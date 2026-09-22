@@ -72,7 +72,7 @@ public class PostgresPostSalesRepository implements PostSalesRepository {
         try {
             String scope = objectMapper.writeValueAsString(List.of(orderItemRef));
             return jdbc.query(
-                "SELECT version, data::text AS data FROM post_sales_case_snapshots WHERE data->'scope'->'orderItemRefs' @> ?::jsonb",
+                "SELECT version, data::text AS data FROM post_sales_case_snapshots WHERE data->'scope'->'orderItemRefs' @> ?::jsonb ORDER BY id FOR UPDATE",
                 (rs, rowNum) -> toCase(readSnapshot(rs.getString("data"))).withVersion(rs.getLong("version")),
                 scope
             );
@@ -129,6 +129,7 @@ public class PostgresPostSalesRepository implements PostSalesRepository {
         ObjectNode root = objectMapper.createObjectNode();
         root.put("caseId", c.caseId()); root.put("journeyOrderId", c.journeyOrderId()); root.put("caseType", c.caseType().name());
         root.set("scope", objectMapper.valueToTree(c.scope())); root.put("reasonCode", c.reasonCode()); root.put("actorRef", c.actorRef()); root.put("idempotencyKey", c.idempotencyKey());
+        root.set("releasedOrderItems", objectMapper.valueToTree(c.releasedOrderItems()));
         root.put("status", c.status().name()); if (c.terminalReason()==null) root.putNull("terminalReason"); else root.put("terminalReason", c.terminalReason());
         if (c.decision()==null) root.putNull("decision"); else root.set("decision", decision(c.decision()));
         ArrayNode steps = root.putArray("executionPlan"); c.executionPlan().forEach(s -> steps.add(step(s)));
@@ -138,7 +139,9 @@ public class PostgresPostSalesRepository implements PostSalesRepository {
 
     private PostSalesCase toCase(PostSalesSnapshot snap) {
         ObjectNode r = snap.data();
-        return PostSalesCase.rehydrate(text(r,"caseId"), text(r,"journeyOrderId"), PostSalesCaseType.valueOf(text(r,"caseType")), objectMapper.convertValue(r.path("scope"), PostSalesScope.class), text(r,"reasonCode"), text(r,"actorRef"), text(r,"idempotencyKey"), PostSalesCaseStatus.valueOf(text(r,"status")), r.path("decision").isNull()?null:decision(r.path("decision")), steps(r.path("executionPlan")), r.path("executionPlanAggregate").isNull()?null:plan(r.path("executionPlanAggregate")), r.path("terminalReason").asText(null), List.of());
+        java.util.Set<String> released = new java.util.LinkedHashSet<>();
+        r.path("releasedOrderItems").forEach(value -> released.add(value.asText()));
+        return PostSalesCase.rehydrate(text(r,"caseId"), text(r,"journeyOrderId"), PostSalesCaseType.valueOf(text(r,"caseType")), objectMapper.convertValue(r.path("scope"), PostSalesScope.class), text(r,"reasonCode"), text(r,"actorRef"), text(r,"idempotencyKey"), PostSalesCaseStatus.valueOf(text(r,"status")), r.path("decision").isNull()?null:decision(r.path("decision")), steps(r.path("executionPlan")), r.path("executionPlanAggregate").isNull()?null:plan(r.path("executionPlanAggregate")), r.path("terminalReason").asText(null), List.of()).withReleasedOrderItems(released);
     }
 
     private ObjectNode decision(PostSalesDecision decision) {

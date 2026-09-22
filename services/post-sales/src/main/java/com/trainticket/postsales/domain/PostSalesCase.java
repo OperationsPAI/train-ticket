@@ -4,6 +4,8 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.LinkedHashSet;
+import java.util.Set;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -17,6 +19,7 @@ public final class PostSalesCase {
     private final String idempotencyKey;
     private final List<PostSalesStep> executionPlan;
     private final List<PostSalesEvent> domainEvents;
+    private final Set<String> releasedOrderItems = new LinkedHashSet<>();
     private PostSalesCaseStatus status;
     private PostSalesDecision decision;
     private PostSalesExecutionPlan executionPlanAggregate;
@@ -126,6 +129,25 @@ public final class PostSalesCase {
     }
     public List<PostSalesStep> executionPlan() { return executionPlan.stream().map(PostSalesStep::copy).toList(); }
     public List<PostSalesEvent> domainEvents() { return List.copyOf(domainEvents); }
+
+    public Set<String> releasedOrderItems() { return Set.copyOf(releasedOrderItems); }
+
+    public PostSalesCase withReleasedOrderItems(Set<String> released) {
+        if (!scope.orderItemRefs().containsAll(released)) {
+            throw new DomainRuleViolation("released capacity must belong to the case scope");
+        }
+        releasedOrderItems.clear();
+        releasedOrderItems.addAll(released);
+        return this;
+    }
+
+    public boolean recordCapacityReleased(String orderItemRef) {
+        if (!scope.orderItemRefs().contains(orderItemRef)) {
+            throw new DomainRuleViolation("released capacity must belong to the case scope");
+        }
+        releasedOrderItems.add(orderItemRef);
+        return releasedOrderItems.containsAll(scope.orderItemRefs());
+    }
 
     public void requestCancellation(Instant occurredAt, String sourceCommandId, String causationId, String correlationId) {
         requireStatus(PostSalesCaseStatus.OPENED);
