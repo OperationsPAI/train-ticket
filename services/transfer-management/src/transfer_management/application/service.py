@@ -797,6 +797,8 @@ class TransferManagementService:
         return plan.to_json(connections)
 
     def _find_published_rule(self, from_type: NodeType, to_type: NodeType, category: TransferCategory, at: datetime) -> MctRule | None:
+        if hasattr(self.store, "find_published_mct_rule"):
+            return self.store.find_published_mct_rule(from_type, to_type, category, at)
         items = list(getattr(self.store, "mct_rules", {}).values()) if hasattr(self.store, "mct_rules") else list(self.store.list_mct_rules())
         # Deterministic selection: among matching published rules, the highest
         # (version, mctRuleId) wins regardless of storage iteration order.
