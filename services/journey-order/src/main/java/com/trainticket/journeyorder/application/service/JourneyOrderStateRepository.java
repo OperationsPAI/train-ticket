@@ -10,6 +10,8 @@ import java.util.Optional;
 public interface JourneyOrderStateRepository {
     default void lockOrderCreation(String idempotencyKey) {}
     Optional<OrderManagementService.StoredOrder> findOrder(String orderId);
+    default Optional<OrderManagementService.StoredOrder> findOrderForUpdate(String orderId) { return findOrder(orderId); }
+    default void lockEvent(String eventId) {}
     List<OrderManagementService.StoredOrder> findOrdersForTravelerUpdates(String travelerId);
     List<OrderManagementService.StoredOrder> listOrders(String accountId, String status, int limit, int offset);
     long countOrders(String accountId, String status);
