@@ -42,6 +42,11 @@ public class PostgresRefundRepository implements RefundRepository {
 
     @Override
     public List<Refund> findByBusinessCaseRef(String businessCaseRef) {
+        if (TransactionSynchronizationManager.isActualTransactionActive()
+            && !TransactionSynchronizationManager.isCurrentTransactionReadOnly()) {
+            jdbc.query("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))",
+                rs -> { return rs.next(); }, "payment-refund-case:" + businessCaseRef);
+        }
         List<String> ids = jdbc.query(
             "SELECT id FROM refund_snapshots WHERE data->>'sourceCaseRef'=? ORDER BY id",
             (rs, row) -> rs.getString("id"), businessCaseRef);
