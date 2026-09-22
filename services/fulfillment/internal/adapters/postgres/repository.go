@@ -68,6 +68,9 @@ func (r *FulfillmentRepository) FindByID(ctx context.Context, id domain.Fulfillm
 
 func (r *FulfillmentRepository) FindByEntitlementSegment(ctx context.Context, entitlementID domain.EntitlementRef, segmentBookingID domain.SegmentBookingRef, segmentRef domain.SegmentRef) (*domain.FulfillmentRecord, error) {
 	if _, transactional := txFromContext(ctx); transactional {
+		if err := r.lockEntitlement(ctx, entitlementID); err != nil {
+			return nil, err
+		}
 		key, err := json.Marshal([]string{string(entitlementID), string(segmentBookingID), string(segmentRef)})
 		if err != nil {
 			return nil, err
@@ -94,6 +97,28 @@ func (r *FulfillmentRepository) FindByEntitlementSegment(ctx context.Context, en
 		record.Version = version
 	}
 	return record, err
+}
+
+func (r *FulfillmentRepository) lockEntitlement(ctx context.Context, entitlementID domain.EntitlementRef) error {
+	_, err := r.db.DBFor(ctx).Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "fulfillment-entitlement:"+string(entitlementID))
+	return err
+}
+
+func (r *FulfillmentRepository) RecordTicketVoided(ctx context.Context, entitlementID domain.EntitlementRef, bookingID domain.SegmentBookingRef, eventID string) error {
+	if _, ok := txFromContext(ctx); !ok {
+		return errors.New("ticket void requires a transaction")
+	}
+	if err := r.lockEntitlement(ctx, entitlementID); err != nil {
+		return err
+	}
+	_, err := r.db.DBFor(ctx).Exec(ctx, "INSERT INTO voided_entitlements(entitlement_id,segment_booking_id,event_id) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING", string(entitlementID), string(bookingID), eventID)
+	return err
+}
+
+func (r *FulfillmentRepository) IsTicketVoided(ctx context.Context, entitlementID domain.EntitlementRef, bookingID domain.SegmentBookingRef) (bool, error) {
+	var found bool
+	err := r.db.DBFor(ctx).QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM voided_entitlements WHERE entitlement_id=$1 AND segment_booking_id IN ('',$2))", string(entitlementID), string(bookingID)).Scan(&found)
+	return found, err
 }
 
 func (r *FulfillmentRepository) SaveSegmentStatus(ctx context.Context, record *domain.SegmentStatusRecord) (bool, error) {
