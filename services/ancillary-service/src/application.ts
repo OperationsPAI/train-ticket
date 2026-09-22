@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { HttpAncillaryReferences } from "./references.js";
 import { HttpAncillaryPayments } from "./payments.js";
+import { handlesAncillaryEvent } from "./adapters/messaging/event-filter.js";
 
 import {
   createEventEnvelope,
@@ -834,6 +835,7 @@ export class AncillaryApplicationService {
   async handleJourneyOrderCancelled(
     envelope: EventEnvelope,
   ): Promise<"ack" | "retry" | "dlq"> {
+    if (!handlesAncillaryEvent(envelope)) return "ack";
     if (envelope.eventType === "RefundSettled" && this.payments) {
       const ref=envelope.payload.businessRef;
       if(typeof ref!=="string" || !ref.startsWith("aoi-"))return "ack";
