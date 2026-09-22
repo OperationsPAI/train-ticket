@@ -207,7 +207,8 @@ class MessagingPortsTest {
             List.of(),
             null,
             null,
-            List.of()
+            List.of(),
+            Instant.parse("2026-07-05T10:30:00Z")
         );
         repository.save(activeMainRefund);
         PostSalesEventHandler handler = new PostSalesEventHandler(
