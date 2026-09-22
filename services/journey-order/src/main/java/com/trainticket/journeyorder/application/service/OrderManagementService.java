@@ -12,6 +12,7 @@ import com.trainticket.journeyorder.application.port.out.EventSubscriber;
 import com.trainticket.journeyorder.application.port.out.JourneyOrderEventHandler;
 import com.trainticket.journeyorder.application.port.out.IdentityVerificationPort;
 import com.trainticket.journeyorder.application.port.out.OfferPricePort;
+import com.trainticket.journeyorder.application.port.out.ResolvedOrderOffer;
 import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.platformkit.http.ApiErrorCode;
 import com.trainticket.platformkit.http.ApiException;
@@ -75,10 +76,7 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
     }
 
     public OrderManagementService(EventPublisher eventPublisher, Clock clock, JourneyOrderStateRepository stateRepository, IdentityVerificationPort identityVerification) {
-        // No offer lookup: the existing unit tests construct the service directly
-        // and assert on the placeholder fare. They keep the old behaviour rather
-        // than each needing a stub, and the production path always has the port.
-        this(eventPublisher, clock, stateRepository, identityVerification, (offerId, offerVersion) -> java.util.Optional.empty());
+        this(eventPublisher, clock, stateRepository, identityVerification, request -> { throw new IllegalStateException("Authoritative offer snapshot resolution is required"); });
     }
 
     public OrderManagementService(EventPublisher eventPublisher, Clock clock, JourneyOrderStateRepository stateRepository) {
@@ -95,6 +93,16 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
 
     @Override
     public JourneyOrderResult createOrder(JourneyOrderRequest request, String idempotencyKey, String correlationId) {
+        IdempotencyEntry<JourneyOrderResult> existing = stateRepository.findCreateIdempotency(idempotencyKey).orElse(null);
+        if (existing != null) {
+            if (!existing.requestFingerprint().equals(createFingerprint(request))) throw new IdempotencyKeyReused("Idempotency-Key was reused with a different create order request");
+            return existing.result();
+        }
+        AccountOrderGate.assertCanCreateOrder(request.accountId(), stateRepository.findAccountState(request.accountId()));
+        return createOrderFromOffer(request, idempotencyKey, correlationId, offerPrice.resolve(request));
+    }
+
+    public JourneyOrderResult createOrderFromOffer(JourneyOrderRequest request, String idempotencyKey, String correlationId, ResolvedOrderOffer resolved) {
         String fingerprint = createFingerprint(request);
         IdempotencyEntry<JourneyOrderResult> existing = stateRepository.findCreateIdempotency(idempotencyKey).orElse(null);
         if (existing != null) {
@@ -105,10 +113,18 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         }
 
         AccountOrderGate.assertCanCreateOrder(request.accountId(), stateRepository.findAccountState(request.accountId()));
-        Money offerTotal = offerPrice.totalFor(request.offerId(), request.offerVersion()).orElse(null);
+        if(!request.accountId().equals(resolved.accountId()) || !request.offerId().equals(resolved.offer().offerId())
+            || request.offerVersion()!=resolved.offer().offerVersion()
+            || !new java.util.HashSet<>(request.travelerRefs()).equals(new java.util.HashSet<>(resolved.travelers().stream().map(TravelerRef::travelerId).toList()))
+            || !new java.util.HashSet<>(request.segmentRefs()).equals(new java.util.HashSet<>(resolved.segments().stream().map(SegmentOrderSnapshot::segmentRef).toList()))) {
+            throw new ApiException(ApiErrorCode.PRECONDITION_FAILED,"Order request differs from resolved offer");
+        }
+        resolved.offer().requireValidAt(clock.instant());
         String orderIntentId = orderIntentId(idempotencyKey, request);
         String identityIdempotencyKey = identityIdempotencyKey(idempotencyKey, request);
-        IdentityVerificationPort.PreOrderCheckResult identityResult = identityVerification.preOrderCheck(request, orderIntentId, identityIdempotencyKey, correlationId);
+        String departureDate=resolved.segments().getFirst().departureTime().atOffset(java.time.ZoneOffset.UTC).toLocalDate().toString();
+        JourneyOrderRequest identityRequest = new JourneyOrderRequest(request.accountId(),request.offerId(),request.offerVersion(),request.travelerRefs(),request.segmentRefs(),departureDate,request.productCode(),request.sourceIp());
+        IdentityVerificationPort.PreOrderCheckResult identityResult = identityVerification.preOrderCheck(identityRequest, orderIntentId, identityIdempotencyKey, correlationId);
         if (identityResult.rejected() || identityResult.manualReviewRequired()) {
             throw new ApiException(ApiErrorCode.PRECONDITION_FAILED, "Identity verification is not passed for all travelers");
         }
@@ -119,67 +135,9 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         Instant now = Instant.now(clock);
         String sourceCommandId = "cmd-" + UUID.randomUUID();
 
-        // Build domain objects from the simple request
-        OfferSnapshotRef offerRef = new OfferSnapshotRef(
-            request.offerId(), request.offerVersion(), now.minusSeconds(60),
-            now.plusSeconds(600), "price-snap-" + request.offerId(), "rule-snap-" + request.offerId()
-        );
-
-        List<TravelerRef> travelers = request.travelerRefs().stream()
-            .map(tid -> new TravelerRef(tid, "ADULT"))
-            .toList();
-
-        // NOTE: journey-order does not yet resolve the real offer itinerary, so the
-        // per-segment departure is a stub. It must fall in a refund-viable window
-        // (> 48h out) rather than the previous now+1day, which post-sales would
-        // otherwise classify as LT_48H_NON_REFUNDABLE and quote a zero refund. A
-        // 30-day offset yields the deterministic TIER_GT_15_DAYS bucket.
-        List<SegmentOrderSnapshot> segments = request.segmentRefs().stream()
-            .map(sid -> new SegmentOrderSnapshot(sid, "ORIG", "DEST", "TRAIN",
-                now.plusSeconds(30L * 86400L), now.plusSeconds(30L * 86400L + 25200L), ""))
-            .toList();
-
-        // Per-traveler fare items, priced from the OFFER rather than a literal.
-        //
-        // This used to be Money.of("CNY", "100.00") regardless of what the customer
-        // was quoted, which is worse than a display bug: post-sales derives the
-        // refund penalty base from the order's fare, so every refund was priced
-        // against 100.00 with the correct tier percentage applied to the wrong
-        // number. On the live cluster every post_sales_policy_contexts row held
-        // 100.00 or 200.00 and none held anything else, whatever fare rules were
-        // published.
-        //
-        // The offer total is split across travelers, with the remainder going to
-        // the first item so the items sum EXACTLY to the total. Dividing and
-        // rounding each share independently loses or invents minor units, and this
-        // sum is what the payable total is derived from.
-        List<OrderItem> orderItems = new ArrayList<>();
-        Money perTraveler = fallbackFare();
-        long remainderMinorUnits = 0;
-        if (offerTotal != null && !travelers.isEmpty()) {
-            long totalMinor = offerTotal.toMinorUnits();
-            long share = totalMinor / travelers.size();
-            remainderMinorUnits = totalMinor - share * travelers.size();
-            perTraveler = Money.fromMinorUnits(share, offerTotal.currency().getCurrencyCode());
-        }
-        for (int i = 0; i < travelers.size(); i++) {
-            String itemId = "fare-" + request.offerId() + "-" + i;
-            String travelerId = request.travelerRefs().get(i);
-            String segmentRef = request.segmentRefs().get(0);
-            Money itemFare = i == 0 && remainderMinorUnits > 0
-                ? Money.fromMinorUnits(perTraveler.toMinorUnits() + remainderMinorUnits,
-                    perTraveler.currency().getCurrencyCode())
-                : perTraveler;
-            orderItems.add(new OrderItem(
-                itemId, com.trainticket.journeyorder.domain.OrderItemType.SEGMENT_FARE,
-                "fare", itemFare, "segment-1",
-                List.of(new com.trainticket.journeyorder.domain.OrderLineBinding(itemId, travelerId, segmentRef, ""))
-            ));
-        }
-
         JourneyOrder order = JourneyOrder.createFromOffer(
-            request.accountId(), "api", request.offerId(),
-            offerRef, travelers, segments, orderItems, now,
+            request.accountId(), resolved.channelId(), request.offerId(),
+            resolved.offer(), resolved.travelers(), resolved.segments(), resolved.items(), now,
             sourceCommandId, correlationId, request.sourceIp()
         );
 
@@ -203,6 +161,8 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
             };
             return createTransaction == null ? save.get() : createTransaction.execute(status -> save.get());
         } catch (RuntimeException exception) {
+            IdempotencyEntry<JourneyOrderResult> committed = stateRepository.findCreateIdempotency(idempotencyKey).orElse(null);
+            if(committed!=null && committed.requestFingerprint().equals(fingerprint)) return committed.result();
             identityVerification.releasePreOrderCheck(identityResult.preOrderCheckId(), "ORDER_CREATE_FAILED", identityIdempotencyKey, correlationId);
             throw exception;
         }
@@ -362,18 +322,6 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         return payload;
     }
 
-    /**
-     * Fare used when the offer's price cannot be read.
-     *
-     * Order creation must not fail because offer-management is unavailable, so
-     * there has to be some value. It is a placeholder and the adapter logs a
-     * warning when it is reached -- an order carrying this figure will misprice
-     * any refund against it, which is the defect this whole path exists to fix.
-     */
-    private static Money fallbackFare() {
-        return Money.of("CNY", "100.00");
-    }
-
     private static Map<String, Object> monetaryPayload(MonetarySummary summary) {
         String currency = summary.currency().getCurrencyCode();
         return Map.of(
@@ -397,7 +345,7 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
             + Objects.requireNonNull(request.offerId()) + "|"
             + request.offerVersion() + "|"
             + String.join(",", request.travelerRefs()) + "|"
-            + String.join(",", request.segmentRefs());
+            + String.join(",", request.segmentRefs()) + "|" + Objects.toString(request.journeyDate(),"") + "|" + Objects.toString(request.productCode(),"");
     }
 
     private static String cancelFingerprint(CancelJourneyOrderRequest request) {
@@ -456,7 +404,8 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
             order.timeline().isEmpty() ? null : order.timeline().getFirst().occurredAt(),
             order.confirmationConditions().riskClear(),
             order.timeline().stream().filter(fact -> "JourneyOrderCancelled".equals(fact.factType()))
-                .reduce((previous, latest) -> latest).map(fact -> fact.reason()).orElse(null)
+                .reduce((previous, latest) -> latest).map(fact -> fact.reason()).orElse(null),
+            order.travelers(), order.segments()
         );
     }
 
