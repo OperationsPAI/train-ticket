@@ -764,6 +764,12 @@ export class AncillaryApplicationService {
   ): Promise<AncillaryOrderItemSnapshot> {
     return this.requireOrderItem(ancillaryOrderItemId);
   }
+  async reconcileRefund(id:string,correlation:string):Promise<void>{
+    const item=await this.requireOrderItem(id);
+    if(!this.payments || item.status!=="REFUND_PENDING" || !item.paymentIntentId)return;
+    const refund=await this.payments.refundFor(item,correlation);
+    if(refund)await this.refunded(id,{refundRef:refund.refundId,refundedAmount:refund.amount,refundedAt:new Date().toISOString()},correlation);
+  }
   async listOrderItems(
     filters: OrderItemFilters,
   ): Promise<Paged<AncillaryOrderItemSnapshot>> {
