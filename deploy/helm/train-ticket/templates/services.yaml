@@ -39,7 +39,7 @@ metadata:
 spec:
   replicas: {{ $replicas }}
   strategy:
-    type: Recreate
+    {{- toYaml ($svc.strategy | default (dict "type" "Recreate")) | nindent 4 }}
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ $name }}
@@ -49,6 +49,9 @@ spec:
         app.kubernetes.io/name: {{ $name }}
         app.kubernetes.io/part-of: train-ticket
     spec:
+      {{- if $svc.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ $svc.terminationGracePeriodSeconds }}
+      {{- end }}
       {{- if $db }}
       {{- $pgHost := printf "postgres-%s" ($svc.pgInstance | default $.Values.postgres.defaultInstance) }}
       initContainers:
@@ -63,6 +66,10 @@ spec:
         - name: {{ $name }}
           image: {{ include "train-ticket.image" (dict "global" $.Values.global "name" $name "image" $svc.image) }}
           imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
+          {{- with $svc.lifecycle }}
+          lifecycle:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - name: http
               containerPort: 8080
