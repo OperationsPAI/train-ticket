@@ -562,7 +562,7 @@ describe("notification messaging integration surface", () => {
         payload: {
           ...payloadBase,
           disruptionId: "drp-321",
-          affectedScope: { journeyOrderId: "ord-321", serviceDate: "2026-07-05", disruptionType: "MISSED_CONNECTION", evidenceRef: "ev-321" },
+          affectedScope: { journeyOrderId: "ord-321", serviceDate: "2026-07-05", disruptionType: "PARTIAL", evidenceRef: "ev-321" },
           openedAt: "2026-07-05T10:00:00.000Z",
           status: "OPENED",
         },

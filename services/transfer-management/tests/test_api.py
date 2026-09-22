@@ -55,7 +55,8 @@ class FakeDownstream:
         UUID(idempotency_key)
         assert UUID(idempotency_key).version == 7
         assert correlation_id.startswith("corr-")
-        assert body["disruptionType"] == "MISSED_CONNECTION"
+        assert body["disruptionType"] == "PARTIAL"
+        assert body["connectionId"]
         assert body["evidence"]["sourceSystem"] == "TRANSFER_MANAGEMENT"
         self.calls.append((body, idempotency_key, correlation_id))
         return {"disruption": {"disruptionId": "drp-1"}, "incident": {"incidentId": "inc-1"}, "recoveryCases": [{"caseId": "rcv-1"}]}
