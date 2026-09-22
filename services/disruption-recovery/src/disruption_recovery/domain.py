@@ -101,46 +101,7 @@ class ProcessingBatchStatus(StrEnum):
     COMPLETED = "COMPLETED"
 
 
-LEGACY_DISRUPTION_TYPE_MAP = {
-    "SERVICE_DELAY": DisruptionType.DELAY,
-    "SERVICE_CANCELLED": DisruptionType.CANCELLATION,
-    "SERVICE_SUSPENDED": DisruptionType.CANCELLATION,
-    "SAILING_SUSPENDED": DisruptionType.CANCELLATION,
-    "STOP_CHANGED": DisruptionType.PARTIAL,
-    "PORT_CALL_CHANGED": DisruptionType.PARTIAL,
-    "ROAD_CLOSED": DisruptionType.FORCE_MAJEURE,
-    "WEATHER": DisruptionType.FORCE_MAJEURE,
-    "OPERATION_RESTRICTION": DisruptionType.FORCE_MAJEURE,
-    "SUPPLIER_FAILURE": DisruptionType.FORCE_MAJEURE,
-    "DRIVER_CANCELLED": DisruptionType.CANCELLATION,
-    "DISPATCH_FAILED": DisruptionType.CANCELLATION,
-    "CONNECTION_MISSED": DisruptionType.PARTIAL,
-    "MISSED_CONNECTION": DisruptionType.PARTIAL,
-    "BATCH_SYSTEM_EVENT": DisruptionType.PARTIAL,
-}
-
-
-DISRUPTION_TYPES = {
-    "SERVICE_DELAY",
-    "SERVICE_CANCELLED",
-    "SERVICE_SUSPENDED",
-    "SAILING_SUSPENDED",
-    "ROAD_CLOSED",
-    "WEATHER",
-    "OPERATION_RESTRICTION",
-    "SUPPLIER_FAILURE",
-    "DRIVER_CANCELLED",
-    "DISPATCH_FAILED",
-    "STOP_CHANGED",
-    "PORT_CALL_CHANGED",
-    "BATCH_SYSTEM_EVENT",
-    "CONNECTION_MISSED",
-    "MISSED_CONNECTION",
-    "DELAY",
-    "CANCELLATION",
-    "PARTIAL",
-    "FORCE_MAJEURE",
-}
+DISRUPTION_TYPES = frozenset(DisruptionType)
 
 
 TERMINAL_BEFORE_CLOSE = {RecoveryCaseStatus.RECOVERED, RecoveryCaseStatus.DECLINED, RecoveryCaseStatus.FAILED}
@@ -782,10 +743,7 @@ class MassDisruptionProcessor:
 def normalize_disruption_type(disruption_type: DisruptionType | str) -> DisruptionType:
     if isinstance(disruption_type, DisruptionType):
         return disruption_type
-    value = require_text(str(disruption_type), "disruptionType").upper()
-    if value in DisruptionType.__members__:
-        return DisruptionType[value]
-    mapped = LEGACY_DISRUPTION_TYPE_MAP.get(value)
-    if mapped is None:
+    value = require_text(str(disruption_type), "disruptionType")
+    if value not in DISRUPTION_TYPES:
         raise DomainError("disruptionType is invalid")
-    return mapped
+    return DisruptionType(value)

@@ -37,7 +37,7 @@ Activation-wave rulings:
 - Closed loop with Disruption Recovery is HTTP-first. When a protected connection
   (`PROTECTED` or `SUPPLIER_PROTECTED`) becomes `MISSED`, Transfer Management
   calls Disruption Recovery `POST /api/v1/disruptions` as a `SYSTEM` report with
-  `disruptionType=MISSED_CONNECTION` and
+  `disruptionType=PARTIAL`, an explicit `connectionId`, and
   `evidence.sourceSystem=TRANSFER_MANAGEMENT`. It persists the outbound UUID-v7
   idempotency key and the `recoveryCases[].caseId` values from the response.
   `SELF_TRANSFER` missed connections publish facts only and do not open recovery
@@ -755,7 +755,8 @@ When a `Connection` transitions to `MISSED` and `contractType` is `PROTECTED` or
 
 | Field | Value |
 |---|---|
-| `disruptionType` | `MISSED_CONNECTION` |
+| `disruptionType` | `PARTIAL` |
+| `connectionId` | Identifier of the missed protected connection. |
 | `scheduledServiceRef` | Omitted unless the next segment has a scheduled-service reference in the itinerary snapshot. |
 | `segmentRef` | `nextSegmentRef` |
 | `serviceDate` | Operating date of the next segment. |

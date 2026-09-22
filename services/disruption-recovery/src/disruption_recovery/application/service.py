@@ -287,13 +287,13 @@ def _coerce_replacement_window(data: Mapping[str, Any], generated_at: datetime) 
 
 
 def _reaccommodation_from_report(data: Mapping[str, Any], generated_at: datetime) -> dict[str, Any] | None:
-    if str(data.get("disruptionType") or "") != "MISSED_CONNECTION":
+    if str(data.get("disruptionType") or "") != "PARTIAL":
         return None
     evidence = dict(data.get("evidence") or {})
     reported_by = dict(data.get("reportedBy") or {})
     if evidence.get("sourceSystem") != "TRANSFER_MANAGEMENT" or reported_by.get("actorType") != "SYSTEM":
         return None
-    connection_id = str(data.get("connectionId") or evidence.get("evidenceRef") or "").strip()
+    connection_id = str(data.get("connectionId") or "").strip()
     if not connection_id:
         return None
     return {"connectionId": connection_id, "replacementWindow": _coerce_replacement_window(data, generated_at)}
