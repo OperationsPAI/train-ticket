@@ -85,6 +85,7 @@ export class LoyaltyMembershipApplicationService {
   constructor(
     private readonly repository: MemberRepository,
     private readonly publisher: EventPublisher,
+    private readonly resolveOrderAccount?: (orderId: string) => Promise<string>,
   ) {}
 
   async getMember(memberId: string): Promise<MemberDetailsDto> {
@@ -162,7 +163,8 @@ export class LoyaltyMembershipApplicationService {
     isHoliday?: boolean;
     memberBirthDate?: Date;
   }): Promise<MemberDetailsDto> {
-    const accountId = command.accountId ?? await this.repository.findAccountIdByOrderId(command.orderId);
+    const accountId = command.accountId ?? await this.repository.findAccountIdByOrderId(command.orderId)
+      ?? await this.resolveOrderAccount?.(command.orderId);
     if (!accountId) {
       throw new ApplicationError("OUT_OF_ORDER_EVENT", `No account reference found for order ${command.orderId}`, 409);
     }
@@ -189,6 +191,9 @@ export class LoyaltyMembershipApplicationService {
   }): Promise<MemberDetailsDto> {
     await this.repository.saveOrderAccountRef(command.orderId, command.accountId);
     const member = (await this.repository.findByAccountId(command.accountId)) ?? Member.enroll({ accountId: command.accountId });
+    if (member.toSnapshot().ledger.some((entry) => entry.sourceFactRef.eventId === command.sourceEventId)) {
+      return memberDetails(member.toSnapshot());
+    }
     const { member: updated, events } = member.accrueFromConfirmedOrder(command);
     await this.repository.save(updated);
     for (const event of events) {
