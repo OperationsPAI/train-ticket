@@ -609,72 +609,121 @@ pub mod redis_runtime {
         group: &str,
         self_name: &str,
     ) {
-        let result: Result<redis::Value, _> = redis::cmd("XINFO")
+        prune_idle_consumers(connection, stream, group, self_name, DEAD_CONSUMER_IDLE_MS).await;
+    }
+
+    async fn prune_idle_consumers(
+        connection: &mut redis::aio::MultiplexedConnection,
+        stream: &str,
+        group: &str,
+        self_name: &str,
+        max_idle_ms: u64,
+    ) {
+        let result: Result<redis::streams::StreamInfoConsumersReply, _> = redis::cmd("XINFO")
             .arg("CONSUMERS")
             .arg(stream)
             .arg(group)
             .query_async(connection)
             .await;
         let consumers = match result {
-            Ok(redis::Value::Bulk(consumers)) => consumers,
+            Ok(reply) => reply.consumers,
             _ => return, // best-effort; stream or group may not exist yet
         };
-        for consumer_value in consumers {
-            let redis::Value::Bulk(ref fields) = consumer_value else {
-                continue;
-            };
-            let mut name: Option<String> = None;
-            let mut idle: u64 = 0;
-            let mut pending: i64 = 0;
-            let mut i = 0;
-            while i + 1 < fields.len() {
-                let key = redis_value_to_string(&fields[i]).unwrap_or_default();
-                match key.as_str() {
-                    "name" => name = redis_value_to_string(&fields[i + 1]),
-                    "idle" => {
-                        idle = match &fields[i + 1] {
-                            redis::Value::Int(v) => *v as u64,
-                            other => redis_value_to_string(other)
-                                .and_then(|s| s.parse().ok())
-                                .unwrap_or(0),
-                        }
-                    }
-                    "pending" => {
-                        pending = match &fields[i + 1] {
-                            redis::Value::Int(v) => *v,
-                            other => redis_value_to_string(other)
-                                .and_then(|s| s.parse().ok())
-                                .unwrap_or(0),
-                        }
-                    }
-                    _ => {}
-                }
-                i += 2;
-            }
-            let Some(ref consumer_name) = name else {
-                continue;
-            };
-            if consumer_name == self_name {
+        for consumer in consumers {
+            if consumer.name == self_name
+                || consumer.pending != 0
+                || consumer.idle as u64 <= max_idle_ms
+            {
                 continue;
             }
-            if idle > DEAD_CONSUMER_IDLE_MS {
-                let _: Result<redis::Value, _> = redis::cmd("XGROUP")
-                    .arg("DELCONSUMER")
-                    .arg(stream)
-                    .arg(group)
-                    .arg(consumer_name)
-                    .query_async(connection)
-                    .await;
+            // Recheck ownership atomically with deletion in case a reader became active.
+            let result: redis::RedisResult<i64> = redis::Script::new(
+                "if #redis.call('XPENDING', KEYS[1], ARGV[1], '-', '+', 1, ARGV[2]) ~= 0 then return 0 end; redis.call('XGROUP', 'DELCONSUMER', KEYS[1], ARGV[1], ARGV[2]); return 1"
+            ).key(stream).arg(group).arg(&consumer.name).invoke_async(connection).await;
+            if matches!(result, Ok(1)) {
                 log::info!(
-                    "pruned dead consumer {} from {}/{} (idle={}ms, pending={})",
-                    consumer_name,
+                    "pruned idle consumer {} from {}/{} (idle={}ms)",
+                    consumer.name,
                     stream,
                     group,
-                    idle,
-                    pending
+                    consumer.idle,
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn pruning_preserves_pending_messages_in_real_redis() {
+        let Ok(url) = std::env::var("TEST_REDIS_URL") else {
+            return;
+        };
+        let client = redis::Client::open(url).unwrap();
+        let mut connection = client.get_multiplexed_async_connection().await.unwrap();
+        let stream = format!("test:prune:{}", uuid::Uuid::now_v7());
+        let group = "prune-test";
+        let _: String = redis::cmd("XGROUP")
+            .arg("CREATE")
+            .arg(&stream)
+            .arg(group)
+            .arg("0")
+            .arg("MKSTREAM")
+            .query_async(&mut connection)
+            .await
+            .unwrap();
+        let id: String = redis::cmd("XADD")
+            .arg(&stream)
+            .arg("*")
+            .arg("payload")
+            .arg("pending-data")
+            .query_async(&mut connection)
+            .await
+            .unwrap();
+        let _: redis::streams::StreamReadReply = redis::cmd("XREADGROUP")
+            .arg("GROUP")
+            .arg(group)
+            .arg("pending-owner")
+            .arg("STREAMS")
+            .arg(&stream)
+            .arg(">")
+            .query_async(&mut connection)
+            .await
+            .unwrap();
+        let _: i64 = redis::cmd("XGROUP")
+            .arg("CREATECONSUMER")
+            .arg(&stream)
+            .arg(group)
+            .arg("empty-owner")
+            .query_async(&mut connection)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        prune_idle_consumers(&mut connection, &stream, group, "current-owner", 0).await;
+        let reply: redis::streams::StreamInfoConsumersReply = redis::cmd("XINFO")
+            .arg("CONSUMERS")
+            .arg(&stream)
+            .arg(group)
+            .query_async(&mut connection)
+            .await
+            .unwrap();
+        assert_eq!(reply.consumers.len(), 1);
+        assert_eq!(reply.consumers[0].name, "pending-owner");
+        assert_eq!(reply.consumers[0].pending, 1);
+        let reclaimed: redis::streams::StreamClaimReply = redis::cmd("XCLAIM")
+            .arg(&stream)
+            .arg(group)
+            .arg("current-owner")
+            .arg(0)
+            .arg(&id)
+            .query_async(&mut connection)
+            .await
+            .unwrap();
+        assert_eq!(reclaimed.ids.len(), 1);
+        assert_eq!(reclaimed.ids[0].id, id);
+        let _: i64 = redis::cmd("DEL")
+            .arg(&stream)
+            .query_async(&mut connection)
+            .await
+            .unwrap();
     }
 
     #[derive(Clone)]
@@ -1188,13 +1237,7 @@ pub mod redis_runtime {
                     return Ok(());
                 }
                 if let Err(error) = self
-                    .recover_pending_with_ops(
-                        ops,
-                        &streams,
-                        &group,
-                        &consumer_name,
-                        handler,
-                    )
+                    .recover_pending_with_ops(ops, &streams, &group, &consumer_name, handler)
                     .await
                 {
                     Self::handle_consume_error_with_ops(ops, &streams, &group, &error.0).await;
@@ -1227,8 +1270,7 @@ pub mod redis_runtime {
                         if run_once {
                             return Err(error);
                         }
-                        Self::handle_consume_error_with_ops(ops, &streams, &group, &error.0)
-                            .await;
+                        Self::handle_consume_error_with_ops(ops, &streams, &group, &error.0).await;
                         break;
                     }
                 }
