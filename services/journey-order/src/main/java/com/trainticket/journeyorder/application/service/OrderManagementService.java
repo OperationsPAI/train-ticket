@@ -191,7 +191,7 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
     @Override
     @Transactional
     public CancelJourneyOrderResult cancelOrder(CancelJourneyOrderRequest request, String idempotencyKey, String correlationId) {
-        StoredOrder stored = stateRepository.findOrder(request.orderId()).orElse(null);
+        StoredOrder stored = stateRepository.findOrderForUpdate(request.orderId()).orElse(null);
         if (stored == null) {
             throw new NotFoundException("Order not found: " + request.orderId());
         }
@@ -434,12 +434,15 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
      *       thread, so concurrent callers get independent transactions and independent rollbacks.</li>
      * </ul>
      *
-     * <p>Events for <em>different</em> aggregates therefore proceed fully in parallel.
+     * <p>PostgreSQL transactions lock an event before deduplication and lock order rows before
+     * applying updates, including traveler projections ordered by order ID.
+     * Ordinary detail reads remain nonlocking.
      */
     @Override
     @Transactional
     public EventSubscriber.HandlerResult handle(EventEnvelope envelope) {
         try {
+            stateRepository.lockEvent(envelope.eventId());
             if (stateRepository.isEventProcessed(envelope.eventId())) {
                 return new EventSubscriber.Success();
             }
@@ -1009,7 +1012,7 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
     }
 
     private StoredOrder storedOrderFromId(String orderId) {
-        return stateRepository.findOrder(orderId)
+        return stateRepository.findOrderForUpdate(orderId)
             .orElseThrow(() -> new NotFoundException("Order not found for consumed event: " + orderId));
     }
 
