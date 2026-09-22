@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.trainticket.payment.Application;
 import com.trainticket.payment.domain.DomainRuleViolation;
 import com.trainticket.payment.domain.Money;
+import com.trainticket.payment.domain.ChannelRef;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.DriverManager;
@@ -55,6 +56,17 @@ class RefundCallbackIdentityLiveTest {
                 assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM outbox",Integer.class));
                 assertEquals(1L,jdbc.queryForObject("SELECT version FROM refund_snapshots WHERE id=?",Long.class,refundId));
                 assertEquals(payment.path("refundedAmount"),mapper.readTree(jdbc.queryForObject("SELECT data->'refundedAmount' FROM payment_intent_snapshots WHERE id=?",String.class,paymentId)));
+                var otherRoute = other.path("channelRef");
+                for (var invalidRoute : new ChannelRef[]{
+                    new ChannelRef(otherRoute.path("channel").asText(), orderId, null, otherRoute.path("channelTransactionId").asText(), null, null, null),
+                    new ChannelRef(otherRoute.path("channel").asText(), otherRoute.path("channelOrderId").asText(), null, originalTransaction, null, null, null),
+                    new ChannelRef(otherRoute.path("channel").asText(), null, null, null, null, null, null)
+                }) {
+                    assertThrows(DomainRuleViolation.class, () -> service.requestRefund(other.path("paymentIntentId").asText(), amount,
+                        refund.path("reasonCode").asText(), refund.path("sourceCaseRef").asText(), UUID.randomUUID().toString(), "corr-invalid-route", invalidRoute));
+                }
+                assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM refund_snapshots", Integer.class));
+                assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM outbox", Integer.class));
                 var pending=service.requestRefund(other.path("paymentIntentId").asText(),amount,refund.path("reasonCode").asText(),refund.path("sourceCaseRef").asText(),UUID.randomUUID().toString(),"corr-pending");
                 assertThrows(DomainRuleViolation.class,()->service.settleRefundFromChannel(pending.refundId(),paymentId,amount,channelRefundId,orderId,channel,originalTransaction,refundTransaction,"evt-wrong-payment","corr-pending"));
                 assertThrows(DomainRuleViolation.class,()->service.settleRefundFromChannel(pending.refundId(),other.path("paymentIntentId").asText(),amount,channelRefundId,orderId,channel,originalTransaction,refundTransaction,"evt-wrong-route","corr-pending"));

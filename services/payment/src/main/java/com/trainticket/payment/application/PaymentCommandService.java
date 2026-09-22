@@ -28,9 +28,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class PaymentCommandService {
-    // RULING (wave A2): captures without an explicit channel route through the
-    // default SIM channel so saga-driven and loadgen traffic exercises the real
-    // handoff; the legacy internal path remains reachable only by explicit env.
     private static final String DEFAULT_CHANNEL = System.getenv().getOrDefault("PAYMENT_DEFAULT_CHANNEL", "ALIPAY_SIM");
 
     private final Clock clock;
@@ -216,15 +213,21 @@ public class PaymentCommandService {
     @Transactional
     public Refund requestRefund(String paymentIntentId, Money amount, String reason, String businessCaseRef, String idempotencyKey, String correlationId, ChannelRef originalRoute) {
         Instant now = Instant.now(clock);
-        Refund refund = requestRefund(paymentIntentId, amount, reason, businessCaseRef, idempotencyKey, correlationId);
         if (originalRoute == null) {
-            return refund;
+            return requestRefund(paymentIntentId, amount, reason, businessCaseRef, idempotencyKey, correlationId);
         }
         PaymentIntent intent = getIntent(paymentIntentId);
         ChannelRef capturedRoute = intent.channelRef();
-        if (capturedRoute == null || capturedRoute.channel() == null || !ChannelRouter.normalize(capturedRoute.channel()).equals(ChannelRouter.normalize(originalRoute.channel()))) {
-            throw new DomainRuleViolation("refund must return to original payment channel");
+        if (capturedRoute == null || capturedRoute.channel() == null
+            || originalRoute.channel() == null
+            || !ChannelRouter.normalize(capturedRoute.channel()).equals(ChannelRouter.normalize(originalRoute.channel()))
+            || originalRoute.channelOrderId() == null || originalRoute.channelOrderId().isBlank()
+            || !Objects.equals(capturedRoute.channelOrderId(), originalRoute.channelOrderId())
+            || originalRoute.channelTransactionId() == null || originalRoute.channelTransactionId().isBlank()
+            || !Objects.equals(capturedRoute.channelTransactionId(), originalRoute.channelTransactionId())) {
+            throw new DomainRuleViolation("refund must return to the original payment channel order and transaction");
         }
+        Refund refund = requestRefund(paymentIntentId, amount, reason, businessCaseRef, idempotencyKey, correlationId);
         if (!channelRouter.isEnabled(originalRoute.channel())) {
             int before = refund.domainEvents().size();
             refund.fail("ORIGINAL_CHANNEL_UNAVAILABLE", false, now, commandId(idempotencyKey), commandId(idempotencyKey), correlationId);
