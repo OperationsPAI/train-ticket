@@ -16,5 +16,6 @@ public record GetJourneyOrderResponse(
     @JsonProperty("riskClear") boolean riskClear,
     @JsonProperty("cancellationReason") String cancellationReason,
     @JsonProperty("travelers") List<com.trainticket.journeyorder.domain.TravelerRef> travelers,
-    @JsonProperty("segments") List<com.trainticket.journeyorder.domain.SegmentOrderSnapshot> segments
+    @JsonProperty("segments") List<com.trainticket.journeyorder.domain.SegmentOrderSnapshot> segments,
+    @JsonProperty("ancillaryItems") List<com.trainticket.journeyorder.application.port.in.JourneyOrderResult.AncillaryItemDto> ancillaryItems
 ) {}
