@@ -20,3 +20,8 @@ nodeExporter:
   enabled: true
 kubeStateMetrics:
   enabled: true
+loadgen:
+  statePersistence:
+    enabled: true
+    storageClass: local-path
+    claimName: loadgen-resident-state
