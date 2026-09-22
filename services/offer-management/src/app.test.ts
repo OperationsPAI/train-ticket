@@ -4,7 +4,7 @@ import { beforeEach, describe, it } from "node:test";
 
 import { createApp, resetIdempotencyStore, resetOfferStore } from "./app.js";
 import { InMemoryEventPublisher } from "./adapters/messaging/in-memory.js";
-import { applyUpstreamEvent, contractInputHash, InMemoryUpstreamStateRepository } from "./application/upstream-state.js";
+import { applyUpstreamEvent, applyUpstreamEvents, contractInputHash, InMemoryUpstreamStateRepository } from "./application/upstream-state.js";
 import { type EventEnvelope } from "./ports/messaging.js";
 import { type QuoteOfferCommand } from "./domain.js";
 
@@ -604,6 +604,72 @@ function uuidV7(): string {
   const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
+
+describe("upstream projection writes a batch in one statement", () => {
+  // Itineraries and fare quotes arrive one per event at the same rate, and a
+  // write per event holds a pool connection for the whole round trip.
+  //
+  // Measured with itineraries written per event: `process ItineraryProposed`
+  // averaged 295ms with a 4.7s p99, the pg pool sat at 60 of 60 used with 133
+  // requests queued, HTTP requests averaged 3.27s behind the same pool, and
+  // the consumer ran 9 to 19 seconds behind events:fare-pricing against a
+  // 17-second client retry budget. 4772 of 6000 recorded journey failures
+  // were `No consumed Fare Pricing quote`.
+  //
+  // Counting repository calls rather than timing anything: what went wrong is
+  // the number of round trips, and that is the property to hold.
+  function countingRepository() {
+    const inner = new InMemoryUpstreamStateRepository();
+    const calls = { saveItineraries: 0, saveFareQuotes: 0, rows: 0 };
+    const repository = Object.create(inner) as InMemoryUpstreamStateRepository & {
+      saveItineraries(itineraries: readonly unknown[]): Promise<void>;
+    };
+    repository.saveItineraries = async (itineraries) => {
+      calls.saveItineraries += 1;
+      calls.rows += itineraries.length;
+      return inner.saveItineraries(itineraries as never);
+    };
+    repository.saveFareQuotes = async (fareQuotes) => {
+      calls.saveFareQuotes += 1;
+      return inner.saveFareQuotes(fareQuotes as never);
+    };
+    return { repository, calls };
+  }
+
+  function itineraryProposed(ref: string) {
+    return makeEnvelope("ItineraryProposed", "trip-planning", {
+      intentRef: `intent-${ref}`,
+      itineraries: [{
+        itineraryRef: ref,
+        legs: [{ serviceSegmentRef: `seg-${ref}`, mode: "RAIL" }],
+      }],
+    });
+  }
+
+  it("stores a batch of itineraries with one repository call", async () => {
+    const { repository, calls } = countingRepository();
+    await applyUpstreamEvents(repository, [
+      itineraryProposed("itin-a"),
+      itineraryProposed("itin-b"),
+      itineraryProposed("itin-c"),
+    ]);
+
+    assert.equal(calls.saveItineraries, 1,
+      "one call per event holds a pool connection per round trip");
+    assert.equal(calls.rows, 3, "every itinerary in the batch must be stored");
+    for (const ref of ["itin-a", "itin-b", "itin-c"]) {
+      assert.ok(await repository.findItinerary(ref), `${ref} was not stored`);
+    }
+  });
+
+  it("stores nothing when the batch carries no itinerary", async () => {
+    const { repository, calls } = countingRepository();
+    await applyUpstreamEvents(repository, [
+      makeEnvelope("TravelerSnapshotUpdated", "traveler-profile", { travelerId: "tvl-1" }),
+    ]);
+    assert.equal(calls.saveItineraries, 0, "an empty batch must not issue a statement");
+  });
+});
 
 describe("Offer Management HTTP API — GET /api/v1/offers/:offerId", () => {
   beforeEach(() => {

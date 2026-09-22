@@ -150,6 +150,7 @@ export type StoredAncillaryOffer = Readonly<{
 
 export interface UpstreamStateRepository {
   saveItinerary(itinerary: StoredItinerary): Promise<void>;
+  saveItineraries(itineraries: readonly StoredItinerary[]): Promise<void>;
   findItinerary(itineraryRef: string): Promise<StoredItinerary | undefined>;
   saveFareQuote(fareQuote: StoredFareQuote): Promise<void>;
   saveFareQuotes(fareQuotes: readonly StoredFareQuote[]): Promise<void>;
@@ -182,7 +183,13 @@ export class InMemoryUpstreamStateRepository implements UpstreamStateRepository 
   private readonly ancillaryOffersById = new Map<string, StoredAncillaryOffer>();
 
   async saveItinerary(itinerary: StoredItinerary): Promise<void> {
-    this.itineraries.set(itinerary.itineraryRef, itinerary);
+    await this.saveItineraries([itinerary]);
+  }
+
+  async saveItineraries(itineraries: readonly StoredItinerary[]): Promise<void> {
+    for (const itinerary of itineraries) {
+      this.itineraries.set(itinerary.itineraryRef, itinerary);
+    }
   }
 
   async findItinerary(itineraryRef: string): Promise<StoredItinerary | undefined> {
@@ -306,10 +313,34 @@ export async function applyUpstreamEvents(repository: UpstreamStateRepository, e
     await repository.saveFareQuotes(fareQuotes);
   }
 
+  // Itineraries are collected across the batch for the same reason fare
+  // quotes are. Both arrive one per event at the same rate, and a per-event
+  // write holds a pool connection for the whole round trip.
+  //
+  // Measured before this: `process ItineraryProposed` averaged 295ms with a
+  // 4.7s p99 and was the highest-volume consumer span, the pg pool sat at 60
+  // of 60 used with 133 requests queued, and HTTP requests averaged 3.27s
+  // because they queued behind the same pool. The consumer then ran 9 to 19
+  // seconds behind on events:fare-pricing against the load generator's
+  // 17-second offer retry budget, so 4772 of the last 6000 recorded journey
+  // failures were `No consumed Fare Pricing quote`.
+  //
+  // Raising the pool was not available: postgres-core held 403 of its 500
+  // connections, and offer-management alone already held 44 to 60 of them
+  // while every other service used single digits.
+  const itineraries = envelopes
+    .filter((envelope) => envelope.eventType === "ItineraryProposed")
+    .flatMap((envelope) => parseItineraries(envelope.payload));
+
+  if (itineraries.length > 0) {
+    await repository.saveItineraries(itineraries);
+  }
+
   for (const envelope of envelopes) {
     switch (envelope.eventType) {
       case "ItineraryProposed":
-        await storeItineraries(repository, envelope.payload);
+        // Already stored above, in one statement for the whole batch.
+        break;
         break;
       case "FareQuoteComputed":
         break;
@@ -453,9 +484,12 @@ export async function buildQuoteOfferCommand(repository: UpstreamStateRepository
   };
 }
 
-async function storeItineraries(repository: UpstreamStateRepository, payload: Record<string, unknown>): Promise<void> {
-  const itineraries = arrayOfObjects(payload.itineraries);
-  for (const itinerary of itineraries) {
+// parseItineraries reads one ItineraryProposed payload into the rows it
+// implies, writing nothing. The caller collects across the batch and stores
+// them in one statement, as it does for fare quotes.
+function parseItineraries(payload: Record<string, unknown>): StoredItinerary[] {
+  const parsed: StoredItinerary[] = [];
+  for (const itinerary of arrayOfObjects(payload.itineraries)) {
     const itineraryRef = stringField(itinerary, "itineraryRef");
     if (!itineraryRef) continue;
     const legs = arrayOfObjects(itinerary.legs);
@@ -464,16 +498,16 @@ async function storeItineraries(repository: UpstreamStateRepository, payload: Re
     for (const [index, leg] of legs.entries()) {
       modeBySegment.set(segmentRefs[index], transportMode(stringField(leg, "mode")));
     }
-    const availabilityBySegment = availabilitySnapshots(itinerary, segmentRefs);
-    await repository.saveItinerary({
+    parsed.push({
       itineraryRef,
       itineraryVersion: stringField(itinerary, "itineraryVersion") ?? stringField(payload, "snapshotVersion") ?? "v1",
       segmentRefs,
       modeBySegment,
-      availabilityBySegment,
+      availabilityBySegment: availabilitySnapshots(itinerary, segmentRefs),
       inputHash: stringField(itinerary, "inputHash") ?? stringField(payload, "intentRef"),
     });
   }
+  return parsed;
 }
 
 function parseFareQuote(payload: Record<string, unknown>): StoredFareQuote | undefined {
