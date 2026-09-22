@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.trainticket.postsales.application.PostSalesMapper;
 import com.trainticket.postsales.domain.*;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
@@ -41,6 +42,12 @@ class DecisionSnapshotTest {
                 var source = PostSalesCase.open("order", PostSalesCaseType.valueOf(kind.name()),
                     PostSalesScope.ticket("booking", "segment", "traveler", "entitlement"),
                     "CUSTOMER_REQUEST", "account", UUID.randomUUID().toString(), now, "cmd-open", "corr");
+                repository.save(source);
+                var loadedOpen = repository.findByIdempotencyKey(source.idempotencyKey()).orElseThrow();
+                assertTrue(loadedOpen.domainEvents().isEmpty());
+                assertEquals(now, loadedOpen.createdAt());
+                assertEquals(PostSalesMapper.openResponse(source), PostSalesMapper.openResponse(loadedOpen));
+                assertEquals(now.toString(), PostSalesMapper.caseDetails(loadedOpen).get("createdAt"));
                 source.beginEvaluation(now, "cmd-evaluate", "cmd-open", "corr");
                 var rules = new RuleEvaluationSnapshot("quote", "rules", "1", now, Map.of("orderId", "order"));
                 var fare = Money.of("100", "CNY");
@@ -79,6 +86,12 @@ class DecisionSnapshotTest {
                     jdbc.update("UPDATE post_sales_case_snapshots SET data = ?::jsonb", root.toString());
                     assertThrows(DomainRuleViolation.class, () -> repository.findById(source.caseId()));
                 }
+                var undated = (ObjectNode) mapper.readTree(snapshot);
+                undated.putNull("createdAt");
+                jdbc.update("UPDATE post_sales_case_snapshots SET data = ?::jsonb", undated.toString());
+                var loadedUndated = repository.findByIdempotencyKey(source.idempotencyKey()).orElseThrow();
+                assertNull(PostSalesMapper.openResponse(loadedUndated).get("createdAt"));
+                assertEquals("psc-" + source.caseId(), PostSalesMapper.openResponse(loadedUndated).get("caseId"));
             } finally {
                 jdbc.execute("SET search_path TO public");
                 jdbc.execute("DROP SCHEMA " + schema + " CASCADE");
