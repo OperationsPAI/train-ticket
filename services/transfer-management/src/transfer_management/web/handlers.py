@@ -40,7 +40,7 @@ class RegisterConnectionRequest(LooseModel):
     fromNodeType: str
     toNodeType: str
     transferCategory: str
-    contractId: str
+    contractId: str | None = None
     contractType: str
     window: dict[str, Any]
     journeyOrderId: str | None = None
