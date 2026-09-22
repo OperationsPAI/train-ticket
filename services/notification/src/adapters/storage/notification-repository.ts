@@ -2,10 +2,32 @@ import { type PoolClient, type QueryResult } from "pg";
 
 import { SnapshotRepository, type SnapshotRecord } from "@trainticket/ts-kit";
 
-import { type ChannelType, type NotificationChannel, type NotificationTaskSnapshot } from "../../domain.js";
+import { NotificationAggregator, isAggregatableTemplate, type AggregatableNotification, type ChannelType, type NotificationChannel, type NotificationTaskSnapshot } from "../../domain.js";
 import { type ContactProfile, type RateLimitStore, type RecipientContactRepository, type UserPreferenceRepository } from "../../application/notification-service.js";
 
 export type PersistedNotificationTask = SnapshotRecord<NotificationTaskSnapshot>;
+
+export class PostgresNotificationAggregator {
+  constructor(private readonly client: PoolClient) {}
+
+  async shouldSuppress(candidate: AggregatableNotification): Promise<boolean> {
+    if (!isAggregatableTemplate(candidate.templateType)) return false;
+    const result = await this.client.query(
+      "SELECT template_type, occurred_at FROM notification_aggregation WHERE recipient_ref=$1 AND order_ref=$2 FOR UPDATE",
+      [candidate.recipientRef, candidate.orderRef],
+    );
+    const aggregator = new NotificationAggregator();
+    if (result.rows[0]) {
+      aggregator.shouldSuppress({ ...candidate, templateType: result.rows[0].template_type, occurredAt: result.rows[0].occurred_at });
+    }
+    const suppressed = aggregator.shouldSuppress(candidate);
+    await this.client.query(
+      "INSERT INTO notification_aggregation(recipient_ref,order_ref,template_type,occurred_at) VALUES($1,$2,$3,$4) ON CONFLICT(recipient_ref,order_ref) DO UPDATE SET template_type=EXCLUDED.template_type,occurred_at=EXCLUDED.occurred_at",
+      [candidate.recipientRef, candidate.orderRef, candidate.templateType, candidate.occurredAt],
+    );
+    return suppressed;
+  }
+}
 
 export class PostgresNotificationTaskRepository {
   constructor(private readonly client: PoolClient) {}
