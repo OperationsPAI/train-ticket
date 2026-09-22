@@ -251,6 +251,19 @@ class PostgresTransferManagementStore(InMemoryStore):
             return tuple(rule_from_json(row[0]) for row in rows)
         return self._with_conn(read)
 
+    def find_published_mct_rule(self, from_type: Any, to_type: Any, category: Any, at: datetime) -> MctRule | None:
+        def read(conn: Any) -> MctRule | None:
+            row = conn.execute(
+                "SELECT data FROM mct_rule_snapshots WHERE data->>'status'='PUBLISHED' "
+                "AND data->>'fromNodeType'=%s AND data->>'toNodeType'=%s AND data->>'transferCategory'=%s "
+                "AND (data->>'validFrom')::timestamptz <= %s "
+                "AND (data->>'validUntil' IS NULL OR (data->>'validUntil')::timestamptz > %s) "
+                "ORDER BY version DESC, id DESC LIMIT 1",
+                (from_type.value, to_type.value, category.value, at, at),
+            ).fetchone()
+            return rule_from_json(row[0]) if row else None
+        return self._with_conn(read)
+
     def save_risk_policy(self, policy: TransferRiskPolicy) -> None:
         def write(conn: Any) -> None:
             self._risk_policies.save(conn, policy.riskPolicyId, policy.to_json(), self._take("risk_policy", policy.riskPolicyId))
