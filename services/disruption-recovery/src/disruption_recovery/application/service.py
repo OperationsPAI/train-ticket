@@ -255,7 +255,7 @@ class NoopDownstream(DownstreamPort):
 def _event_id(event_type: str, aggregate_id: str, version: int) -> str:
     # Deterministic identity, UUID-v7-shaped per the envelope contract:
     # sha256 material folded into a UUID with the version/variant nibbles
-    # stamped (legacy-acl ids.py precedent).
+    # stamped.
     digest = bytearray(sha256(f"{PRODUCER}:{event_type}:{aggregate_id}:{version}".encode("utf-8")).digest()[:16])
     digest[6] = (digest[6] & 0x0F) | 0x70
     digest[8] = (digest[8] & 0x3F) | 0x80
@@ -727,8 +727,7 @@ class DisruptionRecoveryService:
     def _downstream_key(self, case_id: str, option: RecoveryOption) -> str:
         # Downstream HTTP idempotency middleware only accepts UUID-v7 keys;
         # deterministic material folded into a version-stamped UUID keeps
-        # replays stable (legacy-acl / waitlist ruling — composite string
-        # keys were rejected live at the wave-17 gate).
+        # replays stable.
         if option.optionType is RecoveryOptionType.REACCOMMODATION:
             reaccommodation = dict(option.reaccommodation or {})
             material = f"{PRODUCER}:reaccommodation:{case_id}:{option.optionId}:{reaccommodation.get('connectionId')}"

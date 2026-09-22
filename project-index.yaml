@@ -1339,19 +1339,6 @@ requirements:
     confidence: confirmed
     source: "docs/03-ddd-final/implementation-roadmap.md"
 
-  - id: REQ-123
-    title: "WP-23 Legacy ACL strangler"
-    description: "Map old preserve, cancel, rebook, payment, and execute entrypoints to controlled commands."
-    priority: P1
-    status: deprecated
-    code: []
-    tests: []
-    docs:
-      - path: docs/03-ddd-final/implementation-roadmap.md
-      - path: docs/03-ddd-final/phase-1-contract.md
-    depends_on: [REQ-108, REQ-109, REQ-110, REQ-112, REQ-114, REQ-119]
-    confidence: confirmed
-    source: "docs/03-ddd-final/implementation-roadmap.md"
   - {id: REQ-142, title: "Payment Channel service implementation", status: implemented, ref: services/payment-channel}
   - id: REQ-143
     title: "Invoicing service implementation"

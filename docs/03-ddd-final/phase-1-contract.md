@@ -130,7 +130,7 @@ Last updated: 2026-06-28
 5. `Reporting` 不能提供修订单、修库存、补退款的写入口。
 6. `Customer Service` 不能直接改业务表；必须进入目标 domain 命令。
 7. `Notification` 失败不能回滚业务成功。
-8. 旧系统直接写状态能力必须封装为 Legacy ACL 和受控命令。
+8. 客户端统一通过目标业务域的命令接口修改状态。
 
 ## 第一阶段可验收标准
 
@@ -142,5 +142,5 @@ Last updated: 2026-06-28
 | Inventory | 火车区间库存按重叠区间判断 Hold 冲突。 |
 | Ticketing | 出票失败可观察、可重试、可人工。 |
 | Post Sales | 已出票退票先作废权益再退款；退款失败不恢复票。 |
-| Migration | 旧 preserve、cancel、rebook、payment 副作用被拆成命令、事件和 Legacy ACL。 |
+| Client API | 购票、退票、改签和支付使用当前业务域的命令接口。 |
 | Operations | 客服和后台有 OrderTimeline、Saga 状态和人工命令审计。 |

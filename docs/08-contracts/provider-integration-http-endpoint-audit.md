@@ -86,7 +86,7 @@ git grep -n -I -E 'RestTemplate|WebClient|HttpClient|java\.net\.http|OkHttp|fetc
 
 Findings:
 
-- Generic outbound HTTP references exist in e2e scripts, Legacy ACL, Post Sales
+- Generic outbound HTTP references exist in e2e scripts, Post Sales
   configuration, platform/runtime code, and tests.
 - None target `provider-integration`, `/api/v1/internal/provider-reservations`,
   or the cancellation path.

@@ -508,10 +508,6 @@ class ProbeConcurrencyTest(unittest.TestCase):
     # `def` probe waits for one to finish. An `async def` probe runs on the
     # event loop and cannot be starved by a saturated pool.
     #
-    # Measured on legacy-acl: the pod restarted 78 times in 9 hours on
-    # "Liveness probe failed: context deadline exceeded" while its CPU peaked
-    # at 9% of its limit.
-    #
     # Asserted as a property of the route rather than by saturating a real
     # pool: filling 40 threads takes 40 concurrent blocking requests, and a
     # test that does that is slow and timing-dependent. What has to hold is

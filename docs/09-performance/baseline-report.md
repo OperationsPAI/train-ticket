@@ -453,7 +453,6 @@ The load generator now covers 16 journey types: the original 10 customer journey
 | change | Post-sales | 5 | Active | Post-sales fix validated 100% change success |
 | fulfillment | Ride/ticket lifecycle | 7 | Active | Covered by fulfillment/ride scenarios |
 | support | Customer support | 4 | Active | Support journey present in active mix |
-| legacy | Legacy ACL lifecycle | 6 | Active | Legacy journey present in active mix |
 | ride | Ground transport | 5 | Active | Ride journey present in active mix |
 | disruption | Ops recovery | 1 | Active | Disruption journey present in active mix |
 | transfer | Transfer management | 1 | Active | Transfer journey present in active mix |

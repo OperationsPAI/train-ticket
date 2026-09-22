@@ -199,7 +199,6 @@ Notification 的独立价值在于把“业务事实已经发生”与“应该�
 - 客服工作台 ACL：将通知失败、用户未读、人工补发请求转成 Customer Service 可处理事件，不让客服直接改 DeliveryAttempt。
 - Account ACL：消费 ContactPoint、Preference、Consent 和账户状态视图；联系方式无效信号只能作为建议事件返回 Account。
 - Admin & Audit ACL：模板发布、紧急广播、人工补发和批量导入必须携带 approvalRef、operatorRef、reason 和证据附件引用。
-- Legacy ACL：旧 `ts-notification-service`、短信表、邮件表、站内信表、模板配置表在迁移期通过转换层发布 Notification 事件，禁止新域直接依赖旧状态码。
 
 ## 11. 当前服务迁移影响
 
