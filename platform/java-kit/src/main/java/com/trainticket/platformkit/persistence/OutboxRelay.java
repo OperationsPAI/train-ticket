@@ -128,17 +128,27 @@ public class OutboxRelay implements AutoCloseable {
      */
     void cleanup() {
         sweep("outbox", "DELETE FROM outbox WHERE ctid IN (SELECT ctid FROM outbox "
-            + "WHERE published_at IS NOT NULL AND published_at < now() - interval '30 seconds' LIMIT ?)");
+            + "WHERE published_at IS NOT NULL AND published_at < now() - interval '30 seconds' "
+            + "LIMIT ? FOR UPDATE SKIP LOCKED)");
         sweep("processed_events", "DELETE FROM processed_events WHERE ctid IN (SELECT ctid FROM processed_events "
-            + "WHERE processed_at < now() - interval '5 minutes' LIMIT ?)");
+            + "WHERE processed_at < now() - interval '5 minutes' "
+            + "LIMIT ? FOR UPDATE SKIP LOCKED)");
         sweep("idempotency_records", "DELETE FROM idempotency_records WHERE ctid IN (SELECT ctid FROM idempotency_records "
-            + "WHERE created_at < now() - interval '10 minutes' LIMIT ?)");
+            + "WHERE created_at < now() - interval '10 minutes' "
+            + "LIMIT ? FOR UPDATE SKIP LOCKED)");
     }
 
     /**
      * Runs one batched sweep. Uses `ctid IN (SELECT ... LIMIT n)` because a plain
      * `DELETE ... LIMIT` is not valid in Postgres, and the subquery keeps the row
      * set bounded whether or not the retention column happens to be indexed.
+     *
+     * The subquery takes FOR UPDATE SKIP LOCKED so that concurrent sweepers claim
+     * disjoint rows. Several services run more than one process, each with its own
+     * relay, and without it the subquery picks an arbitrary row set, so two sweeps
+     * lock the same rows in opposite orders and deadlock. The deployed cluster
+     * logged 76 deadlocks in one window, every one of them two of these statements
+     * waiting on each other, and the loser's whole batch rolled back.
      */
     private void sweep(String table, String batchedDelete) {
         long removed = 0;
