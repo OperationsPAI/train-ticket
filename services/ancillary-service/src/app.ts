@@ -4,6 +4,7 @@ import { OptimisticConcurrencyConflict } from "@trainticket/ts-kit";
 import { AncillaryApplicationService, InMemoryAncillaryRepository, isDomainError, type AncillaryRepository } from "./application.js";
 import { serviceProfile } from "./profile.js";
 import { HttpFarePricingGateway, type AncillaryPricingGateway } from "./pricing.js";
+import { ReferenceUnavailable } from "./references.js";
 import { InMemoryIdempotencyStore, errorMessage, handleIdempotency, headerValue, livenessProbe, requestContext as kitRequestContext, requestFingerprint, sendError as kitSendError, type ErrorEnvelope, type EventPublisher, type IdempotencyStore, type RequestContext, type SchemaDetail } from "@trainticket/ts-kit";
 
 export type HealthStatus = Readonly<{ status: "ok"; service: typeof serviceProfile }>;
@@ -103,7 +104,8 @@ export function createApp(instrumentation: InstrumentationHooks = {}, dependenci
   app.setNotFoundHandler((request, reply) => kitSendError(reply, 404, "NOT_FOUND", `Route ${request.method} ${request.url} was not found`, requestContext(request)));
   app.setErrorHandler((error, request, reply) => {
     const ctx = requestContext(request);
-    if (error instanceof ValidationError) kitSendError(reply, 400, "VALIDATION_FAILED", error.message, ctx);
+    if (error instanceof ReferenceUnavailable) kitSendError(reply, 503, "UNAVAILABLE", error.message, ctx);
+    else if (error instanceof ValidationError) kitSendError(reply, 400, "VALIDATION_FAILED", error.message, ctx);
     else if (error instanceof OptimisticConcurrencyConflict) kitSendError(reply, 409, "CONFLICT", error.message, ctx);
     else if (isDomainError(error)) kitSendError(reply, error.code === "NOT_FOUND" ? 404 : error.code === "PRECONDITION_FAILED" ? 409 : 422, error.code === "NOT_FOUND" ? "NOT_FOUND" : error.code === "PRECONDITION_FAILED" ? "PRECONDITION_FAILED" : "DOMAIN_RULE_VIOLATION", error.message, ctx, { domainCode: error.code });
     else kitSendError(reply, 500, "INTERNAL_ERROR", errorMessage(error), ctx);
