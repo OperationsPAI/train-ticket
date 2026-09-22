@@ -549,10 +549,10 @@ export type OutboxRelayOptions = Readonly<{
 }>;
 
 /** Rows per retention DELETE. */
-const CLEANUP_BATCH_SIZE = 5_000;
+const CLEANUP_BATCH_SIZE = 1_000;
 
 /** Batches per table per sweep. Bounds one pass; the next pass resumes. */
-const CLEANUP_MAX_BATCHES = 20;
+const CLEANUP_MAX_BATCHES = 1;
 
 export class OutboxRelay {
   private stopped = true;
