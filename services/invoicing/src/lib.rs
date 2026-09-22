@@ -76,7 +76,9 @@ pub async fn build_runtime() -> Result<(Router, JoinHandle<()>), SubscribeFailed
             let hs = hs.clone();
             let consumer = format!("{consumer}-{index}");
             tasks.spawn(async move {
-                let subscriber = rust_kit::messaging::redis_runtime::RedisEventSubscriber::from_env().expect("Redis subscriber configuration");
+                let subscriber = rust_kit::messaging::redis_runtime::RedisEventSubscriber::from_env()
+                    .expect("Redis subscriber configuration")
+                    .with_event_filter(PostgresInvoicingService::handles_event);
                 subscriber.subscribe(
                 vec![stream],
                 "invoicing".into(),
