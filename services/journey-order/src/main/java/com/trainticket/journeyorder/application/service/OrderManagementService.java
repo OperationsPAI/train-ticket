@@ -500,6 +500,10 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
                     "SessionOpened", "SessionRevoked", "PreferenceUpdated" -> new EventSubscriber.Success();
                 default -> new EventSubscriber.Success();
             };
+            if (result instanceof EventSubscriber.TransientError) {
+                rollbackCurrentTransactionIfActive();
+                return result;
+            }
             stateRepository.recordProcessedEvent(envelope.eventId(), envelope.producer());
             return result;
         } catch (InvalidEventPayload ex) {
