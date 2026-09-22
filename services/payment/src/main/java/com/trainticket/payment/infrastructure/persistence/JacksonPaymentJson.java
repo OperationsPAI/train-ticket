@@ -305,7 +305,7 @@ final class JacksonPaymentJson {
         return switch (envelope.eventType()) {
             case "PaymentIntentCreated" -> new PaymentIntentCreated(envelope, text(payload, "paymentIntentId"), text(payload, "businessRef"), text(payload, "purpose"), money(payload.path("amount")), text(payload, "payerRef"), text(payload, "idempotencyKey"));
             case "PaymentAuthorized" -> new PaymentAuthorized(envelope, text(payload, "paymentIntentId"), money(payload.path("authorizedAmount")), text(payload, "channel"), text(payload, "channelTransactionId"));
-            case "PaymentCaptured" -> new PaymentCaptured(envelope, text(payload, "paymentIntentId"), text(payload, "businessRef"), money(payload.path("capturedAmount")), text(payload, "channel"), text(payload, "channelTransactionId"), channelRef(payload.path("channelRef")));
+            case "PaymentCaptured" -> new PaymentCaptured(envelope, text(payload, "paymentIntentId"), text(payload, "businessRef"), money(payload.path("capturedAmount")), text(payload, "channel"), text(payload, "channelTransactionId"), channelRef(payload.path("channelRef")),payload.path("purpose").asText(null),payload.path("payerRef").asText(null));
             case "PaymentFailed" -> new PaymentFailed(envelope, text(payload, "paymentIntentId"), payload.path("businessRef").asText(null), text(payload, "reasonCode"), payload.path("retryable").asBoolean(), channelRef(payload.path("channelRef")));
             case "PaymentIntentCancelled" -> new PaymentIntentCancelled(envelope, text(payload, "paymentIntentId"), text(payload, "reason"));
             case "PaymentIntentExpired" -> new PaymentIntentExpired(envelope, text(payload, "paymentIntentId"));
