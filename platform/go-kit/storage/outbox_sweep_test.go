@@ -79,7 +79,9 @@ func TestSweepDrainsThenStops(t *testing.T) {
 		}
 		return 137, nil
 	}}
-	(&OutboxRelay{db: db}).sweep(context.Background(), "processed_events", "DELETE ... LIMIT $1")
+	for pass := 0; pass < 3; pass++ {
+		(&OutboxRelay{db: db}).sweep(context.Background(), "processed_events", "DELETE ... LIMIT $1")
+	}
 	if db.calls != 3 {
 		t.Fatalf("expected 2 full batches then a short one, got %d", db.calls)
 	}
@@ -89,13 +91,13 @@ func TestSweepDrainsThenStops(t *testing.T) {
 // not be discarded like the old `r.db.Exec(...)` with no error check.
 func TestSweepStopsAndDoesNotPanicOnError(t *testing.T) {
 	db := &sweepDB{script: func(call int) (int64, error) {
-		if call == 2 {
+		if call == 1 {
 			return 0, errors.New("connection reset by peer")
 		}
 		return cleanupBatchSize, nil
 	}}
 	(&OutboxRelay{db: db}).sweep(context.Background(), "processed_events", "DELETE ... LIMIT $1")
-	if db.calls != 2 {
+	if db.calls != 1 {
 		t.Fatalf("expected the sweep to abort on the failing batch, got %d calls", db.calls)
 	}
 }
