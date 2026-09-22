@@ -91,9 +91,10 @@ Re-verification required when:
 - `IdentityRejected` — travelerId, reason (DUPLICATE_TICKET, BLACKLISTED, EXPIRED_DOCUMENT)
 - `BlacklistHit` — documentNumber, blacklistType
 
-### API changes
-- `POST /api/v1/verifications` request adds: `segmentRef`, `departureDate`, `seatClass`, `bookingValueMinor`
-- Response adds: `restrictions: string[]`, `duplicateTicketCheck: PASS|FAIL`
+### API
+
+- `POST /api/v1/identity-verification/verifications` accepts `segmentRef`, `departureDate`, `seatClass`, `bookingValueMinor`.
+- The response includes `restrictions: string[]`, `duplicateTicketCheck: PASS|FAIL`.
 
 ## Test Criteria
 
