@@ -14,6 +14,15 @@ use std::sync::Arc;
 pub struct ApiState<S: InvoicingApi + 'static> {
     pub(crate) service: Arc<S>,
 }
+
+pub(crate) async fn get_amount_basis<S: InvoicingApi + 'static>(
+    State(st): State<ApiState<S>>, Extension(ctx): Extension<RequestContext>, Path(order_id): Path<String>,
+) -> Response {
+    match st.service.get_amount_basis(order_id).await {
+        Ok(basis) => Json(basis).into_response(),
+        Err(error) => api_error_response(error, crate::utils::canonical_corr(ctx.correlation_id())),
+    }
+}
 impl<S: InvoicingApi + 'static> Clone for ApiState<S> {
     fn clone(&self) -> Self {
         Self {
