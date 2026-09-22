@@ -486,6 +486,9 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        refresh_service = getattr(_.state, "projection_refresh_service", None)
+        if refresh_service is not None:
+            refresh_service.start_projection_refresh()
         if messaging_runtime is not None:
             messaging_runtime.start()
         try:
@@ -493,6 +496,8 @@ def create_app(
         finally:
             if messaging_runtime is not None:
                 messaging_runtime.stop()
+            if refresh_service is not None:
+                refresh_service.stop_projection_refresh()
             relay = getattr(_.state, "outbox_relay", None)
             if relay is not None:
                 relay.stop()
@@ -504,6 +509,8 @@ def create_app(
     init_opentelemetry(profile()["service_id"], app=app)
     if app_service is None:
         app_service, default_idempotency_store = _postgres_service_from_env(app)
+    if hasattr(app_service, "start_projection_refresh"):
+        app.state.projection_refresh_service = app_service
     if enable_messaging:
         from .adapters.messaging.runtime import MessagingRuntime
         messaging_runtime = MessagingRuntime(app_service)
