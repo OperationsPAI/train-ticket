@@ -567,22 +567,17 @@ services:
     db: ancillary_service
   offer-management:
     db: offer_management
-    # Two pods, because one Node process consumes its streams serially and
-    # that is now the bound rather than anything inside the process.
+    # Three pods. Two was not enough once trip-planning stopped inventing
+    # itineraries for routes it had no inventory for: real search volume rose,
+    # so this service's share of it rose with it, and the pool went back to 60
+    # of 60 used with 160 requests queued and a POST p99 of exactly 10008ms,
+    # which is the client's own timeout rather than a latency.
     #
-    # Measured after the projection was batched: `process ItineraryProposed`
-    # fell from 295ms to 86.5ms and POST from 3.27s to 1.24s, the pool went
-    # from 45.8 used on average to 27, and the transport timeouts the load
-    # generator recorded fell from 185 to 16 in a comparable window. What did
-    # not move is the consumer's distance behind events:fare-pricing, still 88
-    # seconds against the generator's 17-second offer retry budget, while the
-    # pod sat at 44% of its 4-core limit with an event loop that is one thread.
-    #
-    # A Redis consumer group distributes its entries across consumers, so a
-    # second pod is a second consumer on every stream and needs no coordination.
-    # It is the only lever left: the work is already batched, the pool is no
-    # longer starved, and the CPU limit is not the ceiling.
-    replicas: 2
+    # A third pod rather than a larger pool per pod, for the same connection
+    # cost: 3 x 60 is 180, as 2 x 90 would be, and postgres-core had 451 of its
+    # 700 in use. The extra pod also adds a consumer on every stream and
+    # another HTTP process, and CPU is not the limit at 45% of a 4-core cap.
+    replicas: 3
     env:
       # 15 was the constraint that produced the baseline's error rate, and it is
       # not a Postgres constraint: measured `waitingCount` on the pg.Pool reached
