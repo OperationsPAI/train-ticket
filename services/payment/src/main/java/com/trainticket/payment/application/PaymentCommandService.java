@@ -179,6 +179,10 @@ public class PaymentCommandService {
         PaymentChannelClient.HandoffOrder handoff = paymentChannelClient.handoffCapture(intent, orderKey, submitKey, correlationId, requestedRef);
         intent.recordChannelHandoff(handoff.channelRef());
         paymentIntentRepository.save(intent);
+        if ("SUCCEEDED".equals(handoff.status())) {
+            return captureIntentFromChannel(paymentIntentId, intent.amount(), handoff.channelRef().channel(),
+                handoff.channelTransactionId(), handoff.channelOrderId(), commandId(idempotencyKey), correlationId);
+        }
         return intent;
     }
 
