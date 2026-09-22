@@ -85,6 +85,13 @@ impl PostgresCapacityService {
         Ok(())
     }
 
+    async fn lock_inventory(tx: &mut PgTransaction<'_>, pool_id: &str) -> Result<(), StorageError> {
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+            .bind(format!("capacity-inventory:{pool_id}"))
+            .execute(&mut **tx).await?;
+        Ok(())
+    }
+
     async fn apply_pending_booking_events(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -255,6 +262,7 @@ impl PostgresCapacityService {
             tx.commit().await.map_err(to_app_storage)?;
             return Ok(resp);
         }
+        Self::lock_inventory(&mut tx, &pool_id).await.map_err(to_app_storage)?;
         let loaded = self
             .inventory_repo
             .get::<InventoryPoolSnapshot>(&mut *tx, &pool_id)
@@ -449,6 +457,9 @@ impl PostgresCapacityService {
                     .ok_or_else(|| AppError::NotFound("hold not found".into()))?;
                 let pool_id = hold_snapshot.data.inventory_pool_id.clone();
                 let mut tx = self.pool().begin().await.map_err(to_app_storage)?;
+                if let Some(booking) = &hold_snapshot.data.references.segment_booking_ref {
+                    Self::lock_booking(&mut tx, booking).await.map_err(to_app_storage)?;
+                }
                 if let Some(resp) = self
                     .claim_idempotency::<T>(&mut tx, idempotency_key, fingerprint)
                     .await?
@@ -456,6 +467,7 @@ impl PostgresCapacityService {
                     tx.commit().await.map_err(to_app_storage)?;
                     return Ok(resp);
                 }
+                Self::lock_inventory(&mut tx, &pool_id).await.map_err(to_app_storage)?;
                 let loaded_pool = self
                     .inventory_repo
                     .get::<InventoryPoolSnapshot>(&mut *tx, &pool_id)
@@ -844,6 +856,7 @@ impl PostgresCapacityService {
             tx.commit().await.map_err(inbound_transient)?;
             return Ok(());
         }
+        Self::lock_inventory(&mut tx, &pool_id).await.map_err(inbound_transient)?;
         let loaded = self
             .inventory_repo
             .get::<InventoryPoolSnapshot>(&mut *tx, &pool_id)
@@ -1172,6 +1185,7 @@ impl PostgresCapacityService {
         }
         let hold_id = hold_snapshot.id.clone();
         let pool_id = hold_snapshot.data.inventory_pool_id.clone();
+        Self::lock_inventory(&mut tx, &pool_id).await.map_err(inbound_transient)?;
         let Some(loaded_pool) = self
             .inventory_repo
             .get::<InventoryPoolSnapshot>(&mut *tx, &pool_id)
@@ -1428,6 +1442,7 @@ impl PostgresCapacityService {
         }
         let hold_id = hold_snapshot.id.clone();
         let pool_id = hold_snapshot.data.inventory_pool_id.clone();
+        Self::lock_inventory(&mut tx, &pool_id).await.map_err(inbound_transient)?;
         let Some(loaded_pool) = self
             .inventory_repo
             .get::<InventoryPoolSnapshot>(&mut *tx, &pool_id)
@@ -1588,6 +1603,7 @@ impl PostgresCapacityService {
             return Ok(());
         };
         let pool_id = hold_snapshot.data.inventory_pool_id.clone();
+        Self::lock_inventory(&mut tx, &pool_id).await.map_err(inbound_transient)?;
         let loaded_pool = self
             .inventory_repo
             .get::<InventoryPoolSnapshot>(&mut *tx, &pool_id)
