@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/trainticket/greenfield/services/place-network/internal/domain"
 	"github.com/trainticket/greenfield/services/place-network/internal/domain/ports"
@@ -150,6 +151,7 @@ type ListPlacesRequest struct {
 	Limit  int
 	Offset int
 	Status string
+	Codes  []string
 }
 
 type PlaceSummary struct {
@@ -169,6 +171,14 @@ type ListPlacesResponse struct {
 }
 
 func (s *Service) ListPlaces(ctx context.Context, req ListPlacesRequest) (*ListPlacesResponse, error) {
+	if len(req.Codes) > 100 {
+		return nil, NewDomainError("VALIDATION_FAILED", "at most 100 place codes are allowed")
+	}
+	for _, code := range req.Codes {
+		if strings.TrimSpace(code) == "" {
+			return nil, NewDomainError("VALIDATION_FAILED", "place code must not be blank")
+		}
+	}
 	limit := req.Limit
 	if limit <= 0 {
 		limit = 20
@@ -181,7 +191,7 @@ func (s *Service) ListPlaces(ctx context.Context, req ListPlacesRequest) (*ListP
 		offset = 0
 	}
 	responseOffset := offset
-	page, err := s.places.FindPage(ctx, ports.PlaceListFilter{Limit: limit, Offset: offset, Status: req.Status})
+	page, err := s.places.FindPage(ctx, ports.PlaceListFilter{Limit: limit, Offset: offset, Status: req.Status, Codes: req.Codes})
 	if err != nil {
 		return nil, NewDomainError("UNAVAILABLE", "failed to list places")
 	}
