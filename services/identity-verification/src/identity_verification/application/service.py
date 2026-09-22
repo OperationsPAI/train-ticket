@@ -4,6 +4,7 @@ from contextlib import nullcontext
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+import json
 import re
 from typing import Any, Mapping
 from uuid import UUID
@@ -89,7 +90,7 @@ def _pre_order_material(data: Mapping[str, Any]) -> str:
         ",".join(sorted(str(x) for x in data.get("travelerRefs") or [])),
         ",".join(sorted(str(x) for x in data.get("segmentRefs") or [])),
         data.get("journeyDate"), data.get("productCode"), data.get("limitPolicyVersion"),
-        ",".join(sorted(str(x) for x in data.get("requestedEligibilityTypes") or [])),
+        json.dumps(sorted(data.get("eligibilityUsages") or [], key=lambda item: (item["travelerId"], item["eligibilityCertificateId"])), sort_keys=True),
     )
 
 
@@ -463,6 +464,13 @@ class IdentityVerificationService:
             candidate_facts: list[PurchaseLimitFact] = []; candidate_certificates: list[EligibilityCertificate] = []
             result = PreOrderResult.PASS
             traveler_refs = sorted(set(str(x) for x in data["travelerRefs"]))
+            usages = data.get("eligibilityUsages") or []
+            certificate_ids = [str(usage["eligibilityCertificateId"]) for usage in usages]
+            if len(certificate_ids) != len(set(certificate_ids)):
+                raise DomainError("eligibility certificate may only be used once per order")
+            if any(str(usage["travelerId"]) not in traveler_refs for usage in usages):
+                raise DomainError("eligibility usage traveler is outside the order")
+            certificates = {certificate_id: self.store.get_certificate(certificate_id) for certificate_id in sorted(certificate_ids)}
             for traveler_id in traveler_refs:
                 creds = [c for c in self.store.credentials_for_traveler(traveler_id) if c.status is CredentialStatus.VERIFIED and (c.validUntil is None or c.validUntil > at)]
                 if not creds:
@@ -471,11 +479,13 @@ class IdentityVerificationService:
                     continue
                 credential = creds[0]
                 checks.append({"travelerId": traveler_id, "credentialRecordId": credential.credentialRecordId, "code": "VERIFICATION_PASSED", "status": "PASS", "policyVersion": str(data["limitPolicyVersion"])})
-                for eligibility_type in sorted(set(data.get("requestedEligibilityTypes") or [])):
-                    certs, _ = self.store.query_certificates(traveler_id, str(eligibility_type), str(data["journeyDate"]), str(data["productCode"]), 1, 0)
-                    if certs:
-                        candidate_certificates.append(certs[0])
-                        checks.append({"travelerId": traveler_id, "credentialRecordId": credential.credentialRecordId, "eligibilityCertificateId": certs[0].eligibilityCertificateId, "code": "ELIGIBILITY_ACTIVE", "status": "PASS", "policyVersion": certs[0].policyVersion})
+                for usage in [item for item in usages if str(item["travelerId"]) == traveler_id]:
+                    certificate = certificates[str(usage["eligibilityCertificateId"])]
+                    if certificate.travelerId != traveler_id or certificate.eligibilityType != str(usage["eligibilityType"]):
+                        raise DomainError("eligibility certificate does not match the quoted traveler and type")
+                    if certificate.is_active_for(str(data["journeyDate"]), str(data["productCode"])):
+                        candidate_certificates.append(certificate)
+                        checks.append({"travelerId": traveler_id, "credentialRecordId": credential.credentialRecordId, "eligibilityCertificateId": certificate.eligibilityCertificateId, "code": "ELIGIBILITY_ACTIVE", "status": "PASS", "policyVersion": certificate.policyVersion})
                     else:
                         checks.append({"travelerId": traveler_id, "credentialRecordId": credential.credentialRecordId, "code": "ELIGIBILITY_UNAVAILABLE", "status": "REJECT", "reasonCode": "NO_ACTIVE_CERTIFICATE", "policyVersion": str(data["limitPolicyVersion"])})
                         result = PreOrderResult.REJECT
@@ -521,7 +531,7 @@ class IdentityVerificationService:
             if record.get("status") != "RESERVED" or record.get("body", {}).get("result") != "PASS":
                 raise PreconditionFailed("pre-order check is not a passed reservation")
             at = now_utc(); envelopes: list[EventEnvelope] = []
-            for reservation in record.get("usageReservations", []):
+            for reservation in sorted(record.get("usageReservations", []), key=lambda item: str(item["eligibilityCertificateId"])):
                 if reservation.get("status") != "RESERVED": continue
                 certificate = self.store.get_certificate(str(reservation["eligibilityCertificateId"]))
                 confirmed = certificate.confirm(at); version = confirmed.version
@@ -543,7 +553,7 @@ class IdentityVerificationService:
             if record.get("status") == "RELEASED": return dict(record["body"])
             if record.get("status") == "CONFIRMED": raise PreconditionFailed("pre-order check is already confirmed")
             at = now_utc(); body = dict(record["body"]); envelopes: list[EventEnvelope] = []
-            for reservation in record.get("usageReservations", []):
+            for reservation in sorted(record.get("usageReservations", []), key=lambda item: str(item["eligibilityCertificateId"])):
                 if reservation.get("status") != "RESERVED": continue
                 certificate = self.store.get_certificate(str(reservation["eligibilityCertificateId"]))
                 released = certificate.release(at); version = released.version
