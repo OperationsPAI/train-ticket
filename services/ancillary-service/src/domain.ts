@@ -202,6 +202,9 @@ export type AncillaryOfferSnapshot = Readonly<{
 }>;
 
 export type AncillaryOrderItemSnapshot = Readonly<{
+  paymentIntentId?: string;
+  paymentCapturedAt?: string;
+  refundId?: string;
   ancillaryOrderItemId: string;
   journeyOrderId: string;
   travelerRef: string;
@@ -584,6 +587,17 @@ export class AncillaryOrderItem {
   isTerminal(): boolean {
     return ORDER_TERMINAL_STATUSES.includes(this.snapshot.status);
   }
+  attachPayment(paymentIntentId:string, now=new Date()):void{
+    if(this.snapshot.paymentIntentId===paymentIntentId)return;
+    if(this.snapshot.paymentIntentId || !["SELECTED","PENDING_CONFIRMATION"].includes(this.snapshot.status))throw new DomainError("PAYMENT_CONFLICT","Ancillary payment cannot be replaced");
+    this.snapshot={...this.snapshot,paymentIntentId,updatedAt:iso(now),aggregateVersion:this.snapshot.aggregateVersion+1};
+  }
+  confirmPaid(now=new Date()):OrderItemStatus{
+    const previous=this.snapshot.status;
+    if(previous==="CONFIRMED")return previous;
+    if(!this.snapshot.paymentIntentId || !["SELECTED","PENDING_CONFIRMATION"].includes(previous))throw new DomainError("INVALID_ORDER_ITEM_TRANSITION","Ancillary payment cannot confirm current status");
+    this.snapshot={...this.snapshot,status:"CONFIRMED",paymentCapturedAt:iso(now),updatedAt:iso(now),aggregateVersion:this.snapshot.aggregateVersion+1};return previous;
+  }
   confirm(
     input: {
       confirmationRef?: string;
@@ -711,6 +725,7 @@ export class AncillaryOrderItem {
     this.snapshot = {
       ...this.snapshot,
       status: "REFUNDED",
+      refundId: input.refundRef,
       refundableAmount: input.refundedAmount,
       statusReason: input.reasonCode ?? input.refundRef,
       updatedAt: input.refundedAt,

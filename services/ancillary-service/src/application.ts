@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { HttpAncillaryReferences } from "./references.js";
+import { HttpAncillaryPayments } from "./payments.js";
 
 import {
   createEventEnvelope,
@@ -187,6 +188,7 @@ export class AncillaryApplicationService {
     private readonly publisher?: EventPublisher,
     private readonly pricingGateway?: AncillaryPricingGateway,
     private readonly references?: HttpAncillaryReferences,
+    private readonly payments?: HttpAncillaryPayments,
   ) {}
 
   async createCatalogItem(
@@ -473,7 +475,9 @@ export class AncillaryApplicationService {
       await this.requireOrderItem(ancillaryOrderItemId),
     );
     if (this.references) await this.references.verify({ ...item.toSnapshot(), entitlementRef: input.entitlementRef ?? item.toSnapshot().entitlementRef }, item.toSnapshot().catalogSnapshot.requiresEntitlementRef);
-    const previousStatus = item.confirm(input);
+    if (this.payments) await this.payments.verify(item.toSnapshot(),correlationId);
+    if (this.payments && item.toSnapshot().status==="CONFIRMED") return item.toSnapshot();
+    const previousStatus = this.payments ? item.confirmPaid() : item.confirm(input);
     const snapshot = item.toSnapshot();
     await this.repository.saveOrderItem(snapshot);
     const eventType =
@@ -500,6 +504,15 @@ export class AncillaryApplicationService {
     return snapshot;
   }
 
+  async preparePayment(id:string,correlation:string):Promise<AncillaryOrderItemSnapshot>{
+    if(!this.payments)throw new DomainError("PAYMENT_UNAVAILABLE","Payment service is required");
+    const item=AncillaryOrderItem.fromSnapshot(await this.requireOrderItem(id));
+    if(this.references)await this.references.verify(item.toSnapshot(),item.toSnapshot().catalogSnapshot.requiresEntitlementRef);
+    if(item.toSnapshot().paymentIntentId)return item.toSnapshot();
+    item.attachPayment(await this.payments.prepare(item.toSnapshot(),correlation));
+    await this.repository.saveOrderItem(item.toSnapshot());return item.toSnapshot();
+  }
+
   async fulfillmentReady(
     ancillaryOrderItemId: string,
     input: {
@@ -516,6 +529,7 @@ export class AncillaryApplicationService {
     const previousStatus = item.fulfillmentReady(input);
     const snapshot = item.toSnapshot();
     if (this.references) await this.references.verify(snapshot, snapshot.catalogSnapshot.requiresEntitlementRef);
+    if (this.payments) await this.payments.verify(snapshot,correlationId);
     await this.repository.saveOrderItem(snapshot);
     await this.publish(
       correlationId,
@@ -549,6 +563,7 @@ export class AncillaryApplicationService {
     const item = AncillaryOrderItem.fromSnapshot(
       await this.requireOrderItem(ancillaryOrderItemId),
     );
+    if(["REFUND_PENDING","REFUNDED"].includes(item.toSnapshot().status))return item.toSnapshot();
     const previousStatus = item.cancel(input);
     const snapshot = item.toSnapshot();
     await this.repository.saveOrderItem(snapshot);
@@ -569,6 +584,10 @@ export class AncillaryApplicationService {
           aggregateVersion: snapshot.aggregateVersion,
         },
       );
+    if (this.payments && snapshot.paymentIntentId) {
+      const payment=await this.payments.details(snapshot.paymentIntentId,correlationId);
+      if(payment.capturedAmount.minorUnits>0) return (await this.suggestRefund(ancillaryOrderItemId,{reasonCode:input.reasonCode},correlationId)).ancillaryOrderItem;
+    }
     return snapshot;
   }
 
@@ -591,6 +610,13 @@ export class AncillaryApplicationService {
       await this.requireOrderItem(ancillaryOrderItemId),
     );
     const result = item.suggestRefund(input);
+    if(this.payments){
+      const snapshot=item.toSnapshot();
+      if(!snapshot.paymentIntentId)throw new DomainError("PAYMENT_REQUIRED","Refund requires the ancillary payment intent");
+      const payment=await this.payments.details(snapshot.paymentIntentId,correlationId);
+      if(payment.businessRef!==snapshot.ancillaryOrderItemId || payment.purpose!=="ancillary" || payment.capturedAmount.currency!==snapshot.refundableAmount.currency || payment.capturedAmount.minorUnits<snapshot.refundableAmount.minorUnits)
+        throw new DomainError("REFUND_MISMATCH","Refund exceeds the ancillary captured payment");
+    }
     const snapshot = item.toSnapshot();
     await this.repository.saveOrderItem(snapshot);
     if (result)
@@ -631,6 +657,11 @@ export class AncillaryApplicationService {
     const item = AncillaryOrderItem.fromSnapshot(
       await this.requireOrderItem(ancillaryOrderItemId),
     );
+    if(this.payments){
+      const refund=await this.payments.settledRefund(item.toSnapshot(),input.refundRef,correlationId);
+      if(refund.amount.currency!==input.refundedAmount.currency || refund.amount.minorUnits!==input.refundedAmount.minorUnits)throw new DomainError("REFUND_MISMATCH","Reported refund amount differs from settled funds");
+    }
+    if(item.toSnapshot().status==="REFUNDED" && item.toSnapshot().refundId===input.refundRef)return item.toSnapshot();
     const previousStatus = item.refunded(input);
     const snapshot = item.toSnapshot();
     await this.repository.saveOrderItem(snapshot);
@@ -785,6 +816,19 @@ export class AncillaryApplicationService {
   async handleJourneyOrderCancelled(
     envelope: EventEnvelope,
   ): Promise<"ack" | "retry" | "dlq"> {
+    if (envelope.eventType === "RefundSettled" && this.payments) {
+      const ref=envelope.payload.businessRef;
+      if(typeof ref!=="string" || !ref.startsWith("aoi-"))return "ack";
+      await this.refunded(ref,{refundRef:String(envelope.payload.refundId),refundedAmount:envelope.payload.amount as Money,refundedAt:envelope.occurredAt},envelope.correlationId);return "ack";
+    }
+    if(envelope.eventType==="PaymentCaptured" && this.payments){
+      const ref=envelope.payload.businessRef;
+      if(typeof ref!=="string" || !ref.startsWith("aoi-"))return "ack";
+      const item=await this.requireOrderItem(ref);
+      if(item.paymentIntentId!==envelope.payload.paymentIntentId)throw new DomainError("PAYMENT_MISMATCH","Capture references a different ancillary payment");
+      if(item.status==="CANCELLED")await this.suggestRefund(ref,{reasonCode:"CANCELLED_BEFORE_CAPTURE"},envelope.correlationId);
+      return "ack";
+    }
     if (envelope.eventType === "EntitlementVoided") {
       const entitlement = envelope.payload.entitlementId;
       if (typeof entitlement !== "string" || !entitlement) throw new DomainError("INVALID_REFERENCES", "EntitlementVoided requires entitlementId");
@@ -969,6 +1013,7 @@ function orderEventBase(
   snapshot: AncillaryOrderItemSnapshot,
 ): Record<string, unknown> {
   return {
+    paymentIntentId: snapshot.paymentIntentId,
     ancillaryOrderItemId: snapshot.ancillaryOrderItemId,
     journeyOrderId: snapshot.journeyOrderId,
     travelerRef: snapshot.travelerRef,
@@ -989,6 +1034,7 @@ function cancelEventBase(
   snapshot: AncillaryOrderItemSnapshot,
 ): Record<string, unknown> {
   return {
+    paymentIntentId: snapshot.paymentIntentId,
     ancillaryOrderItemId: snapshot.ancillaryOrderItemId,
     journeyOrderId: snapshot.journeyOrderId,
     travelerRef: snapshot.travelerRef,

@@ -34,7 +34,13 @@ export class PostgresAncillaryRepository implements AncillaryRepository {
     const rows = await this.db.query("SELECT data FROM ancillary_order_items WHERE data->>'entitlementRef'=$1 ORDER BY id",[entitlementRef]);
     return rows.rows.map((row:{data:AncillaryOrderItemSnapshot})=>row.data);
   }
-  async getOrderItem(ancillaryOrderItemId: string): Promise<AncillaryOrderItemSnapshot | undefined> { return (await new SnapshotRepository<AncillaryOrderItemSnapshot>(this.db, "ancillary_order_items").get(ancillaryOrderItemId))?.data; }
+  async getOrderItem(ancillaryOrderItemId: string): Promise<AncillaryOrderItemSnapshot | undefined> {
+    const repo=new SnapshotRepository<AncillaryOrderItemSnapshot>(this.db,"ancillary_order_items");
+    const initial=(await repo.get(ancillaryOrderItemId))?.data;
+    if(initial?.entitlementRef)await this.db.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",["ancillary-ticket:"+initial.entitlementRef]);
+    await this.db.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",["ancillary-item:"+ancillaryOrderItemId]);
+    return (await repo.get(ancillaryOrderItemId))?.data;
+  }
   async listOrderItems(filters: OrderItemFilters): Promise<readonly AncillaryOrderItemSnapshot[]> {
     const clauses = ["data->>'journeyOrderId' = $1"];
     const values: unknown[] = [filters.journeyOrderId];
