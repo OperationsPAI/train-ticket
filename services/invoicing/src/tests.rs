@@ -47,12 +47,19 @@ fn amount() -> AmountBasis {
 #[tokio::test]
 async fn revenue_basis_sums_distinct_items_and_deduplicates_recognition_ids() {
     let svc = InMemoryInvoicingService::default();
+    svc.apply_subscribed_event(rust_kit::messaging::EventEnvelope::new(
+        "JourneyOrderConfirmed", rust_kit::messaging::now_rfc3339_utc(), corr(), None::<String>, "journey-order",
+        json!({"orderId":"ord-components", "accountId":"acc-components", "monetarySummary":{"total":{"currency":"CNY","minorUnits":10000}}}),
+    )).await.unwrap();
     for (recognition, minor) in [("rr-first", 6000), ("rr-second", 4000), ("rr-first", 6000)] {
         svc.apply_subscribed_event(rust_kit::messaging::EventEnvelope::new(
             "RevenueRecognized", rust_kit::messaging::now_rfc3339_utc(), corr(), None::<String>,
             "finance-settlement", json!({"orderId":"ord-components", "revenueRecognitionId":recognition,
                 "amount":{"currency":"CNY","minorUnits":minor}}),
         )).await.unwrap();
+        if recognition == "rr-first" && svc.snapshot().amounts["ord-components"].revenue_recognition_ids.len() == 1 {
+            assert!(svc.get_amount_basis("ord-components".into()).await.is_err());
+        }
     }
     let basis = svc.get_amount_basis("ord-components".into()).await.unwrap();
     assert_eq!(basis.total_amount.minor_units, 10000);
