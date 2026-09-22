@@ -368,7 +368,6 @@ Booking Orchestration 不直接实现外部供应商协议。它通过 Provider 
 
 | Current Service | Migration Impact |
 |---|---|
-| `ts-preserve-service` | 从“普通车同步订票大编排”迁移为 Booking Orchestration 的输入适配层；订单、库存、支付、附加服务副作用拆出；保留为 Legacy ACL 期间只发起受控 Booking 命令。 |
 | `ts-preserve-other-service` | 与 `ts-preserve-service` 合并为统一 Booking 流程；高铁/普通车差异转为 Segment/ServicePlan 属性，不再分裂编排。 |
 | `ts-order-service`, `ts-order-other-service` | 供应侧预订字段拆到 `SegmentBooking`；订单只保留商业汇总和 SegmentBookingId 引用；订单 ID 行为差异由迁移 ACL 统一。 |
 | `ts-seat-service` | 不再由 preserve 随机分配座位并从订单反推余票；改为 Capacity & Availability 的 `HoldCapacity`、`ConfirmHold`、`ReleaseHold`。 |

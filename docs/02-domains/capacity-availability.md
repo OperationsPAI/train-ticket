@@ -383,15 +383,6 @@ Capacity & Availability 不直接调用外部供应商原始 API。所有外部�
 | 轮船舱房、铺位、车辆甲板 | `FerryCapacitySnapshot` | 同一船班存在多类容量单元，舱房和车辆空间可能联动。 |
 | 网约车司机供给、ETA、热区供给 | `RideDynamicSupplySnapshot` | 动态供给不是可锁定固定座位；Hold 语义应是短时派单能力预占或报价可用性。 |
 
-### 遗留服务防腐层
-
-第一阶段迁移时，需要建立 Legacy ACL：
-
-- 从 `ts-travel*` 和 `ts-train-service` 读取车次、车型、容量时，映射为 `ServiceSegment` 和 `PhysicalCapacity`，不保留高铁/普通车服务边界。
-- 从 `ts-seat-service` 的余票计算迁移到 `InventoryPool` 和 `CapacityHold`；旧服务只能作为旁路校验或兼容查询。
-- 从 `ts-order*` 反推已售座位只能用于迁移初始化和差异检测，不能成为新库存写模型权威。
-- `tripId.startsWith("G") || tripId.startsWith("D")` 只能在 Legacy ACL 中暂时存在，目标模型必须使用 Service Plan 的 train category 或 service type。
-
 ### 后台系统防腐层
 
 Admin & Audit 是后台操作入口。本上下文只接受已经通过权限和审批的命令。禁止后台直接改库存表、Hold 状态、Quota 使用量或 Snapshot 状态。

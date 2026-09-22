@@ -58,8 +58,7 @@ make check-strict
 
 - New code must be created from the DDD documents, not by modifying legacy
   service code.
-- Legacy behavior may be used only as reference material outside this branch or
-  through a future Legacy ACL / Strangler work package.
+- Clients use the current owning service APIs for all business operations.
 - Shared Kernel must stay minimal: IDs, value objects, event envelope, and
   cross-context primitives only.
 - Domain event payloads belong to their owning bounded context. Shared examples

@@ -438,7 +438,6 @@ WORK_PACKAGES = [
     ("REQ-120", "WP-20 Customer service cases", "Represent support cases, evidence references, manual action requests, and timelines.", "P1", ["REQ-108", "REQ-110", "REQ-112", "REQ-114", "REQ-119"]),
     ("REQ-121", "WP-21 Finance event consumption", "Consume order/payment/post-sales events for revenue recognition and reconciliation views.", "P1", ["REQ-108", "REQ-110", "REQ-114"]),
     ("REQ-122", "WP-22 Reporting read models", "Expose read-only metrics and dashboards from events and Finance views.", "P2", ["REQ-106", "REQ-108", "REQ-110", "REQ-112", "REQ-121"]),
-    ("REQ-123", "WP-23 Legacy ACL strangler", "Map old preserve, cancel, rebook, payment, and execute entrypoints to controlled commands.", "P1", ["REQ-108", "REQ-109", "REQ-110", "REQ-112", "REQ-114", "REQ-119"]),
 ]
 
 

@@ -12,7 +12,7 @@ Last updated: 2026-06-28
 2. 跨域任务只能通过事件、命令或 ACL 契约连接，不能直接写别的 domain 内部状态。
 3. 先搭交易闭环，再补治理和读模型。
 4. 每个 task 都必须能落到一个或多个聚合、命令、事件、读模型或 ACL。
-5. 任何旧服务迁移都必须走 Legacy ACL，不保留直接改状态路径。
+5. 客户端统一调用目标业务域当前提供的命令接口。
 
 ## Work Packages
 
@@ -40,7 +40,6 @@ Last updated: 2026-06-28
 | WP-20 | Customer Service 工单入口 | Customer Service | SupportCase、EvidenceRef、ManualActionRequest、CaseTimeline。 | WP-08, WP-10, WP-12, WP-14, WP-19 | 工单只协作和取证，不直接改业务状态。 |
 | WP-21 | Finance 最小消费 | Finance Settlement | Payment/Order/PostSales event consumer、RevenueRecognition default、Reconciliation shell。 | WP-08, WP-10, WP-14 | Revenue 默认来自 Finance view，不直接从订单或支付表推导。 |
 | WP-22 | Reporting 最小读模型 | Reporting | MetricDefinition、Order/Funnel/Ticketing basic dashboards。 | WP-06, WP-08, WP-10, WP-12, WP-21 | Reporting 只读，不提供修订单、修库存、补退款入口。 |
-| WP-23 | Legacy ACL Strangler | Legacy ACL / All P0 domains | preserve/cancel/rebook/payment/execute 旧接口到新命令映射。 | WP-08-WP-14, WP-19 | 旧副作用被拆成受控命令、事件和审计；无直接写状态路径。 |
 
 ## 建议实施顺序
 
@@ -56,9 +55,9 @@ WP-06 到 WP-12。目标是完成查询、报价、下单、锁库存、支付�
 
 WP-13 到 WP-15。目标是检票事实、退票、改签和交易通知可解释。
 
-### Phase D：治理和迁移
+### Phase D：治理
 
-WP-16 到 WP-23。目标是把用户、风控、客服、后台、财务、报表和旧系统迁移接上主链路。
+WP-16 到 WP-22 负责用户、风控、客服、后台、财务和报表功能。
 
 ## 第一阶段不拆任务的能力
 
@@ -82,5 +81,5 @@ WP-16 到 WP-23。目标是把用户、风控、客服、后台、财务、报�
 | Events | 新增或修改的领域事件。 |
 | Invariants | 需要保护的不变量。 |
 | Upstream / Downstream | 需要消费或发布的契约。 |
-| Migration | 旧服务入口如何映射，是否需要 Legacy ACL。 |
+| Client API | 客户端使用目标业务域当前提供的命令和查询接口。 |
 | Acceptance | 可验证业务结果。 |

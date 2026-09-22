@@ -30,7 +30,7 @@ Decision status：
 | DR-011 | accepted | C-027, C-031 | Customer Service、Admin & Audit、Reporting、Notification 都不能成为核心业务决策或直接写状态的捷径。 |
 | DR-012 | accepted | C-028 | 敏感 raw data 留源域或受控证据库，跨域事件只传最小摘要、引用和脱敏字段。 |
 | DR-013 | accepted | C-029, C-030 | Finance 是财务事实和口径权威；Reporting 只消费 Finance view 和业务事件，并使用版本化 MetricDefinition。 |
-| DR-014 | accepted | C-034 | 迁移必须通过 Legacy ACL 和受控命令 strangler；禁止把旧系统直接写状态能力原样迁入新模型。 |
+| DR-014 | accepted | C-034 | 客户端统一使用当前业务域的命令接口，业务状态由目标业务域管理。 |
 | DR-015 | phase-1-scope | C-007 | 第一阶段默认平台内部库存权威；provider-owned inventory 的边界已定为 Capacity 统一建模，第一阶段不实现外部库存权威。 |
 | DR-016 | phase-1-out-of-scope | C-008 | Waitlist 是独立支撑上下文，拥有 WaitlistRequest、队列排序和兑现策略；不进入第一阶段主票闭环。 |
 | DR-017 | future-scope | C-013 | ProtectedConnection 是 Transfer Management 的合同类型，必须有明确披露、成本责任和恢复范围；第一阶段只支持 non-protected disclosure。 |
@@ -171,17 +171,13 @@ Finance Settlement 是收入确认、清结算、发票、对账差异、记账�
 | Search conversion | 同一 account/session 在 30 分钟内从 ItineraryProposed 到 OfferAccepted 或 JourneyOrderCreated。 |
 | Recovery success | 拆为 adoption、execution、financial completion、case closure 四个指标。 |
 
-## DR-014 Legacy Strangler
+## DR-014 当前业务接口
 
-旧系统中的删单式改签、直接改状态、硬编码退改规则、同步副作用和 ad-hoc SQL 不能直接迁入新设计。迁移期必须通过 Legacy ACL 把旧操作转成受控命令，并记录 sourceEventId、operator、reason 和 audit reference。
-
-第一阶段裁决：
-
-1. `preserve` 链路拆成 CreateJourneyOrder、StartBookingSaga、HoldCapacity、CreatePaymentIntent、IssueEntitlement。
-2. `cancel` 链路拆成 PostSalesCase、VoidEntitlement、CancelSegmentBooking、ReleaseCapacity、RequestRefund。
-3. `rebook` 不允许删旧单建新单，必须用 replacement SegmentBooking 和旧 Entitlement void。
-4. 支付回调先进入 Payment callback record，不允许直接写 order/ticket/notification。
-5. 客服后台旧直接改状态能力必须变成 ManualAction + target domain command。
+客户端使用目标业务域当前提供的 HTTP 接口和业务事件。
+购票调用 Journey Order、Booking Orchestration、Payment 和 Entitlement Ticketing。
+退票和改签通过 Post Sales 处理，进站通过 Fulfillment 处理。
+支付回调进入 Payment callback record，由业务事件推进订单和客票状态。
+客服和后台操作通过 ManualAction 调用目标业务域命令。
 
 ## DR-015 Provider-owned Inventory
 
