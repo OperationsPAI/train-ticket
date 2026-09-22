@@ -51,6 +51,8 @@ export interface AncillaryRepository {
     limit: number,
   ): Promise<readonly AncillaryOfferSnapshot[]>;
   saveOrderItem(snapshot: AncillaryOrderItemSnapshot): Promise<void>;
+  recordTicketVoid(entitlementRef: string, eventId: string): Promise<void>;
+  listByEntitlement(entitlementRef: string): Promise<readonly AncillaryOrderItemSnapshot[]>;
   getOrderItem(
     ancillaryOrderItemId: string,
   ): Promise<AncillaryOrderItemSnapshot | undefined>;
@@ -80,6 +82,12 @@ export class InMemoryAncillaryRepository implements AncillaryRepository {
   private readonly catalogs = new Map<string, AncillaryCatalogItemSnapshot>();
   private readonly offers = new Map<string, AncillaryOfferSnapshot>();
   private readonly orderItems = new Map<string, AncillaryOrderItemSnapshot>();
+  private readonly voidedTickets = new Set<string>();
+
+  async recordTicketVoid(entitlementRef: string): Promise<void> { this.voidedTickets.add(entitlementRef); }
+  async listByEntitlement(entitlementRef: string): Promise<readonly AncillaryOrderItemSnapshot[]> {
+    return [...this.orderItems.values()].filter(item => item.entitlementRef === entitlementRef).map(cloneDefined);
+  }
 
   async saveCatalog(snapshot: AncillaryCatalogItemSnapshot): Promise<void> {
     this.catalogs.set(snapshot.catalogItemId, cloneDefined(snapshot));
@@ -131,6 +139,8 @@ export class InMemoryAncillaryRepository implements AncillaryRepository {
       .map((offer) => cloneDefined(offer));
   }
   async saveOrderItem(snapshot: AncillaryOrderItemSnapshot): Promise<void> {
+    if (snapshot.entitlementRef && this.voidedTickets.has(snapshot.entitlementRef) && ["SELECTED","PENDING_CONFIRMATION","CONFIRMED","FULFILLMENT_READY"].includes(snapshot.status))
+      throw new DomainError("TICKET_VOIDED", "Entitlement is VOIDED");
     this.orderItems.set(snapshot.ancillaryOrderItemId, cloneDefined(snapshot));
   }
   async getOrderItem(
@@ -158,6 +168,7 @@ export class InMemoryAncillaryRepository implements AncillaryRepository {
     this.catalogs.clear();
     this.offers.clear();
     this.orderItems.clear();
+    this.voidedTickets.clear();
   }
 }
 
@@ -774,6 +785,15 @@ export class AncillaryApplicationService {
   async handleJourneyOrderCancelled(
     envelope: EventEnvelope,
   ): Promise<"ack" | "retry" | "dlq"> {
+    if (envelope.eventType === "EntitlementVoided") {
+      const entitlement = envelope.payload.entitlementId;
+      if (typeof entitlement !== "string" || !entitlement) throw new DomainError("INVALID_REFERENCES", "EntitlementVoided requires entitlementId");
+      await this.repository.recordTicketVoid(entitlement,envelope.eventId);
+      for (const item of await this.repository.listByEntitlement(entitlement)) {
+        await this.cancelOrderItem(item.ancillaryOrderItemId,{reasonCode:"ENTITLEMENT_VOIDED",source:"ENTITLEMENT_VOIDED",sourceEventId:envelope.eventId,cancelledAt:envelope.occurredAt},envelope.correlationId);
+      }
+      return "ack";
+    }
     if (envelope.eventType !== "JourneyOrderCancelled") return "ack";
     if (this.processedJourneyOrderCancelledEvents.has(envelope.eventId)) return "ack";
     const orderId =
