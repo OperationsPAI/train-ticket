@@ -83,13 +83,12 @@ func (o *ChannelOrder) Submit(expected int64, requestFingerprint string, now tim
 		o.addEvent("ChannelOrderMissed", map[string]any{"channelOrderId": o.ChannelOrderID, "paymentIntentId": o.PaymentIntentID, "businessRef": o.BusinessRef, "channel": o.Channel, "amount": o.Amount, "missWindowStartAt": now.UTC(), "missWindowEndAt": now.Add(5 * time.Minute).UTC(), "faultSeed": o.FaultSeed, "status": StatusMissed, "missedAt": now.UTC(), "aggregateVersion": o.Version}, now, o.SourceCommandID, o.CorrelationID)
 		return nil
 	}
-	digit := o.Amount.MinorUnits % 10
-	if digit == 9 {
+	if scenario == "DECLINED_ORDER" {
 		o.Status = StatusFailed
 		t := now.UTC()
 		o.CompletedAt = &t
 		o.bump(now)
-		o.addEvent("ChannelOrderFailed", map[string]any{"channelOrderId": o.ChannelOrderID, "paymentIntentId": o.PaymentIntentID, "businessRef": o.BusinessRef, "channel": o.Channel, "amount": o.Amount, "providerErrorCode": "SIM_DECLINED", "terminalReason": "AMOUNT_TAIL_FAILURE", "retryable": false, "status": StatusFailed, "failedAt": now.UTC(), "aggregateVersion": o.Version}, now, o.SourceCommandID, o.CorrelationID)
+		o.addEvent("ChannelOrderFailed", map[string]any{"channelOrderId": o.ChannelOrderID, "paymentIntentId": o.PaymentIntentID, "businessRef": o.BusinessRef, "channel": o.Channel, "amount": o.Amount, "providerErrorCode": "SIM_DECLINED", "terminalReason": "SEEDED_DECLINE", "faultSeed": o.FaultSeed, "retryable": false, "status": StatusFailed, "failedAt": now.UTC(), "aggregateVersion": o.Version}, now, o.SourceCommandID, o.CorrelationID)
 		return nil
 	}
 	o.Status = StatusAccepted
