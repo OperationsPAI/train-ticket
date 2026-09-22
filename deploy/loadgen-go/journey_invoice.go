@@ -2,9 +2,9 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"net/url"
 	"strconv"
+	"time"
 )
 
 // ensureInvoiceTitle returns a usable, ACTIVE invoice title for an account,
@@ -71,32 +71,26 @@ func MaybeRequestInvoice(ctx context.Context, p *Providers, purchase *Purchase) 
 		return "", "", ""
 	}
 
-	currency := p.Currency()
-	orderTail := purchase.Order
-	if len(orderTail) > 8 {
-		orderTail = orderTail[len(orderTail)-8:]
+	var basis map[string]interface{}
+	for attempt := 0; attempt < p.Cfg.Polling.Attempts; attempt++ {
+		code, data, err := p.API.PollRequest(ctx, "GET", "invoicing",
+			"/api/v1/invoice-amount-bases/"+url.PathEscape(purchase.Order), nil, nil, []int{200}, "invoice-amount-basis", []int{404})
+		if err == nil {
+			basis = data
+			break
+		}
+		if code != 404 {
+			return titleID, "", ""
+		}
+		select {
+		case <-ctx.Done():
+			return titleID, "", ""
+		case <-time.After(time.Duration(p.Cfg.Polling.IntervalSeconds * float64(time.Second))):
+		}
 	}
-
-	basis := map[string]interface{}{
-		"basisType":             "REVENUE_RECOGNITION",
-		"revenueRecognitionIds": []string{"rr-loadgen-" + orderTail},
-		"taxLines": []map[string]interface{}{{
-			"taxCode":            "VAT_SIM",
-			"taxRateBasisPoints": 0,
-			"taxableAmount":      map[string]interface{}{"currency": currency, "minorUnits": purchase.TotalMinor},
-			"taxAmount":          map[string]interface{}{"currency": currency, "minorUnits": 0},
-		}},
-		"totalAmount": map[string]interface{}{"currency": currency, "minorUnits": purchase.TotalMinor},
-	}
-	// invoicing requires amountBasisHash to be non-empty (it stands in for a
-	// Finance Settlement projection hash) and compares it when de-duplicating
-	// repeat requests. It does not re-derive it, so any stable digest of the
-	// basis is acceptable -- it just has to be deterministic for identical
-	// input. Go's map marshalling sorts keys, so this is stable.
-	if encoded, err := json.Marshal(basis); err == nil {
-		basis["amountBasisHash"] = "sha256:" + sha256Hex(string(encoded))
-	} else {
-		basis["amountBasisHash"] = "sha256:" + sha256Hex(purchase.Order)
+	if basis == nil {
+		p.Stats.RecordError("invoicing:amount_basis_unfulfilled")
+		return titleID, "", ""
 	}
 
 	code, req, err := p.API.Request(ctx, "POST", "invoicing", "/api/v1/e-invoice-requests",

@@ -167,6 +167,8 @@ func invoicingMeshHandler(service, method, path string) (int, map[string]interfa
 		return 0, nil
 	}
 	switch {
+	case method == "GET" && strings.HasPrefix(path, "/api/v1/invoice-amount-bases/"):
+		return 200, map[string]interface{}{"basisType": "REVENUE_RECOGNITION", "revenueRecognitionIds": []string{"rr-accepted"}, "totalAmount": map[string]interface{}{"currency": "CNY", "minorUnits": 1000}, "amountBasisHash": "sha256:accepted"}
 	case method == "POST" && path == "/api/v1/invoice-titles":
 		return 201, map[string]interface{}{"titleId": "itl-1", "version": 1, "status": "ACTIVE"}
 	case method == "GET" && strings.HasPrefix(path, "/api/v1/invoice-titles/"):
@@ -260,6 +262,11 @@ func TestInvoiceRequestBodyIsAcceptableToInvoicing(t *testing.T) {
 	var body map[string]interface{}
 	m := newFakeMesh(t, invoicingMeshHandler)
 	m.srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/invoice-amount-bases/") {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"basisType": "REVENUE_RECOGNITION", "amountBasisHash": "sha256:" + sha256Hex("accepted financial basis"), "totalAmount": map[string]interface{}{"currency": "CNY", "minorUnits": 1000}})
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/e-invoice-requests") {
 			_ = json.NewDecoder(r.Body).Decode(&body)
 		}
