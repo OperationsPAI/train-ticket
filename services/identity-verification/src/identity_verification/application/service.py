@@ -508,8 +508,18 @@ class IdentityVerificationService:
     def confirm_pre_order_check(self, pre_order_check_id: str, journey_order_id: str, corr: str, cause: str | None) -> dict[str, Any]:
         with self.transaction():
             record = self.store.get_pre_order_check(pre_order_check_id)
-            if record.get("status") == "CONFIRMED": return dict(record["body"])
-            if record.get("status") == "RELEASED": raise PreconditionFailed("pre-order check is already released")
+            if not journey_order_id or not journey_order_id.strip(): raise PreconditionFailed("journey order reference is required")
+            if record.get("status") == "CONFIRMED":
+                bound_order = record.get("journeyOrderId")
+                if bound_order is None:
+                    bound = {self.store.get_fact(str(fact_id)).journeyOrderId for fact_id in record.get("purchaseLimitFactIds", [])}
+                    if bound != {journey_order_id}: raise PreconditionFailed("pre-order check belongs to a different order")
+                    record["journeyOrderId"] = journey_order_id
+                    self.store.save_pre_order_check(record)
+                elif bound_order != journey_order_id: raise PreconditionFailed("pre-order check belongs to a different order")
+                return dict(record["body"])
+            if record.get("status") != "RESERVED" or record.get("body", {}).get("result") != "PASS":
+                raise PreconditionFailed("pre-order check is not a passed reservation")
             at = now_utc(); envelopes: list[EventEnvelope] = []
             for reservation in record.get("usageReservations", []):
                 if reservation.get("status") != "RESERVED": continue
@@ -523,7 +533,8 @@ class IdentityVerificationService:
                 confirmed_fact = fact.confirm(journey_order_id, at)
                 self.store.save_fact(confirmed_fact)
                 envelopes.append(self._fact_confirmed_event(confirmed_fact, journey_order_id, corr, cause, at))
-            record["status"] = "CONFIRMED"; self.store.save_pre_order_check(record); self._append(tuple(envelopes))
+            record["status"] = "CONFIRMED"; record["journeyOrderId"] = journey_order_id
+            self.store.save_pre_order_check(record); self._append(tuple(envelopes))
             return dict(record["body"])
 
     def release_pre_order_check(self, pre_order_check_id: str, release_reason: str, corr: str, cause: str | None, source_event_id: str | None = None) -> dict[str, Any]:
