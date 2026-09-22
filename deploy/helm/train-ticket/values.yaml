@@ -541,6 +541,22 @@ services:
     db: ancillary_service
   offer-management:
     db: offer_management
+    # Two pods, because one Node process consumes its streams serially and
+    # that is now the bound rather than anything inside the process.
+    #
+    # Measured after the projection was batched: `process ItineraryProposed`
+    # fell from 295ms to 86.5ms and POST from 3.27s to 1.24s, the pool went
+    # from 45.8 used on average to 27, and the transport timeouts the load
+    # generator recorded fell from 185 to 16 in a comparable window. What did
+    # not move is the consumer's distance behind events:fare-pricing, still 88
+    # seconds against the generator's 17-second offer retry budget, while the
+    # pod sat at 44% of its 4-core limit with an event loop that is one thread.
+    #
+    # A Redis consumer group distributes its entries across consumers, so a
+    # second pod is a second consumer on every stream and needs no coordination.
+    # It is the only lever left: the work is already batched, the pool is no
+    # longer starved, and the CPU limit is not the ceiling.
+    replicas: 2
     env:
       # 15 was the constraint that produced the baseline's error rate, and it is
       # not a Postgres constraint: measured `waitingCount` on the pg.Pool reached
@@ -550,7 +566,12 @@ services:
       # and 26 active, so the store had nothing to do with it -- the queue was
       # entirely in front of this pool. It is the busiest node on the purchase
       # funnel, so the pool is sized for the concurrency it actually sees.
-      PG_MAX_POOL_SIZE: "60"
+      #
+      # Halved with the second replica, so the pair still holds 60 rather than
+      # 120. postgres-core had 358 of its 500 connections in use with this
+      # service averaging 46.6 of them, and max_connections is a cluster-wide
+      # budget every service draws from.
+      PG_MAX_POOL_SIZE: "30"
       CONSUMER_THREADS: "4"   # 5 streams
     # 4 consumer threads do not fit in the default 500m CPU limit. Raising
     # CONSUMER_THREADS without raising this caused a CrashLoopBackOff: the
