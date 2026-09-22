@@ -22,10 +22,10 @@ Activation-wave rulings:
   carries a `price` Money value used as the fallback when Fare & Pricing is
   unavailable or no applicable rule set is returned. Fee assessments are carried
   on quoted offers and selected order items.
-- Ancillary order items reference `journeyOrderId`, `travelerRef`, and optional
-  `segmentRef`; this contract does not change Journey Order HTTP or event
-  contracts. Payment integration is deferred; the resource carries informational
-  `payableAmount` and `refundableAmount` only.
+- Ancillary order items use a dedicated Payment intent with the item ID as `businessRef`, purpose `ancillary`, the order account as payer, and the exact payable amount.
+  Confirmation requires the captured amount and currency to match and the refunded amount to be zero.
+  Cancellation of a paid item requests an original-channel refund and reaches `REFUNDED` only after Payment reports `SETTLED`.
+  Journey Order exposes these independently settled amounts in `ancillaryItems`; its primary `monetarySummary` remains the ticket collection basis.
 - Purchase references are checked against Journey Order and Entitlement Ticketing.
   The order must be confirmed, the traveler and segment must belong to it, and the supplied departure time must match the order segment.
   An entitlement reference must identify an issued ticket for the same order, traveler, and segment.
@@ -91,7 +91,7 @@ future `COMPENSATED` closure from the wire contract.
 
 | Status | Meaning | Allowed next statuses |
 |---|---|---|
-| `SELECTED` | User selected the item but it is not yet confirmed. | `PENDING_CONFIRMATION`, `CANCELLED` |
+| `SELECTED` | User selected the item and its dedicated payment awaits capture. | `CONFIRMED`, `CANCELLED` |
 | `PENDING_CONFIRMATION` | Waiting for supplier, voucher, seat, entitlement, or primary-ticket condition. | `CONFIRMED`, `FAILED`, `CANCELLED` |
 | `CONFIRMED` | Service is confirmed but not yet in the fulfillment window. | `FULFILLMENT_READY`, `CANCELLED`, `REFUND_PENDING` |
 | `FULFILLMENT_READY` | Voucher, seat, consign, or service window is ready. | `FULFILLED`, `FAILED`, `CANCELLED` |
@@ -188,8 +188,11 @@ future `COMPENSATED` closure from the wire contract.
 | `serviceType` | enum | yes | Service type. |
 | `attachmentScope` | enum | yes | Attachment scope. |
 | `quantity` | integer | yes | Positive quantity. |
-| `payableAmount` | Money | yes | Informational amount due for Payment/Journey Order coordination. |
-| `refundableAmount` | Money | yes | Informational amount currently recommended as refundable. |
+| `payableAmount` | Money | yes | Amount collected through the dedicated ancillary payment. |
+| `refundableAmount` | Money | yes | Amount approved for return through that payment. |
+| `paymentIntentId` | string | after payment preparation | Dedicated Payment intent reference. |
+| `paymentCapturedAt` | RFC3339 UTC | after confirmation | Time the captured payment was accepted. |
+| `refundId` | string | after refund | Settled refund reference verified with Payment. |
 | `assessedFees` | array[object] | yes | Assessed fee components copied from the selected quote and multiplied by quantity; component shape is `{ruleId, amount, explanation, refundable}`. |
 | `feeAssessment` | object | no | Fee assessment summary copied from the selected quote and multiplied by quantity; shape is `{assessmentId, purpose, assessedAt, originalQuoteId, fee, currency, succeeded, failedReason}`. |
 | `priceQuoteRef` | object | no | Fare & Pricing quote reference copied from the selected quote: `{quoteId, inputHash, ruleSnapshot, source}`. |
@@ -418,6 +421,15 @@ not expired, and still eligible.
 
 **Error codes:** `NOT_FOUND`
 
+### Prepare Ancillary Payment
+
+**POST** `/api/v1/ancillary-order-items/{ancillaryOrderItemId}/payment`
+
+Requires `Idempotency-Key` and an empty JSON body.
+Returns the order item with `paymentIntentId`.
+Repeated preparation returns the same dedicated payment intent.
+The customer captures that intent through Payment before confirmation.
+
 ### Confirm Ancillary Order Item
 
 **POST** `/api/v1/ancillary-order-items/{ancillaryOrderItemId}/confirm`
@@ -428,11 +440,11 @@ not expired, and still eligible.
 (string, optional), `expectedStatus` (enum, optional), and `reasonCode` (string,
 optional).
 
-**Response (200):** `AncillaryOrderItem` in `PENDING_CONFIRMATION` or
-`CONFIRMED` according to the confirmation stage.
+**Response (200):** `AncillaryOrderItem` in `CONFIRMED` after validating the dedicated captured payment.
+Repeated confirmation preserves the same state and version.
 
-**Domain effects:** emits `AncillaryOrderItemPendingConfirmation` or
-`AncillaryOrderItemConfirmed`.
+**Domain effects:** emits `AncillaryOrderItemConfirmed` once.
+`PaymentCaptured` can also complete confirmation when the customer response was interrupted.
 
 **Error codes:** `NOT_FOUND`, `PRECONDITION_FAILED`, `DOMAIN_RULE_VIOLATION`,
 `IDEMPOTENCY_KEY_REUSED`, `UNAVAILABLE`
