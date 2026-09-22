@@ -40,5 +40,19 @@ def test_concurrent_registration_returns_one_durable_credential():
                 with pool.connection() as conn:
                     assert conn.execute("SELECT count(*) FROM credential_record_snapshots").fetchone()[0] == 1
                     assert conn.execute("SELECT count(*) FROM outbox").fetchone()[0] == 1
+                credential = service.store.get_credential(results[0]["credentialRecordId"])
+                verification = {"travelerId": traveler, "credentialRecordId": credential.credentialRecordId,
+                                "materialFingerprint": credential.materialFingerprint,
+                                "purpose": "ORDER_CREATION", "simPolicyVersion": "sim-tail-v1"}
+
+                def verify(index):
+                    barrier.wait(timeout=5)
+                    return service.start_verification_case(verification, str(uuid4()), None)
+
+                with ThreadPoolExecutor(max_workers=8) as workers:
+                    cases = list(workers.map(verify, range(8)))
+                assert len({case["verificationCaseId"] for case in cases}) == 1
+                with pool.connection() as conn:
+                    assert conn.execute("SELECT count(*) FROM verification_case_snapshots").fetchone()[0] == 1
         finally:
             admin.execute(psycopg.sql.SQL("DROP SCHEMA {} CASCADE").format(psycopg.sql.Identifier(schema)))
