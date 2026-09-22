@@ -164,7 +164,8 @@ export async function retryDeferredNotifications(pool: import("pg").Pool, channe
 export async function resolveRecipient(pool: import("pg").Pool, envelope: EventEnvelope): Promise<EventEnvelope> {
   const payload = envelope.payload;
   let recipient = stringValue(payload.accountId) ?? stringValue(payload.payerRef) ?? stringValue(payload.actorRef);
-  const orderId = stringValue(payload.orderId) ?? stringValue(payload.journeyOrderId) ?? stringValue(payload.businessRef);
+  const businessRef = stringValue(payload.businessRef);
+  const orderId = stringValue(payload.orderId) ?? stringValue(payload.journeyOrderId) ?? (businessRef?.startsWith("ord-") ? businessRef : undefined);
   const caseId = stringValue(payload.caseId);
   const paymentId = stringValue(payload.paymentIntentId);
   const directRecipient = stringValue(payload.recipientRef) ?? stringValue(payload.travelerId) ?? stringValue(payload.travelerRef) ?? stringValue(payload.riderAccountId);
