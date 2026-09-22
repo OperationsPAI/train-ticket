@@ -433,6 +433,7 @@ export class RedisEventSubscriber implements EventSubscriber {
    * next read instead of erroring on NOGROUP forever.
    */
   private groupsNeedRecreate = false;
+  private readonly recoveryCursors = new Map<string, string>();
 
   constructor(
     private readonly redis: Redis = createRedisClient(redisUrl(), {}, "subscriber"),
@@ -613,7 +614,7 @@ export class RedisEventSubscriber implements EventSubscriber {
 
   private async recover(streams: readonly string[], group: string, consumerName: string, handler: EventHandler, signal?: AbortSignal): Promise<void> {
     while (!this.stopped && !signal?.aborted) {
-      await sleepUntil(() => this.stopped || signal?.aborted === true, CLAIM_MIN_IDLE_MS);
+      await sleepUntil(() => this.stopped || signal?.aborted === true, 1000);
       if (this.stopped || signal?.aborted) {
         return;
       }
@@ -809,7 +810,10 @@ export class RedisEventSubscriber implements EventSubscriber {
   }
 
   private async claimAndProcess(stream: string, group: string, consumerName: string, handler: EventHandler): Promise<void> {
-    const claimed = await this.redis.xautoclaim(stream, group, consumerName, CLAIM_MIN_IDLE_MS, "0", "COUNT", 100) as unknown[];
+    const cursorKey = `${stream}:${group}:${consumerName}`;
+    const claimed = await this.redis.xautoclaim(stream, group, consumerName, CLAIM_MIN_IDLE_MS,
+      this.recoveryCursors.get(cursorKey) ?? "0-0", "COUNT", 100) as unknown[];
+    this.recoveryCursors.set(cursorKey, typeof claimed[0] === "string" ? claimed[0] : "0-0");
     const entries = (Array.isArray(claimed[1]) ? claimed[1] : []) as StreamEntry[];
     const deliveryCounts = await this.deliveryCounts(stream, group, entries.map(([entryId]) => entryId));
     for (const entry of entries) {
