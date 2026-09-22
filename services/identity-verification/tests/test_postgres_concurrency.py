@@ -1,6 +1,7 @@
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -27,7 +28,7 @@ def test_concurrent_registration_returns_one_durable_credential():
                 barrier = threading.Barrier(8)
                 traveler = "tvl-" + uuid4().hex
                 data = {"travelerId": traveler, "profileSnapshotVersion": "v1", "documentType": "ID_CARD",
-                        "maskedDocumentNo": "11***********5", "documentHash": uuid4().hex,
+                        "maskedDocumentNo": "11***********5", "documentHash": uuid4().hex + "-5",
                         "canonicalNameHash": uuid4().hex}
 
                 def register(index):
@@ -54,5 +55,26 @@ def test_concurrent_registration_returns_one_durable_credential():
                 assert len({case["verificationCaseId"] for case in cases}) == 1
                 with pool.connection() as conn:
                     assert conn.execute("SELECT count(*) FROM verification_case_snapshots").fetchone()[0] == 1
+                now = datetime.now(UTC)
+                certificate = {"travelerId": traveler, "eligibilityType": "STUDENT",
+                               "credentialRecordId": credential.credentialRecordId,
+                               "validFrom": (now - timedelta(days=1)).isoformat(),
+                               "validUntil": (now + timedelta(days=365)).isoformat(),
+                               "policyYear": str(now.year), "policyVersion": "v1", "annualUsageLimit": 10,
+                               "applicableProductCodes": ["rail-eligible"], "certificateHash": uuid4().hex,
+                               "evidenceHash": uuid4().hex}
+
+                def register_certificate(index):
+                    barrier.wait(timeout=5)
+                    return service.register_certificate(certificate, str(uuid4()), None)
+
+                with pool.connection() as conn:
+                    before = conn.execute("SELECT count(*) FROM outbox").fetchone()[0]
+                with ThreadPoolExecutor(max_workers=8) as workers:
+                    certificates = list(workers.map(register_certificate, range(8)))
+                assert len({cert["eligibilityCertificateId"] for cert in certificates}) == 1
+                with pool.connection() as conn:
+                    assert conn.execute("SELECT count(*) FROM eligibility_certificate_snapshots").fetchone()[0] == 1
+                    assert conn.execute("SELECT count(*) FROM outbox").fetchone()[0] == before + 2
         finally:
             admin.execute(psycopg.sql.SQL("DROP SCHEMA {} CASCADE").format(psycopg.sql.Identifier(schema)))
