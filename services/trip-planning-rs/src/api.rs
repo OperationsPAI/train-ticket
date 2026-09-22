@@ -209,7 +209,8 @@ async fn search_itineraries_handler(
     // Persist itinerary snapshots
     for itin_json in &itineraries {
         let value = serde_json::to_value(itin_json).unwrap_or_default();
-        state.save_itinerary(&itin_json.itinerary_ref, value).await;
+        state.save_itinerary(&itin_json.itinerary_ref, value).await
+            .map_err(|error| storage_error(error, &correlation_id))?;
     }
 
     // Publish ItineraryProposed event via outbox
@@ -236,7 +237,8 @@ async fn get_itinerary_handler(
 ) -> Result<Json<Value>, (StatusCode, Json<ErrorResponse>)> {
     let correlation_id = context.correlation_id().to_string();
 
-    if let Some(snapshot) = state.get_itinerary(&itinerary_ref).await {
+    if let Some(snapshot) = state.get_itinerary(&itinerary_ref).await
+        .map_err(|error| storage_error(error, &correlation_id))? {
         return Ok(Json(snapshot));
     }
 
@@ -254,6 +256,14 @@ async fn get_itinerary_handler(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn storage_error(error: rust_kit::storage::StorageError, correlation_id: &str) -> (StatusCode, Json<ErrorResponse>) {
+    log::error!("itinerary storage failed: {}", error);
+    (StatusCode::SERVICE_UNAVAILABLE, Json(ErrorResponse {
+        code: "UNAVAILABLE".into(), message: "Itinerary storage unavailable".into(),
+        correlation_id: correlation_id.into(), details: serde_json::json!({}),
+    }))
+}
 
 fn validate_search_request(req: &SearchRequest) -> Result<(), String> {
     if req.origin_ref.trim().is_empty() {
