@@ -314,8 +314,8 @@ public class PaymentCommandService {
 
     @Transactional
     public Refund settleRefundFromChannel(String refundId, String paymentIntentId, Money amount, String channelRefundId, String channelOrderId, String channel, String originalChannelTransactionId, String channelRefundTransactionId, String causationId, String correlationId) {
-        Refund refund = getRefund(refundId);
         PaymentIntent intent = getIntent(paymentIntentId);
+        Refund refund = getRefund(refundId);
         if (!refund.paymentIntentId().equals(paymentIntentId)) {
             throw new DomainRuleViolation("channel refund references a different payment intent");
         }

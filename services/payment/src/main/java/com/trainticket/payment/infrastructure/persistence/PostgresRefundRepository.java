@@ -12,6 +12,7 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Repository;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 @Repository
 @Primary
@@ -30,6 +31,11 @@ public class PostgresRefundRepository implements RefundRepository {
 
     @Override
     public Optional<Refund> findById(String refundId) {
+        if (TransactionSynchronizationManager.isActualTransactionActive()
+            && !TransactionSynchronizationManager.isCurrentTransactionReadOnly()) {
+            jdbc.query("SELECT id FROM refund_snapshots WHERE id = ? FOR UPDATE",
+                rs -> { return rs.next(); }, refundId);
+        }
         return snapshots.get(refundId)
             .map(snapshot -> JacksonPaymentJson.toRefund(snapshot.data(), objectMapper).withVersion(snapshot.version()));
     }

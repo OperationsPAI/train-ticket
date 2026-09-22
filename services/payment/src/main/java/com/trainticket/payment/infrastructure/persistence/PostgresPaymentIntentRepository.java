@@ -14,6 +14,7 @@ import org.springframework.jdbc.core.JdbcOperations;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 @Repository
 @Primary
@@ -40,6 +41,11 @@ public class PostgresPaymentIntentRepository implements PaymentIntentRepository 
 
     @Override
     public Optional<PaymentIntent> findById(String paymentIntentId) {
+        if (TransactionSynchronizationManager.isActualTransactionActive()
+            && !TransactionSynchronizationManager.isCurrentTransactionReadOnly()) {
+            jdbc.query("SELECT id FROM payment_intent_snapshots WHERE id = ? FOR UPDATE",
+                rs -> { return rs.next(); }, paymentIntentId);
+        }
         return snapshots.get(paymentIntentId)
             .map(snapshot -> JacksonPaymentJson.toIntent(snapshot.data(), objectMapper).withVersion(snapshot.version()));
     }
@@ -60,7 +66,7 @@ public class PostgresPaymentIntentRepository implements PaymentIntentRepository 
         return jdbc.query(
             "SELECT data->>'paymentIntentId' AS id FROM payment_intent_snapshots "
                 + "WHERE payment_expires_at_immutable(data) <= ?::timestamp AND data->>'status' IN ('CREATED','AUTHORIZED') "
-                + "ORDER BY payment_expires_at_immutable(data) ASC LIMIT ?",
+                + "ORDER BY payment_expires_at_immutable(data) ASC LIMIT ? FOR UPDATE SKIP LOCKED",
             (rs, rowNum) -> rs.getString("id"),
             now.toString(),
             limit
