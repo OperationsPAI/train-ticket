@@ -275,7 +275,7 @@ staff:
   p_support_classify_escalate_branch: 0.15  # classify -> assign -> escalate lifecycle coverage
   p_support_classify_close_branch: 0.15     # classify -> close, optionally reopen -> close
   p_support_reopen_after_close: 0.10        # only after the classify/close branch
-  p_seat_preferences: 0.03    # staff ticketing attaches a seatPreferences block
+  p_seat_preferences: 0.03    # Seat assignment requests a window preference.
 
 # ---------------------------------------------------------------------------
 # Long-tail probes — conservative low-frequency coverage for read endpoints.
