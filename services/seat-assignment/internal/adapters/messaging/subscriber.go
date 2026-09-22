@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	kitmsg "github.com/trainticket/greenfield/platform/go-kit/messaging"
+	"github.com/trainticket/greenfield/services/seat-assignment/internal/application"
 )
 
 const ConsumerGroup = "seat-assignment"
@@ -23,7 +24,8 @@ func (s *RedisSubscriber) Subscribe(ctx context.Context, consumerName string, ha
 	if strings.TrimSpace(consumerName) == "" {
 		consumerName = "seat-assignment-local"
 	}
-	return s.bus.Subscribe(ctx, kitmsg.Subscription{Streams: SubscribedStreams(), Group: ConsumerGroup, ConsumerName: consumerName}, handler)
+	return s.bus.Subscribe(ctx, kitmsg.Subscription{Streams: SubscribedStreams(), Group: ConsumerGroup, ConsumerName: consumerName,
+		EventFilter: func(event kitmsg.EventEnvelope) bool { return application.HandlesSubscribedEvent(event.EventType) }}, handler)
 }
 func SubscribedStreams() []string {
 	return []string{"events:booking-orchestration", "events:entitlement-ticketing", "events:post-sales", "events:capacity-availability"}
