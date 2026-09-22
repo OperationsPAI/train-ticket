@@ -305,16 +305,33 @@ public class PaymentCommandService {
     public Refund settleRefundFromChannel(String refundId, String paymentIntentId, Money amount, String channelRefundId, String channelOrderId, String channel, String originalChannelTransactionId, String channelRefundTransactionId, String causationId, String correlationId) {
         Refund refund = getRefund(refundId);
         PaymentIntent intent = getIntent(paymentIntentId);
-        if (refund.status().name().equals("SETTLED")) {
-            return refund;
+        if (!refund.paymentIntentId().equals(paymentIntentId)) {
+            throw new DomainRuleViolation("channel refund references a different payment intent");
         }
         if (!refund.amount().equals(amount)) {
             throw new DomainRuleViolation("channel refund amount does not match requested refund amount");
         }
+        ChannelRef original = intent.channelRef();
+        ChannelRef submitted = refund.channelRef();
+        if (original == null || channel == null || !ChannelRouter.normalize(channel).equals(ChannelRouter.normalize(original.channel()))
+            || !Objects.equals(channelOrderId, original.channelOrderId())
+            || (originalChannelTransactionId != null && !Objects.equals(originalChannelTransactionId, original.channelTransactionId()))
+            || submitted == null || !Objects.equals(submitted.channelOrderId(), original.channelOrderId())
+            || !Objects.equals(submitted.channelTransactionId(), original.channelTransactionId())
+            || !ChannelRouter.normalize(submitted.channel()).equals(ChannelRouter.normalize(original.channel()))
+            || channelRefundId == null || channelRefundId.isBlank()
+            || (submitted.channelRefundId() != null && !submitted.channelRefundId().equals(channelRefundId))) {
+            throw new DomainRuleViolation("channel refund does not match the original payment route");
+        }
+        if (refund.status().name().equals("SETTLED")) {
+            if (!Objects.equals(refund.channelRefundTransactionId(), channelRefundTransactionId)) {
+                throw new DomainRuleViolation("settled refund references a different channel transaction");
+            }
+            return refund;
+        }
         int beforeRefund = refund.domainEvents().size();
-        if (channel != null && !channel.isBlank() && refund.channelRef() == null) {
-            channelRouter.requireEnabled(channel);
-            refund.recordChannelHandoff(new ChannelRef(ChannelRouter.normalize(channel), channelOrderId, channelRefundId, originalChannelTransactionId, null, null, null));
+        if (submitted.channelRefundId() == null) {
+            refund.recordChannelHandoff(submitted.withRefund(channelRefundId));
         }
         refund.settle(intent, channelRefundTransactionId, Instant.now(clock), commandId(causationId), causationId, correlationId);
         paymentIntentRepository.save(intent);
