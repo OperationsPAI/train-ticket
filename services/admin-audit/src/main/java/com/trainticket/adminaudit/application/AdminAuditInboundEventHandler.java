@@ -38,19 +38,6 @@ public class AdminAuditInboundEventHandler implements EventSubscriber.EventHandl
                 );
                 return EventSubscriber.HandlerResult.SUCCESS;
             }
-            if ("legacy-acl".equals(envelope.producer()) && "LegacyCommandMapped".equals(envelope.eventType())) {
-                InboundEventPayload payload = InboundEventPayload.from(envelope);
-                service.recordLegacyCommandMapped(
-                    envelope.eventId(),
-                    payload.requiredText("legacyOperation"),
-                    payload.requiredText("outcome"),
-                    payload.requiredText("operatorRef"),
-                    payload.optionalText("reason"),
-                    payload.requiredText("sourceRef"),
-                    envelope.correlationId()
-                );
-                return EventSubscriber.HandlerResult.SUCCESS;
-            }
             return EventSubscriber.HandlerResult.SUCCESS;
         } catch (ValidationException | DomainRuleViolation | IllegalArgumentException exception) {
             // FATAL_FAILURE dead-letters the event: it will not be retried, and the
