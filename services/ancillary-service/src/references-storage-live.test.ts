@@ -31,6 +31,11 @@ test("issued ticket purchase preserves real references and rejects invalid draft
     const draft = await run(service=>service.draftOffer(input));
     const quoted = await run(service=>service.quoteOffer(draft.ancillaryOfferId,{expectedVersion:draft.offerVersion},correlation));
     const selected = await run(service=>service.selectOffer(draft.ancillaryOfferId,{journeyOrderId:sample.order.orderId,expectedVersion:quoted.offerVersion},correlation));
+    const replays=await Promise.all(Array.from({length:4},()=>run(service=>service.selectOffer(draft.ancillaryOfferId,{journeyOrderId:sample.order.orderId,expectedVersion:quoted.offerVersion},correlation))));
+    assert.ok(replays.every(item=>item.ancillaryOrderItemId===selected.ancillaryOrderItemId));
+    await assert.rejects(run(service=>service.selectOffer(draft.ancillaryOfferId,{journeyOrderId:sample.order.orderId,expectedVersion:quoted.offerVersion+1},correlation)),/different request/);
+    assert.equal((await pool.query("SELECT count(*) FROM ancillary_order_items")).rows[0].count,"1");
+    assert.equal((await pool.query("SELECT count(*) FROM outbox WHERE envelope->>'eventType'='AncillaryOrderItemSelected'")).rows[0].count,"1");
     await run(service=>service.confirmOrderItem(selected.ancillaryOrderItemId,{},correlation));
     const confirmed = await run(service=>service.confirmOrderItem(selected.ancillaryOrderItemId,{},correlation));
     assert.equal(confirmed.entitlementRef,sample.ticket.entitlementId);
