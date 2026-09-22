@@ -637,16 +637,26 @@ export class RedisEventSubscriber implements EventSubscriber {
   }
 
   private async processMessages(messages: StreamMessages[] | null, group: string, consumerName: string, handler: EventHandler): Promise<void> {
-    for (const [stream, entries] of messages ?? []) {
-      await this.processEntries(stream, group, consumerName, entries, handler);
+    if (Number(process.env.CONSUMER_BATCH_CONCURRENCY ?? "1") > 1) {
+      await Promise.all((messages ?? []).map(([stream, entries]) =>
+        this.processEntries(stream, group, consumerName, entries, handler)));
+    } else {
+      for (const [stream, entries] of messages ?? []) {
+        await this.processEntries(stream, group, consumerName, entries, handler);
+      }
     }
   }
 
   private async processEntries(stream: string, group: string, consumerName: string, entries: readonly StreamEntry[], handler: EventHandler): Promise<void> {
     if (!handler.handleBatch || entries.length <= 1) {
-      for (const entry of entries) {
-        await this.processEntry(stream, group, consumerName, entry, handler);
-      }
+      const concurrency = Math.max(1, Number(process.env.CONSUMER_BATCH_CONCURRENCY ?? "1"));
+      let next = 0;
+      await Promise.all(Array.from({ length: Math.min(concurrency, entries.length) }, async () => {
+        while (next < entries.length) {
+          const entry = entries[next++];
+          await this.processEntry(stream, group, consumerName, entry, handler);
+        }
+      }));
       return;
     }
 
@@ -889,6 +899,7 @@ export class RedisEventSubscriber implements EventSubscriber {
           const idle = parseInt(fieldValue(entry as string[], "idle") ?? "0", 10);
           if (idle > DEAD_CONSUMER_IDLE_MS) {
             const pending = fieldValue(entry as string[], "pending") ?? "0";
+            if (parseInt(pending, 10) > 0) continue;
             await this.redis.xgroup("DELCONSUMER", stream, group, name);
             console.info({
               service: group,
