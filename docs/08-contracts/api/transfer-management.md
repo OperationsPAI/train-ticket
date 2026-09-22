@@ -412,7 +412,7 @@ are available.
 | `fromNodeType` | enum | yes | Arrival node type. |
 | `toNodeType` | enum | yes | Departure node type. |
 | `transferCategory` | enum | yes | Transfer category. |
-| `contractId` | string | yes | Associated connection contract. |
+| `contractId` | string | no | Associated connection contract; omission creates a proposed contract atomically with the connection. |
 | `window` | ConnectionWindow | yes | Planned transfer window. |
 
 **Response (201):** `Connection` resource.
