@@ -113,6 +113,8 @@ postgres:
       maxConnections: 700
       sharedBuffers: 1GB
       workMem: 8MB
+      maxWalSize: 8GB
+      walCompression: lz4
       # /dev/shm 的大小,并行查询的 DSM 段从这里分配。实测常驻约 126 个段,
       # 其中 69 个 192KiB、46 个 1MiB、2 个 2MiB,合计接近 64MiB,也就是容器
       # 默认值。1Gi 给出约 16 倍余量,足够覆盖 max_parallel_workers 提高或
