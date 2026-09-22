@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Mapping
 
 from fastapi.testclient import TestClient
@@ -422,3 +423,122 @@ def test_probes_do_not_queue_behind_the_legacy_operations() -> None:
             f"work onto the event loop"
         )
     assert seen == probes, f"probe routes missing from the app: {probes - seen}"
+
+
+def test_two_operations_run_concurrently() -> None:
+    # The other half of the probe fix, and what two earlier attempts at this
+    # test got wrong.
+    #
+    # The property is CONCURRENCY, not the latency of one request. A single
+    # request never queues, so timing one proves nothing: both the blocking and
+    # the non-blocking handler answer it immediately. Measured in-process, a
+    # probe issued alongside one blocked operation returned in 0.00s either way.
+    #
+    # What breaks in the cluster is the queue. Every operation is a synchronous
+    # chain of blocking HTTP calls and the endpoints are coroutines, so calling
+    # the service directly from one holds the worker's loop and that worker
+    # serves nothing else until the chain finishes. With 4 uvicorn workers,
+    # four requests in flight leave kubelet's connection unaccepted.
+    #
+    # Measured: POST /api/v1/legacy/preserve ran at a p50 of 82950ms and a p99
+    # of 117768ms over 152 requests, while `GET /readyz` on the same traces took
+    # 114315ms with a handler that returns a constant and the pod's CPU sat at
+    # 8% of its limit. By Little's law the offered concurrency was 21 against 4
+    # workers, so the 83s median IS the queue. The pod restarted 78 times in 9
+    # hours, and converting the probes alone left it restarting 6 times in 29
+    # minutes.
+    #
+    # Driven through the ASGI app on ONE event loop, because TestClient runs
+    # each request in a portal of its own and therefore cannot express one
+    # request starving another.
+    import asyncio
+    import threading
+
+    # Long enough that the second request cannot finish by luck, short enough
+    # that a regression fails the suite rather than stalling it.
+    BLOCKED_FOR_S = 4.0
+
+    entered = threading.Event()
+    release = threading.Event()
+    in_flight: set[int] = set()
+
+    fake = FakeDownstream()
+    original_post = fake.post
+
+    def blocking_post(service: str, path: str, body: Mapping[str, Any], headers: Mapping[str, str] | None = None) -> dict[str, Any]:
+        if service == "trip-planning":
+            # Records that this operation reached its blocking call, keyed by
+            # thread so two operations on one thread cannot both appear.
+            in_flight.add(threading.get_ident())
+            entered.set()
+            release.wait(timeout=BLOCKED_FOR_S)
+        return original_post(service, path, body, headers)
+
+    fake.post = blocking_post
+    app = create_app(client=fake, event_publisher=InMemoryEventPublisher())
+
+    async def call(path: str, method: str, body: bytes) -> int:
+        status = 0
+        sent = False
+
+        async def receive() -> dict[str, Any]:
+            nonlocal sent
+            if sent:
+                return {"type": "http.disconnect"}
+            sent = True
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        async def send(message: Mapping[str, Any]) -> None:
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = message["status"]
+
+        await app(
+            {
+                "type": "http",
+                "asgi": {"version": "3.0"},
+                "http_version": "1.1",
+                "method": method,
+                "path": path,
+                "raw_path": path.encode(),
+                "root_path": "",
+                "scheme": "http",
+                "query_string": b"",
+                "headers": [(k.lower().encode(), v.encode()) for k, v in HEADERS.items()]
+                + [(b"content-type", b"application/json")],
+                "client": ("127.0.0.1", 12345),
+                "server": ("testserver", 80),
+            },
+            receive,
+            send,
+        )
+        return status
+
+    async def scenario() -> int:
+        payload = json.dumps({
+            "accountId": "acc-1", "contactsId": "tvl-1", "tripId": "G100",
+            "seatType": "SECOND", "date": "2026-08-01", "from": "pl-a", "to": "pl-b",
+        }).encode()
+        # Two operations at once. What is being measured is whether the second
+        # one can even start while the first is inside its blocking call.
+        first = asyncio.create_task(call("/api/v1/legacy/preserve", "POST", payload))
+        while entered.wait(timeout=0) is False:
+            await asyncio.sleep(0.01)
+        second = asyncio.create_task(call("/api/v1/legacy/preserve", "POST", payload))
+        # Give the loop room to run the second task. A handler that runs its
+        # blocking work on the loop cannot, because the first one owns it.
+        for _ in range(20):
+            await asyncio.sleep(0.01)
+        reached = in_flight.copy()
+        release.set()
+        await first
+        await second
+        return len(reached)
+
+    concurrent = asyncio.run(scenario())
+    assert concurrent == 2, (
+        f"{concurrent} of 2 operations had started: an operation that runs its "
+        f"blocking chain on the event loop serialises every request on the "
+        f"worker, so offered concurrency of 21 against 4 uvicorn workers queues "
+        f"without bound and the probes time out behind it"
+    )
