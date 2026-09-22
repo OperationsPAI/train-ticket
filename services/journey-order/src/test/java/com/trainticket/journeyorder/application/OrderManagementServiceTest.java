@@ -488,6 +488,7 @@ class OrderManagementServiceTest {
         var order = service.getOrder(created.orderId());
         assertTrue(order.isPresent());
         assertEquals("CREATED", order.get().status());
+        assertTrue(order.get().riskClear());
     }
 
     @Test
@@ -538,6 +539,7 @@ class OrderManagementServiceTest {
         service.handle(lifted);
 
         assertEquals("CANCELLED", service.getOrder(created.orderId()).get().status());
+        assertEquals("HIGH_RISK_SIGNAL", service.getOrder(created.orderId()).get().cancellationReason());
         assertEquals(1, published.stream().filter(event -> event.eventType().equals("JourneyOrderCancelled")).count());
     }
 

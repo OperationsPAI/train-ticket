@@ -433,7 +433,10 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
             toApiStatus(order),
             order.travelers().stream().map(TravelerRef::travelerId).toList(),
             order.segments().stream().map(SegmentOrderSnapshot::segmentRef).toList(),
-            order.timeline().isEmpty() ? null : order.timeline().getFirst().occurredAt()
+            order.timeline().isEmpty() ? null : order.timeline().getFirst().occurredAt(),
+            order.confirmationConditions().riskClear(),
+            order.timeline().stream().filter(fact -> "JourneyOrderCancelled".equals(fact.factType()))
+                .reduce((previous, latest) -> latest).map(fact -> fact.reason()).orElse(null)
         );
     }
 
