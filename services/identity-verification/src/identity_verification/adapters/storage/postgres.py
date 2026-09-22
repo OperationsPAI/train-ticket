@@ -198,7 +198,7 @@ class PostgresIdentityVerificationStore(InMemoryStore):
 
     def get_certificate(self, certificate_id: str) -> EligibilityCertificate:
         def read(conn: Any) -> EligibilityCertificate:
-            snap = self._certificates.get(conn, certificate_id)
+            snap = conn.execute("SELECT version,data FROM eligibility_certificate_snapshots WHERE id=%s FOR UPDATE", (certificate_id,)).fetchone()
             if snap is None: raise NotFoundError(f"eligibility certificate not found: {certificate_id}")
             version, data = snap; self._remember("certificate", certificate_id, version); return certificate_from_json(data, version)
         return self._with_conn(read)
@@ -222,7 +222,9 @@ class PostgresIdentityVerificationStore(InMemoryStore):
             if eligibility_type: where += " AND data->>'eligibilityType'=%s"; params.append(eligibility_type)
             if product_code: where += " AND (data->'applicableProductCodes') ? %s"; params.append(product_code)
             total = int(conn.execute(f"SELECT count(*) FROM eligibility_certificate_snapshots WHERE {where} AND ((data->>'annualUsageReserved')::numeric + (data->>'annualUsageConfirmed')::numeric) < (data->>'annualUsageLimit')::numeric", tuple(params)).fetchone()[0])
-            rows = conn.execute(f"SELECT id, version, data FROM eligibility_certificate_snapshots WHERE {where} AND ((data->>'annualUsageReserved')::numeric + (data->>'annualUsageConfirmed')::numeric) < (data->>'annualUsageLimit')::numeric ORDER BY data->>'createdAt' LIMIT %s OFFSET %s", tuple(params + [limit, offset])).fetchall()
+            state = _UNIT_OF_WORK.get()
+            lock = " FOR UPDATE" if state is not None and state.connection is not None else ""
+            rows = conn.execute(f"SELECT id, version, data FROM eligibility_certificate_snapshots WHERE {where} AND ((data->>'annualUsageReserved')::numeric + (data->>'annualUsageConfirmed')::numeric) < (data->>'annualUsageLimit')::numeric ORDER BY data->>'createdAt', id LIMIT %s OFFSET %s{lock}", tuple(params + [limit, offset])).fetchall()
             certificates = []
             for row in rows:
                 # Loaded aggregates must register their version in the unit of
