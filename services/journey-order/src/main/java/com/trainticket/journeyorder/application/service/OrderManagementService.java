@@ -633,17 +633,23 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         StoredOrder stored = storedOrderFromPayload(envelope);
         JourneyOrder order = stored.order();
         boolean shouldReleaseIdentity = shouldReleaseIdentityReservation(order);
-        if (order.state() != com.trainticket.journeyorder.domain.OrderLifecycleState.PENDING_PAYMENT) {
-            return ackSkipStateRace(envelope, order);
+        if (order.state() == com.trainticket.journeyorder.domain.OrderLifecycleState.CONFIRMING
+            || order.state() == com.trainticket.journeyorder.domain.OrderLifecycleState.CONFIRMED
+            || isTerminal(order)) {
+            return new EventSubscriber.Success();
         }
         int eventCount = order.domainEvents().size();
-        order.expirePayment(
+        if (order.state() == com.trainticket.journeyorder.domain.OrderLifecycleState.PENDING_CONFIRMATION) {
+            order.cancel("PAYMENT_EXPIRED", envelope.occurredAt(), "cmd-consume-payment", envelope.eventId(), envelope.correlationId());
+        } else {
+            order.expirePayment(
             requiredTextPayload(envelope, "paymentIntentId"),
             envelope.occurredAt(),
             "cmd-consume-payment",
             envelope.eventId(),
             envelope.correlationId()
         );
+        }
         stateRepository.saveOrder(order, stored.idempotencyKey());
         publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
         if (shouldReleaseIdentity) {
