@@ -116,10 +116,10 @@ func (r *OutboxRelay) PublishBatch(ctx context.Context) error {
 
 // cleanupBatchSize is the rows per retention DELETE. Small enough to finish
 // quickly even when the retention column is unindexed.
-const cleanupBatchSize = 5000
+const cleanupBatchSize = 1000
 
 // cleanupMaxBatches bounds one sweep pass per table; the next pass resumes.
-const cleanupMaxBatches = 20
+const cleanupMaxBatches = 1
 
 // cleanup is the retention sweep for the three platform tables.
 //

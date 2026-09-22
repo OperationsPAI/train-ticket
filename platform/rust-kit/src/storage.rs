@@ -404,10 +404,10 @@ pub async fn run_outbox_relay(pool: PgPool, client: redis::Client, config: Outbo
 const CLEANUP_EVERY_N: u64 = 20;
 
 /// Rows per retention DELETE.
-const CLEANUP_BATCH_SIZE: i64 = 5_000;
+const CLEANUP_BATCH_SIZE: i64 = 1_000;
 
 /// Batches per table per sweep. Bounds one pass; the next pass resumes.
-const CLEANUP_MAX_BATCHES: usize = 20;
+const CLEANUP_MAX_BATCHES: usize = 1;
 
 /// Retention sweep for the three platform tables.
 ///

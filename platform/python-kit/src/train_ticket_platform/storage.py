@@ -235,10 +235,10 @@ class OutboxRelay:
 
     #: Rows per retention DELETE. Small enough to finish quickly even when the
     #: retention column is unindexed.
-    _CLEANUP_BATCH_SIZE = 5_000
+    _CLEANUP_BATCH_SIZE = 1_000
 
     #: Batches per table per sweep. Bounds one pass; the next pass resumes.
-    _CLEANUP_MAX_BATCHES = 20
+    _CLEANUP_MAX_BATCHES = 1
 
     def run(self) -> None:
         poll_count = 0
