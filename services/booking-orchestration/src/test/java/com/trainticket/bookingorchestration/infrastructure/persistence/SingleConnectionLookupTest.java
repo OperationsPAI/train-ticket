@@ -37,6 +37,15 @@ class SingleConnectionLookupTest {
                 ObjectMapper mapper = new ObjectMapper().registerModule(new JavaTimeModule());
                 var sagas = new PostgresBookingSagaRepository(dataSource, mapper);
                 var bookings = new PostgresSegmentBookingRepository(dataSource, mapper);
+                var service = new com.trainticket.bookingorchestration.application.BookingOrchestrationService(
+                    Clock.systemUTC(), new TransactionalOutboxEventPublisher(
+                        new com.trainticket.platformkit.persistence.OutboxAppender(dataSource, mapper), mapper),
+                    sagas, bookings, new PostgresPaymentIntentSagaReferenceRepository(dataSource), new PostgresConsumedEventRepository(dataSource));
+                service.handleUpstreamEvent(new com.trainticket.platformkit.messaging.EventEnvelope(
+                    com.trainticket.platformkit.messaging.PrefixedIds.newEventId(), "ChannelOrderSubmitted", java.time.Instant.now(),
+                    com.trainticket.platformkit.messaging.PrefixedIds.newCorrelationId(), com.trainticket.platformkit.messaging.PrefixedIds.newCommandId(),
+                    "payment-channel", 1, java.util.Map.of()));
+                assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM processed_events", Integer.class));
                 var saga = BookingSaga.start("saga-lookup", "ord-lookup", "1", "purchase",
                     List.of(new BookingSagaStep("RISK", "risk-lookup", Duration.ofMinutes(1), 1, "cancel")), Clock.systemUTC());
                 sagas.save(saga, "corr-lookup");
