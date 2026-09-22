@@ -1,11 +1,11 @@
 # Current Project Status
 
-Last updated: 2026-07-15
+Last updated: 2026-09-22
 
 ## Status: Phase 3 domain enrichment complete; consumer activation batch reconciled
 
 The greenfield DDD rewrite is a working, end-to-end-verified system. All
-Phase-1 work packages (WP-01..WP-23 of the accepted roadmap) are merged to
+Phase-1 business work packages are merged to
 `refactor/greenfield-ddd`, deployed in the local kind integration environment,
 and certified by the e2e suite.
 
@@ -13,7 +13,7 @@ Wave 11 completed the persistence baseline from
 `docs/08-contracts/persistence.md` for the original deployed business-service
 set: PostgreSQL aggregate snapshot rows with optimistic concurrency,
 transactional outbox publishing, and durable `processed_events` consumer
-dedup/idempotency. The deployed business-service set has since grown to 38.
+dedup/idempotency.
 Redis Streams remain the event bus; Redis is transport only, not a system of
 record. It runs without a persistent volume — a Redis pod deletion wipes
 streams and consumer groups by design, and services recover from PostgreSQL
@@ -22,21 +22,20 @@ are recreated on demand). `deploy/e2e/12-restart.sh` certifies exactly this.
 
 ## What runs today
 
-38 deployed business services + Redis Streams + PostgreSQL, all deployed by the
+Business services, Redis Streams and PostgreSQL are deployed by the
 Helm chart at `deploy/helm/train-ticket` (Helm is the only deployment path; the
 kustomize overlay that used to sit alongside it has been retired and deleted),
 each with a Dockerfile at `deploy/docker/<service>/Dockerfile`. `deploy/build-images.sh`
-builds all 38 plus the loadgen; its image set is derived at run time from the
+builds the business services and loadgen; its image set is derived at run time from the
 `train-ticket/*` images in the rendered release
 (`deploy/render-manifests.sh`), so it cannot drift from what the cluster pulls.
-`service-catalog.json` currently catalogs 33 of these contexts; the deployed set
-also includes corporate-travel, group-booking, loyalty-membership,
-marketing-campaign, and travel-insurance:
+`service-catalog.json` catalogs the business contexts.
+Clients call each owning service through its current HTTP API.
 
 | Language | Services |
 |---|---|
 | Java (Boot 4) | admin-audit, booking-orchestration, finance-settlement, group-booking, journey-order, marketing-campaign, payment, post-sales, traveler-profile, wallet-promotion |
-| Python (FastAPI) | corporate-travel, disruption-recovery, fare-pricing, identity-verification, legacy-acl, reporting, risk-compliance, transfer-management |
+| Python (FastAPI) | corporate-travel, disruption-recovery, fare-pricing, identity-verification, reporting, risk-compliance, transfer-management |
 | Node (TS) | account, ancillary-service, customer-service, loyalty-membership, notification, offer-management, waitlist |
 | Go | dispatch, fulfillment, payment-channel, place-network, provider-integration, seat-assignment, service-plan, supplier-catalog, travel-insurance |
 | Rust | capacity-availability, entitlement-ticketing, invoicing, trip-planning |
@@ -130,20 +129,9 @@ Total WorkGraph tasks: done/=187. PRs #307..#329 merged.
 
 ## Verification baseline
 
-`deploy/e2e/01..12` — 12 self-contained, rerunnable scripts, 159+ assertions:
-
-seed(6) purchase(15) refund(15) change(8) fulfillment(11) risk(7)
-fare-rules(29) notify-support(10) manual-action(7) account-gate(19)
-legacy-acl(33), plus `12-restart.sh` for whole-cluster restart certification
-(first full run: 191/0 — 42 snapshot tables, 117k rows identical across
-deleting every pod in the namespace).
-
-The legacy-acl script walks a complete order lifecycle exclusively through the
-strangler facade's legacy-shaped endpoints. `deploy/e2e/12-restart.sh` pauses
-the resident load generator if present, drains all transactional outboxes,
-captures every PostgreSQL aggregate snapshot row count, deletes every pod in
-the namespace, verifies the row counts survive unchanged, and then re-runs the
-full 01–11 suite against the restarted cluster.
+The scripts in `deploy/e2e/` exercise the current service APIs for purchase, payment, ticketing, fulfillment and post sales.
+`deploy/e2e/12-restart.sh` pauses the resident load generator, drains transactional outboxes and checks that PostgreSQL snapshot row counts survive a cluster restart.
+It then runs the current business API suite against the restarted cluster.
 
 `deploy/loadgen-go/` contains the resident load generator. It can stay deployed in
 the integration namespace for continuous traffic and is paused by the restart
@@ -200,10 +188,7 @@ e2e smoke (13-observability.sh, receiver-counter based).
 
 ## Current backlog
 
-Nothing queued. ADR-0002 activation and the subsequent consumer-activation /
-waitlist-conformance batch are complete. Known accepted gaps after Phase 2:
-payment remains a simulated provider boundary; legacy-acl rebook books the
-first leg only (caller follows up) — both by explicit ruling.
+Payment uses a simulated provider boundary.
 
 ## Operational findings
 

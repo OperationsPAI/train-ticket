@@ -44,7 +44,6 @@ None found.
 | finance-settlement | 5 | Audited. |
 | fulfillment | 5 | Audited. |
 | journey-order | 4 | Audited. |
-| legacy-acl | 6 | Audited. |
 | notification | 0 | Audited; no business HTTP endpoints in implementation or contract. |
 | offer-management | 2 | Audited. |
 | payment | 6 | Audited. |
@@ -115,12 +114,6 @@ None found.
 | journey-order | GET | `/api/v1/journey-orders/{orderId}` | yes | yes | consistent |
 | journey-order | POST | `/api/v1/journey-orders` | yes | yes | consistent |
 | journey-order | POST | `/api/v1/journey-orders/{orderId}/cancel` | yes | yes | consistent |
-| legacy-acl | POST | `/api/v1/legacy/cancel` | yes | yes | consistent |
-| legacy-acl | POST | `/api/v1/legacy/execute` | yes | yes | consistent |
-| legacy-acl | POST | `/api/v1/legacy/inside_payment` | yes | yes | consistent |
-| legacy-acl | POST | `/api/v1/legacy/preserve` | yes | yes | consistent |
-| legacy-acl | POST | `/api/v1/legacy/rebook` | yes | yes | consistent |
-| legacy-acl | POST | `/api/v1/legacy/ticket_issue` | yes | yes | consistent |
 | offer-management | GET | `/api/v1/offers/{offerId}` | yes | yes | consistent |
 | offer-management | POST | `/api/v1/offers` | yes | yes | consistent |
 | payment | GET | `/api/v1/payment-intents/{paymentIntentId}` | yes | yes | consistent |

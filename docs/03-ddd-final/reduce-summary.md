@@ -97,7 +97,7 @@ Provider Integration 第一阶段只做最小 ACL：支付渠道协议适配、�
 | Manual operation | Customer Service、Admin & Audit、Reporting 不直接写业务状态，所有修正进入目标 domain 命令。 |
 | Notification | Notification 只负责触达，不参与核心业务决策；交易必要通知可绕过普通偏好。 |
 | Supplier master data | Supplier Catalog 保存供应商主数据和能力基线；Provider Integration 保存实时健康和熔断。 |
-| Legacy migration | 旧 preserve/cancel/rebook/payment 副作用必须通过 Legacy ACL 转受控命令。 |
+| Client API | 购票、退票、改签和支付统一调用当前业务域的命令接口。 |
 
 ## High-level 回写
 
