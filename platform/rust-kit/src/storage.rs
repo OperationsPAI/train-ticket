@@ -504,40 +504,28 @@ pub async fn relay_once(
         return Ok(0);
     }
 
-    // One connection for the whole batch, opened before the loop.
-    //
-    // It used to be opened per row. Measured on the deployed trip-planning:
-    // the relay published 106 events per second, which is 9.5ms per event
-    // against a batch of 100 every 50ms, so it was never interval-bound. The
-    // outbox held 29740 unpublished events whose oldest was 250 seconds old,
-    // growing in age while stable in depth, which is a relay draining at
-    // exactly the arrival rate.
-    //
-    // The consequence was client-visible rather than internal: offer-management
-    // refuses an offer whose ItineraryProposed it has not consumed, the load
-    // generator retries that for 17 seconds, and the event arrived four
-    // minutes later. Every purchase journey failed on
-    // `No consumed Trip Planning itinerary found`.
     let mut connection = client
         .get_multiplexed_async_connection()
         .await
         .map_err(|error| StorageError::Database(error.to_string()))?;
 
-    // Published sequences accumulate and are marked in one statement after the
-    // loop. A per-row UPDATE is a second round trip per event, and the rows
-    // are already ordered by seq so a crash between the XADD and the UPDATE
-    // redelivers from the first unmarked one, which is the same at-least-once
-    // guarantee the per-row form gave.
+    // Keep event order within the batch and require every Redis reply before acknowledgement.
+    // A partial failure leaves the batch available for delivery with the same event IDs.
+    let mut pipeline = redis::pipe();
     let mut delivered: Vec<i64> = Vec::with_capacity(rows.len());
     for (seq, stream, envelope) in rows {
         let raw_envelope = serde_json::to_string(&envelope)?;
-        crate::messaging::capped_xadd(&stream)
-            .arg("envelope")
-            .arg(&raw_envelope)
-            .query_async::<_, String>(&mut connection)
-            .await
-            .map_err(|error| StorageError::Database(error.to_string()))?;
+        let mut command = crate::messaging::capped_xadd(&stream);
+        command.arg("envelope").arg(&raw_envelope);
+        pipeline.add_command(command);
         delivered.push(seq);
+    }
+    let replies: Vec<String> = pipeline
+        .query_async(&mut connection)
+        .await
+        .map_err(|error| StorageError::Database(error.to_string()))?;
+    if replies.len() != delivered.len() {
+        return Err(StorageError::Database("outbox Redis reply count differs from batch size".into()));
     }
 
     if !delivered.is_empty() {
