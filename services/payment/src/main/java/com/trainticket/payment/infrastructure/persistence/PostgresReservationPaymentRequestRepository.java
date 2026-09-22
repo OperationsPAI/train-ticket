@@ -41,6 +41,6 @@ public class PostgresReservationPaymentRequestRepository implements ReservationP
             JacksonPaymentJson.reservationJson(request, objectMapper)
         );
         if (inserted == 1) return request;
-        return findBySegmentBookingId(request.segmentBookingId()).orElseThrow(() -> new IllegalStateException("Reservation payment request disappeared"));
+        return findBySegmentBookingId(request.segmentBookingId()).orElseThrow(() -> new IllegalStateException("Reservation payment request disappeared")).requireSameReservation(request);
     }
 }
