@@ -26,7 +26,8 @@ public record AncillaryPostSalesProjection(
     String lastEventId,
     String lastEventType,
     Instant lastOccurredAt,
-    long aggregateVersion
+    long aggregateVersion,
+    String paymentIntentId
 ) {
     public AncillaryPostSalesProjection {
         ancillaryOrderItemId = requireText(ancillaryOrderItemId, "ancillaryOrderItemId");
@@ -70,7 +71,8 @@ public record AncillaryPostSalesProjection(
             eventId,
             eventType,
             occurredAt,
-            optionalLong(payload, "aggregateVersion")
+            optionalLong(payload, "aggregateVersion"),
+            optionalText(payload,"paymentIntentId")
         );
     }
 
@@ -98,7 +100,8 @@ public record AncillaryPostSalesProjection(
             lastEventId,
             lastEventType,
             lastOccurredAt,
-            aggregateVersion
+            aggregateVersion,
+            paymentIntentId
         );
     }
 

@@ -156,6 +156,7 @@ final class PostSalesPolicyContextMapper {
         Money ancillary = zero;
         Money discounts = zero;
         for (Map<?, ?> item : items) {
+            if(Boolean.TRUE.equals(item.get("independentlySettled")))continue;
             Money amount = amount(item, currency).orElse(zero);
             String type = text(item, "type")
                 .or(() -> text(item, "itemType"))
