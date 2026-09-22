@@ -785,8 +785,7 @@ export function evaluateEligibility(
     input.primaryTicketStatus ?? (input.entitlementRef ? "ISSUED" : "UNKNOWN");
   if (
     catalog.requiresEntitlementRef &&
-    !input.entitlementRef &&
-    !["ISSUED", "CONFIRMED"].includes(status)
+    (!input.entitlementRef || !["ISSUED", "CONFIRMED"].includes(status))
   )
     reasons.push({
       code: "PRIMARY_TICKET_NOT_CONFIRMED",
