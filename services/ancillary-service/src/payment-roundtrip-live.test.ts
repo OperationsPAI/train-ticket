@@ -55,7 +55,8 @@ test("ancillary uses its own real payment and settled refund",{skip:!process.env
     let settled:any;
     for(let attempt=0;attempt<60;attempt++){settled=await request(`/api/v1/refunds/${refund.refundId}`);if(settled.status==="SETTLED")break;await new Promise(resolve=>setTimeout(resolve,250));}
     assert.equal(settled.status,"SETTLED");
-    const final=await run(service=>service.refunded(selected.ancillaryOrderItemId,{refundRef:refund.refundId,refundedAmount:prepared.payableAmount,refundedAt:new Date().toISOString()},correlation));
+    await run(service=>service.reconcileRefund(selected.ancillaryOrderItemId,correlation));
+    const final=await new PostgresAncillaryRepository(pool).getOrderItem(selected.ancillaryOrderItemId);assert.ok(final);
     assert.equal(final.status,"REFUNDED");
     payment=await request(`/api/v1/payment-intents/${prepared.paymentIntentId}`);assert.deepEqual(payment.refundedAmount,payment.capturedAmount);
     if(process.env.TEST_ANCILLARY_PAYMENT_EVIDENCE)await writeFile(process.env.TEST_ANCILLARY_PAYMENT_EVIDENCE,JSON.stringify({item:final,payment,refund:settled,refundEvent:pending}));

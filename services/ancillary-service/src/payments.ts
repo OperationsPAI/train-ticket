@@ -26,6 +26,10 @@ export class HttpAncillaryPayments {
     return payment;
   }
   details(id: string,correlation: string): Promise<PaymentDetails> { return this.request(this.base,`/api/v1/payment-intents/${encodeURIComponent(id)}`,correlation); }
+  async refundFor(item:AncillaryOrderItemSnapshot,correlation:string):Promise<any|undefined>{
+    const response=await this.request(this.base,`/api/v1/refunds?businessCaseRef=${encodeURIComponent("ancillary:"+item.ancillaryOrderItemId)}`,correlation);
+    return response.items?.find((refund:any)=>refund.paymentIntentId===item.paymentIntentId && refund.status==="SETTLED");
+  }
   async settledRefund(item:AncillaryOrderItemSnapshot,refundId:string,correlation:string):Promise<any>{
     const refund=await this.request(this.base,`/api/v1/refunds/${encodeURIComponent(refundId)}`,correlation);
     if(refund.paymentIntentId!==item.paymentIntentId || refund.businessCaseRef!==`ancillary:${item.ancillaryOrderItemId}` || refund.status!=="SETTLED" || !sameMoney(refund.amount,item.payableAmount))
