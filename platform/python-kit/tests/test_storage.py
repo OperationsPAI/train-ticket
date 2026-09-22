@@ -112,3 +112,57 @@ def test_outbox_relay_uses_envelope_stream_field() -> None:
     OutboxRelay(Pool(Conn([])), redis_client=redis).relay_once()
 
     assert redis.calls[0][1].keys() == {"envelope"}
+
+
+class SweepConn(FakeConn):
+    """Records the sweep statements and reports an exhausted table."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    def execute(self, sql, params=()):
+        self.commands.append((sql, params))
+        cursor = FakeCursor(None)
+        cursor.rowcount = 0
+        return cursor
+
+    def commit(self) -> None:
+        return None
+
+
+class SweepPool:
+    def __init__(self, conn) -> None:
+        self.conn = conn
+
+    def connection(self):
+        return self.conn
+
+
+def sweep_statements() -> list[str]:
+    from train_ticket_platform.storage import OutboxRelay
+
+    conn = SweepConn([])
+    OutboxRelay(SweepPool(conn), redis_client=object())._cleanup()
+    return [sql for sql, _ in conn.commands]
+
+
+def test_cleanup_sweeps_all_three_platform_tables() -> None:
+    statements = sweep_statements()
+    for table in ("outbox", "processed_events", "idempotency_records"):
+        assert any(
+            f"DELETE FROM {table} WHERE ctid IN" in sql for sql in statements
+        ), f"no batched ctid sweep for {table}; statements: {statements}"
+
+
+def test_every_sweep_claims_its_rows_with_skip_locked() -> None:
+    # This service runs four uvicorn workers, each with its own relay thread.
+    # Without SKIP LOCKED two sweeps pick overlapping rows and lock them in
+    # opposite orders: the deployed cluster logged 76 deadlocks in one window,
+    # every one of them two retention statements waiting on each other.
+    for sql in sweep_statements():
+        assert "FOR UPDATE SKIP LOCKED" in sql, (
+            f"concurrent sweepers would contend for the same rows: {sql}"
+        )
