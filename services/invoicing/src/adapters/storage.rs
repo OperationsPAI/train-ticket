@@ -201,13 +201,16 @@ impl PostgresInvoicingService {
         &self,
         envelope: rust_kit::messaging::EventEnvelope,
     ) -> Result<(), rust_kit::messaging::HandlerError> {
+        if !Self::handles_event(&envelope) {
+            return Ok(());
+        }
         let stream = format!("events:{}", envelope.producer);
         self.consume_in_tx(envelope, &stream)
             .await
             .map_err(crate::utils::handler_error)
     }
 
-    fn requires_persistence(envelope: &rust_kit::messaging::EventEnvelope) -> bool {
+    pub fn handles_event(envelope: &rust_kit::messaging::EventEnvelope) -> bool {
         matches!(
             envelope.event_type.as_str(),
             "JourneyOrderCreated"
@@ -253,23 +256,6 @@ impl PostgresInvoicingService {
                 return Ok(());
             }
         }
-        if !Self::requires_persistence(&envelope) {
-            let mut tx = self.pool().begin().await.map_err(internal)?;
-            let claimed = sqlx::query(
-                "INSERT INTO processed_events (event_id, stream) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-            )
-            .bind(&envelope.event_id)
-            .bind(stream)
-            .execute(&mut *tx)
-            .await
-            .map_err(internal)?;
-            if claimed.rows_affected() == 0 {
-                return Ok(());
-            }
-            tx.commit().await.map_err(internal)?;
-            return Ok(());
-        }
-
         let mut tx = self.pool().begin().await.map_err(internal)?;
         let claimed = sqlx::query(
             "INSERT INTO processed_events (event_id, stream) VALUES ($1, $2) ON CONFLICT DO NOTHING",
@@ -520,11 +506,11 @@ mod tests {
             ("RevenueRecognized", "finance-settlement"),
             ("PostSalesApplied", "post-sales"),
         ] {
-            assert!(PostgresInvoicingService::requires_persistence(&envelope(
+            assert!(PostgresInvoicingService::handles_event(&envelope(
                 event_type, producer,
             )));
         }
-        assert!(!PostgresInvoicingService::requires_persistence(&envelope(
+        assert!(!PostgresInvoicingService::handles_event(&envelope(
             "UnrelatedEvent",
             "journey-order",
         )));
