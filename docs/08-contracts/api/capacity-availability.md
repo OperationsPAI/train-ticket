@@ -76,7 +76,7 @@ Places a hold on capacity for a segment.
 |---|---|---|
 | `holdId` | string | Hold identifier (`hold-<uuid>`). |
 | `segmentRef` | string | Service segment. |
-| `status` | enum | `HELD`, `CONFIRMED`, `RELEASED`, `EXPIRED` |
+| `status` | enum | `HELD`, `CONFIRMED`, `RELEASED`, `EXPIRED`, `FAILED` |
 | `heldUntil` | timestamp | Hold expiry time. |
 
 **Error codes:** `VALIDATION_FAILED`, `CONFLICT`, `DOMAIN_RULE_VIOLATION`, `UNAVAILABLE`
