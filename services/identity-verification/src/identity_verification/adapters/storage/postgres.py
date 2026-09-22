@@ -255,13 +255,14 @@ class PostgresIdentityVerificationStore(InMemoryStore):
 
     def get_pre_order_check(self, pre_order_check_id: str) -> dict[str, Any]:
         def read(conn: Any) -> dict[str, Any]:
-            snap = self._pre_orders.get(conn, pre_order_check_id)
+            snap = conn.execute("SELECT version,data FROM pre_order_check_snapshots WHERE id=%s FOR UPDATE", (pre_order_check_id,)).fetchone()
             if snap is None: raise NotFoundError(f"pre-order check not found: {pre_order_check_id}")
             version, data = snap; self._remember("pre-order", pre_order_check_id, version); return dict(data)
         return self._with_conn(read)
 
     def find_pre_order_check_duplicate(self, material_hash: str) -> dict[str, Any] | None:
         def read(conn: Any) -> dict[str, Any] | None:
+            conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", ("pre-order:"+material_hash,))
             row = conn.execute("SELECT id, version, data FROM pre_order_check_snapshots WHERE data->>'materialHash'=%s LIMIT 1", (material_hash,)).fetchone()
             if not row: return None
             self._remember("pre-order", str(row[0]), int(row[1])); return dict(row[2])
