@@ -175,6 +175,16 @@ func (s *Service) Confirm(ctx context.Context, assignmentID, holdID, corr, cause
 		if err != nil {
 			return err
 		}
+		a, exp, err = s.repo.GetAssignment(tx, assignmentID)
+		if err != nil {
+			return err
+		}
+		if a.Status == domain.StatusConfirmed {
+			seat, _ := s.seatMap.Find(a.SeatId)
+			d := dto(*a, seat)
+			out = &d
+			return nil
+		}
 		if holdID == "" {
 			holdID = a.HoldId
 		}
@@ -210,6 +220,13 @@ func (s *Service) Release(ctx context.Context, assignmentID, corr, cause string)
 		inv, invExp, err := s.loadInventory(tx, a.SegmentRef, a.DepartureDate)
 		if err != nil {
 			return err
+		}
+		a, exp, err = s.repo.GetAssignment(tx, assignmentID)
+		if err != nil {
+			return err
+		}
+		if a.Status == domain.StatusReleased {
+			return nil
 		}
 		if _, err := inv.ReleaseSeat(a.SeatId, now); err != nil {
 			return mapDomain(err)
