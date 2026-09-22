@@ -2,6 +2,8 @@ package com.trainticket.payment.infrastructure.persistence;
 
 import com.trainticket.payment.domain.Refund;
 import com.trainticket.payment.domain.ports.RefundRepository;
+import java.util.Comparator;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
@@ -16,6 +18,13 @@ public class InMemoryRefundRepository implements RefundRepository {
     @Override
     public Optional<Refund> findById(String refundId) {
         return Optional.ofNullable(refunds.get(refundId));
+    }
+
+    @Override
+    public List<Refund> findByBusinessCaseRef(String businessCaseRef) {
+        return refunds.values().stream()
+            .filter(refund -> refund.sourceCaseRef().equals(businessCaseRef))
+            .sorted(Comparator.comparing(Refund::refundId)).toList();
     }
 
     @Override

@@ -130,6 +130,9 @@ model fields, and event serializer/deserializer support for `channelRef`.
 
 ### Get Refund
 
+**GET** `/api/v1/refunds?businessCaseRef={caseId}` returns `{items, total}` for the exact business case reference.
+Each item includes the refund ID, payment intent, amount, state and channel refund reference.
+
 **GET** `/api/v1/refunds/{refundId}`
 
 **Response (200):** Full refund details.
