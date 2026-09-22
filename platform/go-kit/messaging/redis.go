@@ -191,8 +191,13 @@ func (b *RedisEventBus) Subscribe(ctx context.Context, sub Subscription, handler
 	b.mu.Lock()
 	b.cancel = append(b.cancel, cancel)
 	b.mu.Unlock()
-	b.wg.Add(1)
-	go func() { defer b.wg.Done(); b.consumeLoop(runCtx, streams, sub.Group, sub.ConsumerName, handler) }()
+	for _, stream := range streams {
+		b.wg.Add(1)
+		go func(stream string) {
+			defer b.wg.Done()
+			b.consumeLoop(runCtx, []string{stream}, sub.Group, sub.ConsumerName, handler)
+		}(stream)
+	}
 	return nil
 }
 func (b *RedisEventBus) ensureGroup(ctx context.Context, stream, group string) error {
@@ -211,7 +216,7 @@ func (b *RedisEventBus) pruneDeadConsumers(ctx context.Context, stream, group, s
 		if c.Name == selfName {
 			continue
 		}
-		if c.Idle > DeadConsumerMaxIdle {
+		if c.Idle > DeadConsumerMaxIdle && c.Pending == 0 {
 			pending := c.Pending
 			_ = b.client.XGroupDelConsumer(ctx, stream, group, c.Name).Err()
 			log.Printf("INFO %spruned dead consumer %s from %s/%s (idle=%v, pending=%d)", goruntime.TraceLogFields(ctx), c.Name, stream, group, c.Idle, pending)
