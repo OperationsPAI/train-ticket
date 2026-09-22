@@ -56,9 +56,9 @@ final class PostgresFinanceRepositories {
         public List<RevenueRecognition> findByOrderId(String orderId) {
             return jdbc.query(
                 "SELECT id FROM revenue_recognition_snapshots WHERE data->>'orderId' = ? ORDER BY (data->>'recognizedAt')::timestamptz",
-                (rs, rowNum) -> findById(rs.getString("id")).orElseThrow(),
+                (rs, rowNum) -> rs.getString("id"),
                 orderId
-            );
+            ).stream().map(id -> findById(id).orElseThrow()).toList();
         }
 
         @Override
@@ -71,11 +71,11 @@ final class PostgresFinanceRepositories {
                       AND (data->>'recognizedAt')::timestamptz < ?::timestamptz
                     ORDER BY (data->>'recognizedAt')::timestamptz, id
                     """,
-                (rs, rowNum) -> findById(rs.getString("id")).orElseThrow(),
+                (rs, rowNum) -> rs.getString("id"),
                 supplierId,
                 startDate.atStartOfDay().toInstant(ZoneOffset.UTC).toString(),
                 endDate.plusDays(1).atStartOfDay().toInstant(ZoneOffset.UTC).toString()
-            );
+            ).stream().map(id -> findById(id).orElseThrow()).toList();
         }
 
         @Override
@@ -125,7 +125,7 @@ final class PostgresFinanceRepositories {
                 sql = "SELECT id FROM reconciliation_case_snapshots WHERE data->>'orderId' = ? ORDER BY (data->>'openedAt')::timestamptz DESC LIMIT ? OFFSET ?";
                 args = new Object[] {orderId, limit, offset};
             }
-            return jdbc.query(sql, (rs, rowNum) -> findById(rs.getString("id")).orElseThrow(), args);
+            return jdbc.query(sql, (rs, rowNum) -> rs.getString("id"), args).stream().map(id -> findById(id).orElseThrow()).toList();
         }
 
         @Override
@@ -172,11 +172,12 @@ final class PostgresFinanceRepositories {
 
         @Override
         public Optional<ReconciliationBatch> findBySettlementDate(LocalDate settlementDate) {
-            return jdbc.query(
+            Optional<String> id = jdbc.query(
                 "SELECT id FROM reconciliation_batch_snapshots WHERE data->>'settlementDate' = ? LIMIT 1",
-                rs -> rs.next() ? findById(rs.getString("id")) : Optional.empty(),
+                rs -> rs.next() ? Optional.of(rs.getString("id")) : Optional.empty(),
                 settlementDate.toString()
             );
+            return id.flatMap(this::findById);
         }
 
         @Override
@@ -207,11 +208,12 @@ final class PostgresFinanceRepositories {
 
         @Override
         public Optional<SupplierSettlement> findBySupplierAndPeriod(String supplierId, LocalDate startDate, LocalDate endDate) {
-            return jdbc.query(
+            Optional<String> id = jdbc.query(
                 "SELECT id FROM supplier_settlement_snapshots WHERE data->>'supplierId' = ? AND data->>'startDate' = ? AND data->>'endDate' = ? LIMIT 1",
-                rs -> rs.next() ? findById(rs.getString("id")) : Optional.empty(),
+                rs -> rs.next() ? Optional.of(rs.getString("id")) : Optional.empty(),
                 supplierId, startDate.toString(), endDate.toString()
             );
+            return id.flatMap(this::findById);
         }
 
         @Override
@@ -244,9 +246,9 @@ final class PostgresFinanceRepositories {
         public List<FeeAccrual> findByOrderId(String orderId) {
             return jdbc.query(
                 "SELECT id FROM fee_accrual_snapshots WHERE data->>'orderId' = ? ORDER BY id",
-                (rs, rowNum) -> findById(rs.getString("id")).orElseThrow(),
+                (rs, rowNum) -> rs.getString("id"),
                 orderId
-            );
+            ).stream().map(id -> findById(id).orElseThrow()).toList();
         }
 
         @Override
@@ -283,11 +285,12 @@ final class PostgresFinanceRepositories {
 
         @Override
         public Optional<Invoice> findByOrderId(String orderId) {
-            return jdbc.query(
+            Optional<String> id = jdbc.query(
                 "SELECT id FROM invoice_snapshots WHERE data->>'orderId' = ? LIMIT 1",
-                rs -> rs.next() ? findById(rs.getString("id")) : Optional.empty(),
+                rs -> rs.next() ? Optional.of(rs.getString("id")) : Optional.empty(),
                 orderId
             );
+            return id.flatMap(this::findById);
         }
 
         @Override
