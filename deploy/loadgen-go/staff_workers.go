@@ -251,20 +251,32 @@ func (s *StaffSim) doRisk(ctx context.Context, item *WorkItem) error {
 
 func (s *StaffSim) doSupport(ctx context.Context, item *WorkItem) error {
 	caseID := item.Case
+	_, current, err := s.api.Request(ctx, "GET", "customer-service",
+		"/api/v1/support-cases/"+url.PathEscape(caseID), nil, nil, []int{200}, "staff-support-read")
+	if err != nil {
+		return err
+	}
+	status := getString(current, "status")
+	if status == "RESOLVED" || status == "CLOSED" {
+		item.SetResult("support", lower(status))
+		return nil
+	}
 	branches := map[string]float64{
-		"assign_resolve":   s.cfg.Staff.PSupportAssignResolveBranch,
+		"assign_resolve":    s.cfg.Staff.PSupportAssignResolveBranch,
 		"classify_escalate": s.cfg.Staff.PSupportClassifyEscalateBranch,
 		"classify_close":    s.cfg.Staff.PSupportClassifyCloseBranch,
 	}
 	branch := WeightedChoice(s.rng, branches)
 
 	if branch == "assign_resolve" && s.rng.Float64() < s.cfg.Staff.PSupportAssign {
-		_, _, err := s.api.Request(ctx, "POST", "customer-service",
-			"/api/v1/support-cases/"+url.PathEscape(caseID)+"/assign",
-			map[string]interface{}{"ownerQueue": "tier1"},
-			nil, []int{200, 201, 422}, "staff-support-assign")
-		if err != nil {
-			return err
+		if getString(current, "ownerQueue") == "" && current["escalation"] == nil {
+			_, _, err := s.api.Request(ctx, "POST", "customer-service",
+				"/api/v1/support-cases/"+url.PathEscape(caseID)+"/assign",
+				map[string]interface{}{"ownerQueue": "tier1"},
+				nil, []int{200, 201}, "staff-support-assign")
+			if err != nil {
+				return err
+			}
 		}
 		item.SetResult("support", "assigned")
 
@@ -282,49 +294,77 @@ func (s *StaffSim) doSupport(ctx context.Context, item *WorkItem) error {
 			item.SetResult("support", "resolved")
 		}
 	} else {
-		_, _, err := s.api.Request(ctx, "POST", "customer-service",
-			"/api/v1/support-cases/"+url.PathEscape(caseID)+"/classify",
-			map[string]interface{}{
-				"classification": "POST_SALES_HELP",
-				"priority":       "NORMAL",
-			}, nil, []int{200, 201, 422}, "staff-support-classify")
-		if err != nil {
-			return err
+		if status == "OPENED" {
+			_, _, err := s.api.Request(ctx, "POST", "customer-service",
+				"/api/v1/support-cases/"+url.PathEscape(caseID)+"/classify",
+				map[string]interface{}{
+					"classification": "POST_SALES_HELP",
+					"priority":       "NORMAL",
+				}, nil, []int{200, 201}, "staff-support-classify")
+			if err != nil {
+				return err
+			}
 		}
 		s.think(ctx)
 
 		if branch == "classify_escalate" {
-			_, _, _ = s.api.Request(ctx, "POST", "customer-service",
-				"/api/v1/support-cases/"+url.PathEscape(caseID)+"/assign",
-				map[string]interface{}{"ownerQueue": "tier1"},
-				nil, []int{200, 201}, "staff-support-assign-before-escalate")
-			_, _, _ = s.api.Request(ctx, "POST", "customer-service",
+			if getString(current, "ownerQueue") == "" && current["escalation"] == nil {
+				_, _, err = s.api.Request(ctx, "POST", "customer-service",
+					"/api/v1/support-cases/"+url.PathEscape(caseID)+"/assign",
+					map[string]interface{}{"ownerQueue": "tier1"},
+					nil, []int{200, 201}, "staff-support-assign-before-escalate")
+				if err != nil {
+					return err
+				}
+			}
+			_, _, err = s.api.Request(ctx, "POST", "customer-service",
 				"/api/v1/support-cases/"+url.PathEscape(caseID)+"/escalate",
 				map[string]interface{}{
 					"targetQueue": "tier2",
 					"reason":      "loadgen long-tail escalation",
 				}, nil, []int{200, 201}, "staff-support-escalate")
+			if err != nil {
+				return err
+			}
 			item.SetResult("support", "escalated")
 		} else {
-			_, _, _ = s.api.Request(ctx, "POST", "customer-service",
+			if getString(current, "ownerQueue") != "" && current["escalation"] == nil {
+				_, _, err = s.api.Request(ctx, "POST", "customer-service",
+					"/api/v1/support-cases/"+url.PathEscape(caseID)+"/resolve",
+					map[string]interface{}{"summary": "Inquiry answered", "resolutionCode": "POST_SALES_EXPLAINED"},
+					nil, []int{200, 201}, "staff-support-resolve-before-close")
+				if err != nil {
+					return err
+				}
+			}
+			_, _, err = s.api.Request(ctx, "POST", "customer-service",
 				"/api/v1/support-cases/"+url.PathEscape(caseID)+"/close",
 				map[string]interface{}{"reason": "NO_FURTHER_ACTION"},
 				nil, []int{200, 201}, "staff-support-close")
+			if err != nil {
+				return err
+			}
 			item.SetResult("support", "closed")
 
 			if s.rng.Float64() < s.cfg.Staff.PSupportReopenAfterClose {
 				s.think(ctx)
-				_, _, _ = s.api.Request(ctx, "POST", "customer-service",
+				_, _, err = s.api.Request(ctx, "POST", "customer-service",
 					"/api/v1/support-cases/"+url.PathEscape(caseID)+"/reopen",
 					map[string]interface{}{
 						"reason":       "customer supplied more context",
 						"requesterRef": item.Requester,
 					}, nil, []int{200, 201}, "staff-support-reopen")
+				if err != nil {
+					return err
+				}
 				s.think(ctx)
-				_, _, _ = s.api.Request(ctx, "POST", "customer-service",
+				_, _, err = s.api.Request(ctx, "POST", "customer-service",
 					"/api/v1/support-cases/"+url.PathEscape(caseID)+"/close",
 					map[string]interface{}{"reason": "NO_FURTHER_ACTION"},
 					nil, []int{200, 201}, "staff-support-close-again")
+				if err != nil {
+					return err
+				}
 				item.SetResult("support", "reopened_closed")
 			}
 		}
