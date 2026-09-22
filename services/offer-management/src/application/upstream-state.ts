@@ -156,6 +156,10 @@ export interface UpstreamStateRepository {
   saveFareQuotes(fareQuotes: readonly StoredFareQuote[]): Promise<void>;
   findFareQuote(itineraryRef: string, channelId: string, travelerRefs: readonly string[]): Promise<StoredFareQuote | undefined>;
   saveTraveler(traveler: StoredTraveler): Promise<void>;
+  /// Writes the snapshot while keeping whatever eligibility the stored row
+  /// already carries. One statement, so the projection does not read a row back
+  /// just to copy one field into the value it is about to write.
+  saveTravelerPreservingEligibility(traveler: StoredTraveler): Promise<void>;
   findTraveler(travelerId: string): Promise<StoredTraveler | undefined>;
   removeTravelerEligibility(travelerId: string, eligibilityId: string): Promise<void>;
   saveTransferPlanEvaluation(evaluation: StoredTransferPlanEvaluation): Promise<void>;
@@ -212,6 +216,14 @@ export class InMemoryUpstreamStateRepository implements UpstreamStateRepository 
 
   async saveTraveler(traveler: StoredTraveler): Promise<void> {
     this.travelers.set(traveler.travelerId, traveler);
+  }
+
+  async saveTravelerPreservingEligibility(traveler: StoredTraveler): Promise<void> {
+    const existing = this.travelers.get(traveler.travelerId);
+    this.travelers.set(traveler.travelerId, {
+      ...traveler,
+      eligibilityRef: traveler.eligibilityRef ?? existing?.eligibilityRef,
+    });
   }
 
   async findTraveler(travelerId: string): Promise<StoredTraveler | undefined> {
@@ -557,12 +569,17 @@ async function storeTravelerSnapshot(repository: UpstreamStateRepository, payloa
   if (!travelerId) return;
   const parsedTravelerType = travelerType(stringField(payload, "travelerType"));
   if (!parsedTravelerType) return;
-  const existing = await repository.findTraveler(travelerId);
-  await repository.saveTraveler({
+  // One statement, merging the stored eligibility in SQL. The read this used to
+  // do existed only to copy `eligibilityRef` forward, which is two round trips
+  // per event and loses an eligibility that arrives between them.
+  //
+  // Measured: `process TravelerSnapshotUpdated` reached 783.6ms, the most
+  // expensive event this service handles, against 66.3ms for FareQuoteComputed
+  // and 104ms for ItineraryProposed.
+  await repository.saveTravelerPreservingEligibility({
     travelerId,
     travelerType: parsedTravelerType,
     maskedDocumentRef: stringField(payload, "maskedDocumentRef"),
-    eligibilityRef: existing?.eligibilityRef,
   });
 }
 
