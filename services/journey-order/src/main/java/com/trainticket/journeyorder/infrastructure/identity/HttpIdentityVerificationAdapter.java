@@ -90,42 +90,43 @@ public class HttpIdentityVerificationAdapter implements IdentityVerificationPort
         if ("DEGRADED".equals(result)) {
             throw new ApiException(ApiErrorCode.UNAVAILABLE, "Identity verification returned degraded result");
         }
-        return new PreOrderCheckResult(result, json.path("preOrderCheckId").asText());
+        String checkId = json.path("preOrderCheckId").asText("");
+        if (checkId.isBlank()) {
+            throw new ApiException(ApiErrorCode.UNAVAILABLE, "Identity verification returned no check reference");
+        }
+        return new PreOrderCheckResult(result, checkId);
     }
 
     @Override
     public void confirmPreOrderCheck(String preOrderCheckId, String journeyOrderId, String idempotencyKey, String correlationId) {
         if (preOrderCheckId == null || preOrderCheckId.isBlank()) {
-            return;
+            throw new ApiException(ApiErrorCode.PRECONDITION_FAILED, "Identity check reference is required");
         }
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("journeyOrderId", journeyOrderId);
-        try {
-            Exchanged exchanged = exchange("/api/v1/identity-verification/pre-order-checks/" + preOrderCheckId + "/confirm", idempotencyKey, correlationId, body);
-            if (exchanged.statusCode() >= 400) {
-                warn(exchanged.json(), "identity verification confirm failed");
-            }
-        } catch (ApiException exception) {
-            // Best-effort confirm: the original adapter logged and returned on
-            // transport failure rather than failing the caller.
-            LOGGER.warn("identity verification downstream failure code={} message={}", "IO_ERROR", exception.getMessage());
-        }
+        Exchanged exchanged = exchange("/api/v1/identity-verification/pre-order-checks/" + preOrderCheckId + "/confirm", idempotencyKey, correlationId, body);
+        requireApplied(exchanged, preOrderCheckId);
     }
 
     @Override
     public void releasePreOrderCheck(String preOrderCheckId, String releaseReason, String idempotencyKey, String correlationId) {
         if (preOrderCheckId == null || preOrderCheckId.isBlank()) {
-            return;
+            throw new ApiException(ApiErrorCode.PRECONDITION_FAILED, "Identity check reference is required");
         }
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("releaseReason", releaseReason);
-        try {
-            Exchanged exchanged = exchange("/api/v1/identity-verification/pre-order-checks/" + preOrderCheckId + "/release", idempotencyKey, correlationId, body);
-            if (exchanged.statusCode() >= 400) {
-                warn(exchanged.json(), "identity verification release failed");
-            }
-        } catch (ApiException exception) {
-            LOGGER.warn("identity verification downstream failure code={} message={}", "IO_ERROR", exception.getMessage());
+        Exchanged exchanged = exchange("/api/v1/identity-verification/pre-order-checks/" + preOrderCheckId + "/release", idempotencyKey, correlationId, body);
+        requireApplied(exchanged, preOrderCheckId);
+    }
+
+    private void requireApplied(Exchanged exchanged, String checkId) {
+        int status = exchanged.statusCode();
+        if (status != 200) {
+            throw new ApiException(status >= 500 ? ApiErrorCode.UNAVAILABLE : ApiErrorCode.PRECONDITION_FAILED,
+                "Identity transition returned HTTP " + status + ": " + exchanged.json().path("message").asText());
+        }
+        if (!checkId.equals(exchanged.json().path("preOrderCheckId").asText())) {
+            throw new ApiException(ApiErrorCode.UNAVAILABLE, "Identity transition returned an inconsistent check reference");
         }
     }
 
@@ -149,7 +150,7 @@ public class HttpIdentityVerificationAdapter implements IdentityVerificationPort
                 .exchange((request, response) -> {
                     String responseBody = new String(response.getBody().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
                     return new Exchanged(response.getStatusCode().value(), mapper.readTree(responseBody.isBlank() ? "{}" : responseBody));
-                }, false);
+                });
         } catch (ResourceAccessException exception) {
             // Transport-level failure: same shape as the previous IOException path.
             LOGGER.warn("identity verification downstream failure code={} message={}", "IO_ERROR", exception.getMessage());
