@@ -208,6 +208,8 @@ class PostgresIdentityVerificationStore(InMemoryStore):
 
     def find_certificate_duplicate(self, traveler_id: str, eligibility_type: str, certificate_hash: str, policy_year: str, policy_version: str) -> EligibilityCertificate | None:
         def read(conn: Any) -> EligibilityCertificate | None:
+            key = json.dumps(["eligibility", traveler_id, eligibility_type, certificate_hash, policy_year, policy_version])
+            conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (key,))
             row = conn.execute("SELECT id, version, data FROM eligibility_certificate_snapshots WHERE data->>'travelerId'=%s AND data->>'eligibilityType'=%s AND data->>'certificateHash'=%s AND data->>'policyYear'=%s AND data->>'policyVersion'=%s LIMIT 1", (traveler_id, eligibility_type, certificate_hash, policy_year, policy_version)).fetchone()
             if not row: return None
             self._remember("certificate", str(row[0]), int(row[1])); return certificate_from_json(row[2], int(row[1]))
