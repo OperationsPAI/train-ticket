@@ -436,6 +436,15 @@ mod tests {
             .bind(&saga_id).fetch_one(&pool).await.unwrap();
         assert_eq!(count.0, 1);
         let restarted = PostgresInvoicingService { storage: rust_kit::storage::Storage::new(pool.clone()) };
+        for (recognition, minor) in [("first", 6000), ("second", 4000), ("first", 6000)] {
+            let mut event = envelope("RevenueRecognized", "finance-settlement");
+            event.payload = json!({"orderId":order_id,"revenueRecognitionId":format!("{order_id}:{recognition}"),
+                "amount":{"currency":"CNY","minorUnits":minor}});
+            restarted.handle_subscribed_event(event).await.unwrap();
+        }
+        let basis = service.get_amount_basis(order_id.clone()).await.unwrap();
+        assert_eq!(basis.total_amount.minor_units, 10000);
+        assert_eq!(basis.revenue_recognition_ids.len(), 2);
         restarted.generate_itinerary(order_id, vec!["tvl-invoice-test".into()], vec!["seg-invoice-test".into()], 1).await.unwrap();
         let rows: (i64,) = sqlx::query_as("SELECT count(*) FROM invoicing_state").fetch_one(&pool).await.unwrap();
         assert_eq!(rows.0, 0);
