@@ -185,6 +185,8 @@ export class CustomerServiceApplication {
 
   async classifySupportCase(caseId: string, request: ClassifySupportCaseRequest, operatorRef: string, correlationId?: string, causationId = newCommandId()): Promise<SupportCaseSnapshot> {
     const { aggregate: current, version } = await this.requireVersionedCase(caseId);
+    const snapshot = current.toSnapshot();
+    if (snapshot.classification === request.classification && snapshot.priority === request.priority) return snapshot;
     const { case: updated, event } = current.classify({
       caseId,
       classification: request.classification,
@@ -204,6 +206,8 @@ export class CustomerServiceApplication {
 
   async assignSupportCase(caseId: string, request: AssignSupportCaseRequest, operatorRef: string, correlationId?: string, causationId = newCommandId()): Promise<SupportCaseSnapshot> {
     const { aggregate: current, version } = await this.requireVersionedCase(caseId);
+    const snapshot = current.toSnapshot();
+    if (snapshot.ownerQueue === request.ownerQueue && snapshot.assignedTo === request.assignedTo) return snapshot;
     const { case: updated, event } = current.assign({
       caseId,
       ownerQueue: request.ownerQueue,
@@ -249,6 +253,7 @@ export class CustomerServiceApplication {
 
   async resolveCase(caseId: string, request: ResolveCaseRequest, operatorRef: string, correlationId?: string, causationId = newCommandId()): Promise<SupportCaseSnapshot> {
     const { aggregate: current, version } = await this.requireVersionedCase(caseId);
+    if (current.status === "Resolved" || current.status === "Closed") return current.toSnapshot();
     const { case: updated, event } = current.resolve({
       caseId,
       summary: request.summary,
@@ -269,6 +274,7 @@ export class CustomerServiceApplication {
 
   async closeCase(caseId: string, request: CloseCaseRequest, operatorRef: string, correlationId?: string, causationId = newCommandId()): Promise<SupportCaseSnapshot> {
     const { aggregate: current, version } = await this.requireVersionedCase(caseId);
+    if (current.status === "Closed") return current.toSnapshot();
     const { case: updated, event } = current.close({
       caseId,
       reason: request.reason,
