@@ -134,14 +134,17 @@ func (p *Providers) AssignSeat(ctx context.Context, segmentRef, departureDate st
 	if segmentRef == "" || departureDate == "" || len(travelers) == 0 {
 		return ""
 	}
+	body := map[string]interface{}{
+		"segmentRef":    segmentRef,
+		"departureDate": departureDate,
+		"travelerRefs":  travelers,
+		"seatClass":     seatClass,
+	}
+	if p.Rng.Float64() < p.Cfg.Staff.PSeatPreferences {
+		body["preferences"] = []map[string]interface{}{{"preferenceType": "WINDOW", "priority": 1}}
+	}
 	code, data, err := p.API.PollRequest(ctx, "POST", "seat-assignment",
-		"/api/v1/seat-assignments",
-		map[string]interface{}{
-			"segmentRef":    segmentRef,
-			"departureDate": departureDate,
-			"travelerRefs":  travelers,
-			"seatClass":     seatClass,
-		}, nil, []int{200, 201}, "seat-assign", []int{422})
+		"/api/v1/seat-assignments", body, nil, []int{200, 201}, "seat-assign", []int{422})
 	if err != nil || code == 422 {
 		if code == 422 {
 			p.Stats.RecordJourney("seat_assignment:class_sold_out:" + seatClass)

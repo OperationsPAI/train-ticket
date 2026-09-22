@@ -221,14 +221,6 @@ func (s *StaffSim) doTicketing(ctx context.Context, item *WorkItem) error {
 		"segmentRef":       item.Seg,
 		"issuePurpose":     "INITIAL",
 	}
-	if s.rng.Float64() < s.cfg.Staff.PSeatPreferences {
-		body["seatPreferences"] = map[string]interface{}{
-			"acceptStanding":      true,
-			"adjacencyPreference": "NONE",
-			"preferenceVersion":   "loadgen-v1",
-		}
-	}
-
 	_, data, err := s.api.Request(ctx, "POST", "entitlement-ticketing", "/api/v1/entitlements",
 		body, nil, []int{200, 201}, "staff-ticketing")
 	if err != nil {
