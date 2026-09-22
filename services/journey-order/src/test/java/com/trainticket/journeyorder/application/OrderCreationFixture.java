@@ -27,6 +27,6 @@ final class OrderCreationFixture {
             items.add(new OrderItem(id,OrderItemType.SEGMENT_FARE,"fare",Money.fromMinorUnits(amount,"CNY"),"quote-item",
                 List.of(new OrderLineBinding(id,travelers.get(index).travelerId(),segments.getFirst().segmentRef(),""))));
         }
-        return new ResolvedOrderOffer(request.accountId(),"WEB",new OfferSnapshotRef(request.offerId(),request.offerVersion(),quoted,departure,"price-ref","rule-ref"),travelers,segments,items);
+        return new ResolvedOrderOffer(request.accountId(),"WEB",new OfferSnapshotRef(request.offerId(),request.offerVersion(),quoted,departure,"price-ref","rule-ref"),travelers,segments,items,"TRAIN",List.of());
     }
 }
