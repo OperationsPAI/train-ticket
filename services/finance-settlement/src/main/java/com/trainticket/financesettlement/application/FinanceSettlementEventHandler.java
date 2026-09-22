@@ -388,6 +388,9 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             .filter(recognition -> recognition.amount().compareTo(refundedAmount) >= 0)
             .findFirst();
         if (matchingRecognition.isEmpty()) {
+            PaymentCaptureFact ancillaryCapture = projections.findCapture(fact.ancillaryOrderItemId()).orElse(null);
+            if (ancillaryCapture != null && sameCurrency(ancillaryCapture.amount(),refundedAmount)
+                && ancillaryCapture.amount().compareTo(refundedAmount)>=0) return;
             ReconciliationCase open = ReconciliationCase.open(
                 fact.journeyOrderId(),
                 "",
@@ -573,6 +576,7 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
         paymentIntentOrderReferences.save(paymentIntentId, orderId);
         Money captured = money(payload.get("capturedAmount"), "capturedAmount");
         projections.saveCapture(orderId, new PaymentCaptureFact(orderId, paymentIntentId, captured, envelope.eventId(), envelope.occurredAt()));
+        if (orderId.startsWith("aoi-")) return;
         String supplierId = supplierReferenceForOrder(orderId);
         RevenueRecognition recognition = RevenueRecognition.recognize(
             orderId,

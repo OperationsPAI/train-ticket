@@ -110,7 +110,7 @@ public final class EventEnvelopeMapper {
                 payload.put("paymentIntentId", refunded.paymentIntentId());
                 payload.put("intentId", refunded.paymentIntentId());
                 payload.put("businessRef", refunded.businessRef());
-                payload.put("orderId", refunded.businessRef());
+                if (refunded.businessRef()!=null && refunded.businessRef().startsWith("ord-")) payload.put("orderId", refunded.businessRef());
                 payload.put("refundId", refunded.refundId());
                 payload.put("amount", money(refunded.amount()));
                 payload.put("amountMinor", refunded.amount().toMinorUnits());
@@ -123,7 +123,7 @@ public final class EventEnvelopeMapper {
                 payload.put("paymentIntentId", settled.paymentIntentId());
                 payload.put("intentId", settled.paymentIntentId());
                 payload.put("businessRef", settled.businessRef());
-                payload.put("orderId", settled.businessRef());
+                if (settled.businessRef()!=null && settled.businessRef().startsWith("ord-")) payload.put("orderId", settled.businessRef());
                 payload.put("amount", money(settled.amount()));
                 payload.put("amountMinor", settled.amount().toMinorUnits());
                 payload.put("channelRefundTransactionId", settled.channelRefundTransactionId());

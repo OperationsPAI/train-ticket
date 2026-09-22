@@ -187,6 +187,7 @@ export async function handlePostSalesApplied(application: LoyaltyMembershipAppli
 export async function handlePaymentCaptured(application: LoyaltyMembershipApplicationService, envelope: EventEnvelope): Promise<void> {
   const payload = envelope.payload;
   const orderId = stringField(payload.businessRef ?? payload.orderId, "businessRef");
+  if (orderId.startsWith("aoi-")) return;
   const accountId = optionalStringField(payload.accountId);
   const capturedAmount = objectField(payload.capturedAmount ?? payload.amount, "capturedAmount");
   const minorUnits = integerField(capturedAmount.minorUnits, "capturedAmount.minorUnits");
