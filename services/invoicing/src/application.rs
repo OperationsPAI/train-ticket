@@ -268,12 +268,10 @@ impl InMemoryInvoicingService {
             .get("amount")
             .cloned()
             .or_else(|| e.payload.get("totalAmount").cloned())
-            .unwrap_or_else(|| serde_json::json!({"currency":"CNY","minorUnits":0}));
-        let money: Money = serde_json::from_value(amount).unwrap_or(Money {
-            currency: "CNY".into(),
-            minor_units: 0,
-        });
-        let rr = string_field(&e.payload, "revenueRecognitionId")
+            .ok_or_else(|| InvoicingError::ValidationFailed("financial amount is required".into()))?;
+        let mut money: Money = serde_json::from_value(amount)
+            .map_err(|error| InvoicingError::ValidationFailed(error.to_string()))?;
+        let mut rr = string_field(&e.payload, "revenueRecognitionId")
             .map(|v| vec![v])
             .or_else(|| {
                 e.payload
@@ -281,6 +279,26 @@ impl InMemoryInvoicingService {
                     .and_then(|v| serde_json::from_value(v.clone()).ok())
             })
             .unwrap_or_default();
+        let mut s = self.state.lock().unwrap();
+        if e.event_type == "RevenueRecognized" {
+            if rr.len() != 1 {
+                return Err(InvoicingError::ValidationFailed("revenueRecognitionId is required".into()));
+            }
+            if let Some(existing) = s.amounts.get(&order_id) {
+                if existing.revenue_recognition_ids.contains(&rr[0]) {
+                    s.processed_events.insert(e.event_id);
+                    return Ok(());
+                }
+                if existing.total_amount.currency != money.currency {
+                    return Err(InvoicingError::ValidationFailed("revenue recognition currency mismatch".into()));
+                }
+                money.minor_units = money.minor_units.checked_add(existing.total_amount.minor_units)
+                    .ok_or_else(|| InvoicingError::ValidationFailed("revenue total overflow".into()))?;
+                rr.extend(existing.revenue_recognition_ids.iter().cloned());
+            }
+        }
+        rr.sort();
+        let hash = sha256_prefixed(&normalize_json(&json!({"revenueRecognitionIds": rr, "totalAmount": money, "invoiceId": e.payload.get("invoiceId")})));
         let basis_type = if e.event_type == "InvoiceGenerated" {
             "FINANCE_INVOICE"
         } else {
@@ -300,9 +318,8 @@ impl InMemoryInvoicingService {
                 },
             }],
             total_amount: money,
-            amount_basis_hash: sha256_prefixed(&normalize_json(&e.payload)),
+            amount_basis_hash: hash,
         };
-        let mut s = self.state.lock().unwrap();
         s.amounts.insert(order_id, basis);
         s.processed_events.insert(e.event_id);
         Ok(())

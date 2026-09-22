@@ -44,6 +44,22 @@ fn amount() -> AmountBasis {
     }
 }
 
+#[tokio::test]
+async fn revenue_basis_sums_distinct_items_and_deduplicates_recognition_ids() {
+    let svc = InMemoryInvoicingService::default();
+    for (recognition, minor) in [("rr-first", 6000), ("rr-second", 4000), ("rr-first", 6000)] {
+        svc.apply_subscribed_event(rust_kit::messaging::EventEnvelope::new(
+            "RevenueRecognized", rust_kit::messaging::now_rfc3339_utc(), corr(), None::<String>,
+            "finance-settlement", json!({"orderId":"ord-components", "revenueRecognitionId":recognition,
+                "amount":{"currency":"CNY","minorUnits":minor}}),
+        )).await.unwrap();
+    }
+    let basis = svc.get_amount_basis("ord-components".into()).await.unwrap();
+    assert_eq!(basis.total_amount.minor_units, 10000);
+    assert_eq!(basis.revenue_recognition_ids, vec!["rr-first", "rr-second"]);
+    assert_eq!(basis.tax_lines[0].taxable_amount.minor_units, 10000);
+}
+
 async fn project_amount(
     svc: &InMemoryInvoicingService,
     order_id: &str,
