@@ -302,6 +302,7 @@ async fn release_hold(
 pub struct GetHoldResponseJson {
     pub hold_id: String,
     pub segment_ref: String,
+    pub segment_booking_ref: Option<String>,
     pub status: String,
     pub held_until: String,
     pub requested_at: String,
@@ -342,6 +343,7 @@ async fn get_hold(
     Ok(Json(GetHoldResponseJson {
         hold_id: result.hold_id,
         segment_ref: result.segment_ref,
+        segment_booking_ref: result.segment_booking_ref,
         status: result.status,
         held_until: result.held_until,
         requested_at: result.requested_at,
@@ -466,6 +468,7 @@ async fn get_hold_pg(
     Ok(Json(GetHoldResponseJson {
         hold_id: result.hold_id,
         segment_ref: result.segment_ref,
+        segment_booking_ref: result.segment_booking_ref,
         status: result.status,
         held_until: result.held_until,
         requested_at: result.requested_at,

@@ -124,6 +124,7 @@ Places a hold on capacity for a segment.
 | `status` | enum | `REQUESTED`, `HELD`, `CONFIRMED`, `RELEASED`, `EXPIRED`, `FAILED`. |
 | `heldUntil` | timestamp | Hold expiry time. |
 | `requestedAt` | timestamp | When the hold was requested. |
+| `segmentBookingRef` | string? | Booking associated with the held capacity. |
 | `travelerRef` | string? | Traveler reference, when the hold carries one. |
 | `capacityUnitRef` | string | The unit held, e.g. a seat number like `09D`. |
 | `interval` | `StationInterval` | `{fromSeq, toSeq}` the hold covers. |
