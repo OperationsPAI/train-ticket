@@ -62,7 +62,18 @@ class BookingRiskResultTest {
                     assertInstanceOf(HandlerResult.Success.class,transaction.execute(status -> service.handleUpstreamEvent(event)));
                     assertEquals(version,restarted.findById(sagaId).orElseThrow().version());
                     assertEquals(decision.equals("DENY") ? 1 : 0,jdbc.queryForObject("SELECT count(*) FROM outbox WHERE envelope->'payload'->>'sagaId'=?",Integer.class,sagaId));
-                    if (decision.equals("DENY")) assertEquals("risk-blocked",saved.terminalReason().orElseThrow());
+                    if (decision.equals("DENY")) {
+                        assertEquals("risk-blocked",saved.terminalReason().orElseThrow());
+                        var samples = mapper.readTree(Files.readString(Path.of(System.getenv("TEST_RISK_COMPLETION_DIRECTORY"),"risk-booking-samples.json")));
+                        var order = samples.path("DENY").path("created").path("payload");
+                        String segment = order.path("segmentRefs").get(0).asText();
+                        String traveler = order.path("travelerRefs").get(0).path("travelerId").asText();
+                        assertThrows(BookingOrchestrationService.PreconditionFailedException.class, () -> transaction.execute(status -> service.requestReservation(sagaId,
+                            new BookingOrchestrationService.RequestReservationCommand(segment,traveler,"sb-" + com.trainticket.platformkit.idempotency.UuidV7.generate()),
+                            UUID.randomUUID().toString(),event.correlationId())));
+                        assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM segment_booking_snapshots",Integer.class));
+                        assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM outbox WHERE envelope->>'eventType'='SegmentReservationRequested'",Integer.class));
+                    }
                 }
             } finally { adminJdbc.execute("DROP SCHEMA " + schema + " CASCADE"); }
         }
