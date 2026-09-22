@@ -214,7 +214,7 @@ public final class PostSalesMapper {
             Map<String, Object> step = new LinkedHashMap<>();
             step.put("type", "VOID_ENTITLEMENT");
             step.put("entitlementId", entitlementRef);
-            step.put("reason", approved.decisionKind().name());
+            step.put("reason", approved.decisionKind() == DecisionKind.CHANGE ? "CHANGE" : "REFUND");
             step.put("policy", "NORMAL");
             steps.add(step);
         }

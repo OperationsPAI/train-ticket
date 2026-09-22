@@ -44,7 +44,7 @@ func TestLivePurchaseAndPostPurchase(t *testing.T) {
 			break
 		}
 	}
-	for index := 0; index < 3; index++ {
+	for index := 0; index < 4; index++ {
 		provider := NewProviders(cfg, api, registry, stats, rand.New(rand.NewSource(int64(90+index))))
 		for _, key := range []string{"p_abandon_after_search", "p_abandon_after_quote", "p_abandon_before_payment", "p_second_traveler", "p_no_show", "p_payment_channel_missed_seed"} {
 			provider.Ctx[key] = float64(0)
@@ -92,6 +92,9 @@ func TestLivePurchaseAndPostPurchase(t *testing.T) {
 		case 1:
 			outcome, err = JourneyChange(WithChain(ctx, "change"), provider)
 		case 2:
+			outcome, err = JourneyRefund(WithChain(ctx, "refund"), provider)
+		case 3:
+			provider.Ctx["post_sales_case_mix"] = map[string]interface{}{"COMPENSATION": float64(1)}
 			outcome, err = JourneyRefund(WithChain(ctx, "refund"), provider)
 		}
 		if err != nil {
