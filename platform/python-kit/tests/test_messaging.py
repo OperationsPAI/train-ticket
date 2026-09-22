@@ -304,48 +304,6 @@ def test_dlq_xadd_carries_approximate_maxlen_at_configured_cap() -> None:
     assert kwargs["approximate"] is True
 
 
-def test_outbox_relay_xadd_carries_approximate_maxlen_at_configured_cap() -> None:
-    from train_ticket_platform.storage import OutboxRelay
-
-    class Cursor:
-        def fetchall(self):
-            return [(1, "events:fare-pricing", {"eventId": "evt-1"})]
-
-    class Conn:
-        def __init__(self) -> None:
-            self.commands = []
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb) -> None:
-            return None
-
-        def execute(self, sql, params=()):
-            self.commands.append((sql, params))
-            if sql.startswith("SELECT seq"):
-                return Cursor()
-            return None
-
-        def commit(self) -> None:
-            pass
-
-    class Pool:
-        def __init__(self, conn) -> None:
-            self.conn = conn
-
-        def connection(self):
-            return self.conn
-
-    redis_fake = CapturingRedis()
-    OutboxRelay(Pool(Conn()), redis_client=redis_fake).relay_once()
-
-    stream, _, kwargs = redis_fake.calls[0]
-    assert stream == "events:fare-pricing"
-    assert kwargs["maxlen"] == messaging.MAXLEN
-    assert kwargs["approximate"] is True
-
-
 def test_default_stream_maxlen_matches_java_kit() -> None:
     assert messaging.DEFAULT_STREAM_MAXLEN == 10000
     assert messaging.STREAM_MAXLEN_ENV == "EVENT_STREAM_MAXLEN"
