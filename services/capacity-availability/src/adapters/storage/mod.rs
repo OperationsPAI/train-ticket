@@ -19,6 +19,17 @@ const SNAPSHOT_TABLE: &str = "availability_snapshot_snapshots";
 const PRODUCER: &str = "capacity-availability";
 const MAX_RETRIES: usize = 3;
 
+fn hold_status(state: CapacityHoldState) -> &'static str {
+    match state {
+        CapacityHoldState::Requested => "REQUESTED",
+        CapacityHoldState::Held => "HELD",
+        CapacityHoldState::Confirmed => "CONFIRMED",
+        CapacityHoldState::Released => "RELEASED",
+        CapacityHoldState::Expired => "EXPIRED",
+        CapacityHoldState::Failed => "FAILED",
+    }
+}
+
 #[derive(Clone)]
 pub struct PostgresCapacityService {
     storage: Storage,
@@ -64,6 +75,48 @@ impl PostgresCapacityService {
 
     pub fn pool(&self) -> &PgPool {
         self.storage.pool()
+    }
+
+    async fn lock_booking(tx: &mut PgTransaction<'_>, booking: &str) -> Result<(), StorageError> {
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+            .bind(format!("capacity-booking:{booking}"))
+            .execute(&mut **tx)
+            .await?;
+        Ok(())
+    }
+
+    async fn apply_pending_confirmation(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        pool: &mut InventoryPool,
+        hold_id: &str,
+        booking: &str,
+        now: u64,
+    ) -> Result<Vec<WireEnvelope>, AppError> {
+        let pending: Option<Value> = sqlx::query_scalar("SELECT envelope FROM pending_booking_confirmations WHERE segment_booking_ref=$1")
+            .bind(booking).fetch_optional(&mut **tx).await.map_err(to_app_storage)?;
+        let Some(pending) = pending else {
+            return Ok(Vec::new());
+        };
+        let confirmation: WireEnvelope = serde_json::from_value(pending)
+            .map_err(|error| AppError::Internal(error.to_string()))?;
+        let id = HoldId::new(hold_id).map_err(to_internal)?;
+        let state = pool.hold(&id)
+            .ok_or_else(|| AppError::Internal("new hold is absent from inventory".into()))?
+            .state;
+        let outbound = if state == CapacityHoldState::Held {
+            let events = pool.confirm_hold(&id, now).map_err(map_hold_mutation_error)?;
+            let mut outbound = domain_events_to_wire(&events, &confirmation.correlation_id)?;
+            for event in &mut outbound {
+                event.causation_id = Some(confirmation.event_id.clone());
+            }
+            outbound
+        } else {
+            Vec::new()
+        };
+        sqlx::query("DELETE FROM pending_booking_confirmations WHERE segment_booking_ref=$1")
+            .bind(booking).execute(&mut **tx).await.map_err(to_app_storage)?;
+        Ok(outbound)
     }
 
     pub async fn is_ready(&self) -> bool {
@@ -174,6 +227,7 @@ impl PostgresCapacityService {
         let hold_id = format!("hold-{}", uuid::Uuid::now_v7());
         let pool_id = pool_id_for(&req.segment_ref, &req.class_ref);
         let mut tx = self.pool().begin().await.map_err(to_app_storage)?;
+        Self::lock_booking(&mut tx, &req.segment_booking_id).await.map_err(to_app_storage)?;
         if let Some(resp) = self
             .claim_idempotency::<HoldCapacityResponse>(&mut tx, idempotency_key, fingerprint)
             .await?
@@ -221,7 +275,8 @@ impl PostgresCapacityService {
             ),
             error => AppError::DomainRuleViolation(error.to_string()),
         })?;
-        let envelopes = domain_events_to_wire(&events, correlation_id)?;
+        let mut envelopes = domain_events_to_wire(&events, correlation_id)?;
+        envelopes.extend(self.apply_pending_confirmation(&mut tx, &mut pool, &hold_id, &req.segment_booking_id, now).await?);
         let persisted = pool
             .hold(&HoldId::new(&hold_id).map_err(to_internal)?)
             .ok_or_else(|| AppError::Internal("hold was not stored in pool".into()))?
@@ -250,18 +305,10 @@ impl PostgresCapacityService {
                 .await
                 .map_err(to_app_storage)?;
         }
-        let status = if events
-            .iter()
-            .any(|event| matches!(event, DomainEvent::CapacityHeld(_)))
-        {
-            "HELD"
-        } else {
-            "WAITLISTED"
-        };
         let response = HoldCapacityResponse {
             hold_id,
             segment_ref: req.segment_ref.clone(),
-            status: status.to_string(),
+            status: hold_status(persisted.state).to_string(),
             held_until: unix_millis_to_rfc3339(now + 300_000),
         };
         self.finish_idempotency(
@@ -522,14 +569,7 @@ impl PostgresCapacityService {
         .await
         .map_err(to_app_storage)?;
         let hold = snapshot.data.try_into_domain()?;
-        let status = match hold.state {
-            CapacityHoldState::Requested => "REQUESTED",
-            CapacityHoldState::Held => "HELD",
-            CapacityHoldState::Confirmed => "CONFIRMED",
-            CapacityHoldState::Released => "RELEASED",
-            CapacityHoldState::Expired => "EXPIRED",
-            CapacityHoldState::Failed => "FAILED",
-        };
+        let status = hold_status(hold.state);
         Ok(crate::application::GetHoldResponse {
             hold_id: hold.hold_id.to_string(),
             segment_ref,
@@ -773,6 +813,7 @@ impl PostgresCapacityService {
         let hold_id = format!("hold-{}", uuid::Uuid::now_v7());
         let pool_id = pool_id_for(&req.segment_ref, &req.class_ref);
         let mut tx = self.pool().begin().await.map_err(inbound_transient)?;
+        Self::lock_booking(&mut tx, &req.segment_booking_id).await.map_err(inbound_transient)?;
         if !mark_event_processing(&mut tx, &envelope.event_id, stream)
             .await
             .map_err(inbound_transient)?
@@ -866,6 +907,8 @@ impl PostgresCapacityService {
                 references: ReferenceMetadataSnapshot::from_domain(&failed.references),
             };
             self.hold_repo.save(&mut tx, &hold_id, None, &snapshot).await.map_err(inbound_transient)?;
+            sqlx::query("DELETE FROM pending_booking_confirmations WHERE segment_booking_ref=$1")
+                .bind(&req.segment_booking_id).execute(&mut *tx).await.map_err(inbound_transient)?;
             OutboxAppender::append(&mut tx, &stream_for_producer(PRODUCER), &outbound)
                 .await
                 .map_err(inbound_transient)?;
@@ -901,8 +944,10 @@ impl PostgresCapacityService {
             }
             error => InboundEventError::Fatal(error.to_string()),
         })?;
-        let outbound = domain_events_to_wire(&events, &envelope.correlation_id)
+        let mut outbound = domain_events_to_wire(&events, &envelope.correlation_id)
             .map_err(inbound_from_app_error)?;
+        outbound.extend(self.apply_pending_confirmation(&mut tx, &mut pool, &hold_id, &req.segment_booking_id, now)
+            .await.map_err(inbound_from_app_error)?);
         let persisted = pool
             .hold(&HoldId::new(&hold_id).map_err(inbound_fatal)?)
             .ok_or_else(|| InboundEventError::Transient("hold was not stored in pool".into()))?
@@ -933,18 +978,10 @@ impl PostgresCapacityService {
                 .await
                 .map_err(inbound_transient)?;
         }
-        let status = if events
-            .iter()
-            .any(|event| matches!(event, DomainEvent::CapacityHeld(_)))
-        {
-            "HELD"
-        } else {
-            "WAITLISTED"
-        };
         let response = HoldCapacityResponse {
             hold_id,
             segment_ref: req.segment_ref.clone(),
-            status: status.to_string(),
+            status: hold_status(persisted.state).to_string(),
             held_until: unix_millis_to_rfc3339(now + 300_000),
         };
         self.finish_idempotency(
@@ -1014,7 +1051,7 @@ impl PostgresCapacityService {
         let response = HoldCapacityResponse {
             hold_id: hold.hold_id.clone(),
             segment_ref: hold.segment_ref(),
-            status: if hold.state == "Failed" { "FAILED" } else { "HELD" }.to_string(),
+            status: hold_status(hold.clone().try_into_domain().map_err(inbound_from_app_error)?.state).to_string(),
             held_until: unix_millis_to_rfc3339(hold.expires_at),
         };
         match self
@@ -1095,6 +1132,7 @@ impl PostgresCapacityService {
         fingerprint: &str,
     ) -> Result<(), InboundEventError> {
         let mut tx = self.pool().begin().await.map_err(inbound_transient)?;
+        Self::lock_booking(&mut tx, segment_booking_ref).await.map_err(inbound_transient)?;
         if !mark_event_processing(&mut tx, &envelope.event_id, stream)
             .await
             .map_err(inbound_transient)?
@@ -1107,9 +1145,11 @@ impl PostgresCapacityService {
             .await
             .map_err(inbound_transient)?
         else {
-            return Err(InboundEventError::Transient(format!(
-                "capacity hold is not available for booking {segment_booking_ref}"
-            )));
+            sqlx::query("INSERT INTO pending_booking_confirmations(segment_booking_ref,envelope) VALUES ($1,$2) ON CONFLICT DO NOTHING")
+                .bind(segment_booking_ref).bind(serde_json::to_value(envelope).map_err(inbound_transient)?)
+                .execute(&mut *tx).await.map_err(inbound_transient)?;
+            tx.commit().await.map_err(inbound_transient)?;
+            return Ok(());
         };
         match hold_snapshot.data.state.as_str() {
             "Confirmed" | "Released" | "Expired" | "Failed" => {
