@@ -85,7 +85,7 @@ impl PostgresCapacityService {
         Ok(())
     }
 
-    async fn apply_pending_confirmation(
+    async fn apply_pending_booking_events(
         &self,
         tx: &mut PgTransaction<'_>,
         pool: &mut InventoryPool,
@@ -93,28 +93,48 @@ impl PostgresCapacityService {
         booking: &str,
         now: u64,
     ) -> Result<Vec<WireEnvelope>, AppError> {
+        let release: Option<(Value, String)> = sqlx::query_as("SELECT envelope, release_reason FROM pending_booking_releases WHERE segment_booking_ref=$1")
+            .bind(booking).fetch_optional(&mut **tx).await.map_err(to_app_storage)?;
         let pending: Option<Value> = sqlx::query_scalar("SELECT envelope FROM pending_booking_confirmations WHERE segment_booking_ref=$1")
             .bind(booking).fetch_optional(&mut **tx).await.map_err(to_app_storage)?;
-        let Some(pending) = pending else {
+        if release.is_none() && pending.is_none() {
             return Ok(Vec::new());
-        };
-        let confirmation: WireEnvelope = serde_json::from_value(pending)
-            .map_err(|error| AppError::Internal(error.to_string()))?;
+        }
         let id = HoldId::new(hold_id).map_err(to_internal)?;
         let state = pool.hold(&id)
             .ok_or_else(|| AppError::Internal("new hold is absent from inventory".into()))?
             .state;
-        let outbound = if state == CapacityHoldState::Held {
-            let events = pool.confirm_hold(&id, now).map_err(map_hold_mutation_error)?;
-            let mut outbound = domain_events_to_wire(&events, &confirmation.correlation_id)?;
+        let transition = if let Some((envelope, reason)) = release {
+            let events = if matches!(state, CapacityHoldState::Held | CapacityHoldState::Confirmed) {
+                pool.release_hold(&id, now, &reason).map_err(map_hold_mutation_error)?
+            } else {
+                Vec::new()
+            };
+            Some((envelope, events))
+        } else if let Some(envelope) = pending {
+            let events = if state == CapacityHoldState::Held {
+                pool.confirm_hold(&id, now).map_err(map_hold_mutation_error)?
+            } else {
+                Vec::new()
+            };
+            Some((envelope, events))
+        } else {
+            None
+        };
+        let outbound = if let Some((envelope, events)) = transition {
+            let source: WireEnvelope = serde_json::from_value(envelope)
+                .map_err(|error| AppError::Internal(error.to_string()))?;
+            let mut outbound = domain_events_to_wire(&events, &source.correlation_id)?;
             for event in &mut outbound {
-                event.causation_id = Some(confirmation.event_id.clone());
+                event.causation_id = Some(source.event_id.clone());
             }
             outbound
         } else {
             Vec::new()
         };
         sqlx::query("DELETE FROM pending_booking_confirmations WHERE segment_booking_ref=$1")
+            .bind(booking).execute(&mut **tx).await.map_err(to_app_storage)?;
+        sqlx::query("DELETE FROM pending_booking_releases WHERE segment_booking_ref=$1")
             .bind(booking).execute(&mut **tx).await.map_err(to_app_storage)?;
         Ok(outbound)
     }
@@ -276,7 +296,7 @@ impl PostgresCapacityService {
             error => AppError::DomainRuleViolation(error.to_string()),
         })?;
         let mut envelopes = domain_events_to_wire(&events, correlation_id)?;
-        envelopes.extend(self.apply_pending_confirmation(&mut tx, &mut pool, &hold_id, &req.segment_booking_id, now).await?);
+        envelopes.extend(self.apply_pending_booking_events(&mut tx, &mut pool, &hold_id, &req.segment_booking_id, now).await?);
         let persisted = pool
             .hold(&HoldId::new(&hold_id).map_err(to_internal)?)
             .ok_or_else(|| AppError::Internal("hold was not stored in pool".into()))?
@@ -680,28 +700,6 @@ impl PostgresCapacityService {
             .collect()
     }
 
-    async fn find_releasable_hold_by_segment_booking(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        segment_booking_ref: &str,
-    ) -> Result<Option<Snapshot<CapacityHoldSnapshot>>, StorageError> {
-        let sql = format!(
-            "SELECT id, version, data FROM {HOLD_TABLE} WHERE data #>> '{{references,segmentBookingRef}}' = $1 AND data ->> 'state' IN ('Held', 'Confirmed') ORDER BY updated_at DESC LIMIT 1"
-        );
-        let row: Option<(String, i64, Value)> = sqlx::query_as(&sql)
-            .bind(segment_booking_ref)
-            .fetch_optional(&mut **tx)
-            .await?;
-        row.map(|(id, version, data)| {
-            Ok(Snapshot {
-                id,
-                version,
-                data: serde_json::from_value(data)?,
-            })
-        })
-        .transpose()
-    }
-
     async fn find_latest_hold_by_segment_booking(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -909,6 +907,8 @@ impl PostgresCapacityService {
             self.hold_repo.save(&mut tx, &hold_id, None, &snapshot).await.map_err(inbound_transient)?;
             sqlx::query("DELETE FROM pending_booking_confirmations WHERE segment_booking_ref=$1")
                 .bind(&req.segment_booking_id).execute(&mut *tx).await.map_err(inbound_transient)?;
+            sqlx::query("DELETE FROM pending_booking_releases WHERE segment_booking_ref=$1")
+                .bind(&req.segment_booking_id).execute(&mut *tx).await.map_err(inbound_transient)?;
             OutboxAppender::append(&mut tx, &stream_for_producer(PRODUCER), &outbound)
                 .await
                 .map_err(inbound_transient)?;
@@ -946,7 +946,7 @@ impl PostgresCapacityService {
         })?;
         let mut outbound = domain_events_to_wire(&events, &envelope.correlation_id)
             .map_err(inbound_from_app_error)?;
-        outbound.extend(self.apply_pending_confirmation(&mut tx, &mut pool, &hold_id, &req.segment_booking_id, now)
+        outbound.extend(self.apply_pending_booking_events(&mut tx, &mut pool, &hold_id, &req.segment_booking_id, now)
             .await.map_err(inbound_from_app_error)?);
         let persisted = pool
             .hold(&HoldId::new(&hold_id).map_err(inbound_fatal)?)
@@ -1388,6 +1388,7 @@ impl PostgresCapacityService {
         release_reason: &'static str,
     ) -> Result<(), InboundEventError> {
         let mut tx = self.pool().begin().await.map_err(inbound_transient)?;
+        Self::lock_booking(&mut tx, segment_booking_ref).await.map_err(inbound_transient)?;
         if !mark_event_processing(&mut tx, &envelope.event_id, stream)
             .await
             .map_err(inbound_transient)?
@@ -1396,13 +1397,26 @@ impl PostgresCapacityService {
             return Ok(());
         }
         let Some(hold_snapshot) = self
-            .find_releasable_hold_by_segment_booking(&mut tx, segment_booking_ref)
+            .find_latest_hold_by_segment_booking(&mut tx, segment_booking_ref)
             .await
             .map_err(inbound_transient)?
         else {
+            sqlx::query("INSERT INTO pending_booking_releases(segment_booking_ref,envelope,release_reason) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING")
+                .bind(segment_booking_ref).bind(serde_json::to_value(envelope).map_err(inbound_transient)?)
+                .bind(release_reason).execute(&mut *tx).await.map_err(inbound_transient)?;
             tx.commit().await.map_err(inbound_transient)?;
             return Ok(());
         };
+        match hold_snapshot.data.state.as_str() {
+            "Released" | "Expired" | "Failed" => {
+                tx.commit().await.map_err(inbound_transient)?;
+                return Ok(());
+            }
+            "Held" | "Confirmed" => {}
+            _ => return Err(InboundEventError::Transient(format!(
+                "capacity hold for booking {segment_booking_ref} is not ready for release"
+            ))),
+        }
         if self
             .claim_idempotency::<ReleaseHoldResponse>(&mut tx, idempotency_key, fingerprint)
             .await
@@ -1420,8 +1434,7 @@ impl PostgresCapacityService {
             .await
             .map_err(inbound_transient)?
         else {
-            tx.commit().await.map_err(inbound_transient)?;
-            return Ok(());
+            return Err(InboundEventError::Transient(format!("inventory pool {pool_id} is not available for release")));
         };
         let mut pool = loaded_pool
             .data
@@ -1429,8 +1442,7 @@ impl PostgresCapacityService {
             .map_err(inbound_from_app_error)?;
         let hold_id_value = HoldId::new(&hold_id).map_err(inbound_fatal)?;
         let Some(current_hold) = pool.hold(&hold_id_value) else {
-            tx.commit().await.map_err(inbound_transient)?;
-            return Ok(());
+            return Err(InboundEventError::Transient(format!("capacity hold {hold_id} is not present in its inventory pool")));
         };
         if !matches!(
             current_hold.state,
