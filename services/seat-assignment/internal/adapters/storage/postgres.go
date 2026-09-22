@@ -40,6 +40,11 @@ type Repository struct{ tx *Transactor }
 func NewRepository(tx *Transactor) *Repository { return &Repository{tx: tx} }
 func (r *Repository) GetInventory(ctx context.Context, segmentRef, departureDate string) (*domain.SeatInventory, int64, error) {
 	id := inventoryID(segmentRef, departureDate)
+	if _, transactional := ctx.Value(txKey{}).(kitstorage.DBTX); transactional {
+		if _, err := r.tx.DBFor(ctx).Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", "seat-inventory:"+id); err != nil {
+			return nil, 0, err
+		}
+	}
 	snap, ok, err := kitstorage.NewSnapshotRepository(r.tx.DBFor(ctx), "seat_inventories").Get(ctx, id)
 	if err != nil || !ok {
 		return nil, 0, err
