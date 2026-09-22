@@ -10,6 +10,7 @@ import (
 // It records physical travel facts: check-in, boarding, no-show, and completion.
 // It never issues or voids entitlements itself.
 type FulfillmentRecord struct {
+	Version             int64 `json:"-"`
 	FulfillmentRecordID FulfillmentRecordID
 	EntitlementID       EntitlementRef
 	SegmentBookingID    SegmentBookingRef
