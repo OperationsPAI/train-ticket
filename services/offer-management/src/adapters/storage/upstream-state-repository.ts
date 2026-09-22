@@ -132,9 +132,16 @@ export class PostgresUpstreamStateRepository implements UpstreamStateRepository 
     await upsertSnapshot(this.client, "offer_upstream_mct_rules", `${rule.mctRuleId}:${rule.version}`, serializeMctRule(rule));
   }
 
-  async findPublishedMctRules(): Promise<readonly StoredMctRule[]> {
-    const rows = await findSnapshots<StoredMctRuleSnapshot>(this.client, "offer_upstream_mct_rules");
-    return rows.map(reviveMctRule).filter((rule) => rule.status === "PUBLISHED");
+  async findPublishedMctRules(at?: Date, limit?: number): Promise<readonly StoredMctRule[]> {
+    const result = await this.client.query(
+      `SELECT data FROM offer_upstream_mct_rules
+       WHERE data->>'status' = 'PUBLISHED'
+         AND ($1::text IS NULL OR (data->>'validFrom' <= $1
+           AND (data->>'validUntil' IS NULL OR data->>'validUntil' > $1)))
+       ORDER BY id LIMIT $2`,
+      [at?.toISOString() ?? null, limit ?? null],
+    ) as QueryResult<{ data: StoredMctRuleSnapshot }>;
+    return result.rows.map((row) => reviveMctRule(row.data));
   }
 
   async saveAncillaryCatalogItem(item: StoredAncillaryCatalogItem): Promise<void> {
