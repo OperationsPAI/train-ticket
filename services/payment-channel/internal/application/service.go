@@ -139,35 +139,38 @@ type CreateRefundRequest struct {
 }
 
 func (s *Service) CreateRefund(ctx context.Context, r CreateRefundRequest) (*domain.ChannelRefund, error) {
-	order, err := s.repo.GetOrder(ctx, r.ChannelOrderID)
-	if err != nil {
-		return nil, derr("NOT_FOUND", "original channel order not found")
-	}
-	if order.Status != domain.StatusSucceeded {
-		return nil, derr("DOMAIN_RULE_VIOLATION", "original channel order is not successful")
-	}
-	if order.Channel != r.Channel {
-		return nil, derr("DOMAIN_RULE_VIOLATION", "refund channel must match original order")
-	}
-	if order.PaymentIntentID != r.PaymentIntentID || order.ChannelTransactionID != r.OriginalChannelTransactionID {
-		return nil, derr("DOMAIN_RULE_VIOLATION", "refund must reference the original payment intent and transaction")
-	}
-	if order.Amount.Currency != r.Amount.Currency {
-		return nil, derr("DOMAIN_RULE_VIOLATION", "refund currency must match original order")
-	}
-	sum, err := s.repo.SumRefundsForOrder(ctx, r.ChannelOrderID)
-	if err != nil {
-		return nil, err
-	}
-	if sum+r.Amount.MinorUnits > order.Amount.MinorUnits {
-		return nil, derr("DOMAIN_RULE_VIOLATION", "refund amount exceeds original order")
-	}
-	now := time.Now().UTC()
-	rf, err := domain.NewChannelRefund("", r.RefundID, r.PaymentIntentID, r.ChannelOrderID, r.OriginalChannelTransactionID, r.Channel, r.Amount, r.RefundReasonCode, r.IdempotencyKey, r.SourceCommandID, r.CorrelationID, r.FaultSeed, now)
-	if err != nil {
-		return nil, derr("VALIDATION_FAILED", err.Error())
-	}
-	err = s.tx(ctx, func(tx context.Context) error {
+	var rf *domain.ChannelRefund
+	err := s.tx(ctx, func(tx context.Context) error {
+		order, err := s.repo.GetOrder(tx, r.ChannelOrderID)
+		if err != nil {
+			return derr("NOT_FOUND", "original channel order not found")
+		}
+		if order.Status != domain.StatusSucceeded {
+			return derr("DOMAIN_RULE_VIOLATION", "original channel order is not successful")
+		}
+		if order.Channel != r.Channel {
+			return derr("DOMAIN_RULE_VIOLATION", "refund channel must match original order")
+		}
+		if order.PaymentIntentID != r.PaymentIntentID || order.ChannelTransactionID != r.OriginalChannelTransactionID {
+			return derr("DOMAIN_RULE_VIOLATION", "refund must reference the original payment intent and transaction")
+		}
+		if order.Amount.Currency != r.Amount.Currency {
+			return derr("DOMAIN_RULE_VIOLATION", "refund currency must match original order")
+		}
+		if err := r.Amount.ValidatePositive(); err != nil {
+			return derr("VALIDATION_FAILED", err.Error())
+		}
+		sum, err := s.repo.SumRefundsForOrder(tx, r.ChannelOrderID)
+		if err != nil {
+			return err
+		}
+		if r.Amount.MinorUnits > order.Amount.MinorUnits-sum {
+			return derr("DOMAIN_RULE_VIOLATION", "refund amount exceeds original order")
+		}
+		rf, err = domain.NewChannelRefund("", r.RefundID, r.PaymentIntentID, r.ChannelOrderID, r.OriginalChannelTransactionID, r.Channel, r.Amount, r.RefundReasonCode, r.IdempotencyKey, r.SourceCommandID, r.CorrelationID, r.FaultSeed, time.Now().UTC())
+		if err != nil {
+			return derr("VALIDATION_FAILED", err.Error())
+		}
 		if err := s.repo.SaveRefund(tx, rf); err != nil {
 			return derr("CONFLICT", err.Error())
 		}
