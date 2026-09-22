@@ -53,6 +53,11 @@ type FulfillmentRepository interface {
 	FindByEntitlementSegment(ctx context.Context, entitlementID domain.EntitlementRef, segmentBookingID domain.SegmentBookingRef, segmentRef domain.SegmentRef) (*domain.FulfillmentRecord, error)
 }
 
+type TicketVoidRepository interface {
+	RecordTicketVoided(context.Context, domain.EntitlementRef, domain.SegmentBookingRef, string) error
+	IsTicketVoided(context.Context, domain.EntitlementRef, domain.SegmentBookingRef) (bool, error)
+}
+
 type SegmentStatusRepository interface {
 	SaveSegmentStatus(ctx context.Context, record *domain.SegmentStatusRecord) (bool, error)
 	FindSegmentStatusByCommandID(ctx context.Context, commandID string) (*domain.SegmentStatusRecord, error)
@@ -412,7 +417,7 @@ func (s *Service) applySubscribedEvent(ctx context.Context, envelope EventEnvelo
 	case "EntitlementIssued":
 		return s.applyEntitlementIssued(ctx, envelope.Payload)
 	case "EntitlementVoided":
-		return s.applyEntitlementVoided(envelope.Payload)
+		return s.applyEntitlementVoided(ctx, envelope.EventID, envelope.Payload)
 	case "SegmentTicketed":
 		return s.applySegmentTicketed(ctx, envelope.Payload)
 	case "AncillaryOrderItemFulfillmentReady":
@@ -478,7 +483,7 @@ func (s *Service) applySegmentTicketed(ctx context.Context, payload json.RawMess
 	return err
 }
 
-func (s *Service) applyEntitlementVoided(payload json.RawMessage) error {
+func (s *Service) applyEntitlementVoided(ctx context.Context, eventID string, payload json.RawMessage) error {
 	var event struct {
 		EntitlementID    string `json:"entitlementId"`
 		SegmentBookingID string `json:"segmentBookingId"`
@@ -489,6 +494,14 @@ func (s *Service) applyEntitlementVoided(payload json.RawMessage) error {
 	entitlementID := domain.EntitlementRef(event.EntitlementID)
 	if err := entitlementID.Validate(); err != nil {
 		return fmt.Errorf("%w: %v", ErrDomainRuleViolation, err)
+	}
+	if strings.TrimSpace(event.SegmentBookingID) != "" {
+		if err := domain.SegmentBookingRef(event.SegmentBookingID).Validate(); err != nil {
+			return fmt.Errorf("%w: %v", ErrDomainRuleViolation, err)
+		}
+	}
+	if repo, ok := s.repo.(TicketVoidRepository); ok {
+		return repo.RecordTicketVoided(ctx, entitlementID, domain.SegmentBookingRef(event.SegmentBookingID), eventID)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -716,6 +729,18 @@ func (s *Service) readyRecordForCommand(ctx context.Context, entitlementID domai
 
 func (s *Service) readyRecord(ctx context.Context, entitlementID domain.EntitlementRef, segmentBookingID domain.SegmentBookingRef, segmentRef domain.SegmentRef) (*domain.FulfillmentRecord, error) {
 	record, err := s.repo.FindByEntitlementSegment(ctx, entitlementID, segmentBookingID, segmentRef)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+	if repo, ok := s.repo.(TicketVoidRepository); ok {
+		voided, voidErr := repo.IsTicketVoided(ctx, entitlementID, segmentBookingID)
+		if voidErr != nil {
+			return nil, voidErr
+		}
+		if voided {
+			return nil, fmt.Errorf("%w: entitlement is VOIDED", ErrDomainRuleViolation)
+		}
+	}
 	if err == nil {
 		if s.isTicketVoided(entitlementID, segmentBookingID) {
 			return nil, fmt.Errorf("%w: entitlement is VOIDED", ErrDomainRuleViolation)
@@ -750,6 +775,9 @@ func (s *Service) isTicketVoided(entitlementID domain.EntitlementRef, segmentBoo
 
 func (s *Service) upsertTicketAndRecord(ctx context.Context, projection TicketProjection) error {
 	s.mu.Lock()
+	if previous, ok := s.tickets[ticketKey(projection.EntitlementID, projection.SegmentBookingID)]; ok && previous.Voided {
+		projection.Voided = true
+	}
 	s.tickets[ticketKey(projection.EntitlementID, projection.SegmentBookingID)] = projection
 	s.mu.Unlock()
 	_, err := s.ensureRecordFromProjection(ctx, projection)
