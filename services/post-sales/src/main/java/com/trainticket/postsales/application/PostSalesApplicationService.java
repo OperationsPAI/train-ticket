@@ -364,6 +364,7 @@ public class PostSalesApplicationService {
 
     public void recordAncillaryProjection(AncillaryPostSalesProjection projection) {
         externalEventProjectionStore.saveAncillary(projection);
+        if(projection.paymentIntentId()!=null) return;
         policyContextStore.findByOrderId(projection.journeyOrderId())
             .map(context -> context.withAncillaryComponent(
                 money(projection.refundableAmount()),

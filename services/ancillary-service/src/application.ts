@@ -678,6 +678,7 @@ export class AncillaryApplicationService {
         serviceType: snapshot.serviceType,
         refundRef: input.refundRef,
         refundedAmount: input.refundedAmount,
+        paymentIntentId: snapshot.paymentIntentId,
         previousStatus,
         status: "REFUNDED",
         refundedAt: input.refundedAt,

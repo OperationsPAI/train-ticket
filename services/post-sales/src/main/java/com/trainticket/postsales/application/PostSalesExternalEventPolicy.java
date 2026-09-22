@@ -61,7 +61,7 @@ public class PostSalesExternalEventPolicy {
             envelope.occurredAt(),
             payload
         );
-        if ("AncillaryOrderItemCancelled".equals(envelope.eventType()) && isPositive(projection.refundableAmount())) {
+        if ("AncillaryOrderItemCancelled".equals(envelope.eventType()) && projection.paymentIntentId()==null && isPositive(projection.refundableAmount())) {
             PostSalesCase linkedCase = applicationService.linkRefundForAncillaryCancellation(projection);
             applicationService.recordAncillaryProjection(projection.withPostSalesCaseId(linkedCase.caseId()));
             return;
