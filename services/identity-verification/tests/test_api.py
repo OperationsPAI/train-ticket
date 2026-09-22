@@ -194,9 +194,14 @@ def test_real_name_verification_api_contract_and_events():
     assert body["restrictions"] == []
     assert body["duplicateTicketCheck"] == "PASS"
     assert store.take_outbox()[0].eventType == "IdentityVerified"
-    compat = client.post("/api/v1/verifications", json={"travelerId": "tvl-api-compat", "documentType": "ID_CARD", "documentNumber": "110105199001010010", "holderName": "张三", "segmentRef": "seg-api-compat", "departureDate": JOURNEY_DATE, "seatClass": "SECOND_CLASS", "bookingValueMinor": 10000}, headers={"Idempotency-Key": key(92)})
-    assert compat.status_code == 201
-    assert compat.json()["status"] == "VERIFIED"
+    replay = client.post("/api/v1/identity-verification/verifications", content=response.request.content, headers={"Idempotency-Key": key(90), "Content-Type": "application/json"})
+    assert replay.status_code == 201
+    assert replay.json() == body
+    assert store.take_outbox() == ()
+    paths = client.get("/openapi.json").json()["paths"]
+    identity_paths = {path for path in paths if path.startswith("/api/")}
+    assert "/api/v1/identity-verification/verifications" in identity_paths
+    assert all(path.startswith("/api/v1/identity-verification/") for path in identity_paths)
 
     store.save_active_ticket(__import__("identity_verification.domain", fromlist=["ActiveTicket"]).ActiveTicket("11010519491231002X", "seg-api", JOURNEY_DATE, "ord-api"))
     rejected = client.post("/api/v1/identity-verification/verifications", json={"travelerId": "tvl-api-2", "documentType": "ID_CARD", "documentNumber": "11010519491231002X", "holderName": "张三", "segmentRef": "seg-api", "departureDate": JOURNEY_DATE, "seatClass": "SECOND_CLASS", "bookingValueMinor": 10000}, headers={"Idempotency-Key": key(91)})
