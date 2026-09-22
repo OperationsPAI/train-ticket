@@ -514,8 +514,12 @@ public class BookingOrchestrationService {
             saga.fail("risk-blocked");
             sagas.save(saga, correlationId);
             publishEvents(saga.pullEvents(), correlationId, causationId);
+        } else if ("CHALLENGE".equals(verdict) || "HOLD".equals(verdict)) {
+            saga.moveToManualReview("risk-" + verdict.toLowerCase(java.util.Locale.ROOT));
+            sagas.save(saga, correlationId);
+            publishEvents(saga.pullEvents(), correlationId, causationId);
         } else {
-            LOGGER.warn("Ack-skipping RiskAssessmentCompleted: unknown verdict '{}' for saga {}", verdict, sagaId);
+            throw new IllegalArgumentException("unsupported risk verdict: " + verdict);
         }
     }
 
