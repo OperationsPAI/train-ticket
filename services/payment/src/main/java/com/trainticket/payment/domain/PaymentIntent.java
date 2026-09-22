@@ -192,6 +192,11 @@ public final class PaymentIntent {
     public Money amount() { return amount; }
     public String payerRef() { return payerRef; }
     public Instant expiresAt() { return expiresAt; }
+    public Instant createdAt() {
+        return domainEvents.stream().filter(PaymentIntentCreated.class::isInstance)
+            .map(event -> event.envelope().occurredAt()).findFirst()
+            .orElseThrow(() -> new IllegalStateException("payment intent has no creation event"));
+    }
     public String idempotencyKey() { return idempotencyKey; }
     public PaymentIntentStatus status() { return status; }
     public Money authorizedAmount() { return authorizedAmount; }

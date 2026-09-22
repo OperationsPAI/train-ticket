@@ -41,6 +41,17 @@ class RefundCaseLookupTest {
                 ObjectMapper mapper = new ObjectMapper().registerModule(new JavaTimeModule());
                 var repository = new PostgresRefundRepository(dataSource, mapper);
                 Instant now = Instant.now();
+                var payments = new PostgresPaymentIntentRepository(dataSource, mapper);
+                var memoryPayments = new InMemoryPaymentIntentRepository();
+                for (int index = 0; index < 20; index++) {
+                    Instant createdAt = now.plusSeconds(index);
+                    var payment = PaymentIntent.create("ord-payment-latest", "purchase", Money.fromMinorUnits(100, "CNY"),
+                        "acct-refund-lookup", createdAt.plusSeconds(900), "payment-latest-" + index, createdAt, "cmd-create", "corr-create");
+                    payments.save(payment);
+                    memoryPayments.save(payment);
+                    assertEquals(payment.paymentIntentId(), payments.findLatestByBusinessRef("ord-payment-latest").orElseThrow().paymentIntentId());
+                    assertEquals(payment.paymentIntentId(), memoryPayments.findLatestByBusinessRef("ord-payment-latest").orElseThrow().paymentIntentId());
+                }
                 var intent = PaymentIntent.create("ord-refund-lookup", "purchase", Money.fromMinorUnits(35000, "CNY"),
                     "acct-refund-lookup", now.plusSeconds(900), "create-refund-lookup", now, "cmd-create", "corr-create");
                 intent.capture(intent.amount(), "channel", "txn-lookup", now, "cmd-capture", "cmd-capture", "corr-capture");
