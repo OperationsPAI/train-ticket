@@ -67,12 +67,7 @@ public final class PostSalesMapper {
         if (postSalesCase.terminalReason() != null) {
             body.put("terminalReason", postSalesCase.terminalReason());
         }
-        String createdAt = postSalesCase.domainEvents().stream().findFirst()
-            .map(PostSalesEvent::metadata)
-            .map(EventMetadata::occurredAt)
-            .map(Object::toString)
-            .orElse(null);
-        body.put("createdAt", createdAt);
+        body.put("createdAt", postSalesCase.createdAt() == null ? null : postSalesCase.createdAt().toString());
         return body;
     }
 
@@ -82,7 +77,7 @@ public final class PostSalesMapper {
         body.put("journeyOrderId", postSalesCase.journeyOrderId());
         body.put("caseType", postSalesCase.caseType().name());
         body.put("status", contractStatus(postSalesCase.status()));
-        body.put("createdAt", postSalesCase.domainEvents().getFirst().metadata().occurredAt().toString());
+        body.put("createdAt", postSalesCase.createdAt() == null ? null : postSalesCase.createdAt().toString());
         return body;
     }
 
