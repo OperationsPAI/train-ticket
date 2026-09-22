@@ -628,34 +628,11 @@ services:
       # the placeholder mispriced every refund -- correct tier percentages applied
       # to the wrong number.
       OFFER_MANAGEMENT_URL: http://offer-management:8080
-      # journey-order consumes 11 streams and its handler is no longer
-      # `synchronized`; without this the platform subscriber falls back to
-      # DEFAULT_CONSUMER_THREADS=1 and the unlocked handler gains nothing.
-      CONSUMER_THREADS: "4"
-      # Java, so the pool is Hikari, which reads HIKARI_MAX_POOL_SIZE and NOT
-      # PG_MAX_POOL_SIZE -- the two names are a real latent mismatch in this
-      # repository, and a value set under the wrong one is silently ignored.
-      #
-      # Nothing set it, so this ran on Hikari's default of 10 while 4 consumer
-      # threads, the Tomcat handlers and the outbox relay all contended for it.
-      # Measured: `total=10, active=10, idle=0, waiting=68`, which is pool
-      # exhaustion, not slowness -- 68 threads queued for 10 connections, each
-      # giving up after the 5s acquisition timeout. Postgres was nowhere near its
-      # own ceiling (241 of 500 connections), so this was per-service sizing.
-      #
-      # 40 covers the 4 consumers plus Tomcat's handlers with margin. Raising it
-      # further is bounded by postgres.maxConnections across ALL services, not by
-      # anything visible here.
+      # Concurrent handlers cover database and identity HTTP waits across eleven streams.
+      # Order row locks and event locks serialize updates to the same business state.
+      CONSUMER_THREADS: "16"
+      # Leave database connections for HTTP requests and the outbox relay.
       HIKARI_MAX_POOL_SIZE: "40"
-    # 4 consumer threads do not fit in the default 500m CPU limit. Raising
-    # CONSUMER_THREADS without raising this caused a CrashLoopBackOff: the
-    # threads saturated half a core working through the backlog, the HTTP thread
-    # could not answer /healthz within the probe timeout, and kubelet restarted
-    # the pod every 64 seconds. Threads and CPU must be raised together.
-    #
-    # Now 3 cores rather than 1: with the pool no longer the bottleneck, the
-    # threads can actually use CPU, and a 1-core ceiling would simply move the
-    # queue from Hikari to the scheduler.
     resources:
       requests: { cpu: 100m, memory: 256Mi }
       limits: { cpu: '3', memory: 2Gi }
