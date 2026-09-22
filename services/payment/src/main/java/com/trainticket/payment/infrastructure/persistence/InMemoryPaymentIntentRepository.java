@@ -25,7 +25,7 @@ public class InMemoryPaymentIntentRepository implements PaymentIntentRepository 
     public Optional<PaymentIntent> findLatestByBusinessRef(String businessRef) {
         return intents.values().stream()
             .filter(intent -> intent.businessRef().equals(businessRef))
-            .sorted(Comparator.comparing(PaymentIntent::paymentIntentId).reversed())
+            .sorted(Comparator.comparing(PaymentIntent::createdAt).thenComparing(PaymentIntent::paymentIntentId).reversed())
             .findFirst();
     }
 
