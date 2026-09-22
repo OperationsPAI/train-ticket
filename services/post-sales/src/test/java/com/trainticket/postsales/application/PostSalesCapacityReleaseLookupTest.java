@@ -129,6 +129,8 @@ class PostSalesCapacityReleaseLookupTest {
             return delegate.findActiveRefundCaseForOrder(journeyOrderId);
         }
 
+        @Override public List<PostSalesCase> findAppliedCasesForOrder(String journeyOrderId) { return delegate.findAppliedCasesForOrder(journeyOrderId); }
+
         @Override public List<PostSalesCase> findByOrderItemRef(String orderItemRef) {
             lookups.incrementAndGet();
             lookedUpRefs.add(orderItemRef);
