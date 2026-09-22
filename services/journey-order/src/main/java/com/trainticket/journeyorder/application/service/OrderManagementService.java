@@ -523,6 +523,7 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
 
     private EventSubscriber.HandlerResult handlePaymentCaptured(EventEnvelope envelope) {
         requirePayloadFields(envelope, "paymentIntentId", "businessRef", "capturedAmount", "channel", "channelTransactionId");
+        if (requiredTextPayload(envelope,"businessRef").startsWith("aoi-")) return new EventSubscriber.Success();
         StoredOrder stored = storedOrderFromPayload(envelope);
         JourneyOrder order = stored.order();
         int eventCount = order.domainEvents().size();
@@ -607,6 +608,7 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
     }
 
     private EventSubscriber.HandlerResult handlePaymentExpired(EventEnvelope envelope) {
+        if (textPayload(envelope,"businessRef","").startsWith("aoi-")) return new EventSubscriber.Success();
         requirePayloadFields(envelope, "paymentIntentId");
         StoredOrder stored = storedOrderFromPayload(envelope);
         JourneyOrder order = stored.order();
