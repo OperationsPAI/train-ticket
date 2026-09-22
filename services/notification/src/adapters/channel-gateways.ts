@@ -61,6 +61,9 @@ function createSmtpTransport(smtpUrl: string): Transporter {
   const username = decodeURIComponent(url.username);
   const password = decodeURIComponent(url.password);
   return nodemailer.createTransport({
+    pool: true,
+    maxConnections: 8,
+    maxMessages: 1000,
     host: url.hostname,
     port: url.port ? Number.parseInt(url.port, 10) : defaultSmtpPort(url.protocol),
     secure: url.protocol === "smtps:",
