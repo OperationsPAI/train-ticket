@@ -178,6 +178,16 @@ export function createApp(options: AppOptions | InstrumentationHooks = {}): Fast
     }
   });
 
+  app.post("/internal/payments/:paymentIntentId/reconcile", async (request, reply) => {
+    try {
+      const params = request.params as { paymentIntentId?: unknown };
+      const paymentIntentId = requiredString(params.paymentIntentId, "paymentIntentId");
+      return await runWithService(application => application.reconcilePayment(paymentIntentId));
+    } catch (error) {
+      sendApplicationError(reply, mapError(error), requestContext(request));
+    }
+  });
+
   app.get("/members/by-account/:accountId", async (request, reply) => {
     try {
       const params = request.params as { accountId?: unknown };

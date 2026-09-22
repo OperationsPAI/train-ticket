@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 
 import type { Pool } from "pg";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { resolveCapturedPaymentFacts } from "./payment-facts.js";
 
 import { createApp, opentelemetryInstrumentationFromEnv, type InstrumentationHooks } from "./app.js";
 import { InMemoryMemberRepository, LoyaltyMembershipApplicationService, type MemberRepository } from "./application.js";
@@ -52,7 +53,7 @@ export async function bootstrap(options: BootstrapOptions = {}) {
   const storage = process.env.DATABASE_URL ? await startLoyaltyStorage() : undefined;
   const publisher = storage ? storage.publisher : new RedisStreamEventPublisher();
   const repository = storage?.repository ?? new InMemoryMemberRepository();
-  const application = new LoyaltyMembershipApplicationService(repository, publisher, resolveOrderAccount);
+  const application = new LoyaltyMembershipApplicationService(repository, publisher, resolveOrderAccount, resolveCapturedPaymentFacts);
   const subscriber = startSubscriber(application, undefined, storage?.runCommand);
 
   const app = createApp({
@@ -287,7 +288,7 @@ export async function startLoyaltyStorage(pool: Pool = createPostgresPool()): Pr
     schema: () => migrations.detail(),
     runCommand: async (operation) => withTransaction(pool, async (client) => loyaltyTransaction.run(client, () =>
       operation(new LoyaltyMembershipApplicationService(new PostgresMemberRepository(client),
-        new TransactionalOutboxPublisher(new OutboxAppender(client)), resolveOrderAccount)))),
+        new TransactionalOutboxPublisher(new OutboxAppender(client)), resolveOrderAccount, resolveCapturedPaymentFacts)))),
     stop: async () => {
       // Stop the migration retry first: otherwise a shutdown during the retry
       // window leaves a backoff timer running and can issue queries against a
