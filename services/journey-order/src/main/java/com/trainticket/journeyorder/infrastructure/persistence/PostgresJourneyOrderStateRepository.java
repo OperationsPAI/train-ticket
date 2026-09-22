@@ -167,6 +167,11 @@ public class PostgresJourneyOrderStateRepository implements JourneyOrderStateRep
     }
 
     @Override
+    public void lockOrderCreation(String idempotencyKey) {
+        jdbc.query("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", rs -> { }, "order-create:" + idempotencyKey);
+    }
+
+    @Override
     public void saveCreateIdempotency(String key, OrderManagementService.IdempotencyEntry<JourneyOrderResult> entry) {
         saveIdempotency(idempotencyRecordKey(CREATE_KIND, key), CREATE_KIND, entry);
     }
