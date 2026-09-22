@@ -68,6 +68,9 @@ func main() {
 			consumer = "seat-assignment-local"
 		}
 		if err := sub.Subscribe(ctx, consumer, func(eventCtx context.Context, env kitmsg.EventEnvelope) error {
+			if !application.HandlesSubscribedEvent(env.EventType) {
+				return nil
+			}
 			return tx.Within(eventCtx, func(txCtx context.Context) error { return svc.HandleSubscribedEvent(txCtx, env) })
 		}); err != nil {
 			log.Fatal(err)

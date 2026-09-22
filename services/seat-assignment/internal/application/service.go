@@ -262,6 +262,16 @@ func (s *Service) HandleSubscribedEvent(ctx context.Context, envelope kitmsg.Eve
 	}
 }
 
+func HandlesSubscribedEvent(eventType string) bool {
+	switch eventType {
+	case "TicketIssued", "EntitlementIssued", "PostSalesApplied", "EntitlementVoided", "EntitlementIssueFailed",
+		"CapacityReleased", "CapacityHoldExpired", "BookingSagaStepSucceeded", "SeatAllocationRequested":
+		return true
+	default:
+		return false
+	}
+}
+
 // handleSeatAllocationRequested is the event-driven seat step of the booking saga.
 // booking-orchestration publishes SeatAllocationRequested and then waits for a
 // SeatAllocated event (with sagaId + segmentBookingId + seatAllocationRef) to
