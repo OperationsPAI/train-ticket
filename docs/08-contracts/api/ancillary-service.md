@@ -34,8 +34,8 @@ Activation-wave rulings:
   standard replay/reuse behavior in `docs/08-contracts/api/README.md`.
 - Finance Settlement, Notification, and Post Sales consumers are contract-surface
   touchpoints only; concrete consumer behavior is deferred to later waves.
-- Ancillary Service consumes `JourneyOrderCancelled` from `events:journey-order`
-  in this wave and automatically cancels associated non-terminal order items.
+- Ancillary Service consumes `JourneyOrderCancelled` and `EntitlementVoided` and cancels associated non-terminal order items.
+  Ticket void facts are durable and prevent later confirmation of a linked item.
 
 Field shapes reference `docs/08-contracts/shared-primitives.md` for IDs,
 timestamps, event envelope fields, pagination conventions, and `Money`
