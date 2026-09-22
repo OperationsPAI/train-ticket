@@ -12,6 +12,10 @@ RISK_COMPLIANCE_CONSUMER_GROUP = "risk-compliance"
 
 
 class RedisEventSubscriber(PlatformRedisEventSubscriber):
+    def start_independent_streams(self, streams: tuple[str, ...], group: str, handler: Any, *, consumer_name: str) -> None:
+        for index, stream in enumerate(streams):
+            super().start_in_background((stream,), group, handler, consumer_name=f"{consumer_name}-{index}")
+
     def _ignored_entry(self, fields: Any) -> bool:
         try:
             raw = json.loads(self._extract_envelope_json(fields))
