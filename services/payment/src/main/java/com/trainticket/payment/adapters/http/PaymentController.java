@@ -73,6 +73,11 @@ public class PaymentController {
         return PaymentHttpMapper.refundDetails(service.getRefund(refundId));
     }
 
+    @GetMapping("/payment-intents/by-business/{businessRef}")
+    public PaymentIntentDetailsResponse latestIntentForBusiness(@PathVariable String businessRef) {
+        return PaymentHttpMapper.intentDetails(service.latestIntentForBusiness(businessRef));
+    }
+
     @GetMapping("/refunds")
     public Map<String, Object> refundsForCase(@RequestParam String businessCaseRef) {
         var items = service.refundsForCase(businessCaseRef).stream().map(PaymentHttpMapper::refundDetails).toList();

@@ -19,6 +19,14 @@ model fields, and event serializer/deserializer support for `channelRef`.
 
 ## Endpoints
 
+### Get Latest Payment Intent for Business Reference
+
+**GET** `/api/v1/payment-intents/by-business/{businessRef}`
+
+Returns the latest payment intent details for the exact business reference.
+The response includes status, payer, captured amount, refunded amount and original channel reference.
+An unknown business reference returns `NOT_FOUND`.
+
 ### Create Payment Intent
 
 **POST** `/api/v1/payment-intents`
