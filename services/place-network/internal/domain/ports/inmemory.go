@@ -3,6 +3,7 @@ package ports
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"sync"
 
@@ -53,7 +54,7 @@ func (r *InMemoryPlaceRepository) FindPage(_ context.Context, filter PlaceListFi
 	defer r.mu.RUnlock()
 	places := make([]domain.Place, 0, len(r.places))
 	for _, place := range r.places {
-		if filter.Status == "" || string(place.Status) == filter.Status {
+		if (filter.Status == "" || string(place.Status) == filter.Status) && (len(filter.Codes) == 0 || slices.Contains(filter.Codes, place.Code)) {
 			places = append(places, place)
 		}
 	}
