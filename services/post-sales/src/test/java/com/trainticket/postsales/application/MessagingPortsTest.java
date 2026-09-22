@@ -391,6 +391,10 @@ class MessagingPortsTest {
                     com.trainticket.postsales.domain.Money.of("5.00", "USD"),
                     "contract test refund"
                 ),
+                new com.trainticket.postsales.domain.RefundPolicyEngine().evaluateRefund(
+                    com.trainticket.postsales.domain.Money.of("5.00", "USD"),
+                    Instant.parse("2026-07-05T10:31:00Z"), Instant.parse("2026-07-06T10:31:00Z"), true, "ADULT", 1
+                ),
                 Instant.parse("2026-07-05T10:31:00Z"),
                 Instant.parse("2026-07-05T11:31:00Z")
             ),

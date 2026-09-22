@@ -90,6 +90,7 @@ class PostSalesCapacityReleaseLookupTest {
             "REFUNDABLE",
             new RuleEvaluationSnapshot("fare-eval-1", "rule-snapshot-1", "rule-v1", NOW, Map.of("orderId", "ord-" + caseId)),
             AmountDecisionSnapshot.refund(Money.of("0.00", "CNY"), Money.of("5.00", "CNY"), "capacity release test"),
+            new com.trainticket.postsales.domain.RefundPolicyEngine().evaluateRefund(Money.of("5.00", "CNY"), NOW, NOW.plusSeconds(86400), true, "ADULT", 1),
             NOW,
             NOW.plusSeconds(3_600)
         );
