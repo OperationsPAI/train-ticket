@@ -76,5 +76,30 @@ def test_concurrent_registration_returns_one_durable_credential():
                 with pool.connection() as conn:
                     assert conn.execute("SELECT count(*) FROM eligibility_certificate_snapshots").fetchone()[0] == 1
                     assert conn.execute("SELECT count(*) FROM outbox").fetchone()[0] == before + 2
+                pre_order = {"orderIntentId":"oint-"+uuid4().hex,"accountId":"acc-"+uuid4().hex,
+                             "offerId":"off-"+uuid4().hex,"offerVersion":1,"travelerRefs":[traveler],
+                             "segmentRefs":["seg-"+uuid4().hex],"journeyDate":(now+timedelta(days=7)).date().isoformat(),
+                             "productCode":"rail-eligible","limitPolicyVersion":"v1","requestedEligibilityTypes":["STUDENT"]}
+
+                def precheck(index):
+                    barrier.wait(timeout=5)
+                    return service.pre_order_check(pre_order,str(uuid4()),None)[0]
+
+                with ThreadPoolExecutor(max_workers=8) as workers:
+                    checks=list(workers.map(precheck,range(8)))
+                assert len({check["preOrderCheckId"] for check in checks})==1
+                assert all(check["result"]=="PASS" for check in checks)
+                with pool.connection() as conn:
+                    assert conn.execute("SELECT count(*) FROM pre_order_check_snapshots").fetchone()[0]==1
+                    assert conn.execute("SELECT data->>'annualUsageReserved' FROM eligibility_certificate_snapshots").fetchone()[0]=="1"
+
+                def confirm(index):
+                    barrier.wait(timeout=5)
+                    return service.confirm_pre_order_check(checks[0]["preOrderCheckId"],"ord-confirmed",str(uuid4()),None)
+
+                with ThreadPoolExecutor(max_workers=8) as workers:
+                    list(workers.map(confirm,range(8)))
+                with pool.connection() as conn:
+                    assert conn.execute("SELECT data->>'annualUsageConfirmed' FROM eligibility_certificate_snapshots").fetchone()[0]=="1"
         finally:
             admin.execute(psycopg.sql.SQL("DROP SCHEMA {} CASCADE").format(psycopg.sql.Identifier(schema)))
