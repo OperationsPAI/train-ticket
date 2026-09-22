@@ -17,6 +17,7 @@ public final class PostSalesCase {
     private final String reasonCode;
     private final String actorRef;
     private final String idempotencyKey;
+    private final Instant createdAt;
     private final List<PostSalesStep> executionPlan;
     private final List<PostSalesEvent> domainEvents;
     private final Set<String> releasedOrderItems = new LinkedHashSet<>();
@@ -33,7 +34,8 @@ public final class PostSalesCase {
         PostSalesScope scope,
         String reasonCode,
         String actorRef,
-        String idempotencyKey
+        String idempotencyKey,
+        Instant createdAt
     ) {
         this.caseId = PostSalesScope.requireText(caseId, "caseId");
         this.journeyOrderId = PostSalesScope.requireText(journeyOrderId, "journeyOrderId");
@@ -42,6 +44,7 @@ public final class PostSalesCase {
         this.reasonCode = PostSalesScope.requireText(reasonCode, "reasonCode");
         this.actorRef = PostSalesScope.requireText(actorRef, "actorRef");
         this.idempotencyKey = PostSalesScope.requireText(idempotencyKey, "idempotencyKey");
+        this.createdAt = createdAt;
         this.executionPlan = new ArrayList<>();
         this.domainEvents = new ArrayList<>();
         this.status = PostSalesCaseStatus.OPENED;
@@ -58,7 +61,7 @@ public final class PostSalesCase {
         String sourceCommandId,
         String correlationId
     ) {
-        PostSalesCase postSalesCase = new PostSalesCase(com.trainticket.platformkit.idempotency.UuidV7.generate(), journeyOrderId, caseType, scope, reasonCode, actorRef, idempotencyKey);
+        PostSalesCase postSalesCase = new PostSalesCase(com.trainticket.platformkit.idempotency.UuidV7.generate(), journeyOrderId, caseType, scope, reasonCode, actorRef, idempotencyKey, Objects.requireNonNull(occurredAt, "occurredAt is required"));
         postSalesCase.domainEvents.add(new PostSalesCaseOpened(postSalesCase.caseId, journeyOrderId, caseType, scope, reasonCode, actorRef,
             metadata(occurredAt, sourceCommandId, sourceCommandId, correlationId, postSalesCase.status)));
         postSalesCase.domainEvents.add(new PostSalesRequested(postSalesCase.caseId, journeyOrderId, caseType, scope, reasonCode,
@@ -94,9 +97,10 @@ public final class PostSalesCase {
         List<PostSalesStep> executionPlan,
         PostSalesExecutionPlan executionPlanAggregate,
         String terminalReason,
-        List<PostSalesEvent> domainEvents
+        List<PostSalesEvent> domainEvents,
+        Instant createdAt
     ) {
-        PostSalesCase postSalesCase = new PostSalesCase(caseId, journeyOrderId, caseType, scope, reasonCode, actorRef, idempotencyKey);
+        PostSalesCase postSalesCase = new PostSalesCase(caseId, journeyOrderId, caseType, scope, reasonCode, actorRef, idempotencyKey, createdAt);
         postSalesCase.status = Objects.requireNonNull(status, "status is required");
         postSalesCase.decision = decision;
         postSalesCase.executionPlan.clear();
@@ -109,6 +113,7 @@ public final class PostSalesCase {
     }
 
     public String caseId() { return caseId; }
+    public Instant createdAt() { return createdAt; }
     public String journeyOrderId() { return journeyOrderId; }
     public PostSalesCaseType caseType() { return caseType; }
     public PostSalesScope scope() { return scope; }
