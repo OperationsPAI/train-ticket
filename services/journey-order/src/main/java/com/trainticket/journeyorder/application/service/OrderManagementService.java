@@ -105,6 +105,7 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         }
 
         AccountOrderGate.assertCanCreateOrder(request.accountId(), stateRepository.findAccountState(request.accountId()));
+        Money offerTotal = offerPrice.totalFor(request.offerId(), request.offerVersion()).orElse(null);
         String orderIntentId = orderIntentId(idempotencyKey, request);
         String identityIdempotencyKey = identityIdempotencyKey(idempotencyKey, request);
         IdentityVerificationPort.PreOrderCheckResult identityResult = identityVerification.preOrderCheck(request, orderIntentId, identityIdempotencyKey, correlationId);
@@ -155,7 +156,6 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         List<OrderItem> orderItems = new ArrayList<>();
         Money perTraveler = fallbackFare();
         long remainderMinorUnits = 0;
-        Money offerTotal = offerPrice.totalFor(request.offerId(), request.offerVersion()).orElse(null);
         if (offerTotal != null && !travelers.isEmpty()) {
             long totalMinor = offerTotal.toMinorUnits();
             long share = totalMinor / travelers.size();
