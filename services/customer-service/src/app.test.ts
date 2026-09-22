@@ -372,7 +372,7 @@ describe("customer-service HTTP API", () => {
     assert.equal(evaluated.json().evaluated, 1);
   });
 
-  it("surfaces non-precondition aggregate invariant violations as DOMAIN_RULE_VIOLATION", async () => {
+  it("returns the existing classification for repeated classification commands", async () => {
     const app = createApp();
     const caseId = await openedCase(app);
     await app.inject({
@@ -389,9 +389,9 @@ describe("customer-service HTTP API", () => {
       payload: { classification: "PAYMENT_DISPUTE", priority: "URGENT" },
     });
 
-    assert.equal(response.statusCode, 422);
-    assert.equal(response.json().code, "DOMAIN_RULE_VIOLATION");
-    assert.equal(response.json().details.domainCode, "CASE_NOT_CLASSIFIABLE");
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().classification, "PAYMENT_DISPUTE");
+    assert.equal(response.json().priority, "URGENT");
   });
 
   it("maps resolve and close precondition failures to PRECONDITION_FAILED", async () => {

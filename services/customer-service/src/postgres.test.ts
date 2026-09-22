@@ -34,12 +34,27 @@ it("queries related cases and evaluates disjoint bounded batches in PostgreSQL",
     assert.deepEqual(matches.map((item) => item.id), [opened.caseId]);
     assert.deepEqual(await repository.findCasesByReferences([]), []);
     assert.deepEqual(await repository.findCasesByReferences([{ businessReferences: { journeyOrderId: `ord-${randomUUID()}` } }]), []);
+    const classification = { classification: "POST_SALES_HELP" as const, priority: "NORMAL" as const };
+    await application.classifySupportCase(opened.caseId, classification, "op-test");
+    const classifiedVersion = (await repository.findCase(opened.caseId))?.version;
+    await application.classifySupportCase(opened.caseId, classification, "op-test");
+    assert.equal((await repository.findCase(opened.caseId))?.version, classifiedVersion);
     await application.assignSupportCase(opened.caseId, { ownerQueue: "support", assignedTo: "op-test" }, "op-test");
+    const assignedVersion = (await repository.findCase(opened.caseId))?.version;
+    await application.assignSupportCase(opened.caseId, { ownerQueue: "support", assignedTo: "op-test" }, "op-test");
+    assert.equal((await repository.findCase(opened.caseId))?.version, assignedVersion);
     await application.resolveCase(opened.caseId, { summary: "Payment confirmed", resolutionCode: "RESOLVED" }, "op-test");
     const before = await repository.findCase(opened.caseId);
+    await application.resolveCase(opened.caseId, { summary: "Payment confirmed", resolutionCode: "RESOLVED" }, "op-test");
+    assert.equal((await repository.findCase(opened.caseId))?.version, before?.version);
     const evaluated = await application.evaluateEscalationAndSla(opened.caseId, new Date(Date.now() + 86_400_000));
     assert.equal(evaluated.status, "Resolved");
     assert.equal((await repository.findCase(opened.caseId))?.version, before?.version);
+    await application.closeCase(opened.caseId, { reason: "RESOLVED" }, "op-test");
+    const closedVersion = (await repository.findCase(opened.caseId))?.version;
+    const closed = await application.closeCase(opened.caseId, { reason: "RESOLVED" }, "op-test");
+    assert.equal(closed.status, "Closed");
+    assert.equal((await repository.findCase(opened.caseId))?.version, closedVersion);
     for (let index = 0; index < 105; index++) {
       await application.openSupportCase({
         requesterRef: `tvl-${randomUUID()}`, channel: "APP", description: "Journey inquiry",
