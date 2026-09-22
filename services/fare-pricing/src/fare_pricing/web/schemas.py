@@ -113,6 +113,7 @@ class AdjustmentQuoteRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     purpose: Literal["REFUND", "CHANGE"]
+    originalQuoteId: str = Field(..., min_length=1)
     entitlementIds: list[str] = Field(..., min_length=1)
     journeyOrderId: str = Field(..., min_length=1)
     segmentRefs: list[str] = Field(..., min_length=1)

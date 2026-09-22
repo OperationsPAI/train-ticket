@@ -105,7 +105,8 @@ Publishes the `DRAFT` rule set. Any older `PUBLISHED` rule set with the same
 | `purpose` | enum | yes | `REFUND`, `CHANGE` |
 | `entitlementIds` | string[] | yes | Entitlements to adjust. |
 | `journeyOrderId` | string | yes | Parent order ID. |
-| `segmentRefs` | string[] | yes | Segment references of the entitlements being adjusted (the caller — post-sales — holds these from the entitlement records). Used to resolve the original fare quote; unresolvable refs -> 412 PRECONDITION_FAILED. |
+| `segmentRefs` | string[] | yes | Segment references of the entitlements being adjusted. |
+| `originalQuoteId` | string | yes | Original fare quote referenced by the purchased offer price snapshot. An unknown quote returns 412 PRECONDITION_FAILED. |
 
 **Response (201):**
 
