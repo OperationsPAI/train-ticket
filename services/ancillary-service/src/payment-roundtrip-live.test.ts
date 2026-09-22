@@ -40,7 +40,11 @@ test("ancillary uses its own real payment and settled refund",{skip:!process.env
     let payment:any;
     for(let attempt=0;attempt<40;attempt++){payment=await request(`/api/v1/payment-intents/${prepared.paymentIntentId}`);if(payment.status==="CAPTURED")break;await new Promise(resolve=>setTimeout(resolve,250));}
     assert.equal(payment.status,"CAPTURED");assert.equal(payment.businessRef,selected.ancillaryOrderItemId);assert.equal(payment.payerRef,source.order.accountId);assert.equal(payment.purpose,"ancillary");
-    const confirmed=await run(service=>service.confirmOrderItem(selected.ancillaryOrderItemId,{},correlation));
+    const facts=await request(`/api/v1/internal/payment-intents/${prepared.paymentIntentId}/captured-facts`);
+    const capture=facts.events.find((event:EventEnvelope)=>event.eventType==="PaymentCaptured");assert.ok(capture);
+    await run(service=>service.handleJourneyOrderCancelled(capture));
+    await run(service=>service.handleJourneyOrderCancelled(capture));
+    const confirmed=await new PostgresAncillaryRepository(pool).getOrderItem(selected.ancillaryOrderItemId);assert.ok(confirmed);
     assert.equal(confirmed.status,"CONFIRMED");
     assert.equal((await run(service=>service.confirmOrderItem(selected.ancillaryOrderItemId,{},correlation))).aggregateVersion,confirmed.aggregateVersion);
     const cancelled=await run(service=>service.cancelOrderItem(selected.ancillaryOrderItemId,{reasonCode:"USER_CANCELLED",source:"USER"},correlation));
