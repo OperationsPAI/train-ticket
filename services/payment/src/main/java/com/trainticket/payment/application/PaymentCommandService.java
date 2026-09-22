@@ -203,7 +203,16 @@ public class PaymentCommandService {
     @Transactional
     public Refund requestRefund(String paymentIntentId, Money amount, String reason, String businessCaseRef, String idempotencyKey, String correlationId) {
         PaymentIntent intent = getIntent(paymentIntentId);
-        Refund refund = Refund.request(intent, amount, businessCaseRef == null || businessCaseRef.isBlank() ? "case-" + idempotencyKey : businessCaseRef, reason, idempotencyKey, Instant.now(clock), commandId(idempotencyKey), correlationId);
+        String caseRef = businessCaseRef == null || businessCaseRef.isBlank() ? "case-" + idempotencyKey : businessCaseRef;
+        for (Refund existing : refundRepository.findByBusinessCaseRef(caseRef)) {
+            if (existing.idempotencyKey().equals(idempotencyKey)) {
+                if (!existing.semanticallyMatches(paymentIntentId, amount, caseRef, reason, idempotencyKey)) {
+                    throw new DomainRuleViolation("refund idempotency key was reused with different request details");
+                }
+                return existing;
+            }
+        }
+        Refund refund = Refund.request(intent, amount, caseRef, reason, idempotencyKey, Instant.now(clock), commandId(idempotencyKey), correlationId);
         refundRepository.save(refund);
         publish(refund.domainEvents());
         return refund;
@@ -228,6 +237,11 @@ public class PaymentCommandService {
             throw new DomainRuleViolation("refund must return to the original payment channel order and transaction");
         }
         Refund refund = requestRefund(paymentIntentId, amount, reason, businessCaseRef, idempotencyKey, correlationId);
+        if (refund.status() == com.trainticket.payment.domain.RefundStatus.SETTLED
+            || refund.status() == com.trainticket.payment.domain.RefundStatus.SUBMITTED
+            || refund.status() == com.trainticket.payment.domain.RefundStatus.MANUAL_REVIEW_REQUIRED) {
+            return refund;
+        }
         if (!channelRouter.isEnabled(originalRoute.channel())) {
             int before = refund.domainEvents().size();
             refund.fail("ORIGINAL_CHANNEL_UNAVAILABLE", false, now, commandId(idempotencyKey), commandId(idempotencyKey), correlationId);
