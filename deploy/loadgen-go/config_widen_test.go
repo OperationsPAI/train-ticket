@@ -599,6 +599,7 @@ func TestSalesChannelIsTheSameOnSearchQuoteAndOffer(t *testing.T) {
 	m := newFakeMesh(t, nil)
 	m.srv.Config.Handler = purchaseChannelHandler(&channels)
 	p := newTestProviders(t, m, &Config{
+		Polling: PollingConfig{Attempts: 1, IntervalSeconds: 0.001},
 		Behavior: map[string]interface{}{
 			"channels":       map[string]interface{}{"COUNTER": 1.0},
 			"p_new_account":  1.0,

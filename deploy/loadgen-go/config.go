@@ -356,9 +356,7 @@ func applyDefaults(cfg *Config) {
 	if cfg.Staff.PSupportClassifyCloseBranch == 0 {
 		cfg.Staff.PSupportClassifyCloseBranch = 0.15
 	}
-	// Without this the zero value disables the seatPreferences branch of
-	// staff ticketing entirely, silently dropping that request shape from
-	// the generated load. 0.03 is the long-standing tuned value.
+	// Seat preferences are applied by the seat assignment request.
 	if cfg.Staff.PSeatPreferences == 0 {
 		cfg.Staff.PSeatPreferences = 0.03
 	}

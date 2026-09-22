@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/url"
+	"sync"
 	"time"
 )
 
@@ -209,82 +210,91 @@ func Bootstrap(ctx context.Context, cfg *Config, api *ApiClient, reg *Registry, 
 	allRoutes := make([]*RouteEntry, len(reg.Routes))
 	copy(allRoutes, reg.Routes)
 	reg.mu.Unlock()
-
-	for _, route := range allRoutes {
-		// One attempt per route probe, nested under the bootstrap attempt.
-		// A dropped route is why later purchases fail on available-train, and
-		// which route was dropped is the fact that makes the drop actionable,
-		// so it belongs on a record and not in an aggregate count.
-		probe := NewAttempt("bootstrap", "bootstrap_verify_route", "")
-		probeCtx := WithAttempt(ctx, probe)
-
-		okRoute := false
-		// The last thing that went wrong across the three tries. A probe that
-		// exhausts its retries must record WHY, and each retry discards its
-		// own error to try again.
-		var lastErr error
-		for attempt := 0; attempt < 3; attempt++ {
-			if probeTvl == "" {
-				_, t, err := api.Request(probeCtx, "POST", "traveler-profile", "/api/v1/travelers",
-					map[string]interface{}{
-						"accountId":    "acc-" + UUID7(),
-						"travelerType": "ADULT",
-						"givenName":    "Boot",
-						"familyName":   "Strap",
-					}, nil, []int{200, 201}, "bootstrap-traveler")
-				if err == nil {
-					probeTvl = getString(t, "travelerId")
-				} else {
-					lastErr = err
-				}
-			}
-			if probeTvl == "" {
-				time.Sleep(5 * time.Second)
-				continue
-			}
-
-			_, res, err := api.Request(probeCtx, "POST", "trip-planning", "/api/v1/itineraries/search",
-				map[string]interface{}{
-					"originRef":      route.OriginPlace,
-					"destinationRef": route.DestPlace,
-					"departureDate":  route.Date,
-					"travelerRefs":   []string{probeTvl},
-					"channel":        "WEB",
-				}, nil, []int{200}, "bootstrap-verify")
-			if err != nil {
-				lastErr = err
-				time.Sleep(5 * time.Second)
-				continue
-			}
-
-			itins := getBookableItineraries(res)
-			if len(itins) > 0 {
-				leg := getFirstLeg(itins[0])
-				route.ScheduledService = getString(leg, "servicePlanRef")
-				route.OriginNode = getString(leg, "originStopRef")
-				route.DestNode = getString(leg, "destinationStopRef")
-				okRoute = true
-				break
-			}
-			// The search answered 200 with nothing bookable. No error to
-			// propagate, and the most important outcome in this loop, so it is
-			// constructed rather than inferred.
-			lastErr = &StepError{
-				Step: "bootstrap-verify",
-				Detail: fmt.Sprintf("no bookable itinerary for route %s %s->%s %s",
-					route.ServiceNumber, truncate(route.OriginPlace, 16),
-					truncate(route.DestPlace, 16), route.Date),
-				Kind: FailureUnavailable,
-			}
-			time.Sleep(5 * time.Second)
+	if len(allRoutes) > 0 {
+		_, traveler, err := api.Request(ctx, "POST", "traveler-profile", "/api/v1/travelers",
+			map[string]interface{}{"accountId": "acc-" + UUID7(), "travelerType": "ADULT", "givenName": "Route", "familyName": "Verifier"}, nil, []int{201}, "bootstrap-traveler")
+		if err != nil {
+			return err
 		}
-		if okRoute {
-			verified = append(verified, route)
-			probe.Record(rec, "bookable", nil)
-		} else {
-			probe.Record(rec, "", lastErr)
+		probeTvl = getString(traveler, "travelerId")
+		if probeTvl == "" {
+			return fmt.Errorf("bootstrap traveler response has no travelerId")
 		}
 	}
+	var verification sync.WaitGroup
+	var verifiedMu sync.Mutex
+	verificationSlots := make(chan struct{}, 8)
+
+	for _, route := range allRoutes {
+		select {
+		case verificationSlots <- struct{}{}:
+		case <-ctx.Done():
+			verification.Wait()
+			return ctx.Err()
+		}
+		verification.Add(1)
+		go func(route *RouteEntry) {
+			defer verification.Done()
+			defer func() { <-verificationSlots }()
+			// One attempt per route probe, nested under the bootstrap attempt.
+			// A dropped route is why later purchases fail on available-train, and
+			// which route was dropped is the fact that makes the drop actionable,
+			// so it belongs on a record and not in an aggregate count.
+			probe := NewAttempt("bootstrap", "bootstrap_verify_route", "")
+			probeCtx := WithAttempt(ctx, probe)
+
+			okRoute := false
+			// The last thing that went wrong across the three tries. A probe that
+			// exhausts its retries must record WHY, and each retry discards its
+			// own error to try again.
+			var lastErr error
+			for attempt := 0; attempt < 3; attempt++ {
+				_, res, err := api.Request(probeCtx, "POST", "trip-planning", "/api/v1/itineraries/search",
+					map[string]interface{}{
+						"originRef":      route.OriginPlace,
+						"destinationRef": route.DestPlace,
+						"departureDate":  route.Date,
+						"travelerRefs":   []string{probeTvl},
+						"channel":        "WEB",
+					}, nil, []int{200}, "bootstrap-verify")
+				if err != nil {
+					lastErr = err
+					time.Sleep(5 * time.Second)
+					continue
+				}
+
+				itins := getBookableItineraries(res)
+				if len(itins) > 0 {
+					leg := getFirstLeg(itins[0])
+					route.ScheduledService = getString(leg, "servicePlanRef")
+					route.OriginNode = getString(leg, "originStopRef")
+					route.DestNode = getString(leg, "destinationStopRef")
+					okRoute = true
+					break
+				}
+				// The search answered 200 with nothing bookable. No error to
+				// propagate, and the most important outcome in this loop, so it is
+				// constructed rather than inferred.
+				lastErr = &StepError{
+					Step: "bootstrap-verify",
+					Detail: fmt.Sprintf("no bookable itinerary for route %s %s->%s %s",
+						route.ServiceNumber, truncate(route.OriginPlace, 16),
+						truncate(route.DestPlace, 16), route.Date),
+					Kind: FailureUnavailable,
+				}
+				time.Sleep(5 * time.Second)
+			}
+			if okRoute {
+				verifiedMu.Lock()
+				verified = append(verified, route)
+				verifiedMu.Unlock()
+				probe.Record(rec, "bookable", nil)
+			} else {
+				probe.Record(rec, "", lastErr)
+			}
+		}(route)
+	}
+	verification.Wait()
 
 	reg.mu.Lock()
 	reg.Routes = verified
@@ -627,11 +637,11 @@ func opsSweep(ctx context.Context, cfg *Config, api *ApiClient, reg *Registry, s
 			currency := cfg.Currency()
 			_, benefit, _ := api.Request(ctx, "POST", "wallet-promotion", "/api/v1/benefits",
 				map[string]interface{}{
-					"accountId":    acct.AccountID,
-					"benefitType":  "BALANCE",
-					"balanceType":  "PROMOTION_CREDIT",
-					"amount":       map[string]interface{}{"currency": currency, "minorUnits": amount},
-					"issuanceSource": "MANUAL_OPS",
+					"accountId":       acct.AccountID,
+					"benefitType":     "BALANCE",
+					"balanceType":     "PROMOTION_CREDIT",
+					"amount":          map[string]interface{}{"currency": currency, "minorUnits": amount},
+					"issuanceSource":  "MANUAL_OPS",
 					"applicableScope": map[string]interface{}{"scopeType": "ANY_TRIP", "currency": currency},
 					"redemptionRule":  map[string]interface{}{"singleUse": false, "requiresReservation": false},
 					"revocationRule":  map[string]interface{}{},
@@ -684,10 +694,10 @@ func opsSweep(ctx context.Context, cfg *Config, api *ApiClient, reg *Registry, s
 
 			_, carrier, _ := api.Request(ctx, "POST", "supplier-catalog", "/api/v1/carriers",
 				map[string]interface{}{
-					"supplierId":     supplierID,
-					"name":           "Loadgen Carrier " + suffix,
-					"code":           "LGC" + suffix,
-					"transportMode":  "RAIL",
+					"supplierId":    supplierID,
+					"name":          "Loadgen Carrier " + suffix,
+					"code":          "LGC" + suffix,
+					"transportMode": "RAIL",
 				}, nil, []int{201}, "ops-carrier-create")
 			if carrier != nil {
 				carrierID := getString(carrier, "carrierId")
@@ -696,9 +706,9 @@ func opsSweep(ctx context.Context, cfg *Config, api *ApiClient, reg *Registry, s
 
 				_, contract, _ := api.Request(ctx, "POST", "supplier-catalog", "/api/v1/contracts",
 					map[string]interface{}{
-						"supplierId":   supplierID,
-						"carrierId":    carrierID,
-						"contractRef":  "LG-CONTRACT-" + suffix,
+						"supplierId":    supplierID,
+						"carrierId":     carrierID,
+						"contractRef":   "LG-CONTRACT-" + suffix,
 						"effectiveFrom": NowISO(),
 					}, nil, []int{201}, "ops-contract-create")
 				if contract != nil {
