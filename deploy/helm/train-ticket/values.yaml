@@ -16,6 +16,7 @@ global:
 # -- Infrastructure ----------------------------------------------------------
 
 postgres:
+  bootstrapImagePullPolicy: IfNotPresent
   enabled: true
   image:
     repository: postgres
