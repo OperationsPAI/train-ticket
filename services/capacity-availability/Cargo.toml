@@ -17,7 +17,7 @@ serde_json = "1.0"
 shared-kernel = { path = "../../platform/shared-kernel-rust" }
 rust-kit = { path = "../../platform/rust-kit" }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "chrono", "json"] }
-tokio = { version = "1.48", features = ["macros", "rt", "rt-multi-thread", "sync", "net"] }
+tokio = { version = "1.48", features = ["macros", "rt", "rt-multi-thread", "sync", "net", "signal"] }
 uuid = { version = "1.0", features = ["v7", "fast-rng"] }
 
 [dev-dependencies]
