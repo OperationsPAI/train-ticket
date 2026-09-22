@@ -333,6 +333,10 @@ model instead of treating terminal state as an error.
 
 ### Request Blue E-Invoice
 
+Clients obtain the consumed Finance Settlement amount snapshot from `GET /api/v1/invoice-amount-bases/{orderId}` before submitting a request.
+The response is the `AmountBasis` object defined above, including its original financial references and digest.
+The endpoint returns `404 NOT_FOUND` while the amount projection is unavailable and propagates storage failures as errors.
+
 **POST** `/api/v1/e-invoice-requests`
 
 **Idempotency:** REQUIRED (`Idempotency-Key` header).
