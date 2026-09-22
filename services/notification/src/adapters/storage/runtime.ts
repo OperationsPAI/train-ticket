@@ -79,11 +79,18 @@ export async function startNotificationStorage(channelGateway: NotificationChann
         })),
       };
     }),
-    handleExternalTrigger: async (envelope, stream) => withTransaction(pool, async (client) => {
+    handleExternalTrigger: async (original, stream) => {
+      const envelope = await resolveRecipient(pool, original);
+      return withTransaction(pool, async (client) => {
       const guard = new ProcessedEventsGuard(client);
       if (!await guard.tryStart(envelope.eventId, stream)) {
         return "ack";
       }
+
+      for (const recipient of [...recipientRefsFor(envelope.payload)].sort()) {
+        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [recipient]);
+      }
+      if (await sameBusinessTaskExists(client, envelope)) return "ack";
 
       const appender = new OutboxAppender(client);
       const publisher = new TransactionalOutboxPublisher(appender);
@@ -112,7 +119,8 @@ export async function startNotificationStorage(channelGateway: NotificationChann
         }
         throw error;
       }
-    }),
+      });
+    },
     stop: async () => {
       // Stop the migration retry first: otherwise a shutdown during the retry
       // window leaves a backoff timer running and can issue queries against a
@@ -123,6 +131,36 @@ export async function startNotificationStorage(channelGateway: NotificationChann
       await Promise.allSettled([redis.quit(), pool.end()]);
     },
   };
+}
+
+export async function resolveRecipient(pool: import("pg").Pool, envelope: EventEnvelope): Promise<EventEnvelope> {
+  const payload = envelope.payload;
+  let recipient = stringValue(payload.accountId) ?? stringValue(payload.payerRef) ?? stringValue(payload.actorRef);
+  const orderId = stringValue(payload.orderId) ?? stringValue(payload.journeyOrderId) ?? stringValue(payload.businessRef);
+  const caseId = stringValue(payload.caseId);
+  const paymentId = stringValue(payload.paymentIntentId);
+  const directRecipient = stringValue(payload.recipientRef) ?? stringValue(payload.travelerId) ?? stringValue(payload.travelerRef) ?? stringValue(payload.riderAccountId);
+  if (!recipient && !directRecipient && templateCodeFor(envelope)) {
+    const refs = [["order", orderId], ["case", caseId], ["payment", paymentId]].filter((entry) => entry[1]);
+    for (const [kind, id] of refs) {
+      const result = await pool.query("SELECT recipient_ref FROM notification_recipient_refs WHERE kind=$1 AND id=$2", [kind, id]);
+      if (result.rows[0]) { recipient = result.rows[0].recipient_ref; break; }
+    }
+    if (!recipient && (orderId || caseId || paymentId)) {
+      const service = orderId ? "journey-order" : caseId ? "post-sales" : "payment";
+      const path = orderId ? `/api/v1/journey-orders/${encodeURIComponent(orderId)}` : caseId ? `/api/v1/post-sales-cases/${encodeURIComponent(caseId)}` : `/api/v1/payment-intents/${encodeURIComponent(paymentId!)}`;
+      const response = await fetch(`http://${service}:8080${path}`, { signal: AbortSignal.timeout(5000) });
+      if (!response.ok) throw new Error(`Recipient lookup ${service} returned ${response.status}`);
+      const details = await response.json() as Record<string, unknown>;
+      recipient = stringValue(details.accountId) ?? stringValue(details.actorRef) ?? stringValue(details.payerRef);
+      if (!recipient) throw new Error(`Recipient missing in ${service} response`);
+    }
+  }
+  if (!recipient) return envelope;
+  for (const [kind, id] of [["order", orderId], ["case", caseId], ["payment", paymentId]]) {
+    if (id) await pool.query("INSERT INTO notification_recipient_refs (kind,id,recipient_ref) VALUES ($1,$2,$3) ON CONFLICT (kind,id) DO NOTHING", [kind, id, recipient]);
+  }
+  return { ...envelope, payload: { ...payload, accountId: recipient } };
 }
 
 class TransactionalOutboxPublisher {
