@@ -328,19 +328,7 @@ func (s *StaffSim) doSupport(ctx context.Context, item *WorkItem) error {
 			}
 			item.SetResult("support", "escalated")
 		} else {
-			if getString(current, "ownerQueue") != "" && current["escalation"] == nil {
-				_, _, err = s.api.Request(ctx, "POST", "customer-service",
-					"/api/v1/support-cases/"+url.PathEscape(caseID)+"/resolve",
-					map[string]interface{}{"summary": "Inquiry answered", "resolutionCode": "POST_SALES_EXPLAINED"},
-					nil, []int{200, 201}, "staff-support-resolve-before-close")
-				if err != nil {
-					return err
-				}
-			}
-			_, _, err = s.api.Request(ctx, "POST", "customer-service",
-				"/api/v1/support-cases/"+url.PathEscape(caseID)+"/close",
-				map[string]interface{}{"reason": "NO_FURTHER_ACTION"},
-				nil, []int{200, 201}, "staff-support-close")
+			err = s.closeSupportCase(ctx, caseID)
 			if err != nil {
 				return err
 			}
@@ -358,10 +346,7 @@ func (s *StaffSim) doSupport(ctx context.Context, item *WorkItem) error {
 					return err
 				}
 				s.think(ctx)
-				_, _, err = s.api.Request(ctx, "POST", "customer-service",
-					"/api/v1/support-cases/"+url.PathEscape(caseID)+"/close",
-					map[string]interface{}{"reason": "NO_FURTHER_ACTION"},
-					nil, []int{200, 201}, "staff-support-close-again")
+				err = s.closeSupportCase(ctx, caseID)
 				if err != nil {
 					return err
 				}
@@ -370,6 +355,41 @@ func (s *StaffSim) doSupport(ctx context.Context, item *WorkItem) error {
 		}
 	}
 	return nil
+}
+
+func (s *StaffSim) closeSupportCase(ctx context.Context, caseID string) error {
+	path := "/api/v1/support-cases/" + url.PathEscape(caseID)
+	for attempt := 0; attempt < 3; attempt++ {
+		_, current, err := s.api.Request(ctx, "GET", "customer-service", path, nil, nil, []int{200}, "staff-support-read-before-close")
+		if err != nil {
+			return err
+		}
+		status := getString(current, "status")
+		if status == "CLOSED" {
+			return nil
+		}
+		var expected []int
+		if attempt < 2 {
+			expected = []int{412}
+		}
+		if status == "ASSIGNED" || status == "IN_PROGRESS" || status == "WAITING_CUSTOMER" || status == "WAITING_EXTERNAL" {
+			code, _, err := s.api.PollRequest(ctx, "POST", "customer-service", path+"/resolve",
+				map[string]interface{}{"summary": "Inquiry answered", "resolutionCode": "POST_SALES_EXPLAINED"}, nil, []int{200, 201}, "staff-support-resolve-before-close", expected)
+			if err != nil {
+				if code == 412 && attempt < 2 {
+					continue
+				}
+				return err
+			}
+		}
+		code, _, err := s.api.PollRequest(ctx, "POST", "customer-service", path+"/close",
+			map[string]interface{}{"reason": "NO_FURTHER_ACTION"}, nil, []int{200, 201}, "staff-support-close", expected)
+		if err != nil && code == 412 && attempt < 2 {
+			continue
+		}
+		return err
+	}
+	return &StepError{Step: "staff-support-close", Kind: FailureUnfulfilled, Detail: "support case did not reach CLOSED: " + caseID}
 }
 
 func (s *StaffSim) doDispatch(ctx context.Context, item *WorkItem) error {
