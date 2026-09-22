@@ -992,3 +992,52 @@ def test_ready_returns_503_when_readiness_gate_is_false() -> None:
 
     assert client.get("/ready").status_code == 503
     assert client.get("/readyz").status_code == 503
+
+
+def test_probes_do_not_queue_behind_the_quoting_operations() -> None:
+    # The regression this pins, and the mechanism is the thread pool rather
+    # than the event loop.
+    #
+    # FastAPI runs a `def` endpoint in anyio's shared pool, which holds 40
+    # threads for the whole process. Every quoting operation is a `def` path
+    # doing blocking work, so under load the operations own all 40 and a `def`
+    # probe waits for one to finish. An `async def` probe runs on the event
+    # loop and cannot be starved by a saturated pool.
+    #
+    # Measured on legacy-acl: the pod restarted 78 times in 9 hours on
+    # "Liveness probe failed: context deadline exceeded" while its CPU peaked
+    # at 9% of its limit.
+    #
+    # Asserted as a property of the route rather than by saturating a real
+    # pool: filling 40 threads takes 40 concurrent blocking requests, and a
+    # test that does that is slow and timing-dependent. What has to hold is
+    # that the probe never enters the pool at all.
+    import asyncio
+    import inspect
+
+    from fastapi import Response
+    from fastapi.routing import APIRoute
+
+    app = create_app(store=InMemoryStore(), event_publisher=FakeEventPublisher())
+    probes = {"/healthz", "/readyz", "/health", "/live", "/ready"}
+    seen = set()
+    for route in app.routes:
+        if not isinstance(route, APIRoute) or route.path not in probes:
+            continue
+        seen.add(route.path)
+        assert asyncio.iscoroutinefunction(route.endpoint), (
+            f"{route.path} is a plain def, so FastAPI serves it from the shared "
+            f"40-thread pool that the quoting operations occupy for the length "
+            f"of their blocking work, and kubelet restarts the pod"
+        )
+        # The readiness probes take FastAPI's injected Response so they can set
+        # 503. That is the only parameter allowed: anything else is a
+        # dependency that may reintroduce blocking work onto the event loop.
+        # eval_str resolves the annotation, which api.py defers to a string via
+        # `from __future__ import annotations`.
+        for name, parameter in inspect.signature(route.endpoint, eval_str=True).parameters.items():
+            assert parameter.annotation is Response, (
+                f"{route.path} takes parameter {name}, which may reintroduce "
+                f"blocking work onto the event loop"
+            )
+    assert seen == probes, f"probe routes missing from the app: {probes - seen}"
