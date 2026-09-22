@@ -32,6 +32,7 @@ export type OfferQuoteResponse = Readonly<{
   }>;
   itineraryRef: string;
   travelerSetHash: string;
+  fareQuoteRef: string;
 }>;
 
 export type OfferDetailsResponse = OfferQuoteResponse & Readonly<{
@@ -126,6 +127,7 @@ function toQuoteResponse(
     downstreamReference,
     itineraryRef: snapshot.itinerary.itineraryId,
     travelerSetHash: snapshot.passengerMix.travelerSetHash,
+    fareQuoteRef: snapshot.priceSnapshot.fareQuoteRef,
   };
 }
 
