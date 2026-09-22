@@ -77,6 +77,26 @@ public class PostgresJourneyOrderStateRepository implements JourneyOrderStateRep
     }
 
     @Override
+    public Optional<OrderManagementService.StoredOrder> findOrderForUpdate(String orderId) {
+        return jdbc.query("SELECT version, data::text AS data FROM journey_order_snapshots WHERE id = ? FOR UPDATE",
+            (rs, rowNum) -> readStoredOrder(rs.getString("data"), rs.getLong("version")), orderId).stream().findFirst();
+    }
+
+    @Override
+    public void lockEvent(String eventId) {
+        jdbc.query("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", rs -> { }, "order-event:" + eventId);
+    }
+
+    private OrderManagementService.StoredOrder readStoredOrder(String json, long version) {
+        try {
+            var snapshot = mapper.readValue(json, JacksonJourneyOrderJson.JourneyOrderSnapshot.class);
+            return new OrderManagementService.StoredOrder(JacksonJourneyOrderJson.toOrder(snapshot, mapper).withVersion(version), snapshot.data().path("idempotencyKey").asText());
+        } catch (JsonProcessingException error) {
+            throw new IllegalStateException("order snapshot could not be decoded", error);
+        }
+    }
+
+    @Override
     public List<OrderManagementService.StoredOrder> findOrdersForTravelerUpdates(String travelerId) {
         return jdbc.query(
             """
@@ -84,19 +104,9 @@ public class PostgresJourneyOrderStateRepository implements JourneyOrderStateRep
                 FROM journey_order_snapshots
                 WHERE data->'travelers' @> ?::jsonb
                   AND data->>'state' NOT IN ('CANCELLED', 'COMPLETED', 'FAILED')
-                ORDER BY (data->>'createdAt')::timestamptz DESC
+                ORDER BY id FOR UPDATE
                 """,
-            (rs, rowNum) -> {
-                try {
-                    var snapshot = mapper.readValue(rs.getString("data"), JacksonJourneyOrderJson.JourneyOrderSnapshot.class);
-                    return new OrderManagementService.StoredOrder(
-                        JacksonJourneyOrderJson.toOrder(snapshot, mapper).withVersion(rs.getLong("version")),
-                        snapshot.data().path("idempotencyKey").asText()
-                    );
-                } catch (JsonProcessingException error) {
-                    throw new IllegalStateException("traveler order snapshot could not be decoded", error);
-                }
-            },
+            (rs, rowNum) -> readStoredOrder(rs.getString("data"), rs.getLong("version")),
             travelerContainmentJson(travelerId)
         );
     }
