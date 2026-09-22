@@ -120,7 +120,7 @@ class PostgresIdentityVerificationStore(InMemoryStore):
         if state is not None and state.connection is not None:
             yield state.connection; return
         with self._pool.connection() as conn:
-            with conn.transaction():
+            with conn.pipeline(), conn.transaction():
                 token = _UNIT_OF_WORK.set(_UnitOfWorkState(connection=conn))
                 try: yield conn
                 finally: _UNIT_OF_WORK.reset(token)
