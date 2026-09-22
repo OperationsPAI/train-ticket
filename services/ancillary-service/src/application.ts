@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { HttpAncillaryReferences } from "./references.js";
 
 import {
   createEventEnvelope,
@@ -174,6 +175,7 @@ export class AncillaryApplicationService {
     private readonly repository: AncillaryRepository,
     private readonly publisher?: EventPublisher,
     private readonly pricingGateway?: AncillaryPricingGateway,
+    private readonly references?: HttpAncillaryReferences,
   ) {}
 
   async createCatalogItem(
@@ -358,6 +360,7 @@ export class AncillaryApplicationService {
     pricing?: PricingContext;
   }): Promise<AncillaryOfferSnapshot> {
     const catalog = await this.requireCatalog(input.catalogItemId);
+    if (this.references) input = { ...input, ...await this.references.verify(input, catalog.requiresEntitlementRef) };
     const offer = AncillaryOffer.draft(catalog, input);
     const snapshot = offer.toSnapshot();
     const snapshotWithPricingContext = input.pricing
@@ -423,6 +426,7 @@ export class AncillaryApplicationService {
       await this.requireOffer(ancillaryOfferId),
     );
     const orderItem = offer.select(input.journeyOrderId, input.expectedVersion);
+    if (this.references) await this.references.verify({ ...orderItem, departureAt: offer.toSnapshot().eligibility.departureAt }, orderItem.catalogSnapshot.requiresEntitlementRef);
     await this.repository.saveOffer(offer.toSnapshot());
     await this.repository.saveOrderItem(orderItem);
     await this.publish(
@@ -457,6 +461,7 @@ export class AncillaryApplicationService {
     const item = AncillaryOrderItem.fromSnapshot(
       await this.requireOrderItem(ancillaryOrderItemId),
     );
+    if (this.references) await this.references.verify({ ...item.toSnapshot(), entitlementRef: input.entitlementRef ?? item.toSnapshot().entitlementRef }, item.toSnapshot().catalogSnapshot.requiresEntitlementRef);
     const previousStatus = item.confirm(input);
     const snapshot = item.toSnapshot();
     await this.repository.saveOrderItem(snapshot);
@@ -499,6 +504,7 @@ export class AncillaryApplicationService {
     );
     const previousStatus = item.fulfillmentReady(input);
     const snapshot = item.toSnapshot();
+    if (this.references) await this.references.verify(snapshot, snapshot.catalogSnapshot.requiresEntitlementRef);
     await this.repository.saveOrderItem(snapshot);
     await this.publish(
       correlationId,
