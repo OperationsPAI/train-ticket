@@ -298,10 +298,11 @@ def compute_adjustment_quote(
 ) -> dict[str, Any]:
     service: FarePricingService = request.app.state.fare_pricing_service
     purpose = AssessmentPurpose.REFUND if req.purpose == "REFUND" else AssessmentPurpose.CHANGE
-    original_quote_id = service.find_fare_quote_id_for_segments(req.segmentRefs)
-    if original_quote_id is None:
-        raise ApiError("PRECONDITION_FAILED", "Original fare quote not found for requested segments", 412)
-    original_quote = service.get_fare_quote(original_quote_id)
+    original_quote_id = req.originalQuoteId
+    try:
+        original_quote = service.get_fare_quote(original_quote_id)
+    except QuoteNotFoundError as exc:
+        raise ApiError("PRECONDITION_FAILED", "Original fare quote not found", 412) from exc
     rule_set_id = service.find_published_rule_set_id(original_quote.channel, original_quote.product_code)
     if rule_set_id is None:
         raise _validation_error("No applicable fare rule set found")
