@@ -14,6 +14,7 @@ async fn persisted_hold_keeps_service_segment_and_booking_references_distinct() 
     let options = PgConnectOptions::from_str(&url).unwrap().options([("search_path", schema.as_str())]);
     let pool = PgPoolOptions::new().max_connections(3).connect_with(options).await.unwrap();
     sqlx::raw_sql(include_str!("../migrations/001_capacity_storage.sql")).execute(&pool).await.unwrap();
+    sqlx::raw_sql(include_str!("../migrations/007_pending_booking_confirmations.sql")).execute(&pool).await.unwrap();
     let service = PostgresCapacityService::new(pool.clone()).unwrap();
     let request = HoldCapacityRequest {
         segment_ref: booking["segmentRef"].as_str().unwrap().to_string(),
@@ -46,7 +47,7 @@ async fn persisted_hold_keeps_service_segment_and_booking_references_distinct() 
 
 #[tokio::test]
 #[ignore = "requires TEST_DATABASE_URL, TEST_BOOKING_JSON and TEST_CONFIRM_EVENT_JSON"]
-async fn confirmation_waits_for_the_hold_without_acknowledging_missing_state() {
+async fn confirmation_is_durable_and_applied_when_the_hold_arrives() {
     use capacity_availability::ports::{HandlerResult, WireEnvelope};
     let booking: serde_json::Value = serde_json::from_str(&std::env::var("TEST_BOOKING_JSON").unwrap()).unwrap();
     let event: WireEnvelope = serde_json::from_str(&std::env::var("TEST_CONFIRM_EVENT_JSON").unwrap()).unwrap();
@@ -58,22 +59,43 @@ async fn confirmation_waits_for_the_hold_without_acknowledging_missing_state() {
     let options = PgConnectOptions::from_str(&url).unwrap().options([("search_path", schema.as_str())]);
     let pool = PgPoolOptions::new().max_connections(3).connect_with(options).await.unwrap();
     sqlx::raw_sql(include_str!("../migrations/001_capacity_storage.sql")).execute(&pool).await.unwrap();
+    sqlx::raw_sql(include_str!("../migrations/007_pending_booking_confirmations.sql")).execute(&pool).await.unwrap();
     let service = PostgresCapacityService::new(pool.clone()).unwrap();
     let initial = service.handle_inbound_event(event.clone()).await;
-    assert!(matches!(initial, HandlerResult::TransientError(_)), "{initial:?}");
+    assert_eq!(initial, HandlerResult::Success);
     let processed: i64 = sqlx::query_scalar("SELECT count(*) FROM processed_events").fetch_one(&pool).await.unwrap();
-    assert_eq!(processed, 0);
+    assert_eq!(processed, 1);
+    let saved: serde_json::Value = sqlx::query_scalar("SELECT envelope FROM pending_booking_confirmations").fetch_one(&pool).await.unwrap();
+    assert_eq!(saved, serde_json::to_value(&event).unwrap());
     let request = HoldCapacityRequest {
         segment_ref: booking["segmentRef"].as_str().unwrap().to_string(),
         segment_booking_id: booking["segmentBookingId"].as_str().unwrap().to_string(),
         traveler_ref: booking["travelerRef"].as_str().unwrap().to_string(),
         class_ref: "standard".to_string(), quantity: 1,
     };
-    let held = service.hold_capacity(request, &uuid::Uuid::now_v7().to_string(), &event.correlation_id).await.unwrap();
+    let restarted = PostgresCapacityService::new(pool.clone()).unwrap();
+    let key = uuid::Uuid::now_v7().to_string();
+    sqlx::query("ALTER TABLE outbox ADD CONSTRAINT block_confirmation CHECK (envelope->>'eventType' <> 'CapacityHoldConfirmed')")
+        .execute(&pool).await.unwrap();
+    assert!(restarted.hold_capacity(request.clone(), &key, &event.correlation_id).await.is_err());
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM pending_booking_confirmations").fetch_one(&pool).await.unwrap(), 1);
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM capacity_hold_snapshots").fetch_one(&pool).await.unwrap(), 0);
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM inventory_pool_snapshots").fetch_one(&pool).await.unwrap(), 0);
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM outbox").fetch_one(&pool).await.unwrap(), 0);
+    sqlx::query("ALTER TABLE outbox DROP CONSTRAINT block_confirmation").execute(&pool).await.unwrap();
+    let held = restarted.hold_capacity(request.clone(), &key, &event.correlation_id).await.unwrap();
+    assert_eq!(held.status, "CONFIRMED");
+    let replay = restarted.hold_capacity(request, &key, &event.correlation_id).await.unwrap();
+    assert_eq!(replay.status, "CONFIRMED");
+    assert_eq!(replay.hold_id, held.hold_id);
+    assert_eq!(service.get_hold(&held.hold_id).await.unwrap().status, "CONFIRMED");
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM pending_booking_confirmations").fetch_one(&pool).await.unwrap(), 0);
     assert_eq!(service.handle_inbound_event(event.clone()).await, HandlerResult::Success);
     assert_eq!(service.get_hold(&held.hold_id).await.unwrap().status, "CONFIRMED");
     let confirmed_count: i64 = sqlx::query_scalar("SELECT count(*) FROM outbox WHERE envelope->>'eventType'='CapacityHoldConfirmed'").fetch_one(&pool).await.unwrap();
     assert_eq!(confirmed_count, 1);
+    let cause: String = sqlx::query_scalar("SELECT envelope->>'causationId' FROM outbox WHERE envelope->>'eventType'='CapacityHoldConfirmed'").fetch_one(&pool).await.unwrap();
+    assert_eq!(cause, event.event_id);
     sqlx::query("DELETE FROM processed_events").execute(&pool).await.unwrap();
     assert_eq!(service.handle_inbound_event(event.clone()).await, HandlerResult::Success);
     service.release_hold(&held.hold_id, &uuid::Uuid::now_v7().to_string(), &event.correlation_id).await.unwrap();
@@ -83,6 +105,59 @@ async fn confirmation_waits_for_the_hold_without_acknowledging_missing_state() {
     assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM outbox WHERE envelope->>'eventType'='CapacityHoldConfirmed'").fetch_one(&pool).await.unwrap(), 1);
     pool.close().await;
     sqlx::query(&format!("DROP SCHEMA {schema} CASCADE")).execute(&admin).await.unwrap();
+    admin.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL, TEST_REQUEST_EVENT_JSON and TEST_CONFIRM_EVENT_JSON"]
+async fn reservation_and_confirmation_events_converge_in_both_orders_and_concurrently() {
+    use capacity_availability::ports::{HandlerResult, WireEnvelope};
+    let request: WireEnvelope = serde_json::from_str(&std::env::var("TEST_REQUEST_EVENT_JSON").unwrap()).unwrap();
+    let confirmation: WireEnvelope = serde_json::from_str(&std::env::var("TEST_CONFIRM_EVENT_JSON").unwrap()).unwrap();
+    assert_eq!(request.payload["segmentBookingId"], confirmation.payload["segmentBookingId"]);
+    let url = std::env::var("TEST_DATABASE_URL").unwrap();
+    let admin = PgPoolOptions::new().max_connections(1).connect(&url).await.unwrap();
+    for ordering in 0..3 {
+        let schema = format!("hold_ordering_{}", uuid::Uuid::now_v7().simple());
+        sqlx::query(&format!("CREATE SCHEMA {schema}")).execute(&admin).await.unwrap();
+        let options = PgConnectOptions::from_str(&url).unwrap().options([("search_path", schema.as_str())]);
+        let pool = PgPoolOptions::new().max_connections(3).connect_with(options).await.unwrap();
+        sqlx::raw_sql(include_str!("../migrations/001_capacity_storage.sql")).execute(&pool).await.unwrap();
+        sqlx::raw_sql(include_str!("../migrations/007_pending_booking_confirmations.sql")).execute(&pool).await.unwrap();
+        let service = PostgresCapacityService::new(pool.clone()).unwrap();
+        if ordering == 0 {
+            assert_eq!(service.handle_inbound_event(confirmation.clone()).await, HandlerResult::Success);
+            assert_eq!(service.handle_inbound_event(request.clone()).await, HandlerResult::Success);
+        } else if ordering == 1 {
+            assert_eq!(service.handle_inbound_event(request.clone()).await, HandlerResult::Success);
+            assert_eq!(service.handle_inbound_event(confirmation.clone()).await, HandlerResult::Success);
+        } else {
+            let (requested, confirmed) = tokio::join!(
+                service.handle_inbound_event(request.clone()),
+                service.handle_inbound_event(confirmation.clone()),
+            );
+            assert_eq!(requested, HandlerResult::Success);
+            assert_eq!(confirmed, HandlerResult::Success);
+        }
+        let saved: serde_json::Value = sqlx::query_scalar("SELECT data FROM capacity_hold_snapshots").fetch_one(&pool).await.unwrap();
+        assert_eq!(saved["state"], "Confirmed");
+        let snapshot = service.get_hold(saved["holdId"].as_str().unwrap()).await.unwrap();
+        assert_eq!(snapshot.status, "CONFIRMED");
+        assert_eq!(snapshot.segment_booking_ref.as_deref(), request.payload["segmentBookingId"].as_str());
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM pending_booking_confirmations").fetch_one(&pool).await.unwrap(), 0);
+        assert_eq!(service.handle_inbound_event(confirmation.clone()).await, HandlerResult::Success);
+        assert_eq!(service.handle_inbound_event(request.clone()).await, HandlerResult::Success);
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM capacity_hold_snapshots").fetch_one(&pool).await.unwrap(), 1);
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM outbox WHERE envelope->>'eventType'='CapacityHoldConfirmed'").fetch_one(&pool).await.unwrap(), 1);
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM processed_events").fetch_one(&pool).await.unwrap(), 2);
+        if ordering == 0 {
+            let status: String = sqlx::query_scalar("SELECT response_body->>'status' FROM idempotency_records WHERE key=$1")
+                .bind(request.payload["idempotencyKey"].as_str().unwrap()).fetch_one(&pool).await.unwrap();
+            assert_eq!(status, "CONFIRMED");
+        }
+        pool.close().await;
+        sqlx::query(&format!("DROP SCHEMA {schema} CASCADE")).execute(&admin).await.unwrap();
+    }
     admin.close().await;
 }
 
@@ -100,10 +175,13 @@ async fn no_capacity_result_remains_failed_after_replay_and_available_capacity()
     let options = PgConnectOptions::from_str(&url).unwrap().options([("search_path", schema.as_str())]);
     let pool = PgPoolOptions::new().max_connections(3).connect_with(options).await.unwrap();
     sqlx::raw_sql(include_str!("../migrations/001_capacity_storage.sql")).execute(&pool).await.unwrap();
+    sqlx::raw_sql(include_str!("../migrations/007_pending_booking_confirmations.sql")).execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO inventory_pool_snapshots(id,version,data) VALUES ($1,$2,$3)")
         .bind(source["pool"]["id"].as_str().unwrap()).bind(source["pool"]["version"].as_i64().unwrap()).bind(&source["pool"]["data"]).execute(&pool).await.unwrap();
     let service = PostgresCapacityService::new(pool.clone()).unwrap();
+    assert_eq!(service.handle_inbound_event(confirmation.clone()).await, HandlerResult::Success);
     assert_eq!(service.handle_inbound_event(request.clone()).await, HandlerResult::Success);
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM pending_booking_confirmations").fetch_one(&pool).await.unwrap(), 0);
     let snapshot: serde_json::Value = sqlx::query_scalar("SELECT data FROM capacity_hold_snapshots").fetch_one(&pool).await.unwrap();
     assert_eq!(snapshot["state"], "Failed");
     let hold_id = snapshot["holdId"].as_str().unwrap();
