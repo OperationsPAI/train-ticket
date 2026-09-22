@@ -13,11 +13,10 @@ Activation-wave rulings:
 - Fulfillment reuses the normal booking chain. When Waitlist consumes a matching
   `CapacityReleased` event for the head of the queue, it prices at current fare
   and creates a commercial offer before creating the order:
-  `POST /api/v1/fare-quotes` with idempotency key
-  a persisted UUID-v7 idempotency key, then `POST /api/v1/offers` with a
-  persisted UUID-v7 key and the candidate Trip Planning `itineraryRef`, then
-  `POST /api/v1/journey-orders` with a persisted UUID-v7 key and the real
-  `offerId`. The existing
+  `POST /api/v1/fare-quotes` uses a persisted UUID-v7 idempotency key.
+  `POST /api/v1/offers` uses the returned `fareQuoteRef`, a persisted UUID-v7 key and the candidate Trip Planning `itineraryRef`.
+  `POST /api/v1/journey-orders` uses a persisted UUID-v7 key and the real `offerId`.
+  The existing
   journey-order saga owns booking, capacity hold, payment capture, and
   ticketing. Waitlist then consumes `JourneyOrderConfirmed` and
   `JourneyOrderCancelled` to move the request to `FULFILLED` or back to

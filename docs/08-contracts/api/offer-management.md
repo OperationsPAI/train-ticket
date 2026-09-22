@@ -27,6 +27,7 @@ commercial offer. Offers do not lock inventory.
 | `channelId` | string | yes | Sales channel. |
 | `itineraryRef` | string | yes | Reference to a Trip Planning itinerary. |
 | `travelerRefs` | string[] | yes | Traveler references for pricing. |
+| `fareQuoteRef` | string | yes | Exact Fare Pricing quote ID returned for this purchase. |
 | `quoteRequestId` | string | no | Client-generated request correlation. |
 
 **Response (201):**
@@ -41,8 +42,13 @@ commercial offer. Offers do not lock inventory.
 | `downstreamReference` | object | Minimal reference for order creation. |
 | `itineraryRef` | string | Source itinerary reference. |
 | `travelerSetHash` | string | Hash of traveler set. |
+| `fareQuoteRef` | string | Fare Pricing quote used by the offer. |
 
 **Error codes:** `VALIDATION_FAILED`, `DOMAIN_RULE_VIOLATION`, `UNAVAILABLE`
+
+The referenced fare quote must match the channel, traveler set and itinerary segments and be within its validity window.
+An unconsumed reference returns `DOMAIN_RULE_VIOLATION` with `details.domainCode=MISSING_FARE_QUOTE` until that exact quote is available.
+The offer price and expiry are derived from the referenced quote.
 
 ### Get Offer
 
