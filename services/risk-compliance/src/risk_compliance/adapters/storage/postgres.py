@@ -16,6 +16,7 @@ from risk_compliance.application import (
 )
 from risk_compliance.domain import PurchaseLimitFact, PurchaseLimitFactStatus, RiskEvaluation, RiskSignal, RiskVerdict, RuleResult
 from train_ticket_platform.events import EventEnvelope
+from train_ticket_platform.messaging import FatalHandlerError
 from train_ticket_platform.storage import OutboxAppender, ProcessedEventsGuard, SnapshotRepository
 
 
@@ -208,6 +209,39 @@ class PostgresAssessmentRepository:
         if found is None:
             raise AssessmentNotFoundError(assessment_id)
         return found
+
+    def lock_order(self, order_id: str) -> None:
+        self.with_connection(lambda conn: conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", ("risk-order:" + order_id,)))
+
+    def save_order_assessment(self, result: RiskAssessmentResult, account_id: str) -> None:
+        self.with_connection(lambda conn: conn.execute(
+            "INSERT INTO order_risk_results(order_id,account_id,assessment_id) VALUES (%s,%s,%s) ON CONFLICT (order_id) DO NOTHING",
+            (result.subjectRef, account_id, result.assessmentId)))
+
+    def order_assessment(self, order_id: str) -> RiskAssessmentResult | None:
+        def read(conn: Any) -> RiskAssessmentResult | None:
+            row = conn.execute("SELECT s.data FROM order_risk_results r JOIN risk_assessment_snapshots s ON s.id=r.assessment_id WHERE r.order_id=%s", (order_id,)).fetchone()
+            return None if row is None else _assessment_from_json(row[0])
+        return self.with_connection(read)
+
+    def save_booking_request(self, envelope: EventEnvelope) -> None:
+        payload = envelope.payload
+        def write(conn: Any) -> None:
+            conn.execute("INSERT INTO booking_risk_requests(saga_id,order_id,account_id,envelope) VALUES (%s,%s,%s,%s::jsonb) ON CONFLICT (saga_id) DO NOTHING",
+                         (payload["sagaId"], payload["journeyOrderId"], payload["accountId"], _jsonb_payload(envelope.to_json_dict())))
+            row = conn.execute("SELECT order_id,account_id FROM booking_risk_requests WHERE saga_id=%s", (payload["sagaId"],)).fetchone()
+            if row != (payload["journeyOrderId"], payload["accountId"]):
+                raise FatalHandlerError("booking risk request references changed")
+        self.with_connection(write)
+
+    def pending_booking_requests(self, order_id: str) -> tuple[EventEnvelope, ...]:
+        def read(conn: Any) -> tuple[EventEnvelope, ...]:
+            rows = conn.execute("SELECT envelope FROM booking_risk_requests WHERE order_id=%s AND completed_at IS NULL ORDER BY saga_id", (order_id,)).fetchall()
+            return tuple(EventEnvelope.from_json_dict(row[0]) for row in rows)
+        return self.with_connection(read)
+
+    def complete_booking_request(self, saga_id: str) -> None:
+        self.with_connection(lambda conn: conn.execute("UPDATE booking_risk_requests SET completed_at=now() WHERE saga_id=%s", (saga_id,)))
 
     def find(self, assessment_id: str) -> RiskAssessmentResult | None:
         def read(conn: Any) -> RiskAssessmentResult | None:
