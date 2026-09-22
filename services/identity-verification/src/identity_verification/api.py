@@ -123,13 +123,7 @@ def _postgres_store_from_env(app: FastAPI) -> tuple[Any, IdempotencyStore | None
     store = PostgresIdentityVerificationStore(pool); relay = OutboxRelay(pool); relay.start()
     subscriber = RedisEventSubscriber(); holder: dict[str, Any] = {}
     def handle(envelope: Any) -> None:
-        service = holder["service"]
-        if envelope.eventType in {"JourneyOrderCreated", "JourneyOrderCancelled"}:
-            service.handle_journey_order_event(envelope, JOURNEY_ORDER_STREAM)
-        elif envelope.eventType == "RiskAlertRaised":
-            service.handle_risk_alert_raised(envelope, RISK_COMPLIANCE_STREAM)
-        else:
-            service.handle_traveler_snapshot_updated(envelope, TRAVELER_PROFILE_STREAM)
+        holder["service"].handle_upstream_event(envelope)
     thread = subscriber.start_in_background((TRAVELER_PROFILE_STREAM, JOURNEY_ORDER_STREAM, RISK_COMPLIANCE_STREAM), "identity-verification", handle)
     app.state.outbox_relay = relay; app.state.event_subscriber = subscriber; app.state.event_subscriber_thread = thread; app.state._identity_service_holder = holder
     return store, PostgresIdempotencyStore(pool)
