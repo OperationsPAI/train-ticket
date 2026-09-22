@@ -46,13 +46,17 @@ public class IdempotencyFilter extends OncePerRequestFilter {
         byte[] body = request.getInputStream().readAllBytes();
         String fingerprint = RequestFingerprint.of(request, body);
         Optional<IdempotencyStore.StoredResponse> existing = store.find(idempotencyKey);
-        if (existing.isPresent()) {
+        if (existing.isPresent() && (existing.get().status() < 500 || !existing.get().fingerprint().equals(fingerprint))) {
             replayOrReject(request, response, fingerprint, existing.get());
             return;
         }
 
         ContentCachingResponseWrapper wrappedResponse = new ContentCachingResponseWrapper(response);
         filterChain.doFilter(new CachedBodyHttpServletRequest(request, body), wrappedResponse);
+        if (wrappedResponse.getStatus() >= 500) {
+            wrappedResponse.copyBodyToResponse();
+            return;
+        }
         IdempotencyStore.StoredResponse stored = new IdempotencyStore.StoredResponse(
             fingerprint,
             wrappedResponse.getStatus(),
