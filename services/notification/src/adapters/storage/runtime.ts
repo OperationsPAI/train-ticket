@@ -87,6 +87,7 @@ export async function startNotificationStorage(channelGateway: NotificationChann
       };
     }),
     handleExternalTrigger: async (original, stream) => {
+      if (!templateCodeFor(original)) return "ack";
       const envelope = await resolveRecipient(pool, original);
       return withTransaction(pool, async (client) => {
       const guard = new ProcessedEventsGuard(client);
