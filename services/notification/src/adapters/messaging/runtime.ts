@@ -24,6 +24,9 @@ export async function startNotificationMessaging(
   const storage = existingStorage ?? await optionalStorageRuntime(channelGateway);
   const publisher = storage ? undefined : new RedisStreamEventPublisher();
   const subscriber = new RedisStreamEventSubscriber();
+  const subscribers = storage
+    ? NOTIFICATION_SUBSCRIBED_STREAMS.map((_, index) => index === 0 ? subscriber : new RedisStreamEventSubscriber())
+    : [subscriber];
   const application = publisher ? new NotificationApplicationService(publisher, undefined, channelGateway, undefined, undefined, undefined, new NotificationAggregator()) : undefined;
   const handler = new DeduplicatingEventHandler(async (envelope) => {
     try {
@@ -47,19 +50,19 @@ export async function startNotificationMessaging(
     }
   });
 
-  await subscriber.subscribe(
-    NOTIFICATION_SUBSCRIBED_STREAMS,
+  await Promise.all(subscribers.map((consumer, index) => consumer.subscribe(
+    storage ? [NOTIFICATION_SUBSCRIBED_STREAMS[index]] : NOTIFICATION_SUBSCRIBED_STREAMS,
     NOTIFICATION_CONSUMER_GROUP,
     notificationConsumerName(),
     (envelope) => handler.handle(envelope),
-  );
+  )));
 
   return {
     publisher,
     subscriber,
     storage,
     stop: async () => {
-      await subscriber.stop();
+      await Promise.all(subscribers.map((consumer) => consumer.stop()));
       await publisher?.close();
       await storage?.stop();
     },
