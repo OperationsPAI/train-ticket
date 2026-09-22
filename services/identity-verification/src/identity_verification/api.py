@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-from contextlib import AbstractContextManager, nullcontext
 import os
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Response
+from opentelemetry import trace
 from train_ticket_platform.idempotency import BoundedInMemoryIdempotencyStore, IdempotencyStore, configure_idempotency_middleware
 from .adapters.messaging.subscriber import RedisEventSubscriber
 from train_ticket_platform.observability import init_opentelemetry
 from train_ticket_platform.storage import DatabaseConfig, DatabasePool, OutboxRelay, PostgresIdempotencyStore, ReadinessGate, run_migrations
-from train_ticket_platform.ids import new_uuid7
 
 from .adapters.messaging import TRAVELER_PROFILE_STREAM
 
@@ -22,61 +20,17 @@ from .application.service import DeterministicSimGateway, IdentityVerificationSe
 from .runtime import health, profile
 from .web.errors import register_exception_handlers
 from .web.handlers import router as identity_router
-
-REQUEST_ID_HEADER = "X-Request-ID"
-CORRELATION_ID_HEADER = "X-Correlation-Id"
-LEGACY_CORRELATION_ID_HEADER = "X-Correlation-ID"
-TraceHook = Callable[[str, Mapping[str, object]], None]
-
-
-class RuntimeSpan(AbstractContextManager["RuntimeSpan"], Protocol):
-    def set_attribute(self, key: str, value: object) -> None: ...
-    def __exit__(self, exc_type: object, exc: object, traceback: object) -> bool | None: ...
-
-
-class RuntimeTracer(Protocol):
-    def start_as_current_span(self, name: str) -> RuntimeSpan: ...
-
-
-def _emit_trace(tracer: TraceHook | None, event: str, attributes: Mapping[str, object]) -> None:
-    if tracer is not None: tracer(event, dict(attributes))
+from .web.middleware import IdentityUnitOfWorkMiddleware, RequestContextMiddleware, RuntimeTracer, TraceHook
 
 
 def opentelemetry_tracer_from_env(service_name: str) -> RuntimeTracer | None:
     exporter = os.getenv("OTEL_TRACES_EXPORTER", "").strip().lower()
     if not exporter or exporter == "none": return None
-    try:
-        from opentelemetry import trace
-    except ImportError:
-        return None
     return trace.get_tracer(os.getenv("OTEL_SERVICE_NAME", "").strip() or service_name)
 
 
-def _span_context(tracer: RuntimeTracer | None, name: str) -> AbstractContextManager[RuntimeSpan | None]:
-    return nullcontext(None) if tracer is None else tracer.start_as_current_span(name)
-
-
-def _request_identifiers(request: Request) -> tuple[str, str]:
-    request_id = request.headers.get(REQUEST_ID_HEADER) or new_uuid7()
-    correlation_id = request.headers.get(CORRELATION_ID_HEADER) or request.headers.get(LEGACY_CORRELATION_ID_HEADER) or request_id
-    return request_id, correlation_id
-
-
 def configure_runtime_endpoints(app: FastAPI, tracer: TraceHook | None = None, otel_tracer: RuntimeTracer | None = None) -> None:
-    @app.middleware("http")
-    async def request_context_middleware(request: Request, call_next: Any):
-        request_id, correlation_id = _request_identifiers(request)
-        request.state.request_id = request_id; request.state.correlation_id = correlation_id
-        attrs = {"service.name": profile()["service_id"], "request_id": request_id, "correlation_id": correlation_id, "http.request.method": request.method, "url.path": request.url.path}
-        _emit_trace(tracer, "http.request.start", attrs)
-        with _span_context(otel_tracer, f"{request.method} {request.url.path}") as span:
-            if span is not None:
-                for k, v in attrs.items(): span.set_attribute(k, v)
-            response = await call_next(request)
-            response.headers[REQUEST_ID_HEADER] = request_id; response.headers[CORRELATION_ID_HEADER] = correlation_id; response.headers[LEGACY_CORRELATION_ID_HEADER] = correlation_id
-            if span is not None: span.set_attribute("http.response.status_code", response.status_code)
-            _emit_trace(tracer, "http.request.complete", {**attrs, "status_code": response.status_code})
-            return response
+    app.add_middleware(RequestContextMiddleware, tracer=tracer, otel_tracer=otel_tracer)
 
     # The probes are coroutines so they never queue behind the verification operations.
     # FastAPI serves a `def` endpoint from anyio's shared 40-thread pool, and the verification operations are `def` paths that hold a thread for the length of their blocking work.
@@ -104,9 +58,7 @@ def configure_identity_routes(app: FastAPI, store: Any | None = None, idempotenc
     service = IdentityVerificationService(store, DeterministicSimGateway(os.getenv("IDENTITY_SIM_SEED", "sim-tail-v1")))
     unit_of_work = getattr(store, "unit_of_work", None)
     if callable(unit_of_work):
-        @app.middleware("http")
-        async def identity_unit_of_work_middleware(request: Request, call_next: Any):
-            with unit_of_work(): return await call_next(request)
+        app.add_middleware(IdentityUnitOfWorkMiddleware, unit_of_work=unit_of_work)
     app.state.identity_verification_service = service; app.state.identity_verification_store = store
     configure_idempotency_middleware(app, idempotency_store or BoundedInMemoryIdempotencyStore(), require_key=True, include_path_prefixes=("/api/v1/identity-verification/credentials", "/api/v1/identity-verification/verification-cases", "/api/v1/identity-verification/eligibility-certificates", "/api/v1/identity-verification/pre-order-checks", "/api/v1/identity-verification/purchase-limit-facts", "/api/v1/identity-verification/verifications"))
     for route in identity_router.routes: app.router.routes.append(route)
