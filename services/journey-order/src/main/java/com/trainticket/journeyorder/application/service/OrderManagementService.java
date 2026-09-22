@@ -930,7 +930,7 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
     }
 
     private EventSubscriber.HandlerResult updateOrdersForTraveler(String travelerId, EventEnvelope envelope, java.util.function.Consumer<JourneyOrder> updater) {
-        List<StoredOrder> storedOrders = stateRepository.findOrdersByTraveler(travelerId);
+        List<StoredOrder> storedOrders = stateRepository.findOrdersForTravelerUpdates(travelerId);
         if (storedOrders.isEmpty()) {
             LOGGER.warn("ack-skip journey-order event={} eventId={} travelerId={} reason=NO_MATCHING_ORDER", envelope.eventType(), envelope.eventId(), travelerId);
             return new EventSubscriber.Success();

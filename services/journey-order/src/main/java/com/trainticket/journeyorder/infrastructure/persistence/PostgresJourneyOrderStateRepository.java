@@ -77,17 +77,28 @@ public class PostgresJourneyOrderStateRepository implements JourneyOrderStateRep
     }
 
     @Override
-    public List<OrderManagementService.StoredOrder> findOrdersByTraveler(String travelerId) {
+    public List<OrderManagementService.StoredOrder> findOrdersForTravelerUpdates(String travelerId) {
         return jdbc.query(
             """
-                SELECT id
+                SELECT version, data::text AS data
                 FROM journey_order_snapshots
                 WHERE data->'travelers' @> ?::jsonb
+                  AND data->>'state' NOT IN ('CANCELLED', 'COMPLETED', 'FAILED')
                 ORDER BY (data->>'createdAt')::timestamptz DESC
                 """,
-            (rs, rowNum) -> rs.getString("id"),
+            (rs, rowNum) -> {
+                try {
+                    var snapshot = mapper.readValue(rs.getString("data"), JacksonJourneyOrderJson.JourneyOrderSnapshot.class);
+                    return new OrderManagementService.StoredOrder(
+                        JacksonJourneyOrderJson.toOrder(snapshot, mapper).withVersion(rs.getLong("version")),
+                        snapshot.data().path("idempotencyKey").asText()
+                    );
+                } catch (JsonProcessingException error) {
+                    throw new IllegalStateException("traveler order snapshot could not be decoded", error);
+                }
+            },
             travelerContainmentJson(travelerId)
-        ).stream().map(id -> findOrder(id).orElseThrow()).toList();
+        );
     }
 
     private String travelerContainmentJson(String travelerId) {
