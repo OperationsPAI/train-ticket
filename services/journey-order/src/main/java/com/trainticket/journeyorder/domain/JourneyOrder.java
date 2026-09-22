@@ -185,12 +185,28 @@ public final class JourneyOrder {
         recordTimeline("RiskBlockLifted", occurredAt, "risk-compliance", "risk block lifted for order", Map.of());
     }
 
-    public void recordEntitlementSummaryAccepted(Instant occurredAt, String sourceCommandId, String causationId, String correlationId) {
-        // Streams are only ordered per-producer; the entitlement fact may
-        // arrive before the payment fact, so accept it in any pre-confirmed state.
+    public void recordEntitlementSummaryAccepted(String entitlementId, String travelerRef, String segmentRef,
+                                                 Instant occurredAt, String sourceCommandId, String causationId, String correlationId) {
+        requireText(entitlementId, "entitlementId");
+        if (travelers.stream().noneMatch(traveler -> traveler.travelerId().equals(travelerRef))
+            || segments.stream().noneMatch(segment -> segment.segmentRef().equals(segmentRef))) {
+            throw new DomainRuleViolation("entitlement does not belong to the order traveler and segment");
+        }
+        boolean recorded = timeline.stream().anyMatch(fact -> fact.factType().equals("EntitlementSummaryAccepted")
+            && entitlementId.equals(fact.attributes().get("entitlementId")));
+        if (recorded) {
+            return;
+        }
         requireState(OrderLifecycleState.PENDING_CONFIRMATION, OrderLifecycleState.PENDING_PAYMENT, OrderLifecycleState.CONFIRMING);
-        confirmationConditions = confirmationConditions.withEntitlementSummaryAccepted();
-        recordTimeline("EntitlementSummaryAccepted", occurredAt, "entitlement-ticketing", "required entitlement summary accepted", Map.of());
+        recordTimeline("EntitlementSummaryAccepted", occurredAt, "entitlement-ticketing", "traveler entitlement accepted",
+            Map.of("entitlementId", entitlementId, "travelerRef", travelerRef, "segmentRef", segmentRef));
+        boolean complete = travelers.stream().allMatch(traveler -> segments.stream().allMatch(segment ->
+            timeline.stream().anyMatch(fact -> fact.factType().equals("EntitlementSummaryAccepted")
+                && traveler.travelerId().equals(fact.attributes().get("travelerRef"))
+                && segment.segmentRef().equals(fact.attributes().get("segmentRef")))));
+        if (complete) {
+            confirmationConditions = confirmationConditions.withEntitlementSummaryAccepted();
+        }
     }
 
     public void confirm(String confirmationAttempt, Instant occurredAt, String sourceCommandId, String causationId, String correlationId) {
