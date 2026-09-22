@@ -76,7 +76,7 @@ class JourneyOrderTest {
         order.markBookingAndCapacityAccepted(NOW.plusSeconds(1), "cmd-booking", "corr-1");
         order.markPendingPayment("initial-ticket-purchase", NOW.plusSeconds(2), "cmd-pay-request", "corr-1");
         order.recordPaymentCaptured("payment-intent-1", NOW.plusSeconds(3), "cmd-payment", "payment-event-1", "corr-1");
-        order.recordEntitlementSummaryAccepted(NOW.plusSeconds(4), "cmd-entitlement", "entitlement-event-1", "corr-1");
+        order.recordEntitlementSummaryAccepted("entitlement-1", "traveler-1", "segment-1", NOW.plusSeconds(4), "cmd-entitlement", "entitlement-event-1", "corr-1");
         assertThrows(DomainRuleViolation.class, () -> order.confirm("attempt-before-risk", NOW.plusSeconds(5), "cmd-confirm", "entitlement-event-1", "corr-1"));
         order.recordRiskAssessmentAllowed(NOW.plusSeconds(5), "cmd-risk", "risk-event-1", "corr-1");
         order.confirm("attempt-1", NOW.plusSeconds(6), "cmd-confirm", "risk-event-1", "corr-1");
@@ -126,7 +126,7 @@ class JourneyOrderTest {
         order.markBookingAndCapacityAccepted(NOW.plusSeconds(1), "cmd-booking", "corr-1");
         order.markPendingPayment("initial-ticket-purchase", NOW.plusSeconds(2), "cmd-pay-request", "corr-1");
         order.recordPaymentCaptured("payment-intent-1", NOW.plusSeconds(3), "cmd-payment", "payment-event-1", "corr-1");
-        order.recordEntitlementSummaryAccepted(NOW.plusSeconds(4), "cmd-entitlement", "entitlement-event-1", "corr-1");
+        order.recordEntitlementSummaryAccepted("entitlement-1", "traveler-1", "segment-1", NOW.plusSeconds(4), "cmd-entitlement", "entitlement-event-1", "corr-1");
         order.recordRiskAssessmentAllowed(NOW.plusSeconds(5), "cmd-risk", "risk-event-1", "corr-1");
         order.confirm("attempt-1", NOW.plusSeconds(6), "cmd-confirm", "risk-event-1", "corr-1");
         return order;
@@ -134,6 +134,29 @@ class JourneyOrderTest {
 
     private static JourneyOrder sampleOrder() {
         return createOrder(sampleOffer(), sampleItems("traveler-1"));
+    }
+
+    @Test
+    void requiresEveryTravelersEntitlementBeforeConfirmation() {
+        JourneyOrder order = JourneyOrder.createFromOffer("account-group", "WEB", "request-group", sampleOffer(),
+            List.of(new TravelerRef("traveler-1", "ADULT"), new TravelerRef("traveler-2", "ADULT")),
+            sampleOrder().segments(), List.of(
+                new OrderItem("fare-1", OrderItemType.SEGMENT_FARE, "fare", Money.of("CNY", "100.00"), "segment-1", List.of(binding("fare-1", "traveler-1"))),
+                new OrderItem("fare-2", OrderItemType.SEGMENT_FARE, "fare", Money.of("CNY", "100.00"), "segment-1", List.of(binding("fare-2", "traveler-2")))
+            ), NOW, "cmd-create", "corr-group", null);
+        order.markBookingAndCapacityAccepted(NOW, "cmd-booking", "corr-group");
+        order.markPendingPayment("purchase", NOW, "cmd-payment", "corr-group");
+        order.recordPaymentCaptured("payment-group", NOW, "cmd-payment", "evt-payment", "corr-group");
+        order.recordRiskAssessmentAllowed(NOW, "cmd-risk", "evt-risk", "corr-group");
+        order.recordEntitlementSummaryAccepted("ent-1", "traveler-1", "segment-1", NOW, "cmd-ticket", "evt-ticket-1", "corr-group");
+        order.recordEntitlementSummaryAccepted("ent-1", "traveler-1", "segment-1", NOW, "cmd-ticket", "evt-replay", "corr-group");
+        assertFalse(order.confirmationConditions().canConfirm());
+        assertThrows(DomainRuleViolation.class, () -> order.confirm("partial", NOW, "cmd-confirm", "evt-confirm", "corr-group"));
+        assertThrows(DomainRuleViolation.class, () -> order.recordEntitlementSummaryAccepted("ent-other", "traveler-other", "segment-1", NOW, "cmd-ticket", "evt-other", "corr-group"));
+        order.recordEntitlementSummaryAccepted("ent-2", "traveler-2", "segment-1", NOW, "cmd-ticket", "evt-ticket-2", "corr-group");
+        assertTrue(order.confirmationConditions().canConfirm());
+        order.confirm("complete", NOW, "cmd-confirm", "evt-confirm", "corr-group");
+        assertEquals(OrderLifecycleState.CONFIRMED, order.state());
     }
 
     private static JourneyOrder createOrder(OfferSnapshotRef offer, List<OrderItem> items) {
