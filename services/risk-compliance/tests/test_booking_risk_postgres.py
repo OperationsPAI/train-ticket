@@ -127,3 +127,21 @@ def test_existing_order_assessment_is_loaded_by_order(database):
     assert service.repository.order_assessment(result.subjectRef) == result
     service.handle_event(request)
     assert completion(database)[0]["payload"]["verdict"] == "BLOCK"
+
+
+def test_restart_completes_saved_requests_with_existing_assessments(database):
+    sample = samples()["DENY"]
+    request = EventEnvelope.from_json_dict(sample["request"])
+    result = _assessment_from_json(sample["assessment"])
+    service = service_for(database)
+    service.handle_event(request)
+    assert completion(database) == []
+    service.repository.save(result)
+    service.repository.remember_order_account(result.subjectRef, request.payload["accountId"])
+    restarted = service_for(database)
+    restarted.recover_booking_results()
+    restarted.recover_booking_results()
+    [event] = completion(database)
+    assert event["payload"]["verdict"] == "BLOCK"
+    assert event["payload"]["assessmentId"] == result.assessmentId
+    assert restarted.repository.recoverable_booking_orders() == ()
