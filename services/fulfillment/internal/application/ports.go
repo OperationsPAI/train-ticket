@@ -360,6 +360,9 @@ func (s *Service) GetFulfillmentRecord(ctx context.Context, id domain.Fulfillmen
 }
 
 func (s *Service) HandleSubscribedEvent(ctx context.Context, envelope EventEnvelope) error {
+	if !HandlesSubscribedEvent(envelope.EventType) {
+		return nil
+	}
 	if strings.TrimSpace(envelope.EventID) == "" {
 		return kitmsg.FatalHandlerError(fmt.Errorf("eventId is required"))
 	}
@@ -390,6 +393,16 @@ func (s *Service) HandleSubscribedEvent(ctx context.Context, envelope EventEnvel
 		return kitmsg.TransientHandlerError(err)
 	}
 	return nil
+}
+
+func HandlesSubscribedEvent(eventType string) bool {
+	switch eventType {
+	case "EntitlementIssued", "EntitlementVoided", "SegmentTicketed", "AncillaryOrderItemFulfillmentReady",
+		"AncillaryFulfillmentFactRecorded", "DriverArrived", "RideStarted", "RideEnded":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Service) applySubscribedEvent(ctx context.Context, envelope EventEnvelope) error {

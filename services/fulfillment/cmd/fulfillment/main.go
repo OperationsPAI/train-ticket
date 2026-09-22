@@ -72,6 +72,9 @@ func main() {
 			consumer = "fulfillment-local"
 		}
 		if err := messaging.SubscribeFulfillment(ctx, subscriber, consumer, func(eventCtx context.Context, envelope application.EventEnvelope) error {
+			if !application.HandlesSubscribedEvent(envelope.EventType) {
+				return nil
+			}
 			return transactor.Within(eventCtx, func(txCtx context.Context) error { return service.HandleSubscribedEvent(txCtx, envelope) })
 		}); err != nil {
 			log.Fatal(err)
