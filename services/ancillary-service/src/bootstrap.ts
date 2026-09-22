@@ -26,6 +26,15 @@ export async function bootstrap(options: BootstrapOptions = {}) {
   const subscriptionFailed = new Promise<never>((_, reject) => { subscription.catch((error: unknown) => { app.log.error({ err: error }, "ancillary-service event subscriber stopped"); abortController.abort(); reject(error); setImmediate(() => { throw error; }); }); });
   await Promise.race([messaging.subscriber.started(), subscriptionFailed]);
   app.addHook("onClose", async () => { clearInterval(expiryTimer); abortController.abort(); messaging.subscriber.stop?.(); await messaging.close(); await storage?.stop(); });
+  let closing=false;
+  const shutdown=()=>{
+    if(closing)return;
+    closing=true;
+    void app.close().catch(error=>{console.error(error);process.exitCode=1;});
+  };
+  process.once("SIGTERM",shutdown);
+  process.once("SIGINT",shutdown);
+  app.addHook("onClose",async()=>{process.removeListener("SIGTERM",shutdown);process.removeListener("SIGINT",shutdown);});
   await app.listen({ host: runtimeHost(options), port: runtimePort(options) });
   return app;
 }
