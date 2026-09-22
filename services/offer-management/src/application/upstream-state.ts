@@ -167,7 +167,7 @@ export interface UpstreamStateRepository {
   saveConnectionContract(contract: StoredConnectionContract): Promise<void>;
   findConnectionContracts(connectionIds: readonly string[]): Promise<readonly StoredConnectionContract[]>;
   saveMctRule(rule: StoredMctRule): Promise<void>;
-  findPublishedMctRules(): Promise<readonly StoredMctRule[]>;
+  findPublishedMctRules(at?: Date, limit?: number): Promise<readonly StoredMctRule[]>;
   saveAncillaryCatalogItem(item: StoredAncillaryCatalogItem): Promise<void>;
   findAncillaryCatalogItem(catalogItemId: string): Promise<StoredAncillaryCatalogItem | undefined>;
   findPublishedAncillaryCatalogItems(limit?: number): Promise<readonly StoredAncillaryCatalogItem[]>;
@@ -261,8 +261,11 @@ export class InMemoryUpstreamStateRepository implements UpstreamStateRepository 
     this.mctRulesById.set(`${rule.mctRuleId}:${rule.version}`, rule);
   }
 
-  async findPublishedMctRules(): Promise<readonly StoredMctRule[]> {
-    return [...this.mctRulesById.values()].filter((rule) => rule.status === "PUBLISHED");
+  async findPublishedMctRules(at?: Date, limit?: number): Promise<readonly StoredMctRule[]> {
+    const rules = [...this.mctRulesById.values()]
+      .filter((rule) => rule.status === "PUBLISHED" && (!at || mctRuleIsActive(rule, at)))
+      .sort((a, b) => `${a.mctRuleId}:${a.version}`.localeCompare(`${b.mctRuleId}:${b.version}`));
+    return limit === undefined ? rules : rules.slice(0, limit);
   }
 
   async saveAncillaryCatalogItem(item: StoredAncillaryCatalogItem): Promise<void> {
@@ -352,7 +355,6 @@ export async function applyUpstreamEvents(repository: UpstreamStateRepository, e
     switch (envelope.eventType) {
       case "ItineraryProposed":
         // Already stored above, in one statement for the whole batch.
-        break;
         break;
       case "FareQuoteComputed":
         break;
@@ -810,8 +812,8 @@ async function buildRiskDisclosures(repository: UpstreamStateRepository, itinera
     }
   }
 
-  const activeMctRules = (await repository.findPublishedMctRules()).filter((rule) => mctRuleIsActive(rule, at));
-  for (const rule of activeMctRules.slice(0, 10)) {
+  const activeMctRules = await repository.findPublishedMctRules(at, 10);
+  for (const rule of activeMctRules) {
     disclosures.push({
       disclosureId: `mct-rule:${rule.mctRuleId}:${rule.version}`,
       severity: "info",
