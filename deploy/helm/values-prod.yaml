@@ -101,7 +101,6 @@ postgres:
       - disruption_recovery
       - fulfillment
       - group_booking
-      - legacy_acl
       - loyalty_membership
       - marketing_campaign
       - provider_integration
@@ -425,11 +424,6 @@ services:
     pgInstance: event
   supplier-catalog:
     db: supplier_catalog
-    resources:
-      requests: *svc_req
-      limits: *svc_lim
-  legacy-acl:
-    db: legacy_acl
     resources:
       requests: *svc_req
       limits: *svc_lim

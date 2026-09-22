@@ -60,7 +60,6 @@ postgres:
         - identity_verification
         - invoicing
         - journey_order
-        - legacy_acl
         - loyalty_membership
         - marketing_campaign
         - notification
@@ -837,8 +836,6 @@ services:
       limits: { cpu: '1500m', memory: 4Gi }
   supplier-catalog:
     db: supplier_catalog
-  legacy-acl:
-    db: legacy_acl
   waitlist:
     db: waitlist
     env:
