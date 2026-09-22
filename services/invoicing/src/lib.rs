@@ -64,7 +64,6 @@ pub async fn build_runtime() -> Result<(Router, JoinHandle<()>), SubscribeFailed
             .map_err(|e| SubscribeFailed(e.to_string()))?,
     );
     rust_kit::storage::spawn_outbox_relay(service.pool().clone(), redis_url);
-    let subscriber = rust_kit::messaging::redis_runtime::RedisEventSubscriber::from_env()?;
     let streams = adapters::messaging::subscribed_streams();
     let consumer = std::env::var("HOSTNAME")
         .ok()
@@ -72,9 +71,14 @@ pub async fn build_runtime() -> Result<(Router, JoinHandle<()>), SubscribeFailed
         .unwrap_or_else(|| format!("invoicing-{}", uuid::Uuid::now_v7()));
     let hs = service.clone();
     let handle = tokio::spawn(async move {
-        subscriber
-            .subscribe(
-                streams,
+        let mut tasks = tokio::task::JoinSet::new();
+        for (index, stream) in streams.into_iter().enumerate() {
+            let hs = hs.clone();
+            let consumer = format!("{consumer}-{index}");
+            tasks.spawn(async move {
+                let subscriber = rust_kit::messaging::redis_runtime::RedisEventSubscriber::from_env().expect("Redis subscriber configuration");
+                subscriber.subscribe(
+                vec![stream],
                 "invoicing".into(),
                 consumer,
                 Box::new(move |e| {
@@ -83,7 +87,10 @@ pub async fn build_runtime() -> Result<(Router, JoinHandle<()>), SubscribeFailed
                 }),
             )
             .await
-            .expect("invoicing Redis subscriber stopped")
+            .expect("invoicing Redis subscriber stopped");
+            });
+        }
+        while let Some(result) = tasks.join_next().await { result.expect("invoicing event stream task failed"); }
     });
     Ok((router_with_postgres_state(service), handle))
 }
@@ -126,6 +133,7 @@ pub(crate) fn routes<S: InvoicingApi + 'static>(service: Arc<S>) -> Router {
             post(set_default_title::<S>),
         )
         .route("/api/v1/e-invoice-requests", post(request_invoice::<S>))
+        .route("/api/v1/invoice-amount-bases/{order_id}", get(get_amount_basis::<S>))
         .route(
             "/api/v1/e-invoice-requests/{invoice_request_id}",
             get(get_request::<S>),
