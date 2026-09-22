@@ -640,6 +640,16 @@ services:
       limits: { cpu: '4', memory: 2Gi }
   journey-order:
     db: journey_order
+    strategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxUnavailable: 0
+        maxSurge: 1
+    terminationGracePeriodSeconds: 45
+    lifecycle:
+      preStop:
+        exec:
+          command: ["sleep", "10"]
     env:
       IDENTITY_VERIFICATION_URL: http://identity-verification:8080
       IDENTITY_VERIFICATION_PREORDER_ENABLED: "true"
