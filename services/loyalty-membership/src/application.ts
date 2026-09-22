@@ -105,7 +105,14 @@ export class LoyaltyMembershipApplicationService {
       return { member: memberDetails(existing.toSnapshot()), created: false };
     }
     const member = Member.enroll({ accountId });
-    await this.repository.save(member);
+    try {
+      await this.repository.save(member);
+    } catch (error) {
+      if (typeof error !== "object" || error === null || (error as { code?: string }).code !== "23505") throw error;
+      const enrolled = await this.repository.findByAccountId(accountId);
+      if (!enrolled) throw error;
+      return { member: memberDetails(enrolled.toSnapshot()), created: false };
+    }
     return { member: memberDetails(member.toSnapshot()), created: true };
   }
 
