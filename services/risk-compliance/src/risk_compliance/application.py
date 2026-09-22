@@ -457,6 +457,16 @@ class RiskComplianceService:
             ))
             self.repository.complete_booking_request(request.payload["sagaId"])
 
+    def recover_booking_results(self) -> None:
+        while orders := self.repository.recoverable_booking_orders():
+            for order_id in orders:
+                with self.repository.transaction():
+                    self.repository.lock_order(order_id)
+                    result = self.repository.order_assessment(order_id)
+                    if result is None:
+                        raise TransientHandlerError(f"order assessment is unavailable: {order_id}")
+                    self._complete_booking_requests(result)
+
     def _handle_purchase_limit_fact(self, envelope: EventEnvelope) -> None:
         transaction = getattr(self.repository, "transaction", None)
         context = transaction() if callable(transaction) else None
