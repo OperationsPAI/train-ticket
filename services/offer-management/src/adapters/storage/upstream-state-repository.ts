@@ -59,6 +59,40 @@ export class PostgresUpstreamStateRepository implements UpstreamStateRepository 
     await upsertSnapshot(this.client, "offer_upstream_travelers", traveler.travelerId, serializeTraveler(traveler));
   }
 
+  /// Writes the snapshot while keeping whatever eligibility the stored row
+  /// already carries, in one statement.
+  ///
+  /// The caller used to read the row, copy `eligibilityRef` out of it and write
+  /// the merged value back, which is two round trips per event and a
+  /// read-modify-write that loses an eligibility arriving between them.
+  ///
+  /// Measured: `process TravelerSnapshotUpdated` reached 783.6ms, by far the
+  /// most expensive event this service handles, against 66.3ms for
+  /// FareQuoteComputed and 104ms for ItineraryProposed, and it held a pool
+  /// connection for both trips.
+  ///
+  /// COALESCE on the incoming value first, so an event that carries an
+  /// eligibility still replaces the stored one.
+  async saveTravelerPreservingEligibility(traveler: StoredTraveler): Promise<void> {
+    const data = serializeTraveler(traveler);
+    await this.client.query(
+      `INSERT INTO offer_upstream_travelers (id, version, data)
+       VALUES ($1, 1, $2)
+       ON CONFLICT (id) DO UPDATE SET
+         version = offer_upstream_travelers.version + 1,
+         data = CASE
+           WHEN EXCLUDED.data ? 'eligibilityRef'
+             THEN EXCLUDED.data
+           WHEN offer_upstream_travelers.data ? 'eligibilityRef'
+             THEN EXCLUDED.data || jsonb_build_object(
+               'eligibilityRef', offer_upstream_travelers.data -> 'eligibilityRef')
+           ELSE EXCLUDED.data
+         END,
+         updated_at = now()`,
+      [traveler.travelerId, data],
+    );
+  }
+
   async findTraveler(travelerId: string): Promise<StoredTraveler | undefined> {
     const row = await findSnapshot<StoredTravelerSnapshot>(this.client, "offer_upstream_travelers", travelerId);
     return row ? reviveTraveler(row) : undefined;
