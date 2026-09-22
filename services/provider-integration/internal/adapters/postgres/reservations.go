@@ -146,6 +146,9 @@ func (p *ProcessedEvents) Within(ctx context.Context, fn func(context.Context) e
 
 func DeduplicatingHandler(log *ProcessedEvents, next application.EventHandler) application.EventHandler {
 	return func(ctx context.Context, envelope application.EventEnvelope) error {
+		if !application.HandlesInboundEvent(envelope.EventType) {
+			return nil
+		}
 		if strings.TrimSpace(envelope.EventID) == "" {
 			return application.FatalHandlerError(fmt.Errorf("eventId is required"))
 		}
