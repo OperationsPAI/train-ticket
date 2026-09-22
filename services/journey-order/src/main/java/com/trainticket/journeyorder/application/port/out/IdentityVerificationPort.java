@@ -7,6 +7,10 @@ public interface IdentityVerificationPort {
     default PreOrderCheckResult preOrderCheck(JourneyOrderRequest request, String orderIntentId, String idempotencyKey, String correlationId, java.time.Instant requestedAt) {
         return preOrderCheck(request,orderIntentId,idempotencyKey,correlationId);
     }
+    default PreOrderCheckResult preOrderCheck(JourneyOrderRequest request, String orderIntentId, String idempotencyKey, String correlationId, java.time.Instant requestedAt, java.util.List<ResolvedOrderOffer.EligibilityUsage> eligibilityUsages) {
+        if (!eligibilityUsages.isEmpty()) throw new UnsupportedOperationException("Eligibility reservations are not configured");
+        return preOrderCheck(request,orderIntentId,idempotencyKey,correlationId,requestedAt);
+    }
     default void confirmPreOrderCheck(String preOrderCheckId, String journeyOrderId, String idempotencyKey, String correlationId) {}
     default void releasePreOrderCheck(String preOrderCheckId, String releaseReason, String idempotencyKey, String correlationId) {}
 

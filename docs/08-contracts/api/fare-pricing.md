@@ -152,7 +152,10 @@ database transaction failure.
 
 ## ADR-0003 wave A identity-verification increment (需同波实现)
 
-Fare & Pricing MUST query Identity Verification's read-only eligibility-certificate endpoint before applying student, child, or military-disabled discount rules. This is a same-wave implementation requirement, not a docs-only dependency.
+Fare & Pricing records each applied student, child or military-disabled discount with the eligible traveler and certificate reference.
+Fare quote responses expose `productCode` and `eligibilityUsages`, with `travelerId`, `eligibilityType` and `eligibilityCertificateId` for each applied eligibility type.
+Journey Order reads the quote referenced by its Offer and sends these exact usages to Identity Verification for reservation.
+Identity Verification validates certificate ownership, type, product, journey date and remaining uses within the reservation transaction.
 
 | Touchpoint | Required change |
 |---|---|

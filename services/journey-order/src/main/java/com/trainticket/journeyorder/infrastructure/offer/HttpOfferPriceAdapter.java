@@ -32,6 +32,7 @@ public class HttpOfferPriceAdapter implements OfferPricePort {
     private final RestClient restClient;
     private final ObjectMapper mapper;
     private final RestClient itineraryClient;
+    private final RestClient fareClient;
 
     @org.springframework.beans.factory.annotation.Autowired
     public HttpOfferPriceAdapter(ObjectMapper mapper, RestClient.Builder restClientBuilder) {
@@ -53,6 +54,8 @@ public class HttpOfferPriceAdapter implements OfferPricePort {
         this.restClient = restClientBuilder.requestFactory(requestFactory).baseUrl(normalized).build();
         this.itineraryClient = restClientBuilder.clone().requestFactory(requestFactory)
             .baseUrl(System.getenv().getOrDefault("TRIP_PLANNING_URL", "http://trip-planning:8080")).build();
+        this.fareClient = restClientBuilder.clone().requestFactory(requestFactory)
+            .baseUrl(System.getenv().getOrDefault("FARE_PRICING_URL", "http://fare-pricing:8080")).build();
     }
 
     private JsonNode read(RestClient client, String path, String id) {
@@ -124,7 +127,27 @@ public class HttpOfferPriceAdapter implements OfferPricePort {
             if(!MonetarySummary.fromItems(items).payableTotal().equals(money(offer.path("total")))) {
                 throw new ApiException(ApiErrorCode.PRECONDITION_FAILED,"Offer item prices do not equal the offered total");
             }
-            return new ResolvedOrderOffer(request.accountId(),text(offer,"channelId"),snapshot,travelers,segments,items);
+            String fareId = text(offer,"fareQuoteRef");
+            JsonNode fare = read(fareClient,"/api/v1/fare-quotes/{id}",fareId);
+            if (!fareId.equals(text(fare,"quoteId")) || !"QUOTED".equals(text(fare,"status"))
+                || !money(fare.path("breakdown").path("total")).equals(money(offer.path("total")))) {
+                throw new ApiException(ApiErrorCode.PRECONDITION_FAILED,"Fare quote differs from the accepted offer");
+            }
+            if (!fare.path("eligibilityUsages").isArray()) throw new ApiException(ApiErrorCode.UNAVAILABLE,"Fare quote is missing eligibility usage details");
+            List<ResolvedOrderOffer.EligibilityUsage> eligibilityUsages = new ArrayList<>();
+            for (JsonNode usage : fare.path("eligibilityUsages")) {
+                String traveler = text(usage,"travelerId");
+                if (!travelerIds.contains(traveler)) throw new ApiException(ApiErrorCode.PRECONDITION_FAILED,"Fare eligibility belongs to another traveler");
+                eligibilityUsages.add(new ResolvedOrderOffer.EligibilityUsage(traveler,text(usage,"eligibilityType"),text(usage,"eligibilityCertificateId")));
+            }
+            var discountTypes = new HashSet<String>();
+            for (JsonNode discount : fare.path("breakdown").path("discounts")) {
+                String type = discount.path("explanation").path("parameters").path("eligibilityType").asText("");
+                if (!type.isBlank() && discount.path("amount").path("minorUnits").asLong() > 0) discountTypes.add(type.toUpperCase(Locale.ROOT));
+            }
+            var usageTypes = new HashSet<>(eligibilityUsages.stream().map(ResolvedOrderOffer.EligibilityUsage::eligibilityType).toList());
+            if (!discountTypes.equals(usageTypes)) throw new ApiException(ApiErrorCode.PRECONDITION_FAILED,"Fare discount has incomplete eligibility usage details");
+            return new ResolvedOrderOffer(request.accountId(),text(offer,"channelId"),snapshot,travelers,segments,items,text(fare,"productCode"),eligibilityUsages);
         } catch(ApiException e) { throw e; }
         catch(RuntimeException e) {throw new ApiException(ApiErrorCode.UNAVAILABLE,"Unable to resolve authoritative order snapshot",e);}
     }

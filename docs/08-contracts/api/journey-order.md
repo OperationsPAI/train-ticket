@@ -18,6 +18,9 @@ Journey Order MUST perform a pre-order identity-verification hook before accepti
 | Touchpoint | Required change |
 |---|---|
 | HTTP validator for `POST /api/v1/journey-orders` | Before aggregate creation, call `POST /api/v1/identity-verification/pre-order-checks` with `accountId`, `offerId`, `offerVersion`, `travelerRefs`, `segmentRefs`, a persisted `orderIntentId`, `journeyDate`, `productCode`, `limitPolicyVersion`, and a UUID-v7 `Idempotency-Key`. |
+
+The order uses `productCode` and `eligibilityUsages` from the Fare Pricing quote identified by its Offer's `fareQuoteRef`.
+Each eligibility usage identifies the traveler, eligibility type and certificate reserved by Identity Verification.
 | Create-order idempotency | Persist and reuse the identity pre-order check idempotency key for retries of the same Journey Order create attempt. The API header remains the direct HTTP idempotency key; internal material folding is owned by Identity Verification. |
 | Validation / error mapping | Map Identity Verification `REJECT` and `MANUAL_REVIEW_REQUIRED` results to the existing create-order rejection path: `PRECONDITION_FAILED` (412) for unacceptable verification state, `DOMAIN_RULE_VIOLATION` (422) for policy violations, `CONFLICT` (409) for protected-scope purchase-limit conflicts, and `UNAVAILABLE` (503) for hook/read-model unavailability. |
 | Enums / state machine | Do not add a new Journey Order status for identity verification. A failed hook prevents order creation; it is not an order lifecycle transition. |

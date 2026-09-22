@@ -288,7 +288,7 @@ Journey Order calls this hook before accepting `POST /api/v1/journey-orders`. Th
 | `segmentRefs` | string[] | yes | Segment refs from the Journey Order create request. |
 | `journeyDate` | string | yes | Local journey date (`YYYY-MM-DD`) for limit policy. |
 | `productCode` | string | yes | Product/ticket code. |
-| `requestedEligibilityTypes` | array[enum] | no | Eligibility types the order intends to use. |
+| `eligibilityUsages` | array[object] | no | Quoted eligibility usages, each containing `travelerId`, `eligibilityType` and `eligibilityCertificateId`. |
 | `limitPolicyVersion` | string | yes | Purchase-limit policy version to record. |
 | `requestedAt` | RFC3339 UTC | yes | Request timestamp. |
 

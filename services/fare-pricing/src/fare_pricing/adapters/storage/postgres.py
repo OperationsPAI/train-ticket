@@ -229,6 +229,7 @@ def _quote_to_json(quote: FareQuote) -> dict[str, Any]:
         "travelerRefs": list(quote.traveler_refs),
         "channel": quote.channel,
         "productCode": quote.product_code,
+        "eligibilityUsages": list(quote.eligibility_usages),
         "currency": quote.currency,
         "status": quote.status.value,
         "validFrom": _dt(quote.valid_from),
@@ -297,6 +298,7 @@ def _quote_from_json(data: Mapping[str, Any] | str) -> FareQuote:
         breakdown=_breakdown_from_json(data.get("breakdown")),
         explanations=tuple(_explanation_from_json(item) for item in data.get("explanations", ())),
         failed_reason=data.get("failedReason"),
+        eligibility_usages=tuple(data.get("eligibilityUsages", ())),
     )
 
 

@@ -591,6 +591,8 @@ class FareQuote:
     explanations: tuple[PriceExplanation, ...] = field(default_factory=tuple)
     failed_reason: str | None = None
 
+    eligibility_usages: tuple[Mapping[str, str], ...] = field(default_factory=tuple)
+
     def __post_init__(self) -> None:
         if not self.quote_id.strip():
             raise PricingError("quote id is required")
@@ -626,6 +628,7 @@ class FareQuote:
             self.breakdown,
             self.explanations,
             None,
+            self.eligibility_usages,
         )
 
 

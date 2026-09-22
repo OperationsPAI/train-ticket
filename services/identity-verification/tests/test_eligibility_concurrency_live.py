@@ -30,7 +30,7 @@ def test_distinct_orders_reserve_confirm_and_release_one_certificate_concurrentl
                 service = IdentityVerificationService(PostgresIdentityVerificationStore(pool))
                 request = {"accountId": purchase["account"], "travelerRefs": [purchase["traveler"]], "segmentRefs": [purchase["seg"]],
                            "journeyDate": purchase["journey_date"], "productCode": certificate["applicableProductCodes"][0],
-                           "requestedEligibilityTypes": [certificate["eligibilityType"], certificate["eligibilityType"]], "limitPolicyVersion": "limit-v1"}
+                           "eligibilityUsages": [{"travelerId":purchase["traveler"],"eligibilityType":certificate["eligibilityType"],"eligibilityCertificateId":certificate["eligibilityCertificateId"]}], "limitPolicyVersion": "limit-v1"}
 
                 def reserve(index):
                     result, _ = service.pre_order_check({**request, "orderIntentId": "oint-" + uuid4().hex}, "corr-" + uuid4().hex, None)

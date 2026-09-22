@@ -89,7 +89,7 @@ def test_concurrent_registration_returns_one_durable_credential():
                 pre_order = {"orderIntentId":"oint-"+uuid4().hex,"accountId":"acc-"+uuid4().hex,
                              "offerId":"off-"+uuid4().hex,"offerVersion":1,"travelerRefs":[traveler],
                              "segmentRefs":["seg-"+uuid4().hex],"journeyDate":(now+timedelta(days=7)).date().isoformat(),
-                             "productCode":"rail-eligible","limitPolicyVersion":"v1","requestedEligibilityTypes":["STUDENT"]}
+                             "productCode":"rail-eligible","limitPolicyVersion":"v1","eligibilityUsages":[{"travelerId":traveler,"eligibilityType":"STUDENT","eligibilityCertificateId":certificates[0]["eligibilityCertificateId"]}]}
 
                 def precheck(index):
                     barrier.wait(timeout=5)

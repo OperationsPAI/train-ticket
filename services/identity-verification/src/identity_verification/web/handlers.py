@@ -60,7 +60,15 @@ class RegisterCertificateRequest(LooseModel):
     evidenceHash: str
 
 
-class PreOrderCheckRequest(LooseModel):
+class EligibilityUsageRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    travelerId: str
+    eligibilityType: str
+    eligibilityCertificateId: str
+
+
+class PreOrderCheckRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     orderIntentId: str
     accountId: str
     offerId: str
@@ -69,7 +77,7 @@ class PreOrderCheckRequest(LooseModel):
     segmentRefs: list[str] = Field(min_length=1)
     journeyDate: str
     productCode: str
-    requestedEligibilityTypes: list[str] | None = None
+    eligibilityUsages: list[EligibilityUsageRequest] = Field(default_factory=list)
     limitPolicyVersion: str
     requestedAt: str
 
