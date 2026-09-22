@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from starlette.concurrency import run_in_threadpool
+
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -205,9 +207,9 @@ class IdempotencyMiddleware:
         fingerprint = http_request_fingerprint(request.method, request.url.path, request.url.query, body)
         scope = idempotency_scope(request)
         request.state.idempotency_decision = IdempotencyDecision(scope=scope, key=canonical_key, fingerprint=fingerprint)
-        existing = self._store.get(scope, canonical_key)
+        existing = await run_in_threadpool(self._store.get, scope, canonical_key)
         if existing is None:
-            existing = self._store.get(f"{request.method.upper()} {request.url.path}", canonical_key)
+            existing = await run_in_threadpool(self._store.get, f"{request.method.upper()} {request.url.path}", canonical_key)
         if existing is not None:
             if existing.fingerprint != fingerprint:
                 return key_reused_response(request, self._error_body_factory)
@@ -228,7 +230,7 @@ class IdempotencyMiddleware:
         raw_body = await response_body(response)
         if 200 <= response.status_code < 400:
             headers = {name: value for name, value in response.headers.items() if name.lower() in {"content-type"}}
-            self._store.put(
+            await run_in_threadpool(self._store.put,
                 scope,
                 canonical_key,
                 IdempotencyRecord(
