@@ -6,6 +6,7 @@ import com.trainticket.payment.domain.PaymentIntent;
 import com.trainticket.payment.domain.Refund;
 import jakarta.servlet.http.HttpServletRequest;
 import java.net.URI;
+import java.util.Map;
 import java.util.Objects;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -14,6 +15,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -69,6 +71,12 @@ public class PaymentController {
     @GetMapping("/refunds/{refundId}")
     public RefundDetailsResponse getRefund(@PathVariable String refundId) {
         return PaymentHttpMapper.refundDetails(service.getRefund(refundId));
+    }
+
+    @GetMapping("/refunds")
+    public Map<String, Object> refundsForCase(@RequestParam String businessCaseRef) {
+        var items = service.refundsForCase(businessCaseRef).stream().map(PaymentHttpMapper::refundDetails).toList();
+        return Map.of("items", items, "total", items.size());
     }
 
     private void validateCreate(CreatePaymentIntentRequest request) {

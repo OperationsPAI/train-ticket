@@ -367,6 +367,10 @@ public class PaymentCommandService {
             .orElseThrow(() -> new NotFoundException("refund not found"));
     }
 
+    public List<Refund> refundsForCase(String businessCaseRef) {
+        return refundRepository.findByBusinessCaseRef(requireText(businessCaseRef, "businessCaseRef"));
+    }
+
     private void publishNewEvents(List<PaymentEvent> events, int previousSize) {
         publish(new ArrayList<>(events.subList(previousSize, events.size())));
     }
