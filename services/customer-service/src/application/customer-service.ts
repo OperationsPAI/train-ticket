@@ -367,6 +367,7 @@ export class CustomerServiceApplication {
   async evaluateEscalationAndSla(caseId: string, now = new Date(), correlationId?: string, causationId = newCommandId()): Promise<SupportCaseSnapshot> {
     const effectiveCorrelationId = correlationId ?? newCorrelationId();
     const { aggregate: current, version } = await this.requireVersionedCase(caseId);
+    if (isTerminalCase(current.toSnapshot())) return current.toSnapshot();
     let updated = current;
     const autoRule = EscalationPolicy.autoEscalation(now, updated.toSnapshot());
     if (autoRule) {
@@ -407,7 +408,7 @@ export class CustomerServiceApplication {
         await this.publisher.publish(toEventEnvelope(toTicketEscalated(result.event), causationId));
       }
     }
-    for (const breachType of updated.slaTracker.breachesAt(now)) {
+    for (const breachType of isTerminalCase(updated.toSnapshot()) ? [] : updated.slaTracker.breachesAt(now)) {
       const breachEvent = updated.createSlaBreachEvent(breachType, now, effectiveCorrelationId, causationId);
       updated = updated.markSlaBreach(breachType, now);
       await this.publisher.publish(toEventEnvelope(breachEvent, causationId));
@@ -488,6 +489,7 @@ export class CustomerServiceApplication {
       if (await this.hasCaseContextForEvent(supportCase.id, envelope.eventId)) {
         continue;
       }
+      await this.requireVersionedCase(supportCase.id);
 
       const context: CaseContextSnapshot = Object.freeze({
         contextId: newCaseContextId(),
@@ -549,11 +551,23 @@ export class CustomerServiceApplication {
   }
 
   private async findCasesReferencingCaseContext(envelope: EventEnvelope): Promise<SupportCase[]> {
-    const cases = this.repository ? await this.repository.listCases() : [...this.cases.values()];
     const projection = caseContextProjection(envelope);
     if (!projection) {
       return [];
     }
+    const refs = projection.refs;
+    const matches: Record<string, unknown>[] = [];
+    const add = (field: string, value: string | undefined) => {
+      if (value) matches.push({ businessReferences: { [field]: value } });
+    };
+    for (const field of ["journeyOrderId", "recoveryCaseId", "connectionId", "transferPlanId", "verificationCaseId", "credentialRecordId", "purchaseLimitFactId"]) {
+      add(field, refs[field]);
+    }
+    add("accountRef", refs.travelerId);
+    add("journeyOrderId", refs.orderIntentId);
+    add("postSalesCaseId", refs.verificationCaseId);
+    if (refs.travelerId) matches.push({ requesterRef: refs.travelerId });
+    const cases = this.repository ? await this.repository.findCasesByReferences(matches) : [...this.cases.values()];
     return cases.filter((supportCase) => caseMatchesContextRefs(supportCase.toSnapshot(), projection.refs));
   }
 
@@ -705,7 +719,13 @@ export class CustomerServiceApplication {
     if (!this.repository) {
       return [...this.cases.values()];
     }
-    return (await this.repository.listCases()).filter((supportCase) => caseReferencesEnvelope(supportCase.toSnapshot(), envelope));
+    if (envelope.producer !== "journey-order" && envelope.producer !== "post-sales") return [];
+    const matches: Record<string, unknown>[] = [];
+    const orderId = stringField(envelope.payload, "orderId") ?? stringField(envelope.payload, "journeyOrderId");
+    const caseId = stringField(envelope.payload, "caseId");
+    if (orderId) matches.push({ businessReferences: { journeyOrderId: orderId } });
+    if (caseId) matches.push({ businessReferences: { postSalesCaseId: caseId } });
+    return this.repository.findCasesByReferences(matches);
   }
 }
 
