@@ -1,4 +1,5 @@
-import { SnapshotRepository, type Database } from "@trainticket/ts-kit";
+import { OptimisticConcurrencyConflict, SnapshotRepository, type Database } from "@trainticket/ts-kit";
+import { isDeepStrictEqual } from "node:util";
 import { type AncillaryRepository, type CatalogFilters, type OrderItemFilters } from "../../application.js";
 import { type AncillaryCatalogItemSnapshot, type AncillaryOfferSnapshot, type AncillaryOrderItemSnapshot } from "../../domain.js";
 
@@ -30,21 +31,18 @@ export class PostgresAncillaryRepository implements AncillaryRepository {
 }
 
 export async function save<T>(repo: SnapshotRepository<T>, id: string, snapshot: T, version: number): Promise<void> {
+  if (!Number.isSafeInteger(version) || version < 1) throw new OptimisticConcurrencyConflict("Aggregate version must be a positive integer");
   const existing = await repo.get(id);
   if (!existing) {
+    if (version !== 1) throw new OptimisticConcurrencyConflict(`Snapshot ${id} is missing its preceding version`);
     await repo.save(id, snapshot, undefined);
     return;
   }
-  if (existing.version >= BigInt(version)) {
-    // Replayed/duplicate command that slipped past the idempotency layers:
-    // the stored aggregate already advanced at least this far. Same-version
-    // replays are harmless no-ops (trip-planning/wallet OCC ruling), not
-    // loud OptimisticConcurrencyConflict failures.
+  if (existing.version === BigInt(version) && isDeepStrictEqual(existing.data, JSON.parse(JSON.stringify(snapshot)))) {
     return;
   }
-  // Guard against concurrent writers using the STORED version, not an
-  // expectation derived from the incoming snapshot.
-  await repo.save(id, snapshot, existing.version);
+  if (existing.version !== BigInt(version - 1)) throw new OptimisticConcurrencyConflict(`Snapshot ${id} does not match the preceding aggregate version`);
+  await repo.save(id, snapshot, BigInt(version - 1));
 }
 async function listJson<T>(db: Database, table: string, filters: Record<string, unknown>, keys: readonly string[]): Promise<readonly T[]> {
   const clauses: string[] = [];
