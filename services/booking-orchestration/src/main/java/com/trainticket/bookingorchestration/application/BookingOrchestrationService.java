@@ -82,6 +82,16 @@ public class BookingOrchestrationService {
         return sagas.findByJourneyOrderId(orderId).map(this::buildSagaDetail);
     }
 
+    public Optional<SegmentBookingDetail> getSegmentBooking(String segmentBookingId) {
+        return segmentBookings.findById(segmentBookingId).map(record -> {
+            SegmentBooking booking = record.booking();
+            return new SegmentBookingDetail(booking.segmentBookingId(), record.sagaId(), booking.journeyOrderId(),
+                booking.segmentRef(), booking.travelerRef(), booking.status().name(),
+                booking.capacityHoldId().orElse(null), booking.entitlementId().orElse(null),
+                booking.failureReason().orElse(null));
+        });
+    }
+
     public RequestReservationResult requestReservation(String sagaId, RequestReservationCommand command,
                                                        String idempotencyKey, String correlationId) {
         BookingSaga saga = sagas.findById(sagaId)
@@ -1029,6 +1039,9 @@ public class BookingOrchestrationService {
     public record StartSagaResult(String sagaId, String journeyOrderId, String status, Instant startedAt) {}
     public record RequestReservationCommand(String segmentRef, String travelerRef, String segmentBookingId) {}
     public record RequestReservationResult(String segmentBookingId, String status) {}
+    public record SegmentBookingDetail(String segmentBookingId, String sagaId, String journeyOrderId,
+                                       String segmentRef, String travelerRef, String status,
+                                       String capacityHoldId, String entitlementId, String failureReason) {}
     public record MarkTicketedCommand(String segmentBookingId, String entitlementId) {}
     public record MarkTicketedResult(String segmentBookingId, String status) {}
     public record SagaDetail(String sagaId, String journeyOrderId, String status, String idempotencyKey,

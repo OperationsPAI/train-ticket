@@ -72,6 +72,15 @@ services (not end-user clients).
 
 **Error codes:** `NOT_FOUND`, `CONFLICT`, `UNAVAILABLE`
 
+### Get Segment Booking
+
+**GET** `/api/v1/internal/segment-bookings/{segmentBookingId}`
+
+Returns `segmentBookingId`, `sagaId`, `journeyOrderId`, `segmentRef`, `travelerRef`, `status`, `capacityHoldId`, `entitlementId`, and `failureReason`.
+The status describes the persisted segment reservation.
+The capacity hold reference permits verification of capacity confirmation before ticket issuance.
+An unknown segment booking returns `NOT_FOUND`.
+
 ### Mark Segment Ticketed
 
 **POST** `/api/v1/internal/booking-sagas/{sagaId}/mark-ticketed`
