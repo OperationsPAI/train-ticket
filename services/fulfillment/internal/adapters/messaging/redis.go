@@ -36,7 +36,8 @@ func (s *RedisSubscriber) Subscribe(ctx context.Context, streams []string, group
 	if strings.TrimSpace(consumerName) == "" {
 		consumerName = group + "-instance"
 	}
-	return s.bus.Subscribe(ctx, kitmsg.Subscription{Streams: streams, Group: group, ConsumerName: consumerName}, kitmsg.Handler(handler))
+	return s.bus.Subscribe(ctx, kitmsg.Subscription{Streams: streams, Group: group, ConsumerName: consumerName,
+		EventFilter: func(event kitmsg.EventEnvelope) bool { return application.HandlesSubscribedEvent(event.EventType) }}, kitmsg.Handler(handler))
 }
 
 func FulfillmentSubscriptions() []string {
