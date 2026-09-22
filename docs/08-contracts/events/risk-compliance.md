@@ -29,6 +29,23 @@ Last updated: 2026-07-04
 | `assessmentSnapshotHash` | string | yes | Hash of input snapshot for explainability. |
 | `assessedAt` | RFC3339 UTC | yes | When the assessment was completed. |
 
+### RiskAssessmentCompleted
+
+The booking result references the authoritative order assessment.
+Requests received before assessment completion remain durable and are completed in the assessment transaction.
+Repeated requests for the same saga produce one completion event.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `sagaId` | string | yes | Booking saga identifier. |
+| `journeyOrderId` | string | yes | Assessed order identifier. |
+| `accountId` | string | yes | Account that owns the order. |
+| `assessmentId` | string | yes | Persisted order assessment identifier. |
+| `riskScore` | integer | yes | Score from the order assessment. |
+| `verdict` | enum | yes | `ALLOW` maps to `PASS`, `DENY` maps to `BLOCK`, and `CHALLENGE` and `HOLD` retain their values. |
+
+Booking proceeds on `PASS`, fails on `BLOCK`, and enters manual review on `CHALLENGE` or `HOLD`.
+
 ### ChallengeIssued
 
 | Field | Description |
