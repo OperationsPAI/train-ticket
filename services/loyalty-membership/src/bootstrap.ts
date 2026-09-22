@@ -2,6 +2,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { Pool } from "pg";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 import { createApp, opentelemetryInstrumentationFromEnv, type InstrumentationHooks } from "./app.js";
 import { InMemoryMemberRepository, LoyaltyMembershipApplicationService, type MemberRepository } from "./application.js";
@@ -20,6 +21,9 @@ import {
   migrationsAwareReadiness,
   redisClientLiveness,
   startMigrations,
+  tracedFetch,
+  withTransaction,
+  type Database,
   type IdempotencyStore,
   type SchemaDetail,
 } from "@trainticket/ts-kit";
@@ -48,8 +52,8 @@ export async function bootstrap(options: BootstrapOptions = {}) {
   const storage = process.env.DATABASE_URL ? await startLoyaltyStorage() : undefined;
   const publisher = storage ? storage.publisher : new RedisStreamEventPublisher();
   const repository = storage?.repository ?? new InMemoryMemberRepository();
-  const application = new LoyaltyMembershipApplicationService(repository, publisher);
-  const subscriber = startSubscriber(application);
+  const application = new LoyaltyMembershipApplicationService(repository, publisher, resolveOrderAccount);
+  const subscriber = startSubscriber(application, undefined, storage?.runCommand);
 
   const app = createApp({
     instrumentation: options.instrumentation ?? opentelemetryInstrumentationFromEnv(),
@@ -94,6 +98,7 @@ export async function bootstrap(options: BootstrapOptions = {}) {
 export function startSubscriber<T extends SupervisedConsumer = RedisStreamEventSubscriber>(
   application: LoyaltyMembershipApplicationService,
   overrides: Pick<SuperviseSubscribeOptions<T>, "subscribe" | "backoffMs" | "sleep" | "log"> | undefined = undefined,
+  runCommand?: LoyaltyStorage["runCommand"],
 ): SubscribeSupervisor | undefined {
   if (!overrides && !process.env.REDIS_URL) {
     return undefined;
@@ -104,25 +109,36 @@ export function startSubscriber<T extends SupervisedConsumer = RedisStreamEventS
     // rejected has set `stopped = true` for good, so reusing it would register
     // a healthy consumer component whose loops exit immediately -- a green
     // probe over silent non-consumption.
-    subscribe: overrides?.subscribe ?? (() => subscribeOnce(application)),
+    subscribe: overrides?.subscribe ?? (() => subscribeOnce(application, runCommand)),
   });
 }
 
-async function subscribeOnce(application: LoyaltyMembershipApplicationService): Promise<RedisStreamEventSubscriber> {
+async function subscribeOnce(application: LoyaltyMembershipApplicationService, runCommand?: LoyaltyStorage["runCommand"]): Promise<RedisStreamEventSubscriber> {
   const subscriber = new RedisStreamEventSubscriber(undefined, undefined, { thrownHandlerErrors: "retry" });
   try {
     await subscriber.subscribe([JOURNEY_ORDER_STREAM, PAYMENT_STREAM, POST_SALES_STREAM], "loyalty-membership", consumerName(), async (envelope) => {
-      if (envelope.eventType === "JourneyOrderCreated") {
-        await handleJourneyOrderCreated(application, envelope);
-      }
-      if (envelope.eventType === "JourneyOrderCancelled") {
-        await handleJourneyOrderCancelled(application, envelope);
-      }
-      if (envelope.eventType === "PaymentCaptured") {
-        await handlePaymentCaptured(application, envelope);
-      }
-      if (envelope.eventType === "PostSalesApplied") {
-        await handlePostSalesApplied(application, envelope);
+      const dispatch = async (application: LoyaltyMembershipApplicationService) => {
+        const db = loyaltyTransaction.getStore();
+        if (db) {
+          const claimed = await db.query("INSERT INTO processed_events(event_id,stream) VALUES($1,$2) ON CONFLICT DO NOTHING RETURNING event_id", [envelope.eventId, `events:${envelope.producer}`]);
+          if (!claimed.rowCount) return;
+        }
+        if (envelope.eventType === "JourneyOrderCreated") {
+          await handleJourneyOrderCreated(application, envelope);
+        }
+        if (envelope.eventType === "JourneyOrderCancelled") {
+          await handleJourneyOrderCancelled(application, envelope);
+        }
+        if (envelope.eventType === "PaymentCaptured") {
+          await handlePaymentCaptured(application, envelope);
+        }
+        if (envelope.eventType === "PostSalesApplied") {
+          await handlePostSalesApplied(application, envelope);
+        }
+      };
+      if (["JourneyOrderCreated", "JourneyOrderCancelled", "PaymentCaptured", "PostSalesApplied"].includes(envelope.eventType)) {
+        if (runCommand) await runCommand(dispatch);
+        else await dispatch(application);
       }
       return { ok: true };
     });
@@ -269,7 +285,9 @@ export async function startLoyaltyStorage(pool: Pool = createPostgresPool()): Pr
     // can only 500.
     ready: migrationsAwareReadiness(migrations, pool),
     schema: () => migrations.detail(),
-    runCommand: async (operation) => operation(new LoyaltyMembershipApplicationService(repository, publisher)),
+    runCommand: async (operation) => withTransaction(pool, async (client) => loyaltyTransaction.run(client, () =>
+      operation(new LoyaltyMembershipApplicationService(new PostgresMemberRepository(client),
+        new TransactionalOutboxPublisher(new OutboxAppender(client)), resolveOrderAccount)))),
     stop: async () => {
       // Stop the migration retry first: otherwise a shutdown during the retry
       // window leaves a backoff timer running and can issue queries against a
@@ -292,14 +310,17 @@ class TransactionalOutboxPublisher implements EventPublisher {
 }
 
 export class PostgresMemberRepository implements MemberRepository {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly pool: Database) {}
 
   async findByMemberId(memberId: string): Promise<Member | undefined> {
+    const account = await this.pool.query("SELECT account_id FROM members WHERE member_id=$1", [memberId]);
+    if (account.rows[0]) await this.lockAccount(account.rows[0].account_id);
     const result = await this.pool.query("SELECT snapshot FROM members WHERE member_id = $1", [memberId]);
     return rowToMember(result.rows[0]);
   }
 
   async findByAccountId(accountId: string): Promise<Member | undefined> {
+    await this.lockAccount(accountId);
     const result = await this.pool.query("SELECT snapshot FROM members WHERE account_id = $1", [accountId]);
     return rowToMember(result.rows[0]);
   }
@@ -332,7 +353,6 @@ export class PostgresMemberRepository implements MemberRepository {
          updated_at = now()`,
       [snapshot.memberId, snapshot.accountId, snapshot.tier, snapshot.status, snapshot.redeemablePoints, snapshot.tierPoints, snapshot.lifetimePoints, snapshot],
     );
-    await this.pool.query("DELETE FROM points_ledger WHERE member_id = $1", [snapshot.memberId]);
     for (const entry of snapshot.ledger) {
       await this.pool.query(
         `INSERT INTO points_ledger (entry_id, member_id, entry_type, points, source_event_id, source_event_type, business_reason, occurred_at)
@@ -342,6 +362,23 @@ export class PostgresMemberRepository implements MemberRepository {
       );
     }
   }
+
+  private async lockAccount(accountId: string): Promise<void> {
+    if (loyaltyTransaction.getStore()) {
+      await this.pool.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`loyalty-account:${accountId}`]);
+    }
+  }
+}
+
+const loyaltyTransaction = new AsyncLocalStorage<Database>();
+
+export async function resolveOrderAccount(orderId: string): Promise<string> {
+  const base = process.env.JOURNEY_ORDER_BASE_URL ?? "http://journey-order:8080";
+  const response = await tracedFetch(`${base}/api/v1/journey-orders/${encodeURIComponent(orderId)}`, { signal: AbortSignal.timeout(5000) });
+  if (!response.ok) throw new Error(`Order account lookup returned HTTP ${response.status}`);
+  const order = await response.json() as { orderId?: string; accountId?: string };
+  if (order.orderId !== orderId || !order.accountId) throw new Error("Order account lookup returned inconsistent references");
+  return order.accountId;
 }
 
 function rowToMember(row: { snapshot: MemberSnapshot } | undefined): Member | undefined {
