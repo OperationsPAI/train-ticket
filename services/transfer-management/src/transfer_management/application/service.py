@@ -401,6 +401,10 @@ class TransferManagementService:
         return self._plan_json(self.store.get_plan(plan_id))
 
     def register_connection(self, data: Mapping[str, Any], correlation_id: str, causation_id: str) -> dict[str, Any]:
+        with self.transaction():
+            return self._register_connection(data, correlation_id, causation_id)
+
+    def _register_connection(self, data: Mapping[str, Any], correlation_id: str, causation_id: str) -> dict[str, Any]:
         at = now_utc()
         plan = self.store.get_plan(require_text(data.get("transferPlanId"), "transferPlanId"))
         from_node_type = NodeType(str(data.get("fromNodeType")))
@@ -438,7 +442,7 @@ class TransferManagementService:
         validation = ConnectionValidator().ensure_valid(planned, departure, mct)
         window = ConnectionWindow.build(planned, departure, cutoff, validation.requiredMinutes, optional_dt(window_data.get("actualArrivalAt")))
         evaluation = self._evaluate_window(window, rule, at, new_prefixed_uuid7("tre"), (), topology.placeGraphVersion if topology else None, degraded_reasons)
-        contract_id = require_text(data.get("contractId"), "contractId")
+        contract_id = str(data.get("contractId") or new_prefixed_uuid7("cct"))
         contract_type = ContractType(str(data.get("contractType")))
         status = ConnectionStatus.FEASIBLE if evaluation.riskLevel is RiskLevel.FEASIBLE else ConnectionStatus.TIGHT if evaluation.riskLevel is RiskLevel.TIGHT else ConnectionStatus.AT_RISK
         guaranteed = bool(data.get("guaranteed") if data.get("guaranteed") is not None else (contract_type in PROTECTED_TYPES and plan.itineraryRef == require_text(data.get("itineraryRef"), "itineraryRef")))
@@ -447,6 +451,12 @@ class TransferManagementService:
         plan = plan.add_connection(connection.connectionId, at)
         self.store.save_plan(plan)
         self.store.save_connection(connection)
+        if not data.get("contractId"):
+            party = {ContractType.PROTECTED: "PLATFORM", ContractType.SUPPLIER_PROTECTED: "SUPPLIER", ContractType.PLATFORM_ASSISTED: "PLATFORM_ASSISTANCE", ContractType.SELF_TRANSFER: "TRAVELER"}[contract_type]
+            contract = ConnectionContract(contract_id, connection.connectionId, contract_type, ContractStatus.PROPOSED,
+                party, "Connection protection terms", "v1", at, at)
+            self.store.save_contract(contract)
+            self._append([_envelope("ConnectionContractProposed", contract_id, 1, contract.to_json() | {"proposedAt": rfc3339_utc(at)}, correlation_id, causation_id, at)])
         events = [
             _envelope("ConnectionRegistered", connection.connectionId, 1, connection.to_json() | {"registeredAt": rfc3339_utc(at)}, correlation_id, causation_id, at),
             _envelope("ConnectionValidated", connection.connectionId, 1, {"connection": connection.ref_json(), "validation": validation.to_json(), "minimumConnectionTime": mct.to_json(), "guarantee": ConnectionGuarantee(connection.connectionId, guaranteed, connection.itineraryRef).to_json(), "validatedAt": rfc3339_utc(at)}, correlation_id, causation_id, at),
