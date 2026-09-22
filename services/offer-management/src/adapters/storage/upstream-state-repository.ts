@@ -211,7 +211,8 @@ async function upsertSnapshot(client: PoolClient, tableName: UpstreamTableName, 
 }
 
 async function upsertSnapshots(client: PoolClient, tableName: UpstreamTableName, snapshots: readonly UpstreamSnapshot[]): Promise<void> {
-  const uniqueSnapshots = [...new Map(snapshots.map((snapshot) => [snapshot.id, snapshot])).values()];
+  const uniqueSnapshots = [...new Map(snapshots.map((snapshot) => [snapshot.id, snapshot])).values()]
+    .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
   if (uniqueSnapshots.length === 0) {
     return;
   }
