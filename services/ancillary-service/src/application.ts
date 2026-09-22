@@ -52,6 +52,7 @@ export interface AncillaryRepository {
     limit: number,
   ): Promise<readonly AncillaryOfferSnapshot[]>;
   saveOrderItem(snapshot: AncillaryOrderItemSnapshot): Promise<void>;
+  findOrderItemByOffer(offerId:string):Promise<AncillaryOrderItemSnapshot|undefined>;
   recordTicketVoid(entitlementRef: string, eventId: string): Promise<void>;
   listByEntitlement(entitlementRef: string): Promise<readonly AncillaryOrderItemSnapshot[]>;
   getOrderItem(
@@ -84,6 +85,10 @@ export class InMemoryAncillaryRepository implements AncillaryRepository {
   private readonly offers = new Map<string, AncillaryOfferSnapshot>();
   private readonly orderItems = new Map<string, AncillaryOrderItemSnapshot>();
   private readonly voidedTickets = new Set<string>();
+
+  async findOrderItemByOffer(offerId:string):Promise<AncillaryOrderItemSnapshot|undefined>{
+    return clone([...this.orderItems.values()].find(item=>item.ancillaryOfferId===offerId));
+  }
 
   async recordTicketVoid(entitlementRef: string): Promise<void> { this.voidedTickets.add(entitlementRef); }
   async listByEntitlement(entitlementRef: string): Promise<readonly AncillaryOrderItemSnapshot[]> {
@@ -438,6 +443,12 @@ export class AncillaryApplicationService {
     const offer = AncillaryOffer.fromSnapshot(
       await this.requireOffer(ancillaryOfferId),
     );
+    const existing = await this.repository.findOrderItemByOffer(ancillaryOfferId);
+    if(existing){
+      if(existing.journeyOrderId!==input.journeyOrderId || existing.offerVersion!==input.expectedVersion+1)
+        throw new DomainError("PRECONDITION_FAILED","Selected offer belongs to a different request");
+      return existing;
+    }
     const orderItem = offer.select(input.journeyOrderId, input.expectedVersion);
     if (this.references) await this.references.verify({ ...orderItem, departureAt: offer.toSnapshot().eligibility.departureAt }, orderItem.catalogSnapshot.requiresEntitlementRef);
     await this.repository.saveOffer(offer.toSnapshot());
