@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -85,9 +86,32 @@ func TestLiveRefundOriginalPaymentIdentity(t *testing.T) {
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM channel_refund_snapshots").Scan(&count); err != nil || count != 0 {
 		t.Fatalf("invalid requests persisted refunds: count=%d err=%v", count, err)
 	}
-	refund, err := service.CreateRefund(ctx, request)
-	if err != nil || refund.PaymentIntentID != order.PaymentIntentID || refund.Amount != order.Amount {
-		t.Fatalf("valid original refund rejected: refund=%+v err=%v", refund, err)
+	results := make(chan error, 16)
+	for index := 0; index < 16; index++ {
+		go func() {
+			attempt := request
+			attempt.RefundID = domain.NewID("rf")
+			attempt.IdempotencyKey = uuid.NewString()
+			_, err := service.CreateRefund(ctx, attempt)
+			results <- err
+		}()
+	}
+	accepted := 0
+	for index := 0; index < 16; index++ {
+		if err := <-results; err == nil {
+			accepted++
+		} else {
+			var rejected *application.DomainError
+			if !errors.As(err, &rejected) || rejected.Message != "refund amount exceeds original order" {
+				t.Fatalf("unexpected concurrent refund error: %v", err)
+			}
+		}
+	}
+	if accepted != 1 {
+		t.Fatalf("accepted %d full refunds for one collected payment", accepted)
+	}
+	if sum, err := repository.SumRefundsForOrder(ctx, order.ChannelOrderID); err != nil || sum != order.Amount.MinorUnits {
+		t.Fatalf("reserved refund amount=%d err=%v", sum, err)
 	}
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM outbox").Scan(&count); err != nil || count != 1 {
 		t.Fatalf("expected one refund creation event: count=%d err=%v", count, err)
