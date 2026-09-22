@@ -150,7 +150,7 @@ public final class LettuceRedisStreamOperations implements RedisStreamOperations
     @Override
     public List<StreamEntry> readGroup(String stream, String group, String consumerName) {
         return connection.sync()
-            .xreadgroup(Consumer.from(group, consumerName), XReadArgs.Builder.block(Duration.ofMillis(BLOCK_MS)).count(BATCH_COUNT), XReadArgs.StreamOffset.lastConsumed(stream))
+            .xreadgroup(Consumer.from(group, consumerName), XReadArgs.Builder.count(BATCH_COUNT), XReadArgs.StreamOffset.lastConsumed(stream))
             .stream()
             .map(LettuceRedisStreamOperations::toEntry)
             .toList();
@@ -193,7 +193,7 @@ public final class LettuceRedisStreamOperations implements RedisStreamOperations
                 if (info.name().equals(selfName)) {
                     continue;
                 }
-                if (info.idleMillis() > maxIdleMillis) {
+                if (info.idleMillis() > maxIdleMillis && info.pending() == 0) {
                     connection.sync().xgroupDelconsumer(stream, Consumer.from(group, info.name()));
                     LoggerFactory.getLogger(LettuceRedisStreamOperations.class)
                         .info("pruned dead consumer {} from {}/{} (idle={}ms, pending={})",
