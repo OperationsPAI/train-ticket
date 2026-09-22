@@ -85,9 +85,9 @@ public class PostgresJourneyOrderStateRepository implements JourneyOrderStateRep
                 WHERE data->'travelers' @> ?::jsonb
                 ORDER BY (data->>'createdAt')::timestamptz DESC
                 """,
-            (rs, rowNum) -> findOrder(rs.getString("id")).orElseThrow(),
+            (rs, rowNum) -> rs.getString("id"),
             travelerContainmentJson(travelerId)
-        );
+        ).stream().map(id -> findOrder(id).orElseThrow()).toList();
     }
 
     private String travelerContainmentJson(String travelerId) {
@@ -109,14 +109,14 @@ public class PostgresJourneyOrderStateRepository implements JourneyOrderStateRep
                 ORDER BY (data->>'createdAt')::timestamptz DESC
                 LIMIT ? OFFSET ?
                 """,
-            (rs, rowNum) -> findOrder(rs.getString("id")).orElseThrow(),
+            (rs, rowNum) -> rs.getString("id"),
             byAccount,
             accountId,
             byStatus,
             status,
             limit,
             offset
-        );
+        ).stream().map(id -> findOrder(id).orElseThrow()).toList();
     }
 
     @Override
