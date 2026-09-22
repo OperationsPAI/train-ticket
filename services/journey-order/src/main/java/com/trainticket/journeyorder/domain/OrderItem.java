@@ -10,6 +10,7 @@ public final class OrderItem {
     private final Money amount;
     private final String commercialReasonRef;
     private final List<OrderLineBinding> bindings;
+    private boolean independentlySettled;
     private boolean cancelled;
     private String cancellationReason;
 
@@ -64,6 +65,11 @@ public final class OrderItem {
 
     public boolean cancelled() {
         return cancelled;
+    }
+    public boolean independentlySettled() { return independentlySettled; }
+    public OrderItem withIndependentSettlement() {
+        if(type != OrderItemType.ANCILLARY_SERVICE) throw new DomainRuleViolation("Only ancillary items use independent settlement");
+        independentlySettled=true;return this;
     }
 
     public String cancellationReason() {
