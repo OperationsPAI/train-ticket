@@ -12,9 +12,7 @@ use axum::{
 };
 use opentelemetry::Context as OTelContext;
 use opentelemetry::global as otel_global;
-use opentelemetry::trace::{
-    FutureExt, SpanKind, TraceContextExt, Tracer, TracerProvider as _,
-};
+use opentelemetry::trace::{FutureExt, SpanKind, TraceContextExt, Tracer, TracerProvider as _};
 use rust_kit::{http as kit_http, idempotency as kit_idempotency};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -26,6 +24,7 @@ use shared_kernel::{
 
 pub mod adapters;
 pub mod application;
+mod issue_facts;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ServiceProfile {
