@@ -202,12 +202,24 @@ class TravelerProfileTest {
         );
         com.fasterxml.jackson.databind.ObjectMapper objectMapper = new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules();
 
-        String json = com.trainticket.travelerprofile.infrastructure.persistence.TravelerJson.snapshot(state, objectMapper).data().toString();
+        var snapshot = com.trainticket.travelerprofile.infrastructure.persistence.TravelerJson.snapshot(state, objectMapper);
+        String json = snapshot.data().toString();
 
         assertFalse(json.contains("110101199001151234"));
         assertFalse(json.contains("\"documentNumber\""));
         assertTrue(json.contains("maskedDocumentRef"));
         assertTrue(json.contains("documentNumberHash"));
+        var restored = com.trainticket.travelerprofile.infrastructure.persistence.TravelerJson.toState(snapshot, objectMapper);
+        assertEquals(profile.primaryDocument().maskedDocumentRef(), restored.aggregate().primaryDocument().maskedDocumentRef());
+        assertEquals(profile.primaryDocument().documentNumberHash(), restored.aggregate().primaryDocument().documentNumberHash());
+        for (String field : java.util.List.of("maskedDocumentRef", "documentNumberHash")) {
+            var incomplete = snapshot.data().deepCopy();
+            ((com.fasterxml.jackson.databind.node.ObjectNode) incomplete.path("documents").get(0)).remove(field);
+            var error = assertThrows(IllegalStateException.class, () ->
+                com.trainticket.travelerprofile.infrastructure.persistence.TravelerJson.toState(
+                    com.trainticket.travelerprofile.infrastructure.persistence.TravelerJson.TravelerSnapshot.of(incomplete), objectMapper));
+            assertEquals(field + " is missing from traveler snapshot", error.getMessage());
+        }
     }
 
     // ==============================
