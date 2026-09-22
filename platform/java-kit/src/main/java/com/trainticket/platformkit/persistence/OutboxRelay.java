@@ -80,12 +80,26 @@ public class OutboxRelay implements AutoCloseable {
 
     private void safePollOnce() {
         try {
-            pollOnce();
-            if (++pollCount % CLEANUP_EVERY_N == 0) {
-                cleanup();
-            }
+            pollOnceAndSweep();
         } catch (RuntimeException ignored) {
             dependencyReady = false;
+        }
+    }
+
+    /**
+     * One poll, plus the retention sweep every {@link #CLEANUP_EVERY_N} polls.
+     *
+     * Both schedulers go through here. {@link LazyRedisOutboxRelayLifecycle}
+     * drives the relay itself rather than calling {@link #start()}, and when it
+     * called {@link #pollOnce()} directly it silently ran without the sweep:
+     * `n_tup_del` on idempotency_records was 0 in every Java service on the
+     * deployed cluster, traveler_profile having reached 12811917 rows in
+     * 7855 MB and journey_order 4756058 rows in 6028 MB.
+     */
+    public void pollOnceAndSweep() {
+        pollOnce();
+        if (++pollCount % CLEANUP_EVERY_N == 0) {
+            cleanup();
         }
     }
 
@@ -112,7 +126,7 @@ public class OutboxRelay implements AutoCloseable {
      * spent. The budget bounds one pass; the next pass continues where this left
      * off.
      */
-    private void cleanup() {
+    void cleanup() {
         sweep("outbox", "DELETE FROM outbox WHERE ctid IN (SELECT ctid FROM outbox "
             + "WHERE published_at IS NOT NULL AND published_at < now() - interval '30 seconds' LIMIT ?)");
         sweep("processed_events", "DELETE FROM processed_events WHERE ctid IN (SELECT ctid FROM processed_events "
