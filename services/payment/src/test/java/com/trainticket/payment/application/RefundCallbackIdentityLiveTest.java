@@ -11,6 +11,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.DriverManager;
 import java.util.UUID;
+import java.util.ArrayList;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
@@ -55,6 +58,8 @@ class RefundCallbackIdentityLiveTest {
                 assertThrows(DomainRuleViolation.class,()->service.settleRefundFromChannel(refundId,paymentId,amount,channelRefundId,orderId,channel,originalTransaction,originalTransaction,"evt-refund","corr-refund"));
                 assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM outbox",Integer.class));
                 assertEquals(1L,jdbc.queryForObject("SELECT version FROM refund_snapshots WHERE id=?",Long.class,refundId));
+                assertEquals(refundId, service.requestRefund(paymentId, amount, refund.path("reasonCode").asText(),
+                    refund.path("sourceCaseRef").asText(), refund.path("idempotencyKey").asText(), "corr-settled-replay", service.getIntent(paymentId).channelRef()).refundId());
                 assertEquals(payment.path("refundedAmount"),mapper.readTree(jdbc.queryForObject("SELECT data->'refundedAmount' FROM payment_intent_snapshots WHERE id=?",String.class,paymentId)));
                 var otherRoute = other.path("channelRef");
                 for (var invalidRoute : new ChannelRef[]{
@@ -68,6 +73,20 @@ class RefundCallbackIdentityLiveTest {
                 assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM refund_snapshots", Integer.class));
                 assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM outbox", Integer.class));
                 var pending=service.requestRefund(other.path("paymentIntentId").asText(),amount,refund.path("reasonCode").asText(),refund.path("sourceCaseRef").asText(),UUID.randomUUID().toString(),"corr-pending");
+                try (var workers = Executors.newFixedThreadPool(8)) {
+                    var replays = new ArrayList<java.util.concurrent.Future<com.trainticket.payment.domain.Refund>>();
+                    for (int index = 0; index < 16; index++) {
+                        replays.add(workers.submit(() -> service.requestRefund(pending.paymentIntentId(), pending.amount(), pending.reasonCode(),
+                            pending.sourceCaseRef(), pending.idempotencyKey(), "corr-refund-replay")));
+                    }
+                    for (var replay : replays) assertEquals(pending.refundId(), replay.get(10, TimeUnit.SECONDS).refundId());
+                }
+                assertThrows(DomainRuleViolation.class, () -> service.requestRefund(pending.paymentIntentId(), pending.amount().add(Money.fromMinorUnits(1, "CNY")),
+                    pending.reasonCode(), pending.sourceCaseRef(), pending.idempotencyKey(), "corr-changed-amount"));
+                assertThrows(DomainRuleViolation.class, () -> service.requestRefund(paymentId, pending.amount(),
+                    pending.reasonCode(), pending.sourceCaseRef(), pending.idempotencyKey(), "corr-changed-payment"));
+                assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM refund_snapshots", Integer.class));
+                assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM outbox WHERE envelope->>'eventType'='RefundRequested'", Integer.class));
                 assertThrows(DomainRuleViolation.class,()->service.settleRefundFromChannel(pending.refundId(),paymentId,amount,channelRefundId,orderId,channel,originalTransaction,refundTransaction,"evt-wrong-payment","corr-pending"));
                 assertThrows(DomainRuleViolation.class,()->service.settleRefundFromChannel(pending.refundId(),other.path("paymentIntentId").asText(),amount,channelRefundId,orderId,channel,originalTransaction,refundTransaction,"evt-wrong-route","corr-pending"));
                 assertEquals("REQUESTED",jdbc.queryForObject("SELECT data->>'status' FROM refund_snapshots WHERE id=?",String.class,pending.refundId()));
