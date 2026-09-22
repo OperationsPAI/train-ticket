@@ -17,6 +17,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import com.trainticket.payment.domain.ports.PaymentIntentRepository;
 import com.trainticket.payment.domain.ports.LatePaymentCaseRepository;
 import com.trainticket.payment.domain.ports.RefundRepository;
@@ -374,6 +375,18 @@ public class PaymentCommandService {
     public PaymentIntent latestIntentForBusiness(String businessRef) {
         return paymentIntentRepository.findLatestByBusinessRef(requireText(businessRef, "businessRef"))
             .orElseThrow(() -> new NotFoundException("payment intent not found for business reference"));
+    }
+
+    public Map<String, Object> capturedFacts(String paymentIntentId) {
+        PaymentIntent intent = getIntent(paymentIntentId);
+        var events = intent.domainEvents().stream()
+            .filter(com.trainticket.payment.domain.PaymentCaptured.class::isInstance)
+            .map(EventEnvelopeMapper::fromDomainEvent).toList();
+        return Map.of("paymentIntentId", intent.paymentIntentId(), "businessRef", intent.businessRef(),
+            "payerRef", intent.payerRef(), "purpose", intent.purpose(), "status", intent.status().name(),
+            "capturedAmount", Map.of("currency", intent.capturedAmount().currency().getCurrencyCode(), "minorUnits", intent.capturedAmount().toMinorUnits()),
+            "refundedAmount", Map.of("currency", intent.refundedAmount().currency().getCurrencyCode(), "minorUnits", intent.refundedAmount().toMinorUnits()),
+            "events", events);
     }
 
     private void publishNewEvents(List<PaymentEvent> events, int previousSize) {

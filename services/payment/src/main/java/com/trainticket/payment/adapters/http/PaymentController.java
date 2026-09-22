@@ -84,6 +84,11 @@ public class PaymentController {
         return Map.of("items", items, "total", items.size());
     }
 
+    @GetMapping("/internal/payment-intents/{paymentIntentId}/captured-facts")
+    public Map<String, Object> capturedFacts(@PathVariable String paymentIntentId) {
+        return service.capturedFacts(paymentIntentId);
+    }
+
     private void validateCreate(CreatePaymentIntentRequest request) {
         if (request == null) {
             throw new ValidationException("request body is required");
