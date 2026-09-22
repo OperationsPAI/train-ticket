@@ -92,9 +92,25 @@ postgres:
       # broke transactions mid-flight and silently stopped identity-verification
       # from publishing its outbox events.
       #
-      # 500 connections at 8MB work_mem is the sizing constraint; shared_buffers
-      # stays at the conventional ~25% of the limit.
-      maxConnections: 500
+      # 700 rather than 500, because 500 had become the binding constraint on
+      # the purchase funnel rather than a headroom figure. Measured: 482 of 500
+      # in use, with identity_verification holding 92 and fare_pricing 72 while
+      # their own metrics reported 0.4 and 0.7 connections actually in use. Both
+      # are sized per uvicorn worker against a measured burst latency, so the
+      # idle breadth is deliberate and not waste to reclaim.
+      #
+      # What that left was 18 free connections, so offer-management could not be
+      # given back the pool its second replica had to halve, and both its pods
+      # sat at 30 of 30 used with 106 requests queued while the consumer fell
+      # behind events:fare-pricing again.
+      #
+      # 700 at 8MB work_mem is the sizing constraint, and the limit below moves
+      # with it: the peak working set was 22341 MiB against a 24Gi limit, which
+      # is 93% of the cgroup bound, so connections could not be raised against
+      # the old ceiling. The node carries 251Gi at 33% used, so the ceiling was
+      # the limit rather than the hardware. shared_buffers stays at the
+      # conventional ~25%.
+      maxConnections: 700
       sharedBuffers: 1GB
       workMem: 8MB
       # /dev/shm 的大小,并行查询的 DSM 段从这里分配。实测常驻约 126 个段,
@@ -123,9 +139,19 @@ postgres:
       #
       # This is the one pod whose demand is the whole system's demand, and the
       # one scope where a ceiling contaminates every measurement at once.
+      # 40Gi rather than 24Gi, and it moves with maxConnections above. The peak
+      # working set was 22341 MiB against the 24Gi limit, which is 93% of the
+      # bound, and 200 more connections at 8MB work_mem is another ~1.6Gi of
+      # per-backend headroom on top of that. Raising connections against the old
+      # limit would have traded a "too many clients" refusal for an OOMKill.
+      #
+      # The node carries 251Gi at 33% used, so this is the same argument the
+      # comment above makes for CPU: a ceiling on this pod contaminates every
+      # measurement in the system, and being frugal here has already cost two
+      # outages.
       resources:
         requests: { cpu: '1', memory: 4Gi }
-        limits: { cpu: '32', memory: 24Gi }
+        limits: { cpu: '32', memory: 40Gi }
 
 redis:
   enabled: true
@@ -567,11 +593,14 @@ services:
       # entirely in front of this pool. It is the busiest node on the purchase
       # funnel, so the pool is sized for the concurrency it actually sees.
       #
-      # Halved with the second replica, so the pair still holds 60 rather than
-      # 120. postgres-core had 358 of its 500 connections in use with this
-      # service averaging 46.6 of them, and max_connections is a cluster-wide
-      # budget every service draws from.
-      PG_MAX_POOL_SIZE: "30"
+      # Per pod, so the pair holds 120. It was halved to 30 when the second
+      # replica went in, to keep the pair at the 60 one pod used, and that
+      # became the next bound: both pods sat at 30 of 30 used with 106 requests
+      # queued and the consumer fell behind events:fare-pricing again.
+      #
+      # Restored to 60 each now that postgres.maxConnections is 700 rather than
+      # 500. It is a cluster-wide budget, and the old one had 18 free.
+      PG_MAX_POOL_SIZE: "60"
       CONSUMER_THREADS: "4"   # 5 streams
     # 4 consumer threads do not fit in the default 500m CPU limit. Raising
     # CONSUMER_THREADS without raising this caused a CrashLoopBackOff: the
