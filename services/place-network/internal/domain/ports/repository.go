@@ -22,6 +22,7 @@ type PlaceListFilter struct {
 	Limit  int
 	Offset int
 	Status string
+	Codes  []string
 }
 
 type PlacePage struct {

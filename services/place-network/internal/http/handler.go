@@ -78,7 +78,7 @@ func (h *Handler) ListPlaces(ctx *gin.Context) {
 		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, "offset must be an integer", nil)
 		return
 	}
-	resp, err := h.svc.ListPlaces(ctx.Request.Context(), application.ListPlacesRequest{Limit: limit, Offset: offset, Status: ctx.Query("status")})
+	resp, err := h.svc.ListPlaces(ctx.Request.Context(), application.ListPlacesRequest{Limit: limit, Offset: offset, Status: ctx.Query("status"), Codes: ctx.QueryArray("code")})
 	if err != nil {
 		h.writeApplicationError(ctx, err)
 		return
