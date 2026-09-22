@@ -248,7 +248,18 @@ public class PaymentCommandService {
         PaymentIntent intent = getIntent(paymentIntentId);
         PaymentChannel selectedChannel = channelRouter.requireAvailable(channel, amount);
         channel = selectedChannel.channelId();
+        ChannelRef original = intent.channelRef();
+        if (original == null || !channel.equals(ChannelRouter.normalize(original.channel()))
+            || channelOrderId == null || channelOrderId.isBlank()
+            || channelTransactionId == null || channelTransactionId.isBlank()
+            || (original.channelOrderId() != null && !original.channelOrderId().equals(channelOrderId))
+            || (original.channelTransactionId() != null && !original.channelTransactionId().equals(channelTransactionId))) {
+            throw new DomainRuleViolation("channel capture does not match the payment route");
+        }
         if (intent.status().name().equals("CAPTURED")) {
+            if (!intent.capturedAmount().equals(amount)) {
+                throw new DomainRuleViolation("captured payment callback amount mismatch");
+            }
             return intent;
         }
         // A channel-confirmed collection against a CANCELLED or EXPIRED intent
