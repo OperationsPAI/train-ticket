@@ -662,13 +662,13 @@ impl PostgresCapacityService {
         .transpose()
     }
 
-    async fn find_confirmable_hold_by_segment_booking(
+    async fn find_latest_hold_by_segment_booking(
         &self,
         tx: &mut PgTransaction<'_>,
         segment_booking_ref: &str,
     ) -> Result<Option<Snapshot<CapacityHoldSnapshot>>, StorageError> {
         let sql = format!(
-            "SELECT id, version, data FROM {HOLD_TABLE} WHERE data #>> '{{references,segmentBookingRef}}' = $1 AND data ->> 'state' = 'Held' ORDER BY updated_at DESC LIMIT 1"
+            "SELECT id, version, data FROM {HOLD_TABLE} WHERE data #>> '{{references,segmentBookingRef}}' = $1 ORDER BY updated_at DESC LIMIT 1"
         );
         let row: Option<(String, i64, Value)> = sqlx::query_as(&sql)
             .bind(segment_booking_ref)
@@ -1079,13 +1079,24 @@ impl PostgresCapacityService {
             return Ok(());
         }
         let Some(hold_snapshot) = self
-            .find_confirmable_hold_by_segment_booking(&mut tx, segment_booking_ref)
+            .find_latest_hold_by_segment_booking(&mut tx, segment_booking_ref)
             .await
             .map_err(inbound_transient)?
         else {
-            tx.commit().await.map_err(inbound_transient)?;
-            return Ok(());
+            return Err(InboundEventError::Transient(format!(
+                "capacity hold is not available for booking {segment_booking_ref}"
+            )));
         };
+        match hold_snapshot.data.state.as_str() {
+            "Confirmed" | "Released" | "Expired" | "Failed" => {
+                tx.commit().await.map_err(inbound_transient)?;
+                return Ok(());
+            }
+            "Held" => {}
+            _ => return Err(InboundEventError::Transient(format!(
+                "capacity hold for booking {segment_booking_ref} is not ready for confirmation"
+            ))),
+        }
         if self
             .claim_idempotency::<ConfirmHoldResponse>(&mut tx, idempotency_key, fingerprint)
             .await
@@ -1103,8 +1114,7 @@ impl PostgresCapacityService {
             .await
             .map_err(inbound_transient)?
         else {
-            tx.commit().await.map_err(inbound_transient)?;
-            return Ok(());
+            return Err(InboundEventError::Transient(format!("inventory pool {pool_id} is not available for confirmation")));
         };
         let mut pool = loaded_pool
             .data
@@ -1112,8 +1122,7 @@ impl PostgresCapacityService {
             .map_err(inbound_from_app_error)?;
         let hold_id_value = HoldId::new(&hold_id).map_err(inbound_fatal)?;
         let Some(current_hold) = pool.hold(&hold_id_value) else {
-            tx.commit().await.map_err(inbound_transient)?;
-            return Ok(());
+            return Err(InboundEventError::Transient(format!("capacity hold {hold_id} is not present in its inventory pool")));
         };
         if !matches!(current_hold.state, CapacityHoldState::Held) {
             tx.commit().await.map_err(inbound_transient)?;
