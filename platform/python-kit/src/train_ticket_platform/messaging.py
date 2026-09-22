@@ -206,6 +206,7 @@ class RedisEventSubscriber(EventSubscriber):
                 now = time.monotonic()
                 if now >= next_prune_at:
                     self._prune_dead_consumers(streams_tuple, group, consumer_name)
+                    self._recover_idle_pending(streams_tuple, group, consumer_name, handler)
                     next_prune_at = now + (PRUNE_INTERVAL_MS / 1000)
                 if recovering:
                     recovering = self._recover_own_pending(streams_tuple, group, consumer_name, handler)
@@ -281,9 +282,7 @@ class RedisEventSubscriber(EventSubscriber):
                 raise
 
     def _prune_dead_consumers(self, streams: Sequence[str], group: str, self_name: str) -> None:
-        """Claim entries from consumers idle > 5 min into this consumer, then
-        delete the dead consumer.  The claimed entries land in our PEL and are
-        picked up by ``_recover_own_pending`` on the next loop iteration."""
+        """Remove idle consumers only when no pending entries belong to them."""
         for stream in streams:
             try:
                 consumers = self._client.xinfo_consumers(stream, group)
@@ -294,17 +293,30 @@ class RedisEventSubscriber(EventSubscriber):
                     if name == self_name:
                         continue
                     idle = int(consumer.get("idle", consumer.get(b"idle", 0)))
-                    if idle > DEAD_CONSUMER_IDLE_MS:
-                        pending = int(consumer.get("pending", consumer.get(b"pending", 0)))
-                        if pending > 0:
-                            self._client.xautoclaim(stream, group, self_name, 0, "0", count=pending + 100)
-                        self._client.execute_command("XGROUP", "DELCONSUMER", stream, group, name)
+                    pending = int(consumer.get("pending", consumer.get(b"pending", 0)))
+                    if idle > DEAD_CONSUMER_IDLE_MS and pending == 0:
+                        removed = self._client.eval(
+                            "if #redis.call('XPENDING', KEYS[1], ARGV[1], '-', '+', 1, ARGV[2]) ~= 0 then return 0 end; redis.call('XGROUP','DELCONSUMER',KEYS[1],ARGV[1],ARGV[2]); return 1",
+                            1, stream, group, name,
+                        )
+                        if not removed:
+                            continue
                         LOGGER.info(
-                            "pruned dead consumer %s from %s/%s (idle=%dms, pending=%d, claimed to %s)",
-                            name, stream, group, idle, pending, self_name,
+                            "pruned idle consumer %s from %s/%s (idle=%dms)", name, stream, group, idle,
                         )
             except Exception:
-                pass
+                LOGGER.exception("consumer pruning failed for %s/%s", stream, group)
+
+    def _recover_idle_pending(self, streams: Sequence[str], group: str, consumer_name: str,
+                              handler: Callable[[EventEnvelope], Any], min_idle_ms: int = 60_000) -> None:
+        if not hasattr(self, "_claim_cursors"):
+            self._claim_cursors: dict[tuple[str, str, str], str] = {}
+        for stream in streams:
+            key = (stream, group, consumer_name)
+            reply = self._client.xautoclaim(stream, group, consumer_name, min_idle_ms,
+                self._claim_cursors.get(key, "0-0"), count=POLL_COUNT)
+            self._claim_cursors[key] = reply[0]
+            self._process_results([(stream, reply[1])], group, consumer_name, handler)
 
     def _recover_own_pending(self, streams: Sequence[str], group: str, consumer_name: str, handler: Callable[[EventEnvelope], Any]) -> bool:
         """Re-deliver entries sitting in THIS consumer's PEL from a prior incarnation.
