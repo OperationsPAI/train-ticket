@@ -11,6 +11,7 @@ import {
   type SeatClass,
 } from "./domain.js";
 import { toEventEnvelope, type EventPublisher } from "./ports.js";
+import type { CapturedPaymentFacts } from "./payment-facts.js";
 
 export { InMemoryEventPublisher };
 
@@ -86,7 +87,32 @@ export class LoyaltyMembershipApplicationService {
     private readonly repository: MemberRepository,
     private readonly publisher: EventPublisher,
     private readonly resolveOrderAccount?: (orderId: string) => Promise<string>,
+    private readonly resolvePaymentFacts?: (paymentIntentId: string) => Promise<CapturedPaymentFacts>,
   ) {}
+
+  async reconcilePayment(paymentIntentId: string): Promise<{ paymentIntentId: string; sourceEventIds: string[]; member: MemberDetailsDto }> {
+    if (!this.resolvePaymentFacts || !this.resolveOrderAccount) throw new Error("Payment reconciliation dependencies are required");
+    const facts = await this.resolvePaymentFacts(paymentIntentId);
+    if (facts.status !== "CAPTURED" || facts.purpose !== "purchase" || facts.refundedAmount.minorUnits !== 0) {
+      throw new ApplicationError("PRECONDITION_FAILED", "Reconciliation requires an unrefunded captured purchase payment", 409);
+    }
+    const owner = await this.resolveOrderAccount(facts.businessRef);
+    if (owner !== facts.payerRef) throw new ApplicationError("PRECONDITION_FAILED", "Payment payer differs from the order owner", 409);
+    if (facts.events.length !== 1) throw new ApplicationError("PRECONDITION_FAILED", "Payment must have one authoritative capture event", 409);
+    const event = facts.events[0];
+    const amount = event.payload.capturedAmount as Money | undefined;
+    if (event.eventType !== "PaymentCaptured" || event.producer !== "payment" || !event.eventId ||
+      event.payload.paymentIntentId !== paymentIntentId || event.payload.businessRef !== facts.businessRef ||
+      !amount || !Number.isSafeInteger(amount.minorUnits) || amount.minorUnits <= 0 ||
+      amount.minorUnits !== facts.capturedAmount.minorUnits || amount.currency !== facts.capturedAmount.currency ||
+      !Number.isFinite(Date.parse(event.occurredAt))) {
+      throw new ApplicationError("PRECONDITION_FAILED", "Capture event does not match the persisted payment", 409);
+    }
+    const member = await this.accrueFromPaymentCaptured({ orderId: facts.businessRef, accountId: owner,
+      ticketPrice: amount, sourceEventId: event.eventId, confirmedAt: new Date(event.occurredAt),
+      correlationId: event.correlationId, causationId: event.eventId });
+    return { paymentIntentId, sourceEventIds: [event.eventId], member };
+  }
 
   async getMember(memberId: string): Promise<MemberDetailsDto> {
     return memberDetails((await this.requireMember(memberId)).toSnapshot());
