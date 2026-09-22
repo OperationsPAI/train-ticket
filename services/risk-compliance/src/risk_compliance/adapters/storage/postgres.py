@@ -221,6 +221,10 @@ class PostgresAssessmentRepository:
     def order_assessment(self, order_id: str) -> RiskAssessmentResult | None:
         def read(conn: Any) -> RiskAssessmentResult | None:
             row = conn.execute("SELECT s.data FROM order_risk_results r JOIN risk_assessment_snapshots s ON s.id=r.assessment_id WHERE r.order_id=%s", (order_id,)).fetchone()
+            if row is None:
+                row = conn.execute("SELECT s.data FROM risk_assessment_snapshots s WHERE s.data->>'subjectRef'=%s AND s.data->>'scenario'='order_risk' AND EXISTS (SELECT 1 FROM risk_order_accounts a WHERE a.order_id=%s) ORDER BY s.updated_at,s.id LIMIT 1", (order_id,order_id)).fetchone()
+                if row is not None:
+                    conn.execute("INSERT INTO order_risk_results(order_id,account_id,assessment_id) SELECT order_id,account_id,%s FROM risk_order_accounts WHERE order_id=%s ON CONFLICT DO NOTHING", (row[0]["assessmentId"],order_id))
             return None if row is None else _assessment_from_json(row[0])
         return self.with_connection(read)
 

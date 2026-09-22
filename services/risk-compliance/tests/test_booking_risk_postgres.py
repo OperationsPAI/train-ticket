@@ -117,15 +117,13 @@ def test_early_booking_request_is_durable_and_completed_with_the_order_assessmen
         assert conn.execute("SELECT count(*) FROM booking_risk_requests WHERE completed_at IS NULL").fetchone()[0] == 0
 
 
-def test_migration_indexes_existing_order_assessment(database):
+def test_existing_order_assessment_is_loaded_by_order(database):
     sample = samples()["DENY"]
     request = EventEnvelope.from_json_dict(sample["request"])
     result = _assessment_from_json(sample["assessment"])
     service = service_for(database)
     service.repository.save(result)
     service.repository.remember_order_account(result.subjectRef, request.payload["accountId"])
-    with database.connection() as conn:
-        conn.execute((Path(__file__).parents[1] / "migrations/006_booking_risk_results.sql").read_text())
     assert service.repository.order_assessment(result.subjectRef) == result
     service.handle_event(request)
     assert completion(database)[0]["payload"]["verdict"] == "BLOCK"
