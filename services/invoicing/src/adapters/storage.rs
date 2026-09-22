@@ -50,38 +50,42 @@ impl PostgresInvoicingService {
 
     async fn hydrate_locked(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        account: &str,
+        key: &str,
     ) -> Result<(InMemoryInvoicingService, Arc<InMemoryEventPublisher>), InvoicingError> {
-        sqlx::query("INSERT INTO invoicing_state (id, data) VALUES (1, '{}'::jsonb) ON CONFLICT (id) DO NOTHING")
-            .execute(&mut **tx)
-            .await
-            .map_err(internal)?;
-        let row: (Value,) =
-            sqlx::query_as("SELECT data FROM invoicing_state WHERE id = 1 FOR UPDATE")
-                .fetch_one(&mut **tx)
-                .await
-                .map_err(internal)?;
-        let (svc, publisher) = Self::engine();
-        if row.0.as_object().map(|o| !o.is_empty()).unwrap_or(false) {
-            let snapshot: InvoicingStateSnapshot =
-                serde_json::from_value(row.0).map_err(internal)?;
-            svc.import_snapshot(snapshot);
+        for lock in [format!("invoice-key:{key}"), format!("invoice-account:{account}")] {
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+                .bind(lock).execute(&mut **tx).await.map_err(internal)?;
         }
+        let rows: Vec<(String,String,Value)> = sqlx::query_as(
+            "SELECT kind,id,data FROM invoicing_command_rows WHERE (account_id=$1 AND kind <> 'idempotency') OR (kind='idempotency' AND id=$2)",
+        ).bind(account).bind(key).fetch_all(&mut **tx).await.map_err(internal)?;
+        let (svc, publisher) = Self::engine();
+        svc.import_snapshot(Self::snapshot_from_rows(rows)?);
         Ok((svc, publisher))
     }
 
-    async fn hydrate_read(&self) -> Result<InMemoryInvoicingService, InvoicingError> {
-        let row: Option<(Value,)> = sqlx::query_as("SELECT data FROM invoicing_state WHERE id = 1")
-            .fetch_optional(self.pool())
-            .await
-            .map_err(internal)?;
-        let (svc, _publisher) = Self::engine();
-        if let Some((data,)) = row {
-            if data.as_object().map(|o| !o.is_empty()).unwrap_or(false) {
-                let snapshot: InvoicingStateSnapshot =
-                    serde_json::from_value(data).map_err(internal)?;
-                svc.import_snapshot(snapshot);
-            }
+    fn snapshot_from_rows(rows: Vec<(String,String,Value)>) -> Result<InvoicingStateSnapshot, InvoicingError> {
+        let mut snapshot = serde_json::to_value(InvoicingStateSnapshot::default()).map_err(internal)?;
+        for (kind,id,data) in rows {
+            snapshot.get_mut(&kind).and_then(Value::as_object_mut)
+                .ok_or_else(|| InvoicingError::Internal(format!("unknown command row kind {kind}")))?.insert(id,data);
         }
+        serde_json::from_value(snapshot).map_err(internal)
+    }
+
+    async fn account_for(&self, kind: &str, id: &str) -> Result<String, InvoicingError> {
+        let row: Option<(String,)> = sqlx::query_as("SELECT account_id FROM invoicing_command_rows WHERE kind=$1 AND id=$2")
+            .bind(kind).bind(id).fetch_optional(self.pool()).await.map_err(internal)?;
+        row.map(|row| row.0).ok_or_else(|| InvoicingError::NotFound(format!("{kind} {id} not found")))
+    }
+
+    async fn hydrate_read(&self, account: Option<&str>, order: Option<&str>, kind: Option<&str>, id: Option<&str>) -> Result<InMemoryInvoicingService, InvoicingError> {
+        let rows: Vec<(String,String,Value)> = sqlx::query_as(
+            "SELECT kind,id,data FROM invoicing_command_rows WHERE kind <> 'idempotency' AND ($1::text IS NULL OR account_id=$1) AND ($2::text IS NULL OR order_id=$2) AND ($3::text IS NULL OR kind=$3) AND ($4::text IS NULL OR id=$4)",
+        ).bind(account).bind(order).bind(kind).bind(id).fetch_all(self.pool()).await.map_err(internal)?;
+        let (svc, _publisher) = Self::engine();
+        svc.import_snapshot(Self::snapshot_from_rows(rows)?);
         Ok(svc)
     }
 
@@ -89,17 +93,20 @@ impl PostgresInvoicingService {
         mut tx: sqlx::Transaction<'_, sqlx::Postgres>,
         svc: &InMemoryInvoicingService,
         publisher: &InMemoryEventPublisher,
+        account: &str,
     ) -> Result<(), InvoicingError> {
         let mut snapshot = svc.snapshot();
         snapshot.orders.clear();
         snapshot.amounts.clear();
         snapshot.saga_invoices.clear();
         let data = serde_json::to_value(snapshot).map_err(internal)?;
-        sqlx::query("UPDATE invoicing_state SET data = $1 WHERE id = 1")
-            .bind(data)
-            .execute(&mut *tx)
-            .await
-            .map_err(internal)?;
+        for kind in ["titles","requests","invoices","red_flushes","idempotency"] {
+            for (id, entity) in data[kind].as_object().ok_or_else(|| InvoicingError::Internal("invalid command snapshot".into()))? {
+                sqlx::query("INSERT INTO invoicing_command_rows(kind,id,account_id,order_id,data) VALUES($1,$2,$3,$4,$5) ON CONFLICT(kind,id) DO UPDATE SET data=EXCLUDED.data,order_id=EXCLUDED.order_id WHERE invoicing_command_rows.data IS DISTINCT FROM EXCLUDED.data")
+                    .bind(kind).bind(id).bind(account).bind(entity.get("orderId").and_then(Value::as_str))
+                    .bind(entity).execute(&mut *tx).await.map_err(internal)?;
+            }
+        }
         for envelope in publisher.drain() {
             let body = serde_json::to_value(&envelope).map_err(internal)?;
             sqlx::query(
@@ -116,17 +123,17 @@ impl PostgresInvoicingService {
         Ok(())
     }
 
-    async fn mutate<T, F, Fut>(&self, f: F) -> Result<T, InvoicingError>
+    async fn mutate<T, F, Fut>(&self, account: String, key: String, f: F) -> Result<T, InvoicingError>
     where
         F: FnOnce(InMemoryInvoicingService) -> Fut,
         Fut: std::future::Future<Output = (InMemoryInvoicingService, Result<T, InvoicingError>)>,
     {
         let mut tx = self.pool().begin().await.map_err(internal)?;
-        let (svc, publisher) = Self::hydrate_locked(&mut tx).await?;
+        let (svc, publisher) = Self::hydrate_locked(&mut tx, &account, &key).await?;
         let (svc, out) = f(svc).await;
         match out {
             Ok(value) => {
-                Self::commit_state(tx, &svc, &publisher).await?;
+                Self::commit_state(tx, &svc, &publisher, &account).await?;
                 Ok(value)
             }
             Err(error) => Err(error), // tx dropped -> rollback, nothing published
@@ -233,12 +240,14 @@ impl PostgresInvoicingService {
                 return self.consume_projection(envelope, stream, kind, &id).await;
             }
         }
+        let mut account = None;
         if matches!(envelope.event_type.as_str(), "PostSalesApproved" | "PostSalesApplied") {
             let order_id = envelope.payload.get("orderId").and_then(Value::as_str).unwrap_or("");
-            let exists: (bool,) = sqlx::query_as(
-                "SELECT EXISTS (SELECT 1 FROM invoicing_state, LATERAL jsonb_each(COALESCE(data->'invoices','{}'::jsonb)) i WHERE i.value->>'orderId'=$1 AND i.value->>'invoiceType'='BLUE' AND i.value->>'status'='ISSUED')",
-            ).bind(order_id).fetch_one(self.pool()).await.map_err(internal)?;
-            if !exists.0 {
+            let found: Option<(String,)> = sqlx::query_as(
+                "SELECT account_id FROM invoicing_command_rows WHERE kind='invoices' AND order_id=$1 AND data->>'invoiceType'='BLUE' AND data->>'status'='ISSUED' LIMIT 1",
+            ).bind(order_id).fetch_optional(self.pool()).await.map_err(internal)?;
+            account = found.map(|row| row.0);
+            if account.is_none() {
                 sqlx::query("INSERT INTO processed_events (event_id,stream) VALUES ($1,$2) ON CONFLICT DO NOTHING")
                     .bind(&envelope.event_id).bind(stream).execute(self.pool()).await.map_err(internal)?;
                 return Ok(());
@@ -273,16 +282,17 @@ impl PostgresInvoicingService {
         if claimed.rows_affected() == 0 {
             return Ok(());
         }
-        let (svc, publisher) = Self::hydrate_locked(&mut tx).await?;
+        let account = account.or_else(|| envelope.payload.get("accountId").and_then(Value::as_str).map(str::to_owned)).unwrap_or_default();
+        let (svc, publisher) = Self::hydrate_locked(&mut tx, &account, &envelope.event_id).await?;
         svc.apply_subscribed_event(envelope).await?;
-        Self::commit_state(tx, &svc, &publisher).await
+        Self::commit_state(tx, &svc, &publisher, &account).await
     }
 }
 
 macro_rules! delegate_mutation {
-    ($self:ident, $svc:ident => $body:expr) => {
+    ($self:ident, $account:expr, $key:expr, $svc:ident => $body:expr) => {
         $self
-            .mutate(|$svc| async move {
+            .mutate($account, $key, |$svc| async move {
                 let out = $body;
                 ($svc, out)
             })
@@ -304,7 +314,7 @@ impl InvoicingApi for PostgresInvoicingService {
         key: String,
         corr: String,
     ) -> Result<InvoiceTitle, InvoicingError> {
-        delegate_mutation!(self, svc => svc.create_title(cmd, key, corr).await)
+        delegate_mutation!(self, cmd.account_id.clone(), key.clone(), svc => svc.create_title(cmd, key, corr).await)
     }
     async fn list_titles(
         &self,
@@ -313,13 +323,13 @@ impl InvoicingApi for PostgresInvoicingService {
         limit: usize,
         offset: usize,
     ) -> Result<Page<InvoiceTitle>, InvoicingError> {
-        self.hydrate_read()
+        self.hydrate_read(Some(&account_id), None, Some("titles"), None)
             .await?
             .list_titles(account_id, status, limit, offset)
             .await
     }
     async fn get_title(&self, id: String) -> Result<InvoiceTitle, InvoicingError> {
-        self.hydrate_read().await?.get_title(id).await
+        self.hydrate_read(None, None, Some("titles"), Some(&id)).await?.get_title(id).await
     }
     async fn update_title(
         &self,
@@ -328,7 +338,7 @@ impl InvoicingApi for PostgresInvoicingService {
         key: String,
         corr: String,
     ) -> Result<InvoiceTitle, InvoicingError> {
-        delegate_mutation!(self, svc => svc.update_title(id, cmd, key, corr).await)
+        delegate_mutation!(self, self.account_for("titles", &id).await?, key.clone(), svc => svc.update_title(id, cmd, key, corr).await)
     }
     async fn set_default_title(
         &self,
@@ -337,7 +347,7 @@ impl InvoicingApi for PostgresInvoicingService {
         key: String,
         corr: String,
     ) -> Result<InvoiceTitle, InvoicingError> {
-        delegate_mutation!(self, svc => svc.set_default_title(id, cmd, key, corr).await)
+        delegate_mutation!(self, cmd.account_id.clone(), key.clone(), svc => svc.set_default_title(id, cmd, key, corr).await)
     }
     async fn deactivate_title(
         &self,
@@ -346,7 +356,7 @@ impl InvoicingApi for PostgresInvoicingService {
         key: String,
         corr: String,
     ) -> Result<DeactivateTitleResponse, InvoicingError> {
-        delegate_mutation!(self, svc => svc.deactivate_title(id, cmd, key, corr).await)
+        delegate_mutation!(self, self.account_for("titles", &id).await?, key.clone(), svc => svc.deactivate_title(id, cmd, key, corr).await)
     }
     async fn request_invoice(
         &self,
@@ -354,7 +364,7 @@ impl InvoicingApi for PostgresInvoicingService {
         key: String,
         corr: String,
     ) -> Result<EInvoiceRequest, InvoicingError> {
-        self.mutate(|svc| async move {
+        self.mutate(cmd.account_id.clone(), key.clone(), |svc| async move {
             let result = match self.load_order_context(&svc, &cmd.order_id).await {
                 Ok(()) => svc.request_invoice(cmd, key, corr).await,
                 Err(error) => Err(error),
@@ -363,10 +373,10 @@ impl InvoicingApi for PostgresInvoicingService {
         }).await
     }
     async fn get_request(&self, id: String) -> Result<EInvoiceRequest, InvoicingError> {
-        self.hydrate_read().await?.get_request(id).await
+        self.hydrate_read(None, None, Some("requests"), Some(&id)).await?.get_request(id).await
     }
     async fn get_invoice(&self, id: String) -> Result<EInvoice, InvoicingError> {
-        self.hydrate_read().await?.get_invoice(id).await
+        self.hydrate_read(None, None, Some("invoices"), Some(&id)).await?.get_invoice(id).await
     }
     async fn list_invoices(
         &self,
@@ -376,13 +386,13 @@ impl InvoicingApi for PostgresInvoicingService {
         limit: usize,
         offset: usize,
     ) -> Result<Page<EInvoice>, InvoicingError> {
-        self.hydrate_read()
+        self.hydrate_read(None, Some(&order_id), Some("invoices"), None)
             .await?
             .list_invoices(order_id, invoice_type, status, limit, offset)
             .await
     }
     async fn get_red_flush(&self, id: String) -> Result<RedFlushView, InvoicingError> {
-        self.hydrate_read().await?.get_red_flush(id).await
+        self.hydrate_read(None, None, Some("red_flushes"), Some(&id)).await?.get_red_flush(id).await
     }
     async fn list_red_flushes(
         &self,
@@ -392,7 +402,7 @@ impl InvoicingApi for PostgresInvoicingService {
         limit: usize,
         offset: usize,
     ) -> Result<Page<RedFlushView>, InvoicingError> {
-        self.hydrate_read()
+        self.hydrate_read(None, order_id.as_deref(), Some("red_flushes"), None)
             .await?
             .list_red_flushes(order_id, case_id, status, limit, offset)
             .await
@@ -413,6 +423,48 @@ impl InvoicingApi for PostgresInvoicingService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL pointing to a disposable database"]
+    async fn command_rows_preserve_migrated_titles_and_isolate_account_transactions() {
+        let admin = sqlx::PgPool::connect(&std::env::var("TEST_DATABASE_URL").unwrap()).await.unwrap();
+        let schema = format!("invoice_rows_{}", uuid::Uuid::now_v7().simple());
+        sqlx::query(&format!("CREATE SCHEMA {schema}")).execute(&admin).await.unwrap();
+        let schema_for_connections = schema.clone();
+        let pool = sqlx::postgres::PgPoolOptions::new().max_connections(8).after_connect(move |conn, _| {
+            let query = format!("SET search_path TO {schema_for_connections}");
+            Box::pin(async move { sqlx::query(&query).execute(conn).await?; Ok(()) })
+        }).connect(&std::env::var("TEST_DATABASE_URL").unwrap()).await.unwrap();
+        sqlx::raw_sql(include_str!("../../migrations/003_state_row.sql")).execute(&pool).await.unwrap();
+        let engine = InMemoryInvoicingService::default();
+        let account = format!("acc-{}", uuid::Uuid::now_v7());
+        let command = CreateInvoiceTitleCommand { account_id: account.clone(), title_type: TitleType::Personal,
+            title_name: "Tax receipt".into(), tax_identity: None, registered_address: None, registered_phone: None,
+            bank_name: None, bank_account: None, set_as_default: true };
+        let title_key = uuid::Uuid::now_v7().to_string();
+        let title = engine.create_title(command.clone(), title_key.clone(), rust_kit::messaging::correlation_id()).await.unwrap();
+        sqlx::query("INSERT INTO invoicing_state(id,data) VALUES(1,$1)").bind(serde_json::to_value(engine.snapshot()).unwrap()).execute(&pool).await.unwrap();
+        let storage = rust_kit::storage::Storage::new(pool.clone());
+        storage.migrate_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations")).await.unwrap();
+        let service = PostgresInvoicingService { storage };
+        assert_eq!(service.get_title(title.title_id.clone()).await.unwrap().title_name, "Tax receipt");
+        let replay = service.create_title(command.clone(), title_key, rust_kit::messaging::correlation_id()).await.unwrap();
+        assert_eq!(replay.title_id, title.title_id);
+        let mut blocker = pool.begin().await.unwrap();
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))").bind(format!("invoice-account:{account}"))
+            .execute(&mut *blocker).await.unwrap();
+        let other = CreateInvoiceTitleCommand { account_id: format!("acc-{}", uuid::Uuid::now_v7()), ..command };
+        tokio::time::timeout(std::time::Duration::from_secs(2), service.create_title(other, uuid::Uuid::now_v7().to_string(), rust_kit::messaging::correlation_id()))
+            .await.unwrap().unwrap();
+        blocker.rollback().await.unwrap();
+        let restarted = PostgresInvoicingService { storage: rust_kit::storage::Storage::new(pool.clone()) };
+        assert_eq!(restarted.list_titles(account, None, 20, 0).await.unwrap().total, 1);
+        let state: (Value,) = sqlx::query_as("SELECT data FROM invoicing_state WHERE id=1").fetch_one(&pool).await.unwrap();
+        assert_eq!(state.0, json!({}));
+        pool.close().await;
+        sqlx::query(&format!("DROP SCHEMA {schema} CASCADE")).execute(&admin).await.unwrap();
+        admin.close().await;
+    }
 
     #[tokio::test]
     #[ignore = "requires TEST_DATABASE_URL pointing to a disposable database"]
