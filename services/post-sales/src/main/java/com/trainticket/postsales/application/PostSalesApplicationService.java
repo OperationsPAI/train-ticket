@@ -434,11 +434,7 @@ public class PostSalesApplicationService {
         return RefundClassification.VOLUNTARY;
     }
 
-    /**
-     * Capacity release is the terminal execution signal for refund cases
-     * (subscription table row 5): find the APPROVED case scoped to this
-     * segment booking and mark it applied.
-     */
+    /** Persist every scoped reservation release before completing capacity execution. */
     public void applyForSegmentBooking(String segmentBookingRef, String causationId, String correlationId) {
         for (PostSalesCase postSalesCase : repository.findByOrderItemRef(segmentBookingRef)) {
             java.time.Instant now = java.time.Instant.now(clock);
@@ -446,11 +442,12 @@ public class PostSalesApplicationService {
                 postSalesCase.startExecution(now, "cmd-capacity-released", causationId, correlationId);
             }
             if (postSalesCase.status() == com.trainticket.postsales.domain.PostSalesCaseStatus.EXECUTING) {
-                postSalesCase.applyResult("capacity released; refund executed", now, "cmd-capacity-released", causationId, correlationId);
+                if (postSalesCase.recordCapacityReleased(segmentBookingRef)) {
+                    postSalesCase.applyResult("all scoped capacity released", now, "cmd-capacity-released", causationId, correlationId);
+                }
                 repository.save(postSalesCase);
                 publishNewEvents(postSalesCase);
             }
-            return;
         }
     }
 
