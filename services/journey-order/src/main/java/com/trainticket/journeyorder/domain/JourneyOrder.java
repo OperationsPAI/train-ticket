@@ -276,10 +276,10 @@ public final class JourneyOrder {
                 ancillaryOrderItemId,
                 OrderItemType.ANCILLARY_SERVICE,
                 "ancillary " + requireText(serviceType, "serviceType"),
-                Money.zero(Objects.requireNonNull(payableAmount, "payableAmount is required").currency()),
+                Objects.requireNonNull(payableAmount, "payableAmount is required"),
                 requireText(catalogItemId, "catalogItemId"),
                 List.of(new OrderLineBinding(ancillaryOrderItemId, requireText(travelerRef, "travelerRef"), blankToEmpty(segmentRef), ancillaryOrderItemId))
-            ));
+            ).withIndependentSettlement());
             monetarySummary = MonetarySummary.fromItems(orderItems);
         }
         recordTimeline(

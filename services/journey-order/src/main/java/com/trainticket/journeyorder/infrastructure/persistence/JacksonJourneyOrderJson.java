@@ -60,6 +60,7 @@ final class JacksonJourneyOrderJson {
             n.put("commercialReasonRef", item.commercialReasonRef());
             n.set("bindings", mapper.valueToTree(item.bindings()));
             n.put("cancelled", item.cancelled());
+            n.put("independentlySettled",item.independentlySettled());
             n.put("cancellationReason", item.cancellationReason());
         }
         return array;
@@ -83,6 +84,7 @@ final class JacksonJourneyOrderJson {
                 mapper.convertValue(n.get("bindings"),
                     new TypeReference<List<com.trainticket.journeyorder.domain.OrderLineBinding>>() {})
             );
+            if (n.path("independentlySettled").asBoolean(false)) item.withIndependentSettlement();
             if (n.path("cancelled").asBoolean(false)) {
                 item.cancel(n.path("cancellationReason").asText("cancelled"));
             }

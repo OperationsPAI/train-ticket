@@ -44,6 +44,7 @@ public record MonetarySummary(
         Money discountTotal = Money.zero(currency);
         Money cancelledTotal = Money.zero(currency);
         for (OrderItem item : items) {
+            if(item.independentlySettled())continue;
             Money amount = requireCurrency(item.amount(), currency, "order item " + item.orderItemId());
             if (item.cancelled()) {
                 cancelledTotal = cancelledTotal.plus(amount.amount().signum() < 0 ? amount.negate() : amount);

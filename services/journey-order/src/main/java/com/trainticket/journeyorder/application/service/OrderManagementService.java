@@ -409,7 +409,8 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
             order.confirmationConditions().riskClear(),
             order.timeline().stream().filter(fact -> "JourneyOrderCancelled".equals(fact.factType()))
                 .reduce((previous, latest) -> latest).map(fact -> fact.reason()).orElse(null),
-            order.travelers(), order.segments()
+            order.travelers(), order.segments(),order.orderItems().stream().filter(item->item.type()==com.trainticket.journeyorder.domain.OrderItemType.ANCILLARY_SERVICE)
+                .map(item->new JourneyOrderResult.AncillaryItemDto(item.orderItemId(),new JourneyOrderResult.MoneyDto(item.amount().currency().getCurrencyCode(),item.amount().toMinorUnits()),item.cancelled(),item.independentlySettled())).toList()
         );
     }
 
