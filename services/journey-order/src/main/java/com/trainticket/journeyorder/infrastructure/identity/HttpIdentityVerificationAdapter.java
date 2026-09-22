@@ -57,6 +57,11 @@ public class HttpIdentityVerificationAdapter implements IdentityVerificationPort
 
     @Override
     public PreOrderCheckResult preOrderCheck(JourneyOrderRequest request, String orderIntentId, String idempotencyKey, String correlationId, Instant requestedAt) {
+        return preOrderCheck(request,orderIntentId,idempotencyKey,correlationId,requestedAt,List.of());
+    }
+
+    @Override
+    public PreOrderCheckResult preOrderCheck(JourneyOrderRequest request, String orderIntentId, String idempotencyKey, String correlationId, Instant requestedAt, List<com.trainticket.journeyorder.application.port.out.ResolvedOrderOffer.EligibilityUsage> eligibilityUsages) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("orderIntentId", orderIntentId);
         body.put("accountId", request.accountId());
@@ -66,7 +71,7 @@ public class HttpIdentityVerificationAdapter implements IdentityVerificationPort
         body.put("segmentRefs", request.segmentRefs());
         body.put("journeyDate", request.journeyDate() == null || request.journeyDate().isBlank() ? LocalDate.now().plusDays(1).toString() : request.journeyDate());
         body.put("productCode", request.productCode() == null || request.productCode().isBlank() ? "TRAIN" : request.productCode());
-        body.put("requestedEligibilityTypes", List.of());
+        body.put("eligibilityUsages", eligibilityUsages);
         body.put("limitPolicyVersion", System.getenv().getOrDefault("IDENTITY_LIMIT_POLICY_VERSION", "limit-v1"));
         body.put("requestedAt", requestedAt.toString());
 

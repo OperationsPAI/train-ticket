@@ -14,6 +14,7 @@ from fare_pricing.application.service import (
     FarePricingService,
     QuoteNotFoundError,
     RuleSetNotFoundError,
+    EligibilityUnavailableError,
 )
 from fare_pricing.domain import (
     AdjustmentQuote,
@@ -274,6 +275,8 @@ def compute_fare_quote(
                     raise ApiError("UNAVAILABLE", "Event bus publish failed", 503) from exc
     except OptimisticConcurrencyError as exc:
         raise _conflict_error(exc) from exc
+    except EligibilityUnavailableError as exc:
+        raise ApiError("UNAVAILABLE", str(exc), 503) from exc
     except (PricingError, RuleSetNotFoundError) as exc:
         raise _domain_error(exc) from exc
 
@@ -337,6 +340,8 @@ def compute_adjustment_quote(
 def _fare_quote_to_response(quote: FareQuote) -> dict[str, Any]:
     resp: dict[str, Any] = {
         "quoteId": quote.quote_id,
+        "productCode": quote.product_code,
+        "eligibilityUsages": list(quote.eligibility_usages),
         "status": quote.status.value.upper(),
         "validFrom": _timestamp_str(quote.valid_from),
         "validUntil": _timestamp_str(quote.valid_until),

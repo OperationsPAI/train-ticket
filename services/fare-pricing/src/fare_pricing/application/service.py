@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta, timezone
 from typing import Any
 
@@ -22,6 +22,10 @@ from fare_pricing.domain import (
 
 class QuoteNotFoundError(Exception):
     """Raised when a quote is not found."""
+
+
+class EligibilityUnavailableError(RuntimeError):
+    pass
 
 
 class AdjustmentQuoteNotFoundError(Exception):
@@ -127,8 +131,8 @@ class InMemoryStore:
 
 
 class EligibilityCertificatePort:
-    def has_active_certificate(self, traveler_id: str, eligibility_type: str, journey_date: str, product_code: str) -> bool:
-        return False
+    def active_certificate_id(self, traveler_id: str, eligibility_type: str, journey_date: str, product_code: str) -> str | None:
+        return None
 
 
 class FarePricingService:
@@ -168,7 +172,8 @@ class FarePricingService:
 
         departure_date = departure_time.astimezone(UTC).date().isoformat() if departure_time is not None else None
         journey_date = departure_date or now.date().isoformat()
-        active_discount_types = self._active_discount_types(rule_set, traveler_refs, journey_date)
+        eligibility_usages = self._eligibility_usages(rule_set, traveler_refs, journey_date)
+        active_discount_types = {usage["eligibilityType"] for usage in eligibility_usages}
         capacity_snapshots = self.capacity_snapshots_for(segment_refs or [], departure_date)
         quote = calculate_fare_quote(
             quote_id=quote_id,
@@ -185,30 +190,34 @@ class FarePricingService:
             departure_time=departure_time,
             capacity_snapshots=capacity_snapshots,
         )
+        applied_types = {str(component.explanation.as_mapping().get("eligibilityType", "")).strip().upper()
+                         for component in quote.breakdown.discounts if component.amount.amount_minor > 0} if quote.breakdown else set()
+        quote = replace(quote, eligibility_usages=tuple(usage for usage in eligibility_usages if usage["eligibilityType"] in applied_types))
         self._store.save_quote(quote)
         self.link_fare_quote_to_segments(quote.quote_id, segment_refs or [])
         return quote
 
-    def _active_discount_types(self, rule_set: FareRuleSet, traveler_refs: list[str], journey_date: str) -> set[str]:
+    def _eligibility_usages(self, rule_set: FareRuleSet, traveler_refs: list[str], journey_date: str) -> list[dict[str, str]]:
         requested = {rule.explanation.as_mapping().get("eligibilityType", "").strip().upper() for rule in rule_set.rules if rule.kind.value == "discount"}
         requested.discard("")
         if not requested:
-            return set()
-        active: set[str] = set()
-        for eligibility_type in requested:
-            if any(self._has_active_certificate(traveler, eligibility_type, journey_date, rule_set.product_code) for traveler in traveler_refs):
-                active.add(eligibility_type)
-        return active
+            return []
+        usages = []
+        for eligibility_type in sorted(requested):
+            for traveler in traveler_refs:
+                certificate_id = self._active_certificate_id(traveler, eligibility_type, journey_date, rule_set.product_code)
+                if certificate_id:
+                    usages.append({"travelerId": traveler, "eligibilityType": eligibility_type, "eligibilityCertificateId": certificate_id})
+                    break
+        return usages
 
-    def _has_active_certificate(self, traveler_id: str, eligibility_type: str, journey_date: str, product_code: str) -> bool:
+    def _active_certificate_id(self, traveler_id: str, eligibility_type: str, journey_date: str, product_code: str) -> str | None:
         lookup = getattr(self._store, "active_eligibility_certificates_for", None)
         if callable(lookup):
-            try:
-                if lookup(traveler_id, eligibility_type, journey_date, product_code):
-                    return True
-            except ValueError:
-                return False
-        return self._eligibility.has_active_certificate(traveler_id, eligibility_type, journey_date, product_code)
+            certificates = lookup(traveler_id, eligibility_type, journey_date, product_code)
+            if certificates:
+                return sorted(certificates, key=lambda item: item.eligibility_certificate_id)[0].eligibility_certificate_id
+        return self._eligibility.active_certificate_id(traveler_id, eligibility_type, journey_date, product_code)
 
     def compute_adjustment_quote(
         self,
