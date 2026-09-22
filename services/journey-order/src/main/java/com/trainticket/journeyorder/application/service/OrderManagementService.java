@@ -587,7 +587,9 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
             return ackSkipStateRace(envelope, order);
         }
         try {
-            order.recordEntitlementSummaryAccepted(envelope.occurredAt(), "cmd-consume-entitlement", envelope.eventId(), envelope.correlationId());
+            order.recordEntitlementSummaryAccepted(requiredTextPayload(envelope, "entitlementId"),
+                requiredTextPayload(envelope, "travelerRef"), requiredTextPayload(envelope, "segmentRef"),
+                envelope.occurredAt(), "cmd-consume-entitlement", envelope.eventId(), envelope.correlationId());
         } catch (DomainRuleViolation | IllegalStateException ex) {
             return ackSkipStateRace(envelope, order);
         }
