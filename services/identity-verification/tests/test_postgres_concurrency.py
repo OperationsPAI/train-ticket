@@ -11,6 +11,7 @@ from psycopg_pool import ConnectionPool
 
 from identity_verification.adapters.storage.postgres import PostgresIdentityVerificationStore
 from identity_verification.application.service import IdentityVerificationService
+from train_ticket_platform.events import EventEnvelope
 
 
 @pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="TEST_DATABASE_URL is required")
@@ -25,6 +26,15 @@ def test_concurrent_registration_returns_one_durable_credential():
                     for migration in sorted((Path(__file__).parents[1] / "migrations").glob("*.sql")):
                         conn.execute(migration.read_text())
                 service = IdentityVerificationService(PostgresIdentityVerificationStore(pool))
+                snapshot = {"travelerId": "tvl-projection", "snapshotVersion": "1", "travelerType": "ADULT"}
+                service.handle_upstream_event(EventEnvelope(eventId="evt-profile-projection", eventType="TravelerSnapshotUpdated",
+                    producer="traveler-profile", payload=snapshot))
+                for event_type in ("RiskAssessmentResult", "JourneyOrderConfirmed", "TravelerDocumentVerified"):
+                    service.handle_upstream_event(EventEnvelope(eventId="evt-unhandled-" + event_type, eventType=event_type,
+                        producer="risk-compliance", payload={"travelerId": "tvl-projection"}))
+                with pool.connection() as conn:
+                    assert conn.execute("SELECT data FROM traveler_snapshot_links WHERE traveler_id='tvl-projection'").fetchone()[0] == snapshot
+                    assert conn.execute("SELECT count(*) FROM processed_events").fetchone()[0] == 1
                 barrier = threading.Barrier(8)
                 traveler = "tvl-" + uuid4().hex
                 data = {"travelerId": traveler, "profileSnapshotVersion": "v1", "documentType": "ID_CARD",
