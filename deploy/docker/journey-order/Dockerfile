@@ -7,7 +7,7 @@ RUN --mount=type=cache,target=/root/.m2 mvn -q -f platform/java-kit/pom.xml -Dsk
 COPY services/journey-order/pom.xml ./services/journey-order/pom.xml
 RUN --mount=type=cache,target=/root/.m2 mvn -q -f services/journey-order/pom.xml -DskipTests dependency:go-offline
 COPY services/journey-order/src ./services/journey-order/src
-RUN --mount=type=cache,target=/root/.m2 mvn -q -f services/journey-order/pom.xml -DskipTests package
+RUN --mount=type=cache,target=/root/.m2 mvn -q -f platform/java-kit/pom.xml -DskipTests install && mvn -q -f services/journey-order/pom.xml -DskipTests package
 
 FROM eclipse-temurin:25-jre
 RUN useradd --system --create-home --home-dir /home/app app
