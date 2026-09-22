@@ -372,7 +372,7 @@ func (s *StaffSim) closeSupportCase(ctx context.Context, caseID string) error {
 		if attempt < 2 {
 			expected = []int{412}
 		}
-		if status == "ASSIGNED" || status == "IN_PROGRESS" || status == "WAITING_CUSTOMER" || status == "WAITING_EXTERNAL" {
+		if (status == "IN_PROGRESS" && getString(current, "ownerQueue") != "" && current["escalation"] == nil) || status == "ASSIGNED" || status == "WAITING_CUSTOMER" || status == "WAITING_EXTERNAL" {
 			code, _, err := s.api.PollRequest(ctx, "POST", "customer-service", path+"/resolve",
 				map[string]interface{}{"summary": "Inquiry answered", "resolutionCode": "POST_SALES_EXPLAINED"}, nil, []int{200, 201}, "staff-support-resolve-before-close", expected)
 			if err != nil {
