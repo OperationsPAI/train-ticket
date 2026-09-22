@@ -930,6 +930,10 @@ pub mod redis_runtime {
         ) -> Result<(), SubscribeFailed>;
         async fn ack(&mut self, stream: &str, group: &str, id: &str)
         -> Result<(), SubscribeFailed>;
+        async fn ack_many(&mut self, stream: &str, group: &str, ids: &[String]) -> Result<(), SubscribeFailed> {
+            for id in ids { self.ack(stream, group, id).await?; }
+            Ok(())
+        }
     }
 
     struct RedisStreamOps {
@@ -990,7 +994,7 @@ pub mod redis_runtime {
                 .arg("BLOCK")
                 .arg(2_000)
                 .arg("COUNT")
-                .arg(10)
+                .arg(100)
                 .arg("STREAMS")
                 .arg(streams)
                 .arg(vec![">"; streams.len()])
@@ -1033,6 +1037,13 @@ pub mod redis_runtime {
         ) -> Result<(), SubscribeFailed> {
             ack(&mut self.connection, stream, group, id).await
         }
+
+        async fn ack_many(&mut self, stream: &str, group: &str, ids: &[String]) -> Result<(), SubscribeFailed> {
+            if ids.is_empty() { return Ok(()); }
+            let _: i64 = redis::cmd("XACK").arg(stream).arg(group).arg(ids)
+                .query_async(&mut self.connection).await.map_err(|error| SubscribeFailed(error.to_string()))?;
+            Ok(())
+        }
     }
 
     #[derive(Clone)]
@@ -1040,6 +1051,7 @@ pub mod redis_runtime {
         client: redis::Client,
         state: Arc<SubscriberState>,
         stop: Arc<std::sync::atomic::AtomicBool>,
+        event_filter: Option<fn(&EventEnvelope) -> bool>,
     }
     impl RedisEventSubscriber {
         pub fn from_env() -> Result<Self, SubscribeFailed> {
@@ -1053,7 +1065,12 @@ pub mod redis_runtime {
                     .map_err(|error| SubscribeFailed(error.to_string()))?,
                 state: Arc::new(SubscriberState::new()),
                 stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                event_filter: None,
             })
+        }
+        pub fn with_event_filter(mut self, filter: fn(&EventEnvelope) -> bool) -> Self {
+            self.event_filter = Some(filter);
+            self
         }
         pub fn shutdown(&self) {
             self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1093,6 +1110,11 @@ pub mod redis_runtime {
             for stream in streams {
                 let mut messages = ops.recover_pending(stream, group, consumer_name).await?;
                 for message in &mut messages {
+                    if self.event_filter.is_some_and(|filter| serde_json::from_str::<EventEnvelope>(&message.raw_envelope)
+                        .is_ok_and(|envelope| !filter(&envelope))) {
+                        ops.ack(&message.stream, group, &message.id).await?;
+                        continue;
+                    }
                     message.delivery_count = ops
                         .delivery_count(&message.stream, group, &message.id)
                         .await
@@ -1146,7 +1168,7 @@ pub mod redis_runtime {
                     .await;
                 }
             };
-            if self.state.has_seen(&envelope.event_id) {
+            if self.event_filter.is_some_and(|filter| !filter(&envelope)) || self.state.has_seen(&envelope.event_id) {
                 return ops.ack(&message.stream, group, &message.id).await;
             }
             let tracer = global::tracer("rust-kit.messaging");
@@ -1256,7 +1278,16 @@ pub mod redis_runtime {
                         continue;
                     }
                 };
+                let mut selected = Vec::new();
+                let mut ignored: HashMap<String, Vec<String>> = HashMap::new();
                 for message in messages {
+                    if self.event_filter.is_some_and(|filter| serde_json::from_str::<EventEnvelope>(&message.raw_envelope)
+                        .is_ok_and(|envelope| !filter(&envelope))) {
+                        ignored.entry(message.stream.clone()).or_default().push(message.id);
+                    } else { selected.push(message); }
+                }
+                for (stream, ids) in ignored { ops.ack_many(&stream, &group, &ids).await?; }
+                for message in selected {
                     if let Err(error) = self
                         .process_message(ops, &group, &consumer_name, message, handler)
                         .await
@@ -1688,6 +1719,7 @@ pub mod redis_runtime {
                 client: redis::Client::open("redis://127.0.0.1:0").unwrap(),
                 state: Arc::new(SubscriberState::new()),
                 stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                event_filter: None,
             };
             let envelope = EventEnvelope::canonical(
                 "PoisonEvent",
@@ -1821,6 +1853,7 @@ pub mod redis_runtime {
                 client: redis::Client::open("redis://127.0.0.1:0").unwrap(),
                 state: Arc::new(SubscriberState::new()),
                 stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                event_filter: None,
             };
             let mut envelope = EventEnvelope::canonical(
                 "ParentedEvent",
@@ -1878,6 +1911,7 @@ pub mod redis_runtime {
                 client: redis::Client::open("redis://127.0.0.1:0").unwrap(),
                 state: Arc::new(SubscriberState::new()),
                 stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                event_filter: None,
             };
             let mut envelope = EventEnvelope::canonical(
                 "MalformedParentEvent",
@@ -1934,6 +1968,7 @@ pub mod redis_runtime {
                 client: redis::Client::open("redis://127.0.0.1:0").unwrap(),
                 state: Arc::new(SubscriberState::new()),
                 stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                event_filter: None,
             };
             let mut envelope = EventEnvelope::canonical(
                 "HandlerContextEvent",
