@@ -12,6 +12,17 @@ from psycopg_pool import ConnectionPool
 from reporting.adapters.storage.postgres import PostgresReportingApplicationService
 from reporting.domain import ReadModelStatus
 from train_ticket_platform.events import EventEnvelope
+from reporting.adapters.messaging.subscriber import RedisEventSubscriber
+from reporting.adapters.messaging.stream_config import reporting_subscription_streams
+
+
+def test_subscriber_pool_covers_all_parallel_readers():
+    subscriber = RedisEventSubscriber("redis://localhost:16379")
+    try:
+        workers = int(os.environ.get("REPORTING_CONSUMERS_PER_STREAM", "4"))
+        assert subscriber._client.connection_pool.max_connections >= len(reporting_subscription_streams()) * workers
+    finally:
+        subscriber._client.close()
 
 
 @pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="TEST_DATABASE_URL is required")
