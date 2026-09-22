@@ -5,6 +5,7 @@ from contextlib import AbstractContextManager, nullcontext
 from typing import Any, Protocol
 
 from fastapi import FastAPI, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from train_ticket_platform.idempotency import BoundedInMemoryIdempotencyStore, IdempotencyStore, configure_idempotency_middleware
 from train_ticket_platform.ids import is_uuid7
@@ -175,7 +176,22 @@ def configure_legacy_routes(app: FastAPI, service: LegacyAclService) -> None:
             payload = {}
         if not isinstance(payload, Mapping):
             payload = {}
-        result = getattr(service, operation)(payload, ctx)
+        # Off the event loop. Every operation this facade exposes is a
+        # synchronous chain of blocking HTTP calls to other services, and these
+        # endpoints are coroutines, so calling it here holds the worker's loop
+        # for the whole chain.
+        #
+        # Measured with it on the loop: POST /api/v1/legacy/preserve averaged
+        # 18236ms waiting on offer-management, and the pod restarted 78 times in
+        # 9 hours on "Liveness probe failed: context deadline exceeded" while
+        # its CPU peaked at 9% of its limit. Making the probes coroutines was
+        # necessary and not sufficient: a coroutine probe still cannot be served
+        # by a loop that is blocked.
+        #
+        # anyio's pool holds 40 threads, so 40 operations can be in flight
+        # before one queues, and the probes no longer sit in that queue because
+        # they are coroutines.
+        result = await run_in_threadpool(getattr(service, operation), payload, ctx)
         return JSONResponse(status_code=200, content=legacy_body(result.status, result.msg, result.data))
 
     @app.post("/api/v1/legacy/preserve")
