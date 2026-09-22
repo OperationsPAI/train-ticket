@@ -669,6 +669,50 @@ describe("upstream projection writes a batch in one statement", () => {
     ]);
     assert.equal(calls.saveItineraries, 0, "an empty batch must not issue a statement");
   });
+
+  // A traveler snapshot keeps the eligibility already stored against it, and
+  // does so without reading the row back first.
+  //
+  // The handler used to read the row, copy `eligibilityRef` out and write the
+  // merged value, which is two round trips per event and loses an eligibility
+  // that arrives between them. Measured: `process TravelerSnapshotUpdated`
+  // reached 783.6ms, the most expensive event this service handles, against
+  // 66.3ms for FareQuoteComputed.
+  it("keeps a stored eligibility across a traveler snapshot without reading it back", async () => {
+    const repository = new InMemoryUpstreamStateRepository();
+    await repository.saveTraveler({
+      travelerId: "tvl-1",
+      travelerType: "ADULT",
+      eligibilityRef: {
+        eligibilityId: "elig-1",
+        eligibilityType: "STUDENT",
+        eligibilitySource: "identity-verification",
+      },
+    });
+
+    let reads = 0;
+    const watched = Object.create(repository) as InMemoryUpstreamStateRepository;
+    watched.findTraveler = async (travelerId: string) => {
+      reads += 1;
+      return repository.findTraveler(travelerId);
+    };
+
+    await applyUpstreamEvents(watched, [
+      makeEnvelope("TravelerSnapshotUpdated", "traveler-profile", {
+        travelerId: "tvl-1",
+        travelerType: "STUDENT",
+        maskedDocumentRef: "**** 1234",
+      }),
+    ]);
+
+    const stored = await repository.findTraveler("tvl-1");
+    assert.equal(stored?.travelerType, "STUDENT", "the snapshot's own fields must win");
+    assert.equal(stored?.eligibilityRef?.eligibilityId, "elig-1",
+      "the stored eligibility was dropped, so the discount it unlocks is lost");
+    assert.equal(reads, 0,
+      "the handler read the row back, which is a second round trip per event and " +
+      "a read-modify-write that loses a concurrent eligibility");
+  });
 });
 
 describe("Offer Management HTTP API — GET /api/v1/offers/:offerId", () => {
