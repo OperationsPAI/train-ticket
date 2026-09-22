@@ -11,7 +11,7 @@ func JourneyChange(ctx context.Context, p *Providers) (string, error) {
 
 	_, err := postSalesCase(ctx, p, purchase, "CHANGE", "SCHEDULE_CHANGE")
 	if err != nil {
-		p.Reg.ReleasePurchase(purchase, "confirmed")
+		p.Reg.ReleasePurchase(purchase, postSalesFailureStatus(purchase))
 		return "", err
 	}
 

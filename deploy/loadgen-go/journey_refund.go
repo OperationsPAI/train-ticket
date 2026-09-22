@@ -90,7 +90,7 @@ func JourneyRefund(ctx context.Context, p *Providers) (string, error) {
 		p.CtxMap("post_sales_case_mix", postSalesCaseMixDefault))
 	caseID, err := postSalesCase(ctx, p, purchase, caseType, postSalesReasonCodes[caseType])
 	if err != nil {
-		p.Reg.ReleasePurchase(purchase, "confirmed")
+		p.Reg.ReleasePurchase(purchase, postSalesFailureStatus(purchase))
 		return "", err
 	}
 
@@ -140,6 +140,7 @@ func postSalesCase(ctx context.Context, p *Providers, purchase *Purchase, caseTy
 		return "", &StepError{Step: lower(caseType) + "-case",
 			Detail: "no case id in response", Kind: FailureMalformed}
 	}
+	purchase.PostSalesCase = caseID
 
 	// Retry on 409 POLICY_CONTEXT_NOT_READY.
 	//
@@ -182,8 +183,14 @@ func postSalesCase(ctx context.Context, p *Providers, purchase *Purchase, caseTy
 		return "", err
 	}
 
-	purchase.PostSalesCase = caseID
 	return caseID, nil
+}
+
+func postSalesFailureStatus(purchase *Purchase) string {
+	if purchase.PostSalesCase != "" {
+		return "post_sales_pending"
+	}
+	return "confirmed"
 }
 
 // findRefundID searches Redis for refund events (simplified: returns empty if no Redis).
