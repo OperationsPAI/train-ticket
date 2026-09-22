@@ -19,7 +19,15 @@ export class PostgresUpstreamStateRepository implements UpstreamStateRepository 
   constructor(private readonly client: PoolClient) {}
 
   async saveItinerary(itinerary: StoredItinerary): Promise<void> {
-    await upsertSnapshot(this.client, "offer_upstream_itineraries", itinerary.itineraryRef, serializeItinerary(itinerary));
+    await this.saveItineraries([itinerary]);
+  }
+
+  async saveItineraries(itineraries: readonly StoredItinerary[]): Promise<void> {
+    await upsertSnapshots(
+      this.client,
+      "offer_upstream_itineraries",
+      itineraries.map((itinerary) => ({ id: itinerary.itineraryRef, data: serializeItinerary(itinerary) })),
+    );
   }
 
   async findItinerary(itineraryRef: string): Promise<StoredItinerary | undefined> {
