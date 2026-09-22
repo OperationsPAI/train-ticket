@@ -853,13 +853,25 @@ impl PostgresCapacityService {
                 .map_err(inbound_fatal)?,
             };
             let outbound = domain_event_to_wire(
-                &DomainEvent::CapacityHoldFailed(failed),
+                &DomainEvent::CapacityHoldFailed(failed.clone()),
                 &envelope.correlation_id,
             )
             .map_err(inbound_from_app_error)?;
+            let snapshot = CapacityHoldSnapshot {
+                hold_id: hold_id.clone(), inventory_pool_id: pool_id.clone(),
+                capacity_unit_ref: "NONE".to_string(), from_seq: 0, to_seq: 1,
+                idempotency_key: idempotency_key.to_string(), requested_at: now,
+                expires_at: now + 300_000, state: "Failed".to_string(),
+                confirmed_at: None, released_at: None, expired_at: None,
+                references: ReferenceMetadataSnapshot::from_domain(&failed.references),
+            };
+            self.hold_repo.save(&mut tx, &hold_id, None, &snapshot).await.map_err(inbound_transient)?;
             OutboxAppender::append(&mut tx, &stream_for_producer(PRODUCER), &outbound)
                 .await
                 .map_err(inbound_transient)?;
+            self.finish_idempotency(&mut tx, idempotency_key, fingerprint, 201,
+                serde_json::to_value(HoldCapacityResponse { hold_id, segment_ref: req.segment_ref.clone(), status: "FAILED".to_string(), held_until: unix_millis_to_rfc3339(snapshot.expires_at) }).map_err(inbound_transient)?
+            ).await.map_err(inbound_from_app_error)?;
             tx.commit().await.map_err(inbound_transient)?;
             return Ok(());
         };
@@ -955,7 +967,7 @@ impl PostgresCapacityService {
         req: &HoldCapacityRequest,
     ) -> Result<Option<CapacityHoldSnapshot>, InboundEventError> {
         let sql = format!(
-            "SELECT data FROM {HOLD_TABLE} WHERE data ->> 'idempotencyKey' = $1 AND data ->> 'state' IN ('Held', 'Confirmed') ORDER BY updated_at DESC LIMIT 1"
+            "SELECT data FROM {HOLD_TABLE} WHERE data ->> 'idempotencyKey' = $1 ORDER BY updated_at DESC LIMIT 1"
         );
         let row: Option<(Value,)> = sqlx::query_as(&sql)
             .bind(idempotency_key)
@@ -983,14 +995,26 @@ impl PostgresCapacityService {
         fingerprint: &str,
         correlation_id: &str,
     ) -> Result<(), InboundEventError> {
-        let outbound = replay_capacity_held_envelope(hold, idempotency_key, correlation_id)?;
+        if hold.state == "Released" || hold.state == "Expired" { return Ok(()); }
+        let outbound = if hold.state == "Failed" {
+            let domain = hold.clone().try_into_domain().map_err(inbound_from_app_error)?;
+            domain_event_to_wire(&DomainEvent::CapacityHoldFailed(CapacityHoldFailed {
+                envelope: EventEnvelope::new("CapacityHoldFailed", now_millis(), correlation_id, None::<String>, PRODUCER),
+                requested_hold_id: domain.hold_id, inventory_pool_id: domain.scope.inventory_pool_id,
+                capacity_unit_ref: domain.scope.capacity_unit_ref, interval: domain.scope.station_interval,
+                idempotency_key: domain.idempotency_key, reason: HoldFailureReason::NoAvailableUnits,
+                references: domain.scope.references,
+            }), correlation_id).map_err(inbound_from_app_error)?
+        } else {
+            replay_capacity_held_envelope(hold, idempotency_key, correlation_id)?
+        };
         OutboxAppender::append(tx, outbox_stream, &outbound)
             .await
             .map_err(inbound_transient)?;
         let response = HoldCapacityResponse {
             hold_id: hold.hold_id.clone(),
             segment_ref: hold.segment_ref(),
-            status: "HELD".to_string(),
+            status: if hold.state == "Failed" { "FAILED" } else { "HELD" }.to_string(),
             held_until: unix_millis_to_rfc3339(hold.expires_at),
         };
         match self
