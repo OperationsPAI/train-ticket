@@ -14,8 +14,8 @@ public class InMemoryIdempotencyStore implements IdempotencyStore {
 
     @Override
     public StoredResponse saveIfAbsent(String key, StoredResponse response) {
-        StoredResponse existing = responses.putIfAbsent(key, response);
-        return existing == null ? response : existing;
+        return responses.compute(key, (ignored, existing) -> existing == null
+            || (existing.status() >= 500 && existing.fingerprint().equals(response.fingerprint())) ? response : existing);
     }
 
     public void clear() {
