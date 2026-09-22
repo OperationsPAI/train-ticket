@@ -108,7 +108,7 @@ public final class TravelerJson {
         String primaryDocumentId = null;
         for (JsonNode node : root.path("documents")) {
             Document document = Document.rehydrate(
-                text(node, "documentId"), DocumentType.valueOf(text(node, "documentType")), maskedDocumentRef(node), documentNumberHash(node), text(node, "issuingCountry"),
+                text(node, "documentId"), DocumentType.valueOf(text(node, "documentType")), text(node, "maskedDocumentRef"), text(node, "documentNumberHash"), text(node, "issuingCountry"),
                 Instant.parse(text(node, "issuedAt")), Instant.parse(text(node, "expiresAt")), text(node, "displayName"), node.path("primaryDocument").asBoolean(false),
                 DocumentStatus.valueOf(text(node, "status")), node.path("statusReason").asText(null), nullableInstant(node, "verifiedAt"), node.path("verifier").asText(null));
             documents.add(document);
@@ -144,21 +144,6 @@ public final class TravelerJson {
 
     private static Instant nullableInstant(JsonNode node, String field) { String value = node.path(field).asText(null); return value == null || value.isBlank() ? null : Instant.parse(value); }
     private static String nullableText(JsonNode node, String field) { String value = node.path(field).asText(null); return value == null || value.isBlank() ? null : value; }
-    private static String maskedDocumentRef(JsonNode node) {
-        String value = node.path("maskedDocumentRef").asText(null);
-        if (value != null && !value.isBlank()) {
-            return value;
-        }
-        String legacyDocumentNumber = text(node, "documentNumber");
-        return Document.mask(legacyDocumentNumber);
-    }
-    private static String documentNumberHash(JsonNode node) {
-        String value = node.path("documentNumberHash").asText(null);
-        if (value != null && !value.isBlank()) {
-            return value;
-        }
-        return Document.hash(text(node, "documentNumber"));
-    }
     private static String text(JsonNode node, String field) { String value = node.path(field).asText(null); if (value == null || value.isBlank()) throw new IllegalStateException(field + " is missing from traveler snapshot"); return value; }
     private static void putNullable(ObjectNode node, String field, String value) { if (value == null) node.putNull(field); else node.put(field, value); }
 
