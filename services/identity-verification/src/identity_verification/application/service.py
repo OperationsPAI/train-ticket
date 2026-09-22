@@ -462,7 +462,7 @@ class IdentityVerificationService:
             at = now_utc(); checks: list[dict[str, Any]] = []; facts: list[dict[str, Any]] = []
             candidate_facts: list[PurchaseLimitFact] = []; candidate_certificates: list[EligibilityCertificate] = []
             result = PreOrderResult.PASS
-            traveler_refs = [str(x) for x in data["travelerRefs"]]
+            traveler_refs = sorted(set(str(x) for x in data["travelerRefs"]))
             for traveler_id in traveler_refs:
                 creds = [c for c in self.store.credentials_for_traveler(traveler_id) if c.status is CredentialStatus.VERIFIED and (c.validUntil is None or c.validUntil > at)]
                 if not creds:
@@ -471,7 +471,7 @@ class IdentityVerificationService:
                     continue
                 credential = creds[0]
                 checks.append({"travelerId": traveler_id, "credentialRecordId": credential.credentialRecordId, "code": "VERIFICATION_PASSED", "status": "PASS", "policyVersion": str(data["limitPolicyVersion"])})
-                for eligibility_type in data.get("requestedEligibilityTypes") or []:
+                for eligibility_type in sorted(set(data.get("requestedEligibilityTypes") or [])):
                     certs, _ = self.store.query_certificates(traveler_id, str(eligibility_type), str(data["journeyDate"]), str(data["productCode"]), 1, 0)
                     if certs:
                         candidate_certificates.append(certs[0])
