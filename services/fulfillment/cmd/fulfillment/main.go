@@ -13,6 +13,7 @@ import (
 	"github.com/trainticket/greenfield/services/fulfillment/internal/adapters/messaging"
 	adapterpg "github.com/trainticket/greenfield/services/fulfillment/internal/adapters/postgres"
 	"github.com/trainticket/greenfield/services/fulfillment/internal/application"
+	"github.com/trainticket/greenfield/services/fulfillment/internal/boarding"
 	"github.com/trainticket/greenfield/services/fulfillment/internal/domain"
 	apphttp "github.com/trainticket/greenfield/services/fulfillment/internal/http"
 )
@@ -47,6 +48,13 @@ func main() {
 	}
 	runner := storage.NewMigrationRunner(pool)
 	if err := runner.Run(ctx, migrationsList); err != nil {
+		log.Fatal(err)
+	}
+	// The readers this estate admits a boarding fact from are the estate's own
+	// register, read once here: the first boarding the process validates is
+	// measured against the rows that were stated when it started, and a read
+	// that fails is as fatal as a pool that cannot be built.
+	if err := boarding.Load(ctx, pool); err != nil {
 		log.Fatal(err)
 	}
 
