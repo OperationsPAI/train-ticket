@@ -43,6 +43,8 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.interceptor.TransactionAspectSupport;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 @Service
 public class OrderManagementService implements JourneyOrderService, JourneyOrderEventHandler {
@@ -54,15 +56,22 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
     private final Clock clock;
     private final IdentityVerificationPort identityVerification;
     private final OfferPricePort offerPrice;
+    private final TransactionTemplate createTransaction;
 
     @Autowired
     public OrderManagementService(EventPublisher eventPublisher, Clock clock, JourneyOrderStateRepository stateRepository,
-            IdentityVerificationPort identityVerification, OfferPricePort offerPrice) {
+            IdentityVerificationPort identityVerification, OfferPricePort offerPrice, Optional<PlatformTransactionManager> transactionManager) {
         this.eventPublisher = eventPublisher;
         this.clock = clock;
         this.stateRepository = stateRepository;
         this.identityVerification = identityVerification;
         this.offerPrice = offerPrice;
+        this.createTransaction = transactionManager.map(TransactionTemplate::new).orElse(null);
+    }
+
+    public OrderManagementService(EventPublisher eventPublisher, Clock clock, JourneyOrderStateRepository stateRepository,
+            IdentityVerificationPort identityVerification, OfferPricePort offerPrice) {
+        this(eventPublisher, clock, stateRepository, identityVerification, offerPrice, Optional.empty());
     }
 
     public OrderManagementService(EventPublisher eventPublisher, Clock clock, JourneyOrderStateRepository stateRepository, IdentityVerificationPort identityVerification) {
@@ -85,7 +94,6 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
     }
 
     @Override
-    @Transactional
     public JourneyOrderResult createOrder(JourneyOrderRequest request, String idempotencyKey, String correlationId) {
         String fingerprint = createFingerprint(request);
         IdempotencyEntry<JourneyOrderResult> existing = stateRepository.findCreateIdempotency(idempotencyKey).orElse(null);
@@ -176,12 +184,24 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         );
 
         try {
-            stateRepository.saveOrder(order, idempotencyKey);
-            stateRepository.saveIdentityPreOrderCheckId(order.orderId(), identityResult.preOrderCheckId());
-            JourneyOrderResult result = toResult(order);
-            stateRepository.saveCreateIdempotency(idempotencyKey, new IdempotencyEntry<>(fingerprint, result));
-            publishEvents(order.domainEvents());
-            return result;
+            java.util.function.Supplier<JourneyOrderResult> save = () -> {
+                stateRepository.lockOrderCreation(idempotencyKey);
+                IdempotencyEntry<JourneyOrderResult> concurrent = stateRepository.findCreateIdempotency(idempotencyKey).orElse(null);
+                if (concurrent != null) {
+                    if (!concurrent.requestFingerprint().equals(fingerprint)) {
+                        throw new IdempotencyKeyReused("Idempotency-Key was reused with a different create order request");
+                    }
+                    return concurrent.result();
+                }
+                AccountOrderGate.assertCanCreateOrder(request.accountId(), stateRepository.findAccountState(request.accountId()));
+                stateRepository.saveOrder(order, idempotencyKey);
+                stateRepository.saveIdentityPreOrderCheckId(order.orderId(), identityResult.preOrderCheckId());
+                JourneyOrderResult result = toResult(order);
+                stateRepository.saveCreateIdempotency(idempotencyKey, new IdempotencyEntry<>(fingerprint, result));
+                publishEvents(order.domainEvents());
+                return result;
+            };
+            return createTransaction == null ? save.get() : createTransaction.execute(status -> save.get());
         } catch (RuntimeException exception) {
             identityVerification.releasePreOrderCheck(identityResult.preOrderCheckId(), "ORDER_CREATE_FAILED", identityIdempotencyKey, correlationId);
             throw exception;
