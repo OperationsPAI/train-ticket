@@ -2,6 +2,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  HandlerError,
   OutboxAppender,
   OutboxRelay,
   PostgresIdempotencyStore,
@@ -79,7 +80,7 @@ export async function startOfferStorage(redisUrl = process.env.REDIS_URL ?? "red
   };
 }
 
-function createUpstreamEventHandler(pool: Pool): UpstreamEventHandler {
+export function createUpstreamEventHandler(pool: Pool): UpstreamEventHandler {
   const handler = ((envelope: EventEnvelope, stream?: string) => (
     handleUpstreamEventBatch(pool, [{ envelope, stream }])
   )) as UpstreamEventHandler;
@@ -97,7 +98,9 @@ async function handleUpstreamEventBatch(pool: Pool, events: readonly UpstreamEve
 
   return withTransaction(pool, async (client): Promise<"ack" | "retry" | "dlq"> => {
     const guard = new ProcessedEventsGuard(client);
-    const startedEventIds = new Set(await guard.tryStartMany(events.map(({ envelope, stream }) => ({ eventId: envelope.eventId, stream }))));
+    const claims = events.map(({ envelope, stream }) => ({ eventId: envelope.eventId, stream }))
+      .sort((left, right) => left.eventId < right.eventId ? -1 : left.eventId > right.eventId ? 1 : 0);
+    const startedEventIds = new Set(await guard.tryStartMany(claims));
     const appliedEventIds = new Set<string>();
     const envelopesToApply: EventEnvelope[] = [];
     for (const { envelope } of events) {
@@ -108,6 +111,12 @@ async function handleUpstreamEventBatch(pool: Pool, events: readonly UpstreamEve
     }
     await applyUpstreamEvents(new PostgresUpstreamStateRepository(client), envelopesToApply);
     return "ack";
+  }).catch((error: unknown) => {
+    const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+    if (["40001", "40P01", "55P03", "57P01", "57P02", "57P03", "53300"].includes(code) || code.startsWith("08")) {
+      throw new HandlerError("transient", `Offer projection database operation failed (${code})`, { cause: error });
+    }
+    throw error;
   });
 }
 
