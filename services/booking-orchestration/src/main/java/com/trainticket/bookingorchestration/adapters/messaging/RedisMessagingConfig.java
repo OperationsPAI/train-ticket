@@ -48,10 +48,18 @@ public class RedisMessagingConfig {
     public EventSubscriber redisEventSubscriber(RedisEventSubscriber subscriber) {
         return config -> {
             try {
-                subscriber.subscribe(config.streams(), config.group(), config.consumerName(), envelope -> switch (config.handler().apply(envelope)) {
+                subscriber.subscribe(config.streams(), config.group(), config.consumerName(), envelope -> {
+                    var result = config.handler().apply(envelope);
+                    for (int attempt = 0; result instanceof com.trainticket.bookingorchestration.application.HandlerResult.TransientError && attempt < 6; attempt++) {
+                        try { Thread.sleep(25L << attempt); }
+                        catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); return com.trainticket.platformkit.messaging.HandlerResult.TRANSIENT_FAILURE; }
+                        result = config.handler().apply(envelope);
+                    }
+                    return switch (result) {
                     case com.trainticket.bookingorchestration.application.HandlerResult.Success ignored -> com.trainticket.platformkit.messaging.HandlerResult.SUCCESS;
                     case com.trainticket.bookingorchestration.application.HandlerResult.TransientError ignored -> com.trainticket.platformkit.messaging.HandlerResult.TRANSIENT_FAILURE;
                     case com.trainticket.bookingorchestration.application.HandlerResult.FatalError ignored -> com.trainticket.platformkit.messaging.HandlerResult.FATAL_FAILURE;
+                    };
                 });
             } catch (com.trainticket.platformkit.messaging.SubscribeFailedException exception) {
                 throw new SubscribeFailed(exception.getMessage(), exception);
