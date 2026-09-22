@@ -56,6 +56,17 @@ class ReservationReplayLiveTest {
                 }
                 for (var future : futures) assertEquals(request, future.get(10, TimeUnit.SECONDS));
                 assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM reservation_payment_requests", Integer.class));
+                var memory = new InMemoryReservationPaymentRequestRepository();
+                assertEquals(request, memory.saveIfAbsent(request));
+                var different = new ReservationPaymentRequest(request.eventId(), request.segmentBookingId(), request.journeyOrderId() + "-other", request.segmentRef(),
+                    request.travelerRef(), request.idempotencyKey(), request.correlationId(), request.requestedAt());
+                assertThrows(IllegalArgumentException.class, () -> transaction.execute(status -> repository.saveIfAbsent(different)));
+                assertThrows(IllegalArgumentException.class, () -> memory.saveIfAbsent(different));
+                var replay = new ReservationPaymentRequest("evt-" + UUID.randomUUID(), request.segmentBookingId(), request.journeyOrderId(), request.segmentRef(),
+                    request.travelerRef(), request.idempotencyKey(), "corr-" + UUID.randomUUID(), request.requestedAt());
+                assertEquals(request, transaction.execute(status -> repository.saveIfAbsent(replay)));
+                assertEquals(request, memory.saveIfAbsent(replay));
+                assertEquals(request, repository.findBySegmentBookingId(request.segmentBookingId()).orElseThrow());
             } finally { admin.createStatement().execute("DROP SCHEMA " + schema + " CASCADE"); }
         }
     }

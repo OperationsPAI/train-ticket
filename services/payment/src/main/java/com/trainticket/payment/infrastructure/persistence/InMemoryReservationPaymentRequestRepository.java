@@ -21,6 +21,6 @@ public class InMemoryReservationPaymentRequestRepository implements ReservationP
     @Override
     public ReservationPaymentRequest saveIfAbsent(ReservationPaymentRequest request) {
         requests.putIfAbsent(request.segmentBookingId(), request);
-        return requests.get(request.segmentBookingId());
+        return requests.get(request.segmentBookingId()).requireSameReservation(request);
     }
 }
