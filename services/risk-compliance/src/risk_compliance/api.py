@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractContextManager, asynccontextmanager, nullcontext
 import os
@@ -405,6 +406,8 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if subscriber_config is not None:
+            if getattr(app.state, "database_pool", None) is not None:
+                await asyncio.to_thread(app.state.risk_service.recover_booking_results)
             app.state.subscriber.start_in_background(
                 subscriber_config["subscriptions"],
                 subscriber_config["consumer_group"],
