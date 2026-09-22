@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.trainticket.journeyorder.application.port.out.OfferPricePort;
 import com.trainticket.journeyorder.domain.Money;
+import com.trainticket.platformkit.http.ApiErrorCode;
+import com.trainticket.platformkit.http.ApiException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Optional;
@@ -13,14 +15,7 @@ import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
-/**
- * Reads an offer's priced total from offer-management.
- *
- * Replaces a hardcoded `Money.of("CNY", "100.00")` in order creation. See
- * {@link OfferPricePort} for why that mattered beyond the order's own display:
- * post-sales derives the refund penalty base from the order fare, so a wrong
- * fare silently mispriced every refund.
- */
+/** Reads the requested offer version and rejects unavailable or invalid pricing. */
 @Component
 public class HttpOfferPriceAdapter implements OfferPricePort {
     private static final Logger LOGGER = LoggerFactory.getLogger(HttpOfferPriceAdapter.class);
@@ -51,7 +46,7 @@ public class HttpOfferPriceAdapter implements OfferPricePort {
     @Override
     public Optional<Money> totalFor(String offerId, int offerVersion) {
         if (offerId == null || offerId.isBlank()) {
-            return Optional.empty();
+            throw new ApiException(ApiErrorCode.VALIDATION_FAILED, "offerId is required");
         }
         try {
             // Read the raw body and parse it here rather than asking RestClient for a
@@ -65,41 +60,27 @@ public class HttpOfferPriceAdapter implements OfferPricePort {
                 .exchange((request, response) -> {
                     int status = response.getStatusCode().value();
                     if (status >= 400) {
-                        LOGGER.warn("offer-management returned HTTP {} for offer {}", status, offerId);
-                        return null;
+                        throw new ApiException(status == 404 ? ApiErrorCode.NOT_FOUND : ApiErrorCode.UNAVAILABLE,
+                            "Offer lookup returned HTTP " + status);
                     }
                     String body = new String(response.getBody().readAllBytes(), StandardCharsets.UTF_8);
                     return body.isBlank() ? null : mapper.readTree(body);
                 }, false);
             if (offer == null) {
-                return Optional.empty();
+                throw new ApiException(ApiErrorCode.UNAVAILABLE, "Offer lookup returned an empty response");
             }
             JsonNode total = offer.path("total");
             if (total.isMissingNode() || !total.hasNonNull("minorUnits") || !total.hasNonNull("currency")) {
-                LOGGER.warn("offer {} returned no usable total; order fare will fall back. body keys={}",
-                    offerId, offer.fieldNames());
-                return Optional.empty();
+                throw new ApiException(ApiErrorCode.UNAVAILABLE, "Offer response has no usable total");
             }
-            // The offer's version is not used to select a price: GET /offers/{id}
-            // returns the current snapshot, and an order is always created against
-            // the offer as it stands. Logged when they disagree so a stale client
-            // is visible rather than silently repriced.
-            int returnedVersion = offer.path("offerVersion").asInt(offerVersion);
+            int returnedVersion = offer.path("offerVersion").asInt(-1);
             if (returnedVersion != offerVersion) {
-                LOGGER.info("offer {} is at version {} but the order requested {}; using the current price",
-                    offerId, returnedVersion, offerVersion);
+                throw new ApiException(ApiErrorCode.PRECONDITION_FAILED, "Offer version does not match the order request");
             }
             return Optional.of(Money.fromMinorUnits(total.get("minorUnits").asLong(), total.get("currency").asText()));
         } catch (RuntimeException exception) {
-            // Never fail order creation on this. An unavailable offer-management
-            // must not stop orders being placed, so the caller falls back to a
-            // default fare -- but it is logged at WARN, because an order whose
-            // fare is a placeholder is exactly the condition that made every
-            // refund wrong in the first place.
-            LOGGER.warn("could not read the priced total for offer {} ({}); the order's fare will be a "
-                    + "placeholder, which will misprice any refund against it",
-                offerId, exception.getClass().getSimpleName(), exception);
-            return Optional.empty();
+            if (exception instanceof ApiException api) throw api;
+            throw new ApiException(ApiErrorCode.UNAVAILABLE, "Unable to read offer pricing", exception);
         }
     }
 }
