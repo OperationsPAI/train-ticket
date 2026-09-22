@@ -3,6 +3,15 @@ package com.trainticket.journeyorder.infrastructure.offer;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.trainticket.journeyorder.application.port.out.OfferPricePort;
+import com.trainticket.journeyorder.application.port.out.ResolvedOrderOffer;
+import com.trainticket.journeyorder.application.port.in.JourneyOrderRequest;
+import com.trainticket.journeyorder.domain.*;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
 import com.trainticket.journeyorder.domain.Money;
 import com.trainticket.platformkit.http.ApiErrorCode;
 import com.trainticket.platformkit.http.ApiException;
@@ -22,6 +31,7 @@ public class HttpOfferPriceAdapter implements OfferPricePort {
 
     private final RestClient restClient;
     private final ObjectMapper mapper;
+    private final RestClient itineraryClient;
 
     @org.springframework.beans.factory.annotation.Autowired
     public HttpOfferPriceAdapter(ObjectMapper mapper, RestClient.Builder restClientBuilder) {
@@ -41,9 +51,84 @@ public class HttpOfferPriceAdapter implements OfferPricePort {
         requestFactory.setReadTimeout(Duration.ofSeconds(5));
         String normalized = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
         this.restClient = restClientBuilder.requestFactory(requestFactory).baseUrl(normalized).build();
+        this.itineraryClient = restClientBuilder.clone().requestFactory(requestFactory)
+            .baseUrl(System.getenv().getOrDefault("TRIP_PLANNING_URL", "http://trip-planning:8080")).build();
+    }
+
+    private JsonNode read(RestClient client, String path, String id) {
+        return client.get().uri(path,id).exchange((request,response) -> {
+            int status=response.getStatusCode().value();
+            if (status >= 400) throw new ApiException(status==404?ApiErrorCode.NOT_FOUND:ApiErrorCode.UNAVAILABLE,"Snapshot lookup returned HTTP "+status);
+            return mapper.readTree(response.getBody());
+        });
+    }
+
+    private static String text(JsonNode node,String key) {
+        String value=node.path(key).asText("");
+        if(value.isBlank()) throw new ApiException(ApiErrorCode.UNAVAILABLE,"Snapshot field missing: "+key);
+        return value;
+    }
+
+    private static Money money(JsonNode node) {
+        if(!node.path("minorUnits").isIntegralNumber()) throw new ApiException(ApiErrorCode.UNAVAILABLE,"Snapshot money must contain integer minorUnits");
+        return Money.fromMinorUnits(node.path("minorUnits").longValue(),text(node,"currency"));
     }
 
     @Override
+    public ResolvedOrderOffer resolve(JourneyOrderRequest request) {
+        try {
+            JsonNode offer=read(restClient,"/api/v1/offers/{id}",request.offerId());
+            if(!request.offerId().equals(text(offer,"offerId")) || request.offerVersion()!=offer.path("offerVersion").asInt(-1)
+                || !request.accountId().equals(text(offer,"accountId"))) {
+                throw new ApiException(ApiErrorCode.PRECONDITION_FAILED,"Offer identity, version or account differs from order request");
+            }
+            if(!"Quoted".equalsIgnoreCase(text(offer,"status"))) throw new ApiException(ApiErrorCode.PRECONDITION_FAILED,"Offer is not available for order creation");
+            JsonNode refs=offer.path("downstreamReference");
+            var snapshot=new OfferSnapshotRef(request.offerId(),request.offerVersion(),Instant.parse(text(offer,"createdAt")),
+                Instant.parse(text(offer,"expiresAt")),text(refs,"priceSnapshotRef"),text(refs,"ruleSnapshotRef"));
+            snapshot.requireValidAt(Instant.now());
+            List<TravelerRef> travelers=new ArrayList<>();
+            for(JsonNode traveler:offer.path("passengerMix").path("travelers")) {
+                travelers.add(new TravelerRef(text(traveler,"travelerId"),text(traveler,"travelerType")));
+            }
+            var travelerIds=travelers.stream().map(TravelerRef::travelerId).toList();
+            if(travelers.isEmpty() || travelerIds.size()!=request.travelerRefs().size() || !new HashSet<>(travelerIds).equals(new HashSet<>(request.travelerRefs()))) {
+                throw new ApiException(ApiErrorCode.PRECONDITION_FAILED,"Order travelers differ from offer travelers");
+            }
+            JsonNode itinerary=read(itineraryClient,"/api/v1/itineraries/{id}",text(offer,"itineraryRef"));
+            List<SegmentOrderSnapshot> segments=new ArrayList<>();
+            for(JsonNode leg:itinerary.path("legs")) {
+                segments.add(new SegmentOrderSnapshot(text(leg,"serviceSegmentRef"),text(leg,"originStopRef"),text(leg,"destinationStopRef"),
+                    text(leg,"mode").toUpperCase(Locale.ROOT),Instant.parse(text(leg,"departureTime")),Instant.parse(text(leg,"arrivalTime")),""));
+            }
+            var segmentIds=segments.stream().map(SegmentOrderSnapshot::segmentRef).toList();
+            if(segments.isEmpty() || segmentIds.size()!=request.segmentRefs().size() || !new HashSet<>(segmentIds).equals(new HashSet<>(request.segmentRefs()))) {
+                throw new ApiException(ApiErrorCode.PRECONDITION_FAILED,"Order segments differ from offer itinerary");
+            }
+            if(request.journeyDate()!=null && !request.journeyDate().isBlank()
+                && !segments.getFirst().departureTime().atOffset(ZoneOffset.UTC).toLocalDate().toString().equals(request.journeyDate())) {
+                throw new ApiException(ApiErrorCode.PRECONDITION_FAILED,"Journey date differs from offer itinerary");
+            }
+            List<OrderItem> items=new ArrayList<>();
+            for(JsonNode item:offer.path("items")) {
+                String itemId=text(item,"offerItemId"),segment=text(item,"segmentRef");
+                if(!segmentIds.contains(segment)) throw new ApiException(ApiErrorCode.PRECONDITION_FAILED,"Offer item is outside the itinerary");
+                Money price=money(item.path("itemPrice"));
+                long share=price.toMinorUnits()/travelers.size(), remainder=price.toMinorUnits()%travelers.size();
+                for(int index=0;index<travelers.size();index++) {
+                    String id=itemId+":"+travelers.get(index).travelerId();
+                    items.add(new OrderItem(id,OrderItemType.SEGMENT_FARE,"fare",Money.fromMinorUnits(share+(index==0?remainder:0),price.currency().getCurrencyCode()),
+                        itemId,List.of(new OrderLineBinding(id,travelers.get(index).travelerId(),segment,""))));
+                }
+            }
+            if(!MonetarySummary.fromItems(items).payableTotal().equals(money(offer.path("total")))) {
+                throw new ApiException(ApiErrorCode.PRECONDITION_FAILED,"Offer item prices do not equal the offered total");
+            }
+            return new ResolvedOrderOffer(request.accountId(),text(offer,"channelId"),snapshot,travelers,segments,items);
+        } catch(ApiException e) { throw e; }
+        catch(RuntimeException e) {throw new ApiException(ApiErrorCode.UNAVAILABLE,"Unable to resolve authoritative order snapshot",e);}
+    }
+
     public Optional<Money> totalFor(String offerId, int offerVersion) {
         if (offerId == null || offerId.isBlank()) {
             throw new ApiException(ApiErrorCode.VALIDATION_FAILED, "offerId is required");

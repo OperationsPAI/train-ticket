@@ -61,6 +61,10 @@ The hook response fields and error semantics are defined in `docs/08-contracts/a
 
 **GET** `/api/v1/journey-orders/{orderId}`
 
+The response includes `travelers` with the traveler types captured by the offer and `segments` with the itinerary's actual endpoints, transport mode, departure time and arrival time.
+Order creation requires the offer version, account, traveler set and segment set to match the request.
+An unavailable, expired or inconsistent offer cannot create a replacement-priced order.
+
 **Response (200):** Full order details including status, monetary summary, timestamps.
 
 **Error codes:** `NOT_FOUND`

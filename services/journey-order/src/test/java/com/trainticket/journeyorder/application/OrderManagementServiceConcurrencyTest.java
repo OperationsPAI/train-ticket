@@ -313,7 +313,7 @@ class OrderManagementServiceConcurrencyTest {
 
     private static List<String> createOrders(OrderManagementService service, int count, String tag) {
         return java.util.stream.IntStream.range(0, count)
-            .mapToObj(i -> service.createOrder(
+            .mapToObj(i -> OrderCreationFixture.createOrder(service,
                 new JourneyOrderRequest("account-" + tag + "-" + i, "offer-" + tag + "-" + i, 1,
                     List.of("tvl-1"), List.of("seg-1")),
                 "idem-" + tag + "-" + i,
