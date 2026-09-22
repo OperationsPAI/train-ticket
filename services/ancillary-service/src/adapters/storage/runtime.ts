@@ -7,6 +7,7 @@ import { AncillaryApplicationService } from "../../application.js";
 import { HttpFarePricingGateway, type AncillaryPricingGateway } from "../../pricing.js";
 import { PostgresAncillaryRepository } from "./repository.js";
 import { HttpAncillaryReferences } from "../../references.js";
+import { HttpAncillaryPayments } from "../../payments.js";
 
 export type AncillaryStorageRuntime = Readonly<{ ready: () => Promise<boolean>; /** Migration retry state, surfaced on `/readyz` so a stuck boot is diagnosable. */ schema: () => SchemaDetail; idempotencyStore: PostgresIdempotencyStore; runCommand: <T>(operation: (application: AncillaryApplicationService) => Promise<T>) => Promise<T>; handleUpstreamEvent: (envelope: EventEnvelope, stream?: string) => Promise<"ack" | "retry" | "dlq">; stop: () => Promise<void> }>;
 export async function startAncillaryStorage(redisUrl = process.env.REDIS_URL ?? "redis://localhost:6379"): Promise<AncillaryStorageRuntime> {
@@ -37,7 +38,7 @@ export async function startAncillaryStorage(redisUrl = process.env.REDIS_URL ?? 
   };
 }
 async function withAncillaryTransaction<T>(pool: Pool, operation: (application: AncillaryApplicationService, client: any) => Promise<T>, pricingGateway?: AncillaryPricingGateway): Promise<T> {
-  return withTransaction(pool, async (client) => operation(new AncillaryApplicationService(new PostgresAncillaryRepository(client), new TransactionalOutboxPublisher(new OutboxAppender(client)), pricingGateway, new HttpAncillaryReferences()), client));
+  return withTransaction(pool, async (client) => operation(new AncillaryApplicationService(new PostgresAncillaryRepository(client), new TransactionalOutboxPublisher(new OutboxAppender(client)), pricingGateway, new HttpAncillaryReferences(),new HttpAncillaryPayments()), client));
 }
 class TransactionalOutboxPublisher { constructor(private readonly appender: OutboxAppender) {} async publish(envelope: EventEnvelope): Promise<void> { await this.appender.append(envelope, streamForProducer(envelope.producer)); } }
 export function migrationsDirectory(): string { return join(dirname(fileURLToPath(import.meta.url)), "../../../migrations"); }
