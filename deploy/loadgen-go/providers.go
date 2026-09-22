@@ -586,6 +586,20 @@ func (p *Providers) FareQuote(ctx context.Context, travelers []string, channel s
 	return q, err
 }
 
+// offerAttempts is how many times the offer is retried on a 422.
+//
+// 12 rather than 8. The backoff is 0.5 * 1.4^n capped at 5s, so 8 attempts gave
+// 16.9 seconds and 12 give 36.9. What sets the requirement is the arrival
+// envelope: it peaks at 4x its mean with bursts of a further 3x to 8x, and the
+// projection this waits on falls behind for the length of a burst.
+//
+// Measured with 8: offer-management's consumer sat at zero lag and zero pending,
+// its pool queue at 0.6 requests on average, and 215 offers still exhausted the
+// budget on `No consumed Fare Pricing quote`. So what remained was not a steady
+// deficit that more capacity fixes, it was the peak of the envelope against a
+// budget sized for the mean.
+const offerAttempts = 12
+
 // Offer creates an offer with retry on 422.
 //
 // The 422 is expected, not a fault: offer-management rejects an itinerary whose
@@ -595,11 +609,11 @@ func (p *Providers) FareQuote(ctx context.Context, travelers []string, channel s
 // second-largest entry in the stats (213 against 378 successes) on a run where
 // every purchase journey completed.
 func (p *Providers) Offer(ctx context.Context, accountID, channel, itinerary string, travelers []string) (map[string]interface{}, error) {
-	for attempt := 0; attempt < 8; attempt++ {
+	for attempt := 0; attempt < offerAttempts; attempt++ {
 		// The LAST attempt is not an expected-status poll: if it still 422s the
 		// offer genuinely could not be created and that must show up as an error.
 		var expected []int
-		if attempt < 7 {
+		if attempt < offerAttempts-1 {
 			expected = []int{422}
 		}
 		_, o, err := p.API.PollRequest(ctx, "POST", "offer-management", "/api/v1/offers",
@@ -612,7 +626,7 @@ func (p *Providers) Offer(ctx context.Context, accountID, channel, itinerary str
 		if err == nil {
 			return o, nil
 		}
-		if se, ok := err.(*StepError); ok && strings.Contains(se.Detail, "422") && attempt < 7 {
+		if se, ok := err.(*StepError); ok && strings.Contains(se.Detail, "422") && attempt < offerAttempts-1 {
 			backoff := 0.5 * pow14(float64(attempt))
 			if backoff > 5.0 {
 				backoff = 5.0
