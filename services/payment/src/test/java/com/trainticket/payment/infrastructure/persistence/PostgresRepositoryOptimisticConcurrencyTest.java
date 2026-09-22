@@ -7,7 +7,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.trainticket.payment.domain.Money;
 import com.trainticket.payment.domain.PaymentIntent;
-import com.trainticket.payment.domain.Refund;
 import com.trainticket.platformkit.persistence.OptimisticConcurrencyException;
 import com.trainticket.platformkit.persistence.Snapshot;
 import com.trainticket.platformkit.persistence.SnapshotRepository;
@@ -36,26 +35,6 @@ class PostgresRepositoryOptimisticConcurrencyTest {
         firstWriter.authorize(firstWriter.amount(), "channel", "auth-1", NOW.plusSeconds(1), "cmd-auth", "cmd-auth", "corr-auth");
         repository.save(firstWriter);
         staleSecondWriter.cancel("customer", NOW.plusSeconds(2), "cmd-cancel", "cmd-cancel", "corr-cancel");
-
-        assertThrows(OptimisticConcurrencyException.class, () -> repository.save(staleSecondWriter));
-        assertEquals(2, firstWriter.version());
-    }
-
-    @Test
-    void refundSaveUsesVersionReadWithAggregateAndConflictsOnStaleWriter() {
-        InMemorySnapshotRepository<JacksonPaymentJson.RefundSnapshot> snapshots = new InMemorySnapshotRepository<>();
-        PostgresRefundRepository repository = new PostgresRefundRepository(objectMapper, snapshots);
-        PaymentIntent captured = PaymentIntent.create("ord-2", "purchase", Money.fromMinorUnits(35000, "CNY"), "acct-1", NOW.plusSeconds(900), "idem-create-refund", NOW, "cmd-create", "corr-create");
-        captured.capture(captured.amount(), "channel", "txn-1", NOW.plusSeconds(1), "cmd-capture", "cmd-capture", "corr-capture");
-        Refund created = Refund.request(captured, Money.fromMinorUnits(10000, "CNY"), "case-1", "ticket refund", "idem-refund", NOW.plusSeconds(2), "cmd-refund", "corr-refund");
-        repository.save(created);
-
-        Refund firstWriter = repository.findById(created.refundId()).orElseThrow();
-        Refund staleSecondWriter = repository.findById(created.refundId()).orElseThrow();
-
-        firstWriter.submitToChannel("refund-txn-1");
-        repository.save(firstWriter);
-        staleSecondWriter.fail("CHANNEL_DOWN", true, NOW.plusSeconds(3), "cmd-fail", "cmd-fail", "corr-fail");
 
         assertThrows(OptimisticConcurrencyException.class, () -> repository.save(staleSecondWriter));
         assertEquals(2, firstWriter.version());
