@@ -43,6 +43,7 @@ class ScopedCapacityCompletionTest {
                 source.recordDecision(PostSalesDecision.refund(source.caseId(), true, "REFUNDABLE",
                     new RuleEvaluationSnapshot("quote", "rules", "1", now, Map.of("orderId", "order-scope")),
                     AmountDecisionSnapshot.refund(Money.of("0", "CNY"), Money.of("10", "CNY"), "refund"),
+                    new RefundPolicyEngine().evaluateRefund(Money.of("10", "CNY"), now, now.plusSeconds(86400), true, "ADULT", 2),
                     now, now.plusSeconds(600)), false, false, now, "cmd-decision", "cmd-evaluate", "corr-scope");
                 source.approve("approval", now, "cmd-approve", "cmd-decision", "corr-scope");
                 source.startExecution(now, "cmd-execute", "cmd-approve", "corr-scope");
