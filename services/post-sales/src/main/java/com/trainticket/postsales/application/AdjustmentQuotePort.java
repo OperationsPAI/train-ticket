@@ -6,8 +6,7 @@ import java.util.Optional;
 /**
  * Outbound port to Fare & Pricing's synchronous adjustment-quote API
  * (docs/08-contracts/api/fare-pricing.md, POST /api/v1/adjustment-quotes).
- * Empty result means the quote could not be computed (service unreachable
- * or original fare quote unresolvable) — callers degrade, never fail the case.
+ * The production adapter resolves the purchased offer's original quote and propagates failures.
  */
 public interface AdjustmentQuotePort {
     Optional<AdjustmentQuoteResult> compute(AdjustmentQuoteRequest request);
