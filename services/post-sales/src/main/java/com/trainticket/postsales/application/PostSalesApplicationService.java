@@ -73,6 +73,7 @@ public class PostSalesApplicationService {
         if (postSalesCase.decision() != null) {
             return postSalesCase;
         }
+        if (requiresExclusiveRefundSlot(postSalesCase.caseType())) rejectAlreadyAppliedScope(postSalesCase.journeyOrderId(), postSalesCase.scope(), postSalesCase.caseId());
         Instant now = clock.instant();
         if (postSalesCase.status().name().equals("OPENED")) {
             postSalesCase.beginEvaluation(now, sourceCommandId, sourceCommandId, correlationId);
@@ -101,6 +102,7 @@ public class PostSalesApplicationService {
         if (postSalesCase.status() == PostSalesCaseStatus.EXECUTING || postSalesCase.status() == PostSalesCaseStatus.APPLIED) {
             return postSalesCase;
         }
+        if (requiresExclusiveRefundSlot(postSalesCase.caseType())) rejectAlreadyAppliedScope(postSalesCase.journeyOrderId(), postSalesCase.scope(), postSalesCase.caseId());
         if (postSalesCase.status() == PostSalesCaseStatus.APPROVED) {
             startApprovedExecution(postSalesCase, sourceCommandId, correlationId);
             return postSalesCase;
@@ -132,7 +134,9 @@ public class PostSalesApplicationService {
 
 
     private PostSalesCase openNewCase(OpenCaseCommand command) {
+        repository.lockOrder(command.journeyOrderId());
         if (requiresExclusiveRefundSlot(command.caseType())) {
+            rejectAlreadyAppliedScope(command.journeyOrderId(), command.scope(), null);
             repository.findActiveRefundCaseForOrder(command.journeyOrderId())
                 .ifPresent(existing -> {
                     throw new RefundAlreadyInProgressException(existing.caseId());
@@ -157,6 +161,16 @@ public class PostSalesApplicationService {
         }
         publishNewEvents(postSalesCase);
         return postSalesCase;
+    }
+
+    private void rejectAlreadyAppliedScope(String orderId, PostSalesScope scope, String currentCaseId) {
+        for (PostSalesCase applied : repository.findAppliedCasesForOrder(orderId)) {
+            if (applied.caseId().equals(currentCaseId) || !requiresExclusiveRefundSlot(applied.caseType())) continue;
+            if (applied.scope().entitlementRefs().stream().anyMatch(scope.entitlementRefs()::contains)
+                || applied.scope().orderItemRefs().stream().anyMatch(scope.orderItemRefs()::contains)) {
+                throw new OrderNotRefundableException();
+            }
+        }
     }
 
     private static boolean requiresExclusiveRefundSlot(PostSalesCaseType caseType) {
