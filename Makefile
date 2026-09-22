@@ -53,10 +53,15 @@ KUBENS := $(KUBECTL) -n $(NAMESPACE)
 # read from the same place, and it cannot drift from what was actually built.
 ROLLABLE := $(shell ls deploy/docker | tr '\n' '|' | sed 's/|$$//')
 
-.PHONY: build-agent-env-image build-devcontainer check check-agent-env-image contract-lint check-devcontainer check-strict go-modules node-locks list-services observability-config observability-down observability-up observability-validate skeleton-check
+.PHONY: build-agent-env-image build-devcontainer check check-agent-env-image contract-lint check-devcontainer check-strict go-modules node-locks platform-tables list-services observability-config observability-down observability-up observability-validate skeleton-check
 .PHONY: deploy deploy-fast deploy-images deploy-apply deploy-db-bootstrap deploy-roll deploy-services deploy-seed deploy-check e2e smoke push-images deploy-acr deploy-acr-apply
 
-check: skeleton-check contract-lint go-modules node-locks
+check: skeleton-check contract-lint go-modules node-locks platform-tables
+
+# A service that creates any of the three platform tables creates all of them,
+# because the relay's retention sweep covers all three unconditionally.
+platform-tables:
+	python3 scripts/check_platform_tables.py
 
 # Every TypeScript service's lock carries the packages platform/ts-kit imports.
 # See scripts/check_node_locks.py for what the two halves of that check are and
