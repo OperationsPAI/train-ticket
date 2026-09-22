@@ -62,10 +62,18 @@ public class AppConfig {
             @Override
             public void subscribe(java.util.List<String> streams, String group, String consumerName,
                                   java.util.function.Function<com.trainticket.platformkit.messaging.EventEnvelope, HandlerResult> handler) {
-                subscriber.subscribe(streams, group, consumerName, envelope -> switch (handler.apply(envelope)) {
+                subscriber.subscribe(streams, group, consumerName, envelope -> {
+                    HandlerResult result = handler.apply(envelope);
+                    for (int attempt = 0; result instanceof TransientError && attempt < 6; attempt++) {
+                        try { Thread.sleep(25L << attempt); }
+                        catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); return com.trainticket.platformkit.messaging.HandlerResult.TRANSIENT_FAILURE; }
+                        result = handler.apply(envelope);
+                    }
+                    return switch (result) {
                     case Success ignored -> com.trainticket.platformkit.messaging.HandlerResult.SUCCESS;
                     case TransientError ignored -> com.trainticket.platformkit.messaging.HandlerResult.TRANSIENT_FAILURE;
                     case FatalError ignored -> com.trainticket.platformkit.messaging.HandlerResult.FATAL_FAILURE;
+                    };
                 });
             }
 
