@@ -69,7 +69,7 @@ public class JourneyOrderController {
         GetJourneyOrderResponse response = new GetJourneyOrderResponse(
             r.orderId(), r.accountId(), r.offerId(),
             toApiMonetarySummary(r.monetarySummary()),
-            r.status(), r.travelerRefs(), r.segmentRefs(), r.createdAt()
+            r.status(), r.travelerRefs(), r.segmentRefs(), r.createdAt(), r.riskClear(), r.cancellationReason()
         );
         return ResponseEntity.ok(response);
     }
