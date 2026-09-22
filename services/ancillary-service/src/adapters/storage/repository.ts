@@ -11,7 +11,14 @@ export class PostgresAncillaryRepository implements AncillaryRepository {
   async getCatalog(catalogItemId: string): Promise<AncillaryCatalogItemSnapshot | undefined> { return (await new SnapshotRepository<AncillaryCatalogItemSnapshot>(this.db, "ancillary_catalog_items").get(catalogItemId))?.data; }
   async listCatalog(filters: CatalogFilters): Promise<readonly AncillaryCatalogItemSnapshot[]> { return listJson<AncillaryCatalogItemSnapshot>(this.db, "ancillary_catalog_items", filters, ["status", "serviceType", "attachmentScope"]); }
   async saveOffer(snapshot: AncillaryOfferSnapshot): Promise<void> { await save(new SnapshotRepository<AncillaryOfferSnapshot>(this.db, "ancillary_offers"), snapshot.ancillaryOfferId, snapshot, snapshot.offerVersion); }
-  async getOffer(ancillaryOfferId: string): Promise<AncillaryOfferSnapshot | undefined> { return (await new SnapshotRepository<AncillaryOfferSnapshot>(this.db, "ancillary_offers").get(ancillaryOfferId))?.data; }
+  async getOffer(ancillaryOfferId: string): Promise<AncillaryOfferSnapshot | undefined> {
+    await this.db.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",["ancillary-offer:"+ancillaryOfferId]);
+    return (await new SnapshotRepository<AncillaryOfferSnapshot>(this.db, "ancillary_offers").get(ancillaryOfferId))?.data;
+  }
+  async findOrderItemByOffer(offerId:string):Promise<AncillaryOrderItemSnapshot|undefined>{
+    const found=await this.db.query("SELECT data FROM ancillary_order_items WHERE data->>'ancillaryOfferId'=$1 ORDER BY id LIMIT 1",[offerId]);
+    return found.rows[0]?.data;
+  }
   async listExpiredQuotedOffers(now: Date, limit: number): Promise<readonly AncillaryOfferSnapshot[]> {
     // Text comparison matches the text-ordered index; RFC3339 UTC compares
     // chronologically as text (REQ-081A ruling).
