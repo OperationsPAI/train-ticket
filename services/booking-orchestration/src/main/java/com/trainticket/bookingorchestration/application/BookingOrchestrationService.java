@@ -132,6 +132,9 @@ public class BookingOrchestrationService {
         if (envelope == null || envelope.eventId() == null || envelope.eventId().isBlank()) {
             return new HandlerResult.FatalError("missing event envelope or eventId");
         }
+        if (!handlesEvent(envelope.eventType())) {
+            return new HandlerResult.Success();
+        }
         if (!consumedEvents.recordIfNew(envelope.eventId(), envelope.producer())) {
             return new HandlerResult.Success();
         }
@@ -184,6 +187,18 @@ public class BookingOrchestrationService {
                 // Streams contain event types that do not affect this saga.
             }
         }
+    }
+
+    public static boolean handlesEvent(String eventType) {
+        return switch (eventType) {
+            case "JourneyOrderCreated", "RiskAssessmentCompleted", "CapacityHeld", "CapacityHoldConfirmed",
+                 "CapacityReleased", "CapacityHoldExpired", "CapacityHoldFailed", "SeatAllocated",
+                 "PaymentIntentCreated", "PaymentCaptured", "PaymentIntentFailed", "PaymentFailed",
+                 "PaymentExpired", "PaymentIntentExpired", "ProviderReservationConfirmed", "ProviderReservationFailed",
+                 "ProviderReservationTimedOut", "EntitlementIssued", "EntitlementIssueFailed", "EntitlementVoided",
+                 "InvoiceGenerated" -> true;
+            default -> false;
+        };
     }
 
     private void handleJourneyOrderCreated(Map<String, Object> payload, String correlationId, String causationId) {
