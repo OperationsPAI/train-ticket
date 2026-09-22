@@ -721,6 +721,16 @@ services:
       limits: { cpu: '12', memory: 6Gi }
   payment:
     db: payment
+    strategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxUnavailable: 0
+        maxSurge: 1
+    terminationGracePeriodSeconds: 45
+    lifecycle:
+      preStop:
+        exec:
+          command: ["sleep", "10"]
     env:
       CONSUMER_THREADS: "4"   # 4 streams
     # JVM event consumer on 4 streams. 512Mi is not enough at
