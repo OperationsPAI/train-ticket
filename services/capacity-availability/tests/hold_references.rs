@@ -85,3 +85,42 @@ async fn confirmation_waits_for_the_hold_without_acknowledging_missing_state() {
     sqlx::query(&format!("DROP SCHEMA {schema} CASCADE")).execute(&admin).await.unwrap();
     admin.close().await;
 }
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL and TEST_FAILED_HOLD_JSON"]
+async fn no_capacity_result_remains_failed_after_replay_and_available_capacity() {
+    use capacity_availability::ports::{HandlerResult, WireEnvelope};
+    let source: serde_json::Value = serde_json::from_str(&std::env::var("TEST_FAILED_HOLD_JSON").unwrap()).unwrap();
+    let mut request: WireEnvelope = serde_json::from_value(source["request"].clone()).unwrap();
+    let confirmation: WireEnvelope = serde_json::from_value(source["confirmation"].clone()).unwrap();
+    let url = std::env::var("TEST_DATABASE_URL").unwrap();
+    let admin = PgPoolOptions::new().max_connections(1).connect(&url).await.unwrap();
+    let schema = format!("failed_hold_{}", uuid::Uuid::now_v7().simple());
+    sqlx::query(&format!("CREATE SCHEMA {schema}")).execute(&admin).await.unwrap();
+    let options = PgConnectOptions::from_str(&url).unwrap().options([("search_path", schema.as_str())]);
+    let pool = PgPoolOptions::new().max_connections(3).connect_with(options).await.unwrap();
+    sqlx::raw_sql(include_str!("../migrations/001_capacity_storage.sql")).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO inventory_pool_snapshots(id,version,data) VALUES ($1,$2,$3)")
+        .bind(source["pool"]["id"].as_str().unwrap()).bind(source["pool"]["version"].as_i64().unwrap()).bind(&source["pool"]["data"]).execute(&pool).await.unwrap();
+    let service = PostgresCapacityService::new(pool.clone()).unwrap();
+    assert_eq!(service.handle_inbound_event(request.clone()).await, HandlerResult::Success);
+    let snapshot: serde_json::Value = sqlx::query_scalar("SELECT data FROM capacity_hold_snapshots").fetch_one(&pool).await.unwrap();
+    assert_eq!(snapshot["state"], "Failed");
+    let hold_id = snapshot["holdId"].as_str().unwrap();
+    assert_eq!(service.get_hold(hold_id).await.unwrap().status, "FAILED");
+    let status: i32 = sqlx::query_scalar("SELECT status_code FROM idempotency_records WHERE key=$1")
+        .bind(request.payload["idempotencyKey"].as_str().unwrap()).fetch_one(&pool).await.unwrap();
+    assert_eq!(status, 201);
+    assert_eq!(service.handle_inbound_event(confirmation).await, HandlerResult::Success);
+    sqlx::query("UPDATE inventory_pool_snapshots SET data=jsonb_set(data,'{holds}','[]'::jsonb)").execute(&pool).await.unwrap();
+    sqlx::query("DELETE FROM idempotency_records").execute(&pool).await.unwrap();
+    request.event_id = rust_kit::messaging::event_id();
+    assert_eq!(service.handle_inbound_event(request).await, HandlerResult::Success);
+    assert_eq!(service.get_hold(hold_id).await.unwrap().status, "FAILED");
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM capacity_hold_snapshots").fetch_one(&pool).await.unwrap(), 1);
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM outbox WHERE envelope->>'eventType'='CapacityHeld'").fetch_one(&pool).await.unwrap(), 0);
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM outbox WHERE envelope->>'eventType'='CapacityHoldFailed'").fetch_one(&pool).await.unwrap(), 2);
+    pool.close().await;
+    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE")).execute(&admin).await.unwrap();
+    admin.close().await;
+}
