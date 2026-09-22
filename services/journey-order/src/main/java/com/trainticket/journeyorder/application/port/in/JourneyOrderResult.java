@@ -13,8 +13,15 @@ public record JourneyOrderResult(
     List<String> segmentRefs,
     Instant createdAt,
     boolean riskClear,
-    String cancellationReason
+    String cancellationReason,
+    List<com.trainticket.journeyorder.domain.TravelerRef> travelers,
+    List<com.trainticket.journeyorder.domain.SegmentOrderSnapshot> segments
 ) {
+    public JourneyOrderResult(String orderId, String accountId, String offerId, MonetarySummaryDto monetarySummary,
+                              String status, List<String> travelerRefs, List<String> segmentRefs, Instant createdAt,
+                              boolean riskClear, String cancellationReason) {
+        this(orderId,accountId,offerId,monetarySummary,status,travelerRefs,segmentRefs,createdAt,riskClear,cancellationReason,List.of(),List.of());
+    }
     public JourneyOrderResult(String orderId, String accountId, String offerId, MonetarySummaryDto monetarySummary,
                               String status, List<String> travelerRefs, List<String> segmentRefs, Instant createdAt) {
         this(orderId, accountId, offerId, monetarySummary, status, travelerRefs, segmentRefs, createdAt, false, null);
