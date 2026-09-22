@@ -12,5 +12,7 @@ public record GetJourneyOrderResponse(
     @JsonProperty("status") String status,
     @JsonProperty("travelerRefs") List<String> travelerRefs,
     @JsonProperty("segmentRefs") List<String> segmentRefs,
-    @JsonProperty("createdAt") Instant createdAt
+    @JsonProperty("createdAt") Instant createdAt,
+    @JsonProperty("riskClear") boolean riskClear,
+    @JsonProperty("cancellationReason") String cancellationReason
 ) {}

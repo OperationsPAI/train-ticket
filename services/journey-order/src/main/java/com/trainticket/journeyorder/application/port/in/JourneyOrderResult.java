@@ -11,8 +11,14 @@ public record JourneyOrderResult(
     String status,
     List<String> travelerRefs,
     List<String> segmentRefs,
-    Instant createdAt
+    Instant createdAt,
+    boolean riskClear,
+    String cancellationReason
 ) {
+    public JourneyOrderResult(String orderId, String accountId, String offerId, MonetarySummaryDto monetarySummary,
+                              String status, List<String> travelerRefs, List<String> segmentRefs, Instant createdAt) {
+        this(orderId, accountId, offerId, monetarySummary, status, travelerRefs, segmentRefs, createdAt, false, null);
+    }
     public record MonetarySummaryDto(
         String currency,
         long subtotal,
