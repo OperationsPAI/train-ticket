@@ -91,6 +91,23 @@ class SegmentBookingTest {
     }
 
     @Test
+    void capacityFailureAfterProviderConfirmationFailsTheBookingAndCancelsProvider() {
+        SegmentBooking booking = SegmentBooking.requestReservation("booking-capacity", "order-capacity", "offer-item",
+            "rail-segment", "traveler", "initial", clock);
+        ProviderReference reference = new ProviderReference("provider", "reservation", "PNR");
+        booking.confirmFromProvider(new ProviderReservationConfirmed(booking.segmentBookingId(), reference, "confirmed", Map.of()));
+        booking.pullEvents();
+
+        booking.failReservation("NO_AVAILABLE_CAPACITY");
+
+        assertEquals(SegmentBookingStatus.FAILED, booking.status());
+        assertEquals("NO_AVAILABLE_CAPACITY", booking.failureReason().orElseThrow());
+        assertTrue(booking.peekEvents().stream().anyMatch(SegmentBookingEvent.ProviderCancellationRequired.class::isInstance));
+        assertTrue(booking.peekEvents().stream().anyMatch(SegmentBookingEvent.SegmentReservationFailed.class::isInstance));
+        assertThrows(IllegalStateException.class, () -> booking.markTicketed("entitlement"));
+    }
+
+    @Test
     void lateProviderConfirmationAfterCancellationEmitsCancellationHookWithoutReopeningBooking() {
         SegmentBooking booking = SegmentBooking.requestReservation("booking-1", "order-1", "offer-item-1",
             "rail-segment-1", "traveler-1", "initial", clock);
