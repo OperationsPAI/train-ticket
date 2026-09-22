@@ -670,6 +670,16 @@ services:
       limits: { cpu: '1', memory: 2Gi }
   identity-verification:
     db: identity_verification
+    strategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxUnavailable: 0
+        maxSurge: 1
+    terminationGracePeriodSeconds: 45
+    lifecycle:
+      preStop:
+        exec:
+          command: ["sleep", "10"]
     env:
       # Same constraint as fare-pricing, and the same measurement: 16480 server
       # spans in the same two-minute burst with a p99 of 3068ms. Both are
