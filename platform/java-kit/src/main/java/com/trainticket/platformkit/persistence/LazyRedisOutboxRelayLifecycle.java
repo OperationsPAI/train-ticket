@@ -59,7 +59,7 @@ public final class LazyRedisOutboxRelayLifecycle implements AutoCloseable {
             return;
         }
         try {
-            ensureRelay().pollOnce();
+            ensureRelay().pollOnceAndSweep();
             redisReady = true;
             reconnectBackoff = Duration.ofSeconds(1);
         } catch (RuntimeException exception) {
