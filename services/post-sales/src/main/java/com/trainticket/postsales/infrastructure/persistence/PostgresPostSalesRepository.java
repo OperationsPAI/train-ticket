@@ -174,12 +174,8 @@ public class PostgresPostSalesRepository implements PostSalesRepository {
     }
     private PostSalesDecision decision(JsonNode node) {
         AmountDecisionSnapshot amount = amount(node.path("amountSnapshot"));
-        RefundAssessment refundAssessment = node.path("refundAssessment").isMissingNode() || node.path("refundAssessment").isNull()
-            ? legacyRefund(node, amount)
-            : objectMapper.convertValue(node.path("refundAssessment"), RefundAssessment.class);
-        ChangeAssessment changeAssessment = node.path("changeAssessment").isMissingNode() || node.path("changeAssessment").isNull()
-            ? legacyChange(node, amount)
-            : objectMapper.convertValue(node.path("changeAssessment"), ChangeAssessment.class);
+        RefundAssessment refundAssessment = objectMapper.convertValue(node.required("refundAssessment"), RefundAssessment.class);
+        ChangeAssessment changeAssessment = objectMapper.convertValue(node.required("changeAssessment"), ChangeAssessment.class);
         return new PostSalesDecision(
             text(node, "caseId"),
             node.path("version").asInt(),
@@ -205,21 +201,8 @@ public class PostgresPostSalesRepository implements PostSalesRepository {
         return node;
     }
     private AmountDecisionSnapshot amount(JsonNode node) {
-        List<RefundComponentDecision> componentDecisions = node.path("componentDecisions").isMissingNode()
-            ? List.of()
-            : objectMapper.convertValue(node.path("componentDecisions"), objectMapper.getTypeFactory().constructCollectionType(List.class, RefundComponentDecision.class));
+        List<RefundComponentDecision> componentDecisions = objectMapper.convertValue(node.required("componentDecisions"), objectMapper.getTypeFactory().constructCollectionType(List.class, RefundComponentDecision.class));
         return new AmountDecisionSnapshot(money(node.path("feeAmount")), money(node.path("refundAmount")), money(node.path("extraChargeAmount")), text(node, "explanation"), componentDecisions);
-    }
-    private RefundAssessment legacyRefund(JsonNode node, AmountDecisionSnapshot amount) {
-        return DecisionKind.valueOf(text(node, "kind")) == DecisionKind.REFUND
-            ? new RefundAssessment(amount.refundAmount(), amount.feeAmount(), java.math.BigDecimal.ZERO, "LEGACY", amount.explanation(), RefundClassification.VOLUNTARY, amount.componentDecisions())
-            : null;
-    }
-
-    private ChangeAssessment legacyChange(JsonNode node, AmountDecisionSnapshot amount) {
-        return DecisionKind.valueOf(text(node, "kind")) == DecisionKind.CHANGE
-            ? new ChangeAssessment(amount.feeAmount(), amount.extraChargeAmount().isZero() ? amount.refundAmount() : amount.extraChargeAmount(), amount.extraChargeAmount(), amount.refundAmount(), amount.explanation())
-            : null;
     }
     private ObjectNode money(Money m){ ObjectNode n=objectMapper.createObjectNode(); n.put("currency", m.currency().getCurrencyCode()); n.put("minorUnits", m.toMinorUnits()); return n; }
     private Money money(JsonNode n){ return Money.fromMinorUnits(n.path("minorUnits").asLong(), text(n,"currency")); }

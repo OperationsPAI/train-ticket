@@ -51,18 +51,8 @@ public record PostSalesDecision(
         }
     }
 
-    public static PostSalesDecision refund(String caseId, boolean eligible, String reasonCode, RuleEvaluationSnapshot ruleSnapshot, AmountDecisionSnapshot amountSnapshot, Instant quotedAt, Instant expiresAt) {
-        RefundAssessment assessment = new RefundAssessment(amountSnapshot.refundAmount(), amountSnapshot.feeAmount(), java.math.BigDecimal.ZERO, "LEGACY", amountSnapshot.explanation(), RefundClassification.VOLUNTARY, amountSnapshot.componentDecisions());
-        return refund(caseId, eligible, reasonCode, ruleSnapshot, amountSnapshot, assessment, quotedAt, expiresAt);
-    }
-
     public static PostSalesDecision refund(String caseId, boolean eligible, String reasonCode, RuleEvaluationSnapshot ruleSnapshot, AmountDecisionSnapshot amountSnapshot, RefundAssessment refundAssessment, Instant quotedAt, Instant expiresAt) {
         return new PostSalesDecision(caseId, 1, DecisionKind.REFUND, eligible, reasonCode, ruleSnapshot, amountSnapshot, null, refundAssessment, null, quotedAt, expiresAt);
-    }
-
-    public static PostSalesDecision change(String caseId, boolean eligible, String reasonCode, RuleEvaluationSnapshot ruleSnapshot, AmountDecisionSnapshot amountSnapshot, ChangeFlowSnapshot changeFlowSnapshot, Instant quotedAt, Instant expiresAt) {
-        ChangeAssessment assessment = new ChangeAssessment(amountSnapshot.feeAmount(), amountSnapshot.extraChargeAmount().isZero() ? amountSnapshot.refundAmount() : amountSnapshot.extraChargeAmount(), amountSnapshot.extraChargeAmount(), amountSnapshot.refundAmount(), amountSnapshot.explanation());
-        return change(caseId, eligible, reasonCode, ruleSnapshot, amountSnapshot, changeFlowSnapshot, assessment, quotedAt, expiresAt);
     }
 
     public static PostSalesDecision change(String caseId, boolean eligible, String reasonCode, RuleEvaluationSnapshot ruleSnapshot, AmountDecisionSnapshot amountSnapshot, ChangeFlowSnapshot changeFlowSnapshot, ChangeAssessment changeAssessment, Instant quotedAt, Instant expiresAt) {
