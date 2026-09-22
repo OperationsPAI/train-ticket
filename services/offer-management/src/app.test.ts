@@ -140,6 +140,7 @@ describe("Offer Management HTTP API — POST /api/v1/offers", () => {
         channelId: "web",
         itineraryRef: "itin-456",
         travelerRefs: ["tvl-001", "tvl-002"],
+        fareQuoteRef: "fq-1",
         quoteRequestId: "qr-789",
       },
     });
@@ -178,6 +179,7 @@ describe("Offer Management HTTP API — POST /api/v1/offers", () => {
         channelId: "web",
         itineraryRef: "itin-456",
         travelerRefs: ["tvl-001"],
+        fareQuoteRef: "fq-2",
       },
     });
 
@@ -223,6 +225,7 @@ describe("Offer Management HTTP API — POST /api/v1/offers", () => {
         channelId: "web",
         itineraryRef: "itin-456",
         travelerRefs: ["tvl-001"],
+        fareQuoteRef: "fq-2",
       },
     });
 
@@ -243,6 +246,7 @@ describe("Offer Management HTTP API — POST /api/v1/offers", () => {
         channelId: "web",
         itineraryRef: "itin-456",
         travelerRefs: ["tvl-001"],
+        fareQuoteRef: "fq-2",
       },
     });
 
@@ -266,6 +270,7 @@ describe("Offer Management HTTP API — POST /api/v1/offers", () => {
         channelId: "web",
         itineraryRef: "itin-456",
         travelerRefs: ["tvl-001"],
+        fareQuoteRef: "fq-2",
       },
     });
 
@@ -320,6 +325,7 @@ describe("Offer Management HTTP API — POST /api/v1/offers", () => {
         channelId: "web",
         itineraryRef: "itin-456",
         travelerRefs: ["tvl-001"],
+        fareQuoteRef: "fq-2",
       },
     });
 
@@ -342,6 +348,7 @@ describe("Offer Management HTTP API — POST /api/v1/offers", () => {
         channelId: "web",
         itineraryRef: "itin-456",
         travelerRefs: ["tvl-001"],
+        fareQuoteRef: "fq-2",
       },
     };
 
@@ -418,7 +425,7 @@ describe("Offer Management HTTP API — POST /api/v1/offers", () => {
       method: "POST",
       url: "/api/v1/offers",
       headers: { "idempotency-key": uuidV7() },
-      body: { accountId: "acct-1", channelId: "web", itineraryRef: "itin-456", travelerRefs: ["tvl-001"] },
+      body: { accountId: "acct-1", channelId: "web", itineraryRef: "itin-456", travelerRefs: ["tvl-001"], fareQuoteRef: "fq-2" },
     });
 
     assert.equal(response.statusCode, 201);
@@ -448,6 +455,7 @@ describe("Offer Management HTTP API — POST /api/v1/offers", () => {
         channelId: "web",
         itineraryRef: "itin-456",
         travelerRefs: ["tvl-001"],
+        fareQuoteRef: "fq-2",
       },
     });
 
@@ -460,6 +468,7 @@ describe("Offer Management HTTP API — POST /api/v1/offers", () => {
         channelId: "mobile",
         itineraryRef: "itin-789",
         travelerRefs: ["tvl-002"],
+        fareQuoteRef: "fq-2",
       },
     });
 
@@ -736,6 +745,7 @@ describe("Offer Management HTTP API — GET /api/v1/offers/:offerId", () => {
         channelId: "web",
         itineraryRef: "itin-456",
         travelerRefs: ["tvl-001"],
+        fareQuoteRef: "fq-2",
       },
     });
     const { offerId } = createResponse.json();

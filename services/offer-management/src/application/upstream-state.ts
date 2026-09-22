@@ -19,6 +19,7 @@ export type QuoteOfferRequest = Readonly<{
   channelId: string;
   itineraryRef: string;
   travelerRefs: readonly string[];
+  fareQuoteRef: string;
   quoteRequestId?: string;
 }>;
 
@@ -154,7 +155,7 @@ export interface UpstreamStateRepository {
   findItinerary(itineraryRef: string): Promise<StoredItinerary | undefined>;
   saveFareQuote(fareQuote: StoredFareQuote): Promise<void>;
   saveFareQuotes(fareQuotes: readonly StoredFareQuote[]): Promise<void>;
-  findFareQuote(itineraryRef: string, channelId: string, travelerRefs: readonly string[]): Promise<StoredFareQuote | undefined>;
+  findFareQuote(quoteId: string): Promise<StoredFareQuote | undefined>;
   saveTraveler(traveler: StoredTraveler): Promise<void>;
   /// Writes the snapshot while keeping whatever eligibility the stored row
   /// already carries. One statement, so the projection does not read a row back
@@ -178,7 +179,7 @@ export interface UpstreamStateRepository {
 
 export class InMemoryUpstreamStateRepository implements UpstreamStateRepository {
   private readonly itineraries = new Map<string, StoredItinerary>();
-  private readonly fareQuotesByKey = new Map<string, StoredFareQuote>();
+  private readonly fareQuotesById = new Map<string, StoredFareQuote>();
   private readonly travelers = new Map<string, StoredTraveler>();
   private readonly transferPlanEvaluationsByItinerary = new Map<string, StoredTransferPlanEvaluation>();
   private readonly connectionContractsById = new Map<string, StoredConnectionContract>();
@@ -206,12 +207,12 @@ export class InMemoryUpstreamStateRepository implements UpstreamStateRepository 
 
   async saveFareQuotes(fareQuotes: readonly StoredFareQuote[]): Promise<void> {
     for (const fareQuote of fareQuotes) {
-      this.fareQuotesByKey.set(fareQuoteKey(fareQuote.inputHash, fareQuote.channelId, fareQuote.travelerRefs), fareQuote);
+      this.fareQuotesById.set(fareQuote.quoteId, fareQuote);
     }
   }
 
-  async findFareQuote(itineraryRef: string, channelId: string, travelerRefs: readonly string[]): Promise<StoredFareQuote | undefined> {
-    return this.fareQuotesByKey.get(fareQuoteKey(itineraryRef, channelId, travelerRefs));
+  async findFareQuote(quoteId: string): Promise<StoredFareQuote | undefined> {
+    return this.fareQuotesById.get(quoteId);
   }
 
   async saveTraveler(traveler: StoredTraveler): Promise<void> {
@@ -292,7 +293,7 @@ export class InMemoryUpstreamStateRepository implements UpstreamStateRepository 
 
   clear(): void {
     this.itineraries.clear();
-    this.fareQuotesByKey.clear();
+    this.fareQuotesById.clear();
     this.travelers.clear();
     this.transferPlanEvaluationsByItinerary.clear();
     this.connectionContractsById.clear();
@@ -399,10 +400,18 @@ export async function buildQuoteOfferCommand(repository: UpstreamStateRepository
     throw new DomainError("MISSING_ITINERARY_SNAPSHOT", `No consumed Trip Planning itinerary found for ${request.itineraryRef}`);
   }
 
-  const fareQuoteLookupKey = contractInputHash(itinerary.segmentRefs, request.channelId, request.travelerRefs);
-  const fareQuote = await repository.findFareQuote(fareQuoteLookupKey, request.channelId, request.travelerRefs);
+  const fareQuote = await repository.findFareQuote(request.fareQuoteRef);
   if (!fareQuote) {
-    throw new DomainError("MISSING_FARE_QUOTE", "No consumed Fare Pricing quote matches itinerary/fare input, channelId, and travelerRefs");
+    throw new DomainError("MISSING_FARE_QUOTE", `Fare Pricing quote has not been consumed: ${request.fareQuoteRef}`);
+  }
+  if (fareQuote.quoteId !== request.fareQuoteRef || fareQuote.channelId !== request.channelId
+      || travelerSetHash(fareQuote.travelerRefs) !== travelerSetHash(request.travelerRefs)
+      || fareQuote.inputHash !== contractInputHash(itinerary.segmentRefs, request.channelId, request.travelerRefs)) {
+    throw new DomainError("FARE_QUOTE_MISMATCH", "Fare quote does not match the requested channel, travelers and itinerary segments");
+  }
+  const quotedAt = new Date();
+  if (fareQuote.validFrom.getTime() > quotedAt.getTime() || fareQuote.validUntil.getTime() <= quotedAt.getTime()) {
+    throw new DomainError("FARE_QUOTE_EXPIRED", "Fare quote is outside its validity window");
   }
 
   const travelers = await Promise.all(request.travelerRefs.map((travelerId) => repository.findTraveler(travelerId)));
@@ -411,7 +420,6 @@ export async function buildQuoteOfferCommand(repository: UpstreamStateRepository
     throw new DomainError("MISSING_TRAVELER_SNAPSHOT", `No consumed Traveler Profile snapshot found for ${missingTraveler}`);
   }
 
-  const quotedAt = new Date();
   const offerExpiresAt = new Date(Math.min(quotedAt.getTime() + 10 * 60 * 1000, fareQuote.validUntil.getTime()));
   const passengerMix: PassengerMix = {
     travelerSetHash: travelerSetHash(request.travelerRefs),
@@ -893,14 +901,6 @@ function availabilitySnapshots(itinerary: Record<string, unknown>, segmentRefs: 
     });
   }
   return bySegment;
-}
-
-export function fareQuoteStorageKey(inputHash: string, channelId: string, travelerRefs: readonly string[]): string {
-  return `${inputHash}:${channelId}:${travelerSetHash(travelerRefs)}`;
-}
-
-function fareQuoteKey(inputHash: string, channelId: string, travelerRefs: readonly string[]): string {
-  return fareQuoteStorageKey(inputHash, channelId, travelerRefs);
 }
 
 export function travelerSetHash(travelerRefs: readonly string[]): string {

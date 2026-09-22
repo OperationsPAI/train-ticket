@@ -98,6 +98,7 @@ export class HttpOfferManagementClient implements OfferManagementClient {
         itineraryRef: entry.itineraryRef ?? entry.segmentRef,
         travelerRefs: entry.travelerRefs,
         quoteRequestId: fareQuoteId,
+        fareQuoteRef: fareQuoteId,
       }),
     });
     if (!response.ok) throw new Error(`Offer creation request failed with status ${response.status}`);
