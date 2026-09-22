@@ -61,6 +61,12 @@ func (r *Repository) UpdateOrder(ctx context.Context, o *domain.ChannelOrder, e 
 	return conflict(r.update(ctx, "channel_order_snapshots", o.ChannelOrderID, e, o))
 }
 func (r *Repository) GetOrder(ctx context.Context, id string) (*domain.ChannelOrder, error) {
+	if _, inTransaction := ctx.Value(txKey{}).(storage.DBTX); inTransaction {
+		var locked string
+		if err := r.tx.DBFor(ctx).QueryRow(ctx, "SELECT id FROM channel_order_snapshots WHERE id=$1 FOR UPDATE", id).Scan(&locked); err != nil {
+			return nil, err
+		}
+	}
 	return get[domain.ChannelOrder](ctx, r.snap(ctx, "channel_order_snapshots"), id)
 }
 func (r *Repository) SaveRefund(ctx context.Context, o *domain.ChannelRefund) error {
