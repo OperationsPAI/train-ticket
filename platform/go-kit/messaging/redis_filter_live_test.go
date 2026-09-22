@@ -103,3 +103,57 @@ func TestRedisFilteredBatchPreservesRequiredEventsAndRetries(t *testing.T) {
 		t.Fatalf("pending=%d calls=%d", pending.Count, calls)
 	}
 }
+
+func TestRedisDLQWriteFailurePreservesOriginalMessage(t *testing.T) {
+	url := os.Getenv("TEST_REDIS_URL")
+	if url == "" {
+		t.Skip("requires TEST_REDIS_URL")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client, err := NewRedisClient(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	bus := NewRedisEventBusWithClient(client, RedisConfig{})
+	stream := "test:dlq-failure:" + ids.NewUUIDv7()
+	group, consumer := "dlq-failure", "reader"
+	defer client.Del(context.Background(), stream, stream+DeadLetterSuffix)
+	if err := client.XGroupCreateMkStream(ctx, stream, group, "0").Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.XAdd(ctx, &redis.XAddArgs{Stream: stream, Values: map[string]any{EnvelopeField: "{"}}).Err(); err != nil {
+		t.Fatal(err)
+	}
+	batch, err := client.XReadGroup(ctx, &redis.XReadGroupArgs{Group: group, Consumer: consumer, Streams: []string{stream, ">"}, Count: 1}).Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Set(ctx, stream+DeadLetterSuffix, "unavailable-stream-type", 0).Err(); err != nil {
+		t.Fatal(err)
+	}
+	handler := func(context.Context, EventEnvelope) error { t.Error("malformed envelope reached handler"); return nil }
+	bus.processMessage(ctx, stream, group, consumer, batch[0].Messages[0], handler)
+	pending, err := client.XPending(ctx, stream, group).Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending.Count != 1 {
+		t.Fatalf("original message was acknowledged after DLQ failure: %d", pending.Count)
+	}
+	if err := client.Del(ctx, stream+DeadLetterSuffix).Err(); err != nil {
+		t.Fatal(err)
+	}
+	bus.processMessage(ctx, stream, group, consumer, batch[0].Messages[0], handler)
+	if pending := client.XPending(ctx, stream, group).Val(); pending.Count != 0 {
+		t.Fatalf("pending=%d", pending.Count)
+	}
+	entries, err := client.XRange(ctx, stream+DeadLetterSuffix, "-", "+").Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Values[EnvelopeField] != "{" {
+		t.Fatalf("original envelope missing from DLQ: %v", entries)
+	}
+}

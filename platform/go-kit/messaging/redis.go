@@ -374,13 +374,18 @@ func (b *RedisEventBus) moveToDLQAndAck(ctx context.Context, stream, group, cons
 	safeAttempts := maxInt64(1, attempts)
 	deadLetteredAt := time.Now().UTC().Format(time.RFC3339Nano)
 	log.Printf("WARN %sservice=%s stream=%s eventId=%s deliveries=%d consumerGroup=%s failureReason=%s attempts=%d deadLetteredAt=%s moving message to DLQ", goruntime.TraceLogFields(ctx), group, stream, eventIDForLog(raw), safeAttempts, group, failureReason, safeAttempts, deadLetteredAt)
-	_ = b.client.XAdd(ctx, &redis.XAddArgs{
+	if err := b.client.XAdd(ctx, &redis.XAddArgs{
 		Stream: stream + DeadLetterSuffix,
 		MaxLen: MaxLen,
 		Approx: true,
 		Values: dlqFieldsWithTimestamp(raw, group, consumer, failureReason, safeAttempts, deadLetteredAt),
-	}).Err()
-	_ = b.client.XAck(ctx, stream, group, id).Err()
+	}).Err(); err != nil {
+		log.Printf("WARN %sservice=%s stream=%s eventId=%s DLQ write failed; original message remains pending: %v", goruntime.TraceLogFields(ctx), group, stream, eventIDForLog(raw), err)
+		return
+	}
+	if err := b.client.XAck(ctx, stream, group, id).Err(); err != nil {
+		log.Printf("WARN %sservice=%s stream=%s eventId=%s DLQ acknowledgement failed; original message remains pending: %v", goruntime.TraceLogFields(ctx), group, stream, eventIDForLog(raw), err)
+	}
 }
 
 func dlqFields(raw, group, consumer, failureReason string, attempts int64) map[string]any {
