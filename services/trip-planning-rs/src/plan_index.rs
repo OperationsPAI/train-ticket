@@ -11,7 +11,7 @@ use std::sync::RwLock;
 
 use crate::domain::{AvailabilityHint, Itinerary, LegCandidate, PriceHint};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct SegmentEntry {
     pub segment_ref: String,
     pub scheduled_service_ref: String,
@@ -45,7 +45,7 @@ pub enum IndexMutation {
 /// Thread-safe in-memory index for plan segments and node->place mappings.
 pub struct PlanIndex {
     /// Segments indexed by departure_date for fast date-prefix lookups.
-    segments_by_date: RwLock<HashMap<NaiveDate, Vec<SegmentEntry>>>,
+    segments_by_date: RwLock<HashMap<NaiveDate, HashMap<String, SegmentEntry>>>,
     /// node_id -> place_id mapping.
     node_place: RwLock<HashMap<String, String>>,
 }
@@ -61,15 +61,7 @@ impl PlanIndex {
     pub fn upsert_segment(&self, entry: SegmentEntry) {
         let mut map = self.segments_by_date.write().unwrap();
         let entries = map.entry(entry.departure_date).or_default();
-        // Replace existing entry with same segment_ref, or insert new.
-        if let Some(existing) = entries
-            .iter_mut()
-            .find(|e| e.segment_ref == entry.segment_ref)
-        {
-            *existing = entry;
-        } else {
-            entries.push(entry);
-        }
+        entries.insert(entry.segment_ref.clone(), entry);
     }
 
     pub fn upsert_node(&self, node_id: String, place_id: String) {
@@ -92,7 +84,7 @@ impl PlanIndex {
         };
 
         let mut results = Vec::new();
-        for entry in entries {
+        for entry in entries.values() {
             if self.matches_ref(&entry.origin_stop_ref, origin_ref, &node_place)
                 && self.matches_ref(&entry.destination_stop_ref, destination_ref, &node_place)
             {
