@@ -653,8 +653,14 @@ func (p *Providers) Order(ctx context.Context, accountID string, offer map[strin
 			"segmentRefs":  segments,
 			"journeyDate":  date,
 			"productCode":  "TRAIN",
-		}, nil, []int{200, 201}, "order")
+		}, map[string]string{"X-Forwarded-For": customerSourceIP(accountID)}, []int{200, 201}, "order")
 	return o, err
+}
+
+func customerSourceIP(accountID string) string {
+	digest := sha256.Sum256([]byte(accountID))
+	return fmt.Sprintf("2001:db8:%x:%x:%x:%x:%x:%x",
+		digest[0:2], digest[2:4], digest[4:6], digest[6:8], digest[8:10], digest[10:12])
 }
 
 // PaymentIntent creates a payment intent on the channel the customer chose.
