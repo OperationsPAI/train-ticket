@@ -194,7 +194,7 @@ class FarePricingService:
                          for component in quote.breakdown.discounts if component.amount.amount_minor > 0} if quote.breakdown else set()
         quote = replace(quote, eligibility_usages=tuple(usage for usage in eligibility_usages if usage["eligibilityType"] in applied_types))
         self._store.save_quote(quote)
-        self.link_fare_quote_to_segments(quote.quote_id, segment_refs or [])
+        self._link_fare_quote_to_segments(quote, segment_refs or [])
         return quote
 
     def _eligibility_usages(self, rule_set: FareRuleSet, traveler_refs: list[str], journey_date: str) -> list[dict[str, str]]:
@@ -324,14 +324,13 @@ class FarePricingService:
         candidates.sort(key=lambda rs: (rs.published_at or datetime.min.replace(tzinfo=UTC), rs.version, rs.rule_set_id), reverse=True)
         return candidates[0].rule_set_id
 
-    def link_fare_quote_to_segments(self, quote_id: str, segment_refs: list[str]) -> None:
-        self._store.get_quote(quote_id)
-        normalized_refs = tuple(sorted(ref for ref in segment_refs if ref.strip()))
+    def _link_fare_quote_to_segments(self, quote: FareQuote, segment_refs: list[str]) -> None:
+        normalized_refs = tuple(sorted({ref.strip() for ref in segment_refs if ref.strip()}))
         if normalized_refs:
             if hasattr(self._store, "link_fare_quote_to_segments") and not isinstance(self._store, InMemoryStore):
-                self._store.link_fare_quote_to_segments(quote_id, normalized_refs)
+                self._store.link_fare_quote_to_segments(quote.quote_id, normalized_refs)
             else:
-                self._store.fare_quote_segment_links[quote_id] = normalized_refs
+                self._store.fare_quote_segment_links[quote.quote_id] = normalized_refs
 
     def find_fare_quote_id_for_segments(self, segment_refs: list[str]) -> str | None:
         if hasattr(self._store, "find_fare_quote_id_for_segments") and not isinstance(self._store, InMemoryStore):
