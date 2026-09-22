@@ -67,7 +67,8 @@ export type FulfillmentMethod =
   "VOUCHER" | "PROVIDER_CONFIRMATION" | "MANUAL_OPS" | "NONE";
 export type PerformedBy = "SYSTEM" | "PROVIDER" | "OPS" | "CUSTOMER_SERVICE";
 export type CancelSource =
-  "USER" | "OPS" | "SYSTEM" | "SUPPLIER" | "JOURNEY_ORDER_CANCELLED";
+  | "ENTITLEMENT_VOIDED"
+  | "USER" | "OPS" | "SYSTEM" | "SUPPLIER" | "JOURNEY_ORDER_CANCELLED";
 
 export const FACT_TYPES: readonly FactType[] = [
   "MEAL_ISSUED",

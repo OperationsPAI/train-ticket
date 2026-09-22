@@ -1,5 +1,6 @@
 import { OptimisticConcurrencyConflict, SnapshotRepository, type Database } from "@trainticket/ts-kit";
 import { isDeepStrictEqual } from "node:util";
+import { DomainError } from "../../domain.js";
 import { type AncillaryRepository, type CatalogFilters, type OrderItemFilters } from "../../application.js";
 import { type AncillaryCatalogItemSnapshot, type AncillaryOfferSnapshot, type AncillaryOrderItemSnapshot } from "../../domain.js";
 
@@ -17,7 +18,22 @@ export class PostgresAncillaryRepository implements AncillaryRepository {
     const result = await this.db.query("SELECT data FROM ancillary_offers WHERE data->>'status' IN ('QUOTED','SELECTED') AND data->>'expiresAt' <= $1 ORDER BY id LIMIT $2", [now.toISOString(), limit]);
     return result.rows.map((row: { data: AncillaryOfferSnapshot }) => row.data);
   }
-  async saveOrderItem(snapshot: AncillaryOrderItemSnapshot): Promise<void> { await save(new SnapshotRepository<AncillaryOrderItemSnapshot>(this.db, "ancillary_order_items"), snapshot.ancillaryOrderItemId, snapshot, snapshot.aggregateVersion); }
+  async saveOrderItem(snapshot: AncillaryOrderItemSnapshot): Promise<void> {
+    if (snapshot.entitlementRef && ["SELECTED","PENDING_CONFIRMATION","CONFIRMED","FULFILLMENT_READY"].includes(snapshot.status)) {
+      await this.db.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",["ancillary-ticket:"+snapshot.entitlementRef]);
+      const found = await this.db.query("SELECT 1 FROM ancillary_voided_tickets WHERE entitlement_id=$1",[snapshot.entitlementRef]);
+      if (found.rowCount) throw new DomainError("TICKET_VOIDED","Entitlement is VOIDED");
+    }
+    await save(new SnapshotRepository<AncillaryOrderItemSnapshot>(this.db, "ancillary_order_items"), snapshot.ancillaryOrderItemId, snapshot, snapshot.aggregateVersion);
+  }
+  async recordTicketVoid(entitlementRef: string,eventId: string): Promise<void> {
+    await this.db.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",["ancillary-ticket:"+entitlementRef]);
+    await this.db.query("INSERT INTO ancillary_voided_tickets(entitlement_id,event_id) VALUES ($1,$2) ON CONFLICT DO NOTHING",[entitlementRef,eventId]);
+  }
+  async listByEntitlement(entitlementRef: string): Promise<readonly AncillaryOrderItemSnapshot[]> {
+    const rows = await this.db.query("SELECT data FROM ancillary_order_items WHERE data->>'entitlementRef'=$1 ORDER BY id",[entitlementRef]);
+    return rows.rows.map((row:{data:AncillaryOrderItemSnapshot})=>row.data);
+  }
   async getOrderItem(ancillaryOrderItemId: string): Promise<AncillaryOrderItemSnapshot | undefined> { return (await new SnapshotRepository<AncillaryOrderItemSnapshot>(this.db, "ancillary_order_items").get(ancillaryOrderItemId))?.data; }
   async listOrderItems(filters: OrderItemFilters): Promise<readonly AncillaryOrderItemSnapshot[]> {
     const clauses = ["data->>'journeyOrderId' = $1"];
