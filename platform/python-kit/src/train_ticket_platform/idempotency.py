@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import Headers
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
@@ -128,13 +130,6 @@ def key_reused_response(request: Request, error_body_factory: ErrorBodyFactory =
     )
 
 
-async def response_body(response: Response) -> bytes:
-    body = b""
-    async for chunk in response.body_iterator:  # type: ignore[attr-defined]
-        body += chunk
-    return body
-
-
 def decode_response_body(body: bytes) -> Any:
     if not body:
         return None
@@ -166,6 +161,7 @@ class IdempotencyMiddleware:
 
     def __init__(
         self,
+        app: ASGIApp,
         store: IdempotencyStore,
         *,
         require_key: bool = True,
@@ -173,6 +169,7 @@ class IdempotencyMiddleware:
         exclude_path_prefixes: tuple[str, ...] = (),
         error_body_factory: ErrorBodyFactory = default_error_body,
     ) -> None:
+        self.app = app
         self._store = store
         self._require_key = require_key
         self._include_path_prefixes = include_path_prefixes
@@ -187,64 +184,82 @@ class IdempotencyMiddleware:
             return False
         return not self._include_path_prefixes or any(path.startswith(prefix) for prefix in self._include_path_prefixes)
 
-    async def __call__(self, request: Request, call_next: Any) -> Response:
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        request = Request(scope, receive)
         if not self.applies_to(request):
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
 
         key = request.headers.get(IDEMPOTENCY_KEY_HEADER)
         if not key:
             if not self._require_key:
-                return await call_next(request)
+                await self.app(scope, receive, send)
+                return
             self._ensure_request_state(request)
-            return validation_failed_response(request, "Idempotency-Key header is required", self._error_body_factory)
+            await validation_failed_response(request, "Idempotency-Key header is required", self._error_body_factory)(scope, receive, send)
+            return
         try:
             canonical_key = require_uuid7_idempotency_key(key)
         except IdempotencyKeyError as exc:
             self._ensure_request_state(request)
-            return validation_failed_response(request, str(exc), self._error_body_factory)
+            await validation_failed_response(request, str(exc), self._error_body_factory)(scope, receive, send)
+            return
 
         body = await request.body()
         fingerprint = http_request_fingerprint(request.method, request.url.path, request.url.query, body)
-        scope = idempotency_scope(request)
-        request.state.idempotency_decision = IdempotencyDecision(scope=scope, key=canonical_key, fingerprint=fingerprint)
-        existing = await run_in_threadpool(self._store.get, scope, canonical_key)
+        key_scope = idempotency_scope(request)
+        request.state.idempotency_decision = IdempotencyDecision(scope=key_scope, key=canonical_key, fingerprint=fingerprint)
+        existing = await run_in_threadpool(self._store.get, key_scope, canonical_key)
         if existing is not None:
             if existing.fingerprint != fingerprint:
-                return key_reused_response(request, self._error_body_factory)
-            if existing.pending_events:
-                response = await call_next(request)
-                raw_body = await response_body(response)
-                return Response(
-                    content=raw_body,
-                    status_code=response.status_code,
-                    headers=dict(response.headers),
-                    media_type=response.media_type,
-                    background=response.background,
-                )
-            self._ensure_request_state(request)
-            return replay_response(existing, request)
+                await key_reused_response(request, self._error_body_factory)(scope, receive, send)
+                return
+            if not existing.pending_events:
+                self._ensure_request_state(request)
+                await replay_response(existing, request)(scope, receive, send)
+                return
 
-        response = await call_next(request)
-        raw_body = await response_body(response)
-        if 200 <= response.status_code < 400:
-            headers = {name: value for name, value in response.headers.items() if name.lower() in {"content-type"}}
-            await run_in_threadpool(self._store.put,
-                scope,
-                canonical_key,
-                IdempotencyRecord(
-                    fingerprint=fingerprint,
-                    status_code=response.status_code,
-                    response_body=decode_response_body(raw_body),
-                    headers=headers,
-                ),
-            )
-        return Response(
-            content=raw_body,
-            status_code=response.status_code,
-            headers=dict(response.headers),
-            media_type=response.media_type,
-            background=response.background,
-        )
+        body_delivered = False
+
+        async def receive_body() -> Message:
+            nonlocal body_delivered
+            if not body_delivered:
+                body_delivered = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return await receive()
+
+        if existing is not None:
+            await self.app(scope, receive_body, send)
+            return
+
+        response_start: Message | None = None
+        chunks: list[bytes] = []
+
+        async def send_response(message: Message) -> None:
+            nonlocal response_start
+            if message["type"] == "http.response.start" and 200 <= message["status"] < 400:
+                response_start = message
+                return
+            if response_start is None or message["type"] != "http.response.body":
+                await send(message)
+                return
+            chunks.append(message.get("body", b""))
+            if message.get("more_body", False):
+                return
+            raw_body = b"".join(chunks)
+            headers = {name: value for name, value in Headers(scope=response_start).items() if name == "content-type"}
+            await run_in_threadpool(self._store.put, key_scope, canonical_key,
+                IdempotencyRecord(fingerprint=fingerprint, status_code=response_start["status"],
+                                  response_body=decode_response_body(raw_body), headers=headers))
+            await send(response_start)
+            await send({**message, "body": raw_body})
+            response_start = None
+            chunks.clear()
+
+        await self.app(scope, receive_body, send_response)
 
     @staticmethod
     def _ensure_request_state(request: Request) -> None:
@@ -270,19 +285,15 @@ def configure_idempotency_middleware(
 ) -> IdempotencyStore:
     configured_store = store or BoundedInMemoryIdempotencyStore()
     app.state.idempotency_store = configured_store
-    middleware = IdempotencyMiddleware(
-        configured_store,
+    prior_middleware_count = len(getattr(app, "user_middleware", ()))
+    app.add_middleware(
+        IdempotencyMiddleware,
+        store=configured_store,
         require_key=require_key,
         include_path_prefixes=include_path_prefixes,
         exclude_path_prefixes=exclude_path_prefixes,
         error_body_factory=error_body_factory,
     )
-
-    prior_middleware_count = len(getattr(app, "user_middleware", ()))
-
-    @app.middleware("http")
-    async def idempotency_middleware(request: Request, call_next: Any) -> Response:
-        return await middleware(request, call_next)
 
     if prior_middleware_count:
         app.user_middleware.append(app.user_middleware.pop(0))
