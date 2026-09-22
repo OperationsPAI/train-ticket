@@ -339,7 +339,7 @@ class OutboxRelay:
         published = 0
         with self._pool.connection() as conn:
             rows = conn.execute(
-                "SELECT seq, stream, envelope FROM outbox WHERE published_at IS NULL ORDER BY seq LIMIT %s",
+                "SELECT seq, stream, envelope FROM outbox WHERE published_at IS NULL ORDER BY seq LIMIT %s FOR UPDATE SKIP LOCKED",
                 (limit,),
             ).fetchall()
             for seq, stream, envelope in rows:
