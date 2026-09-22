@@ -166,6 +166,31 @@ class InMemoryAssessmentRepository:
         self._ip_order_times: dict[str, list[datetime]] = {}
         self._ip_accounts: dict[str, dict[str, datetime]] = {}
         self._order_accounts: dict[str, str] = {}
+        self._order_assessments: dict[str, str] = {}
+        self._booking_requests: dict[str, EventEnvelope] = {}
+        self._completed_booking_requests: set[str] = set()
+
+    def save_order_assessment(self, result: RiskAssessmentResult, account_id: str) -> None:
+        self._order_assessments[result.subjectRef] = result.assessmentId
+        self.remember_order_account(result.subjectRef, account_id)
+
+    def order_assessment(self, order_id: str) -> RiskAssessmentResult | None:
+        assessment_id = self._order_assessments.get(order_id)
+        return None if assessment_id is None else self.get(assessment_id)
+
+    def save_booking_request(self, envelope: EventEnvelope) -> None:
+        saga_id = envelope.payload["sagaId"]
+        previous = self._booking_requests.get(saga_id)
+        if previous is not None and any(previous.payload[key] != envelope.payload[key] for key in ("journeyOrderId", "accountId")):
+            raise FatalHandlerError("booking risk request references changed")
+        self._booking_requests.setdefault(saga_id, envelope)
+
+    def pending_booking_requests(self, order_id: str) -> tuple[EventEnvelope, ...]:
+        return tuple(envelope for saga_id, envelope in self._booking_requests.items()
+                     if saga_id not in self._completed_booking_requests and envelope.payload["journeyOrderId"] == order_id)
+
+    def complete_booking_request(self, saga_id: str) -> None:
+        self._completed_booking_requests.add(saga_id)
 
     def get(self, assessment_id: str) -> RiskAssessmentResult:
         try:
@@ -360,11 +385,16 @@ class RiskComplianceService:
             self._handle_event_in_transaction(envelope)
 
     def _handle_event_in_transaction(self, envelope: EventEnvelope) -> None:
+        order_id = _required_payload_text(envelope.payload, "orderId")
+        lock_order = getattr(self.repository, "lock_order", None)
+        if callable(lock_order):
+            lock_order(order_id)
         try_mark_processed = getattr(self.repository, "try_mark_processed", None)
         if not _try_mark_processed(self.repository, envelope.eventId, "events:journey-order"):
             return
         result, block = self._assess_journey_order_created(envelope)
         self.repository.save(result)
+        self.repository.save_order_assessment(result, _required_payload_text(envelope.payload, "accountId"))
         assessment_envelope = _assessment_envelope(
             result,
             envelope.correlationId,
@@ -375,6 +405,7 @@ class RiskComplianceService:
         if block is not None:
             self.repository.save_block(block)
             self.publisher.publish(_block_applied_envelope(block, envelope.correlationId, assessment_envelope.eventId))
+        self._complete_booking_requests(result)
         if try_mark_processed is None:
             self.repository.record_processed(envelope.eventId)
 
@@ -388,25 +419,43 @@ class RiskComplianceService:
             self._handle_risk_assessment_requested_in_transaction(envelope)
 
     def _handle_risk_assessment_requested_in_transaction(self, envelope: EventEnvelope) -> None:
+        for key in ("sagaId", "journeyOrderId", "accountId"):
+            _required_payload_text(envelope.payload, key)
+        order_id = envelope.payload["journeyOrderId"]
+        lock_order = getattr(self.repository, "lock_order", None)
+        if callable(lock_order):
+            lock_order(order_id)
         try_mark_processed = getattr(self.repository, "try_mark_processed", None)
         if not _try_mark_processed(self.repository, envelope.eventId, "events:booking-orchestration"):
             return
-        payload = envelope.payload
-        saga_id = str(payload.get("sagaId", ""))
-        journey_order_id = str(payload.get("journeyOrderId", ""))
-        account_id = str(payload.get("accountId", ""))
-        assessment_id = deterministic_prefixed_id("asmt", envelope.eventId, "saga-assessment")
-        completed_envelope = _risk_assessment_completed_envelope(
-            assessment_id=assessment_id,
-            saga_id=saga_id,
-            journey_order_id=journey_order_id,
-            account_id=account_id,
-            correlation_id=envelope.correlationId,
-            causation_id=envelope.eventId,
-        )
-        self.publisher.publish(completed_envelope)
+        account = self.repository.account_for_order(order_id)
+        if account is not None and account != envelope.payload["accountId"]:
+            raise FatalHandlerError("booking risk request account does not own order")
+        self.repository.save_booking_request(envelope)
+        result = self.repository.order_assessment(order_id)
+        if result is not None:
+            self._complete_booking_requests(result)
         if try_mark_processed is None:
             self.repository.record_processed(envelope.eventId)
+
+    def _complete_booking_requests(self, result: RiskAssessmentResult) -> None:
+        verdicts = {"ALLOW": "PASS", "DENY": "BLOCK", "CHALLENGE": "CHALLENGE", "HOLD": "HOLD"}
+        verdict = verdicts[result.decision]
+        account_id = self.repository.account_for_order(result.subjectRef)
+        for request in self.repository.pending_booking_requests(result.subjectRef):
+            if request.payload["accountId"] != account_id:
+                raise FatalHandlerError("booking risk request account does not own order")
+            self.publisher.publish(_risk_assessment_completed_envelope(
+                assessment_id=result.assessmentId,
+                saga_id=request.payload["sagaId"],
+                journey_order_id=result.subjectRef,
+                account_id=account_id,
+                correlation_id=request.correlationId,
+                causation_id=request.eventId,
+                verdict=verdict,
+                risk_score=result.score,
+            ))
+            self.repository.complete_booking_request(request.payload["sagaId"])
 
     def _handle_purchase_limit_fact(self, envelope: EventEnvelope) -> None:
         transaction = getattr(self.repository, "transaction", None)
@@ -464,6 +513,12 @@ class RiskComplianceService:
         payload = envelope.payload
         order_id = _required_payload_text(payload, "orderId")
         account_id = _required_payload_text(payload, "accountId")
+        authoritative = self.repository.order_assessment(order_id)
+        if authoritative is not None:
+            if self.repository.account_for_order(order_id) != account_id:
+                raise FatalHandlerError("order account does not match its risk assessment")
+            block = _block_from_result(authoritative) if authoritative.decision in BLOCKING_DECISION_VALUES else None
+            return authoritative, block
         assessment_id = deterministic_prefixed_id("asmt", envelope.eventId, "assessment")
         existing = self.repository.find(assessment_id)
         if existing is not None:
@@ -862,8 +917,8 @@ def _risk_assessment_completed_envelope(
     account_id: str,
     correlation_id: str,
     causation_id: str,
-    verdict: str = "PASS",
-    risk_score: int = 10,
+    verdict: str,
+    risk_score: int,
 ) -> EventEnvelope:
     return envelope_factory(
         event_type="RiskAssessmentCompleted",
@@ -879,7 +934,7 @@ def _risk_assessment_completed_envelope(
         correlation_id=correlation_id,
         causation_id=causation_id,
         schema_version=SCHEMA_VERSION,
-        event_id=deterministic_event_id(assessment_id),
+        event_id=deterministic_prefixed_id("evt", assessment_id, saga_id, "booking-result"),
     )
 
 
