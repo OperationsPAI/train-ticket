@@ -55,6 +55,16 @@ class RefundCaseLookupTest {
                 var intent = PaymentIntent.create("ord-refund-lookup", "purchase", Money.fromMinorUnits(35000, "CNY"),
                     "acct-refund-lookup", now.plusSeconds(900), "create-refund-lookup", now, "cmd-create", "corr-create");
                 intent.capture(intent.amount(), "channel", "txn-lookup", now, "cmd-capture", "cmd-capture", "corr-capture");
+                payments.save(intent);
+                var captured = payments.findById(intent.paymentIntentId()).orElseThrow();
+                var originalEvent = intent.domainEvents().stream().filter(com.trainticket.payment.domain.PaymentCaptured.class::isInstance).findFirst().orElseThrow();
+                var persistedEvent = captured.domainEvents().stream().filter(com.trainticket.payment.domain.PaymentCaptured.class::isInstance).findFirst().orElseThrow();
+                assertEquals(originalEvent.envelope().eventId(), persistedEvent.envelope().eventId());
+                assertEquals(originalEvent.envelope().occurredAt(), persistedEvent.envelope().occurredAt());
+                var capturePayload = (java.util.Map<?, ?>) com.trainticket.payment.application.EventEnvelopeMapper.fromDomainEvent(persistedEvent).payload();
+                assertEquals(intent.paymentIntentId(), capturePayload.get("paymentIntentId"));
+                assertEquals(intent.businessRef(), capturePayload.get("businessRef"));
+                assertEquals(35000L, ((java.util.Map<?, ?>) capturePayload.get("capturedAmount")).get("minorUnits"));
                 var first = Refund.request(intent, Money.fromMinorUnits(10000, "CNY"), "case-lookup", "ticket refund",
                     "refund-lookup-1", now, "cmd-refund", "corr-refund");
                 var second = Refund.request(intent, Money.fromMinorUnits(2000, "CNY"), "case-lookup", "ticket refund",

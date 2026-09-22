@@ -19,6 +19,14 @@ model fields, and event serializer/deserializer support for `channelRef`.
 
 ## Endpoints
 
+### Read Captured Payment Facts
+
+**GET** `/api/v1/internal/payment-intents/{paymentIntentId}/captured-facts`
+
+Returns the persisted payment identity, business reference, payer, purpose, status, captured amount, refunded amount, and original `PaymentCaptured` event envelopes.
+The event IDs and occurrence times are preserved for consumer reconciliation.
+This endpoint does not publish events or change payment state.
+
 ### Get Latest Payment Intent for Business Reference
 
 **GET** `/api/v1/payment-intents/by-business/{businessRef}`
