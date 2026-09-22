@@ -50,17 +50,19 @@ public class PostgresPostSalesRepository implements PostSalesRepository {
     }
 
     @Override public Optional<PostSalesCase> findByIdempotencyKey(String idempotencyKey) {
-        return jdbc.query("SELECT id FROM post_sales_case_snapshots WHERE data->>'idempotencyKey' = ? LIMIT 1", rs -> rs.next() ? findById(rs.getString("id")) : Optional.empty(), idempotencyKey);
+        Optional<String> id = jdbc.query("SELECT id FROM post_sales_case_snapshots WHERE data->>'idempotencyKey' = ? LIMIT 1", rs -> rs.next() ? Optional.of(rs.getString("id")) : Optional.empty(), idempotencyKey);
+        return id.flatMap(this::findById);
     }
 
     @Override public Optional<PostSalesCase> findActiveRefundCaseForOrder(String journeyOrderId) {
-        return jdbc.query("""
+        Optional<String> id = jdbc.query("""
             SELECT s.id
               FROM post_sales_active_refunds a
               JOIN post_sales_case_snapshots s ON s.id = a.case_id
              WHERE a.journey_order_id = ?
              LIMIT 1
-            """, rs -> rs.next() ? findById(rs.getString("id")) : Optional.empty(), journeyOrderId);
+            """, rs -> rs.next() ? Optional.of(rs.getString("id")) : Optional.empty(), journeyOrderId);
+        return id.flatMap(this::findById);
     }
 
     @Override public List<PostSalesCase> findByOrderItemRef(String orderItemRef) {

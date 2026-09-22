@@ -46,11 +46,12 @@ public class PostgresPaymentIntentRepository implements PaymentIntentRepository 
 
     @Override
     public Optional<PaymentIntent> findLatestByBusinessRef(String businessRef) {
-        return jdbc.query(
+        Optional<String> id = jdbc.query(
             "SELECT data->>'paymentIntentId' AS id FROM payment_intent_snapshots WHERE data->>'businessRef' = ? ORDER BY data->>'paymentIntentId' DESC LIMIT 1",
-            rs -> rs.next() ? findById(rs.getString("id")) : Optional.empty(),
+            rs -> rs.next() ? Optional.of(rs.getString("id")) : Optional.empty(),
             businessRef
         );
+        return id.flatMap(this::findById);
     }
 
     @Override
@@ -59,10 +60,10 @@ public class PostgresPaymentIntentRepository implements PaymentIntentRepository 
             "SELECT data->>'paymentIntentId' AS id FROM payment_intent_snapshots "
                 + "WHERE payment_expires_at_immutable(data) <= ?::timestamp AND data->>'status' IN ('CREATED','AUTHORIZED') "
                 + "ORDER BY payment_expires_at_immutable(data) ASC LIMIT ?",
-            (rs, rowNum) -> findById(rs.getString("id")).orElseThrow(),
+            (rs, rowNum) -> rs.getString("id"),
             now.toString(),
             limit
-        );
+        ).stream().map(id -> findById(id).orElseThrow()).toList();
     }
 
     @Override
