@@ -12,13 +12,18 @@ from identity_verification.application.service import IdentityVerificationServic
 from identity_verification.domain import PreconditionFailed
 
 
-@pytest.mark.skipif(not os.environ.get("TEST_BOUND_CHECK"),reason="requires real confirmed identity check and TEST_DATABASE_URL")
-def test_confirmed_identity_check_remains_bound_to_its_order():
-    source=json.loads(Path(os.environ["TEST_BOUND_CHECK"]).read_text())
+@pytest.mark.parametrize("sample_env",["TEST_BOUND_CHECK","TEST_RESERVED_CHECK"])
+def test_confirmed_identity_check_remains_bound_to_its_order(sample_env):
+    if not os.environ.get(sample_env):pytest.skip("requires real identity check and TEST_DATABASE_URL")
+    source=json.loads(Path(os.environ[sample_env]).read_text())
     check=source["check"]
-    orders={fact["journeyOrderId"] for fact in source["facts"]}
-    assert len(orders)==1
-    order=next(iter(orders))
+    if check["status"]=="CONFIRMED":
+        orders={fact["journeyOrderId"] for fact in source["facts"]}
+        assert len(orders)==1
+        order=next(iter(orders))
+    else:
+        confirmed=json.loads(Path(os.environ["TEST_BOUND_CHECK"]).read_text())
+        order=confirmed["facts"][0]["journeyOrderId"]
     url=os.environ["TEST_DATABASE_URL"]
     schema="identity_binding_"+uuid4().hex
     with psycopg.connect(url,autocommit=True) as admin:
@@ -33,8 +38,9 @@ def test_confirmed_identity_check_remains_bound_to_its_order():
                         connection.execute("INSERT INTO purchase_limit_fact_snapshots(id,version,data) VALUES (%s,%s,%s::jsonb)",(fact["purchaseLimitFactId"],fact["aggregateVersion"],json.dumps(fact)))
                 service=IdentityVerificationService(PostgresIdentityVerificationStore(pool))
                 wrong="ord-"+uuid4().hex
-                with pytest.raises(PreconditionFailed,match="different order"):
-                    service.confirm_pre_order_check(check["preOrderCheckId"],wrong,"corr-"+uuid4().hex,None)
+                if check["status"]=="CONFIRMED":
+                    with pytest.raises(PreconditionFailed,match="different order"):
+                        service.confirm_pre_order_check(check["preOrderCheckId"],wrong,"corr-"+uuid4().hex,None)
                 with ThreadPoolExecutor(max_workers=4) as workers:
                     results=list(workers.map(lambda _:service.confirm_pre_order_check(check["preOrderCheckId"],order,"corr-"+uuid4().hex,None),range(4)))
                 assert all(result["preOrderCheckId"]==check["preOrderCheckId"] for result in results)
@@ -43,5 +49,6 @@ def test_confirmed_identity_check_remains_bound_to_its_order():
                     restarted.confirm_pre_order_check(check["preOrderCheckId"],wrong,"corr-"+uuid4().hex,None)
                 with pool.connection() as connection:
                     assert connection.execute("SELECT data->>'journeyOrderId' FROM pre_order_check_snapshots").fetchone()[0]==order
-                    assert connection.execute("SELECT count(*) FROM outbox").fetchone()[0]==0
+                    expected_events=0 if check["status"]=="CONFIRMED" else len(source["facts"])
+                    assert connection.execute("SELECT count(*) FROM outbox").fetchone()[0]==expected_events
         finally:admin.execute(f"DROP SCHEMA {schema} CASCADE")
