@@ -46,8 +46,12 @@ public class InMemoryJourneyOrderStateRepository implements JourneyOrderStateRep
     }
 
     @Override
-    public List<OrderManagementService.StoredOrder> findOrdersByTraveler(String travelerId) {
+    public List<OrderManagementService.StoredOrder> findOrdersForTravelerUpdates(String travelerId) {
         return orders.values().stream()
+            .filter(order -> switch (order.order().state()) {
+                case CANCELLED, COMPLETED, FAILED -> false;
+                default -> true;
+            })
             .filter(order -> order.order().travelers().stream().anyMatch(traveler -> traveler.travelerId().equals(travelerId)))
             .map(InMemoryJourneyOrderStateRepository::copyOf)
             .toList();
