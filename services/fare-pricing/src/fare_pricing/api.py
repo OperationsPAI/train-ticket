@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-from contextlib import AbstractContextManager, nullcontext
 import os
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Response
+from opentelemetry import trace
 
 from train_ticket_platform.observability import init_opentelemetry
-from .ids import prefixed_uuid7, uuid7
 from .runtime import health, profile
 from .application import DomainEventService
 from train_ticket_platform.idempotency import BoundedInMemoryIdempotencyStore, IdempotencyStore, configure_idempotency_middleware
@@ -31,26 +29,7 @@ from .ports.messaging import EventPublisher
 from .handlers import CAPACITY_STREAM, IDENTITY_VERIFICATION_STREAM, handle_capacity_snapshot_updated, handle_identity_verification_event
 from .web.errors import register_exception_handlers
 from .web.handlers import router as fare_pricing_router
-
-REQUEST_ID_HEADER = "X-Request-ID"
-CORRELATION_ID_HEADER = "X-Correlation-Id"
-LEGACY_CORRELATION_ID_HEADER = "X-Correlation-ID"
-TraceHook = Callable[[str, Mapping[str, object]], None]
-
-
-class RuntimeSpan(AbstractContextManager["RuntimeSpan"], Protocol):
-    def set_attribute(self, key: str, value: object) -> None: ...
-
-    def __exit__(self, exc_type: object, exc: object, traceback: object) -> bool | None: ...
-
-
-class RuntimeTracer(Protocol):
-    def start_as_current_span(self, name: str) -> RuntimeSpan: ...
-
-
-def _emit_trace(tracer: TraceHook | None, event: str, attributes: Mapping[str, object]) -> None:
-    if tracer is not None:
-        tracer(event, dict(attributes))
+from .web.middleware import FareUnitOfWorkMiddleware, RequestContextMiddleware, RuntimeTracer, TraceHook
 
 
 def opentelemetry_tracer_from_env(service_name: str) -> RuntimeTracer | None:
@@ -64,70 +43,11 @@ def opentelemetry_tracer_from_env(service_name: str) -> RuntimeTracer | None:
     if not exporter or exporter == "none":
         return None
     configured_service = os.getenv("OTEL_SERVICE_NAME", "").strip() or service_name
-    try:
-        from opentelemetry import trace
-    except ImportError:  # pragma: no cover - optional adapter dependency
-        return None
     return trace.get_tracer(configured_service)
 
 
-def _span_context(tracer: RuntimeTracer | None, name: str) -> AbstractContextManager[RuntimeSpan | None]:
-    if tracer is None:
-        return nullcontext(None)
-    return tracer.start_as_current_span(name)
-
-
-def _set_span_attribute(span: RuntimeSpan | None, key: str, value: object) -> None:
-    if span is not None:
-        span.set_attribute(key, value)
-
-
-def _request_identifiers(request: Request) -> tuple[str, str]:
-    request_id = request.headers.get(REQUEST_ID_HEADER) or uuid7()
-    correlation_id = request.headers.get(CORRELATION_ID_HEADER) or request.headers.get(LEGACY_CORRELATION_ID_HEADER) or prefixed_uuid7("corr")
-    return request_id, correlation_id
-
-
 def configure_runtime_endpoints(app: FastAPI, tracer: TraceHook | None = None, otel_tracer: RuntimeTracer | None = None) -> None:
-    @app.middleware("http")
-    async def request_context_middleware(request: Request, call_next: Any):
-        request_id, correlation_id = _request_identifiers(request)
-        request.state.request_id = request_id
-        request.state.correlation_id = correlation_id
-        service_name = profile()["service_id"]
-        path = request.url.path
-        trace_attributes = {
-            "service.name": service_name,
-            "request_id": request_id,
-            "correlation_id": correlation_id,
-            "http.request.method": request.method,
-            "http.method": request.method,
-            "url.path": path,
-            "http.route": path,
-            "http.request_id": request_id,
-            "http.correlation_id": correlation_id,
-        }
-        _emit_trace(tracer, "http.request.start", trace_attributes)
-        with _span_context(otel_tracer, f"{request.method} {path}") as span:
-            for key, value in trace_attributes.items():
-                _set_span_attribute(span, key, value)
-            try:
-                response = await call_next(request)
-            except Exception as exc:  # pragma: no cover - exercised by FastAPI exception handling paths
-                _set_span_attribute(span, "error.type", exc.__class__.__name__)
-                _emit_trace(tracer, "http.request.error", {**trace_attributes, "error": exc.__class__.__name__})
-                raise
-            response.headers[REQUEST_ID_HEADER] = request_id
-            response.headers[CORRELATION_ID_HEADER] = correlation_id
-            response.headers[LEGACY_CORRELATION_ID_HEADER] = correlation_id
-            _set_span_attribute(span, "http.response.status_code", response.status_code)
-            _set_span_attribute(span, "http.status_code", response.status_code)
-            _emit_trace(
-                tracer,
-                "http.request.complete",
-                {**trace_attributes, "status_code": response.status_code},
-            )
-            return response
+    app.add_middleware(RequestContextMiddleware, tracer=tracer, otel_tracer=otel_tracer)
 
     # The probes are coroutines so they never queue behind the quoting operations.
     # FastAPI serves a `def` endpoint from anyio's shared 40-thread pool, and the quoting operations are `def` paths that hold a thread for the length of their blocking work.
@@ -177,10 +97,7 @@ def configure_fare_pricing_routes(
     service = FarePricingService(store, HttpEligibilityCertificateAdapter() if os.getenv("IDENTITY_VERIFICATION_URL") else None)
     unit_of_work = getattr(store, "unit_of_work", None)
     if callable(unit_of_work):
-        @app.middleware("http")
-        async def fare_pricing_unit_of_work_middleware(request: Request, call_next: Any):
-            with unit_of_work():
-                return await call_next(request)
+        app.add_middleware(FareUnitOfWorkMiddleware, unit_of_work=unit_of_work)
 
     publisher = event_publisher or RedisEventPublisher()
     app.state.publish_events_synchronously = not isinstance(store, PostgresFarePricingStore)
