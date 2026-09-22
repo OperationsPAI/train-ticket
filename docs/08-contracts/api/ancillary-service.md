@@ -26,11 +26,10 @@ Activation-wave rulings:
   `segmentRef`; this contract does not change Journey Order HTTP or event
   contracts. Payment integration is deferred; the resource carries informational
   `payableAmount` and `refundableAmount` only.
-- Eligibility is the minimum rule set for this wave: primary-ticket status via a
-  read-only entitlement lookup or caller-supplied `entitlementRef`, purchase time
-  window before departure, and mandatory `segmentRef` for segment-bound services.
-  Traveler age/documents, supplier capacity, fare-rule eligibility, provider
-  availability, and other dimensions are deferred.
+- Purchase references are checked against Journey Order and Entitlement Ticketing.
+  The order must be confirmed, the traveler and segment must belong to it, and the supplied departure time must match the order segment.
+  An entitlement reference must identify an issued ticket for the same order, traveler, and segment.
+  Reference checks run when drafting, selecting, confirming, and marking fulfillment ready.
 - All state-changing HTTP endpoints require `Idempotency-Key` and follow the
   standard replay/reuse behavior in `docs/08-contracts/api/README.md`.
 - Finance Settlement, Notification, and Post Sales consumers are contract-surface
