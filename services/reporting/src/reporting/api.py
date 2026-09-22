@@ -299,8 +299,14 @@ def configure_runtime_endpoints(app: FastAPI, tracer: TraceHook | None = None, o
             return response
 
 
+    # The probes are coroutines so they never queue behind the reporting queries.
+    # FastAPI serves a `def` endpoint from anyio's shared 40-thread pool, and the reporting queries are `def` paths that hold a thread for the length of their blocking database work.
+    # Measured on legacy-acl: the pod restarted 78 times in 9 hours on "Liveness probe failed: context deadline exceeded" while its CPU peaked at 9% of its limit.
+    # health() and profile() are constant returns, so on the event loop these cost nothing and a saturated pool cannot starve them.
+    #
+    # /readyz and /ready stay synchronous on purpose: _storage_ready runs a blocking `SELECT 1` through the connection pool, and that IO belongs in the thread pool instead of on the event loop.
     @app.get("/healthz")
-    def healthz_endpoint() -> dict[str, str]:
+    async def healthz_endpoint() -> dict[str, str]:
         return {"status": health()}
 
     @app.get("/readyz")
@@ -311,11 +317,11 @@ def configure_runtime_endpoints(app: FastAPI, tracer: TraceHook | None = None, o
         return {"status": health()}
 
     @app.get("/health")
-    def health_endpoint() -> dict[str, object]:
+    async def health_endpoint() -> dict[str, object]:
         return {"status": health(), "service": profile()}
 
     @app.get("/live")
-    def live_endpoint() -> dict[str, str]:
+    async def live_endpoint() -> dict[str, str]:
         return {"status": health()}
 
     @app.get("/ready")
