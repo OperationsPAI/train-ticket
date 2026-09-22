@@ -1,7 +1,6 @@
 import { type PoolClient, type QueryResult } from "pg";
 
 import {
-  fareQuoteStorageKey,
   type StoredAvailability,
   type StoredAncillaryCatalogItem,
   type StoredAncillaryOffer,
@@ -44,14 +43,14 @@ export class PostgresUpstreamStateRepository implements UpstreamStateRepository 
       this.client,
       "offer_upstream_fare_quotes",
       fareQuotes.map((fareQuote) => ({
-        id: fareQuoteStorageKey(fareQuote.inputHash, fareQuote.channelId, fareQuote.travelerRefs),
+        id: fareQuote.quoteId,
         data: serializeFareQuote(fareQuote),
       })),
     );
   }
 
-  async findFareQuote(inputHash: string, channelId: string, travelerRefs: readonly string[]): Promise<StoredFareQuote | undefined> {
-    const row = await findSnapshot<StoredFareQuoteSnapshot>(this.client, "offer_upstream_fare_quotes", fareQuoteStorageKey(inputHash, channelId, travelerRefs));
+  async findFareQuote(quoteId: string): Promise<StoredFareQuote | undefined> {
+    const row = await findSnapshot<StoredFareQuoteSnapshot>(this.client, "offer_upstream_fare_quotes", quoteId);
     return row ? reviveFareQuote(row) : undefined;
   }
 
