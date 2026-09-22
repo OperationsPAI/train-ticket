@@ -57,30 +57,33 @@ func (r *PlaceRepository) FindByID(ctx context.Context, id domain.PlaceID) (*dom
 func (r *PlaceRepository) FindPage(ctx context.Context, filter ports.PlaceListFilter) (ports.PlacePage, error) {
 	status := strings.TrimSpace(filter.Status)
 	where := ""
-	countArgs := []any{}
-	selectArgs := []any{filter.Limit, filter.Offset}
+	args := []any{}
+	conditions := []string{}
 	if status != "" {
-		where = "WHERE data->>'status' = $1"
-		countArgs = append(countArgs, status)
-		selectArgs = append(selectArgs, status)
+		args = append(args, status)
+		conditions = append(conditions, fmt.Sprintf("data->>'status' = $%d", len(args)))
+	}
+	if len(filter.Codes) > 0 {
+		args = append(args, filter.Codes)
+		conditions = append(conditions, fmt.Sprintf("data->>'code' = ANY($%d::text[])", len(args)))
+	}
+	if len(conditions) > 0 {
+		where = "WHERE " + strings.Join(conditions, " AND ")
 	}
 
 	db := dbFor(ctx, r.db)
 	var page ports.PlacePage
-	if err := db.QueryRow(ctx, "SELECT count(*)::int FROM place_snapshots "+where, countArgs...).Scan(&page.Total); err != nil {
+	if err := db.QueryRow(ctx, "SELECT count(*)::int FROM place_snapshots "+where, args...).Scan(&page.Total); err != nil {
 		return ports.PlacePage{}, err
 	}
 
-	selectWhere := where
-	if status != "" {
-		selectWhere = "WHERE data->>'status' = $3"
-	}
+	args = append(args, filter.Limit, filter.Offset)
 	query := fmt.Sprintf(`SELECT data
 FROM place_snapshots
 %s
 ORDER BY data->>'createdAt', data->>'id'
-LIMIT $1 OFFSET $2`, selectWhere)
-	rows, err := db.Query(ctx, query, selectArgs...)
+LIMIT $%d OFFSET $%d`, where, len(args)-1, len(args))
+	rows, err := db.Query(ctx, query, args...)
 	if err != nil {
 		return ports.PlacePage{}, err
 	}
