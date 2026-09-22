@@ -371,6 +371,11 @@ public class PaymentCommandService {
         return refundRepository.findByBusinessCaseRef(requireText(businessCaseRef, "businessCaseRef"));
     }
 
+    public PaymentIntent latestIntentForBusiness(String businessRef) {
+        return paymentIntentRepository.findLatestByBusinessRef(requireText(businessRef, "businessRef"))
+            .orElseThrow(() -> new NotFoundException("payment intent not found for business reference"));
+    }
+
     private void publishNewEvents(List<PaymentEvent> events, int previousSize) {
         publish(new ArrayList<>(events.subList(previousSize, events.size())));
     }
