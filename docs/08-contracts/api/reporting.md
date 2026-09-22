@@ -52,6 +52,12 @@ and timestamps.
 
 **Response (200):** Paginated list of rebuild runs.
 
+Projection refresh requests are persisted with the consumed event.
+Dashboard rebuilds, anomaly evaluation, and revenue view refreshes run in a background worker.
+Each refresh includes all pending event generations recorded at its start.
+Events accepted during a refresh remain pending for the next refresh.
+`REPORTING_CONSUMERS_PER_STREAM` controls concurrent event consumers per stream and defaults to 4.
+
 ## Bus-only commands
 
 | Command | Trigger | Description |

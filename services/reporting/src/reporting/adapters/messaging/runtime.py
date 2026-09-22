@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import threading
 from reporting.application.service import ReportingApplicationService
 from train_ticket_platform.messaging import default_consumer_name
 
@@ -22,19 +21,14 @@ class MessagingRuntime:
 
     def start(self) -> None:
         consumer_name = default_consumer_name(CONSUMER_GROUP)
-        # subscribe() runs the consume loop; it must not block FastAPI
-        # lifespan startup, so it runs on a daemon thread.
-        self._thread = threading.Thread(
-            target=self.subscriber.subscribe,
-            args=(
-                reporting_subscription_streams(),
-                CONSUMER_GROUP,
-                consumer_name,
-                self.service.handle_event,
-            ),
-            daemon=True,
-        )
-        self._thread.start()
+        workers = int(os.environ.get("REPORTING_CONSUMERS_PER_STREAM", "4"))
+        if workers < 1:
+            raise ValueError("REPORTING_CONSUMERS_PER_STREAM must be positive")
+        for stream in reporting_subscription_streams():
+            for index in range(workers):
+                self.subscriber.start_in_background(
+                    (stream,), CONSUMER_GROUP, self.service.handle_event, consumer_name=f"{consumer_name}-{index}",
+                )
 
     def stop(self) -> None:
         self.subscriber.stop()
