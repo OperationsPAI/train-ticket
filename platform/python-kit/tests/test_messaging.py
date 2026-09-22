@@ -428,8 +428,9 @@ def test_dead_consumers_are_swept_periodically_not_only_at_startup() -> None:
 
     # once before the loop, then once per elapsed interval inside it
     assert redis.xinfo_calls > 1
-    assert redis.deleted == ["reporting-old-pod"] * redis.xinfo_calls
-    assert len(redis.autoclaimed) == redis.xinfo_calls, "prune must claim entries before deleting the consumer"
+    assert redis.deleted == [], "consumers with pending entries must be retained"
+    assert redis.autoclaimed, "idle pending entries must be recovered periodically"
+    assert all(call[3] == 60_000 for call in redis.autoclaimed)
 
 
 def test_consumer_name_is_unique_per_process_not_per_pod() -> None:
