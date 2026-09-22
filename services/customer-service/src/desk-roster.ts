@@ -21,23 +21,28 @@ const STATED_OWNER_QUEUES = process.env.CUSTOMER_SERVICE_CASE_ASSIGN_OWNER_QUEUE
 /** The queues one stated roster carries, or `undefined` when it carries none. */
 export function statedOwnerQueues(value: string | undefined): readonly string[] | undefined {
   if (value === undefined) return undefined;
-  const queues = value
-    .split(",")
-    .map((queue) => queue.trim())
-    .filter((queue) => queue.length > 0);
+  const queues = splitStatedQueues(value);
   return queues.length > 0 ? Object.freeze(queues) : undefined;
 }
 
-const RELEASED_OWNER_QUEUES = statedOwnerQueues(STATED_OWNER_QUEUES);
+/** The names one comma-separated roster carries, the blank ones dropped. */
+function splitStatedQueues(value: string): readonly string[] {
+  return value
+    .split(",")
+    .map((queue) => queue.trim())
+    .filter((queue) => queue.length > 0);
+}
+
+const RELEASE_ROSTER = statedOwnerQueues(STATED_OWNER_QUEUES);
 
 /** True when this release staffs the queue, or when it states no roster to go by. */
 export function deskStaffsQueue(ownerQueue: string): boolean {
-  return RELEASED_OWNER_QUEUES === undefined || RELEASED_OWNER_QUEUES.includes(ownerQueue);
+  return RELEASE_ROSTER === undefined || RELEASE_ROSTER.includes(ownerQueue);
 }
 
 /** The queues this release staffs, or `undefined` while it states none. */
 export function staffedOwnerQueues(): readonly string[] | undefined {
-  return RELEASED_OWNER_QUEUES;
+  return RELEASE_ROSTER;
 }
 
 /** Refuses a handoff to a queue the release's roster does not staff. */
