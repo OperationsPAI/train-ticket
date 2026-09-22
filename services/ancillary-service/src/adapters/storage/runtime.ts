@@ -8,6 +8,7 @@ import { HttpFarePricingGateway, type AncillaryPricingGateway } from "../../pric
 import { PostgresAncillaryRepository } from "./repository.js";
 import { HttpAncillaryReferences } from "../../references.js";
 import { HttpAncillaryPayments } from "../../payments.js";
+import { uuidV7 } from "@trainticket/ts-kit";
 
 export type AncillaryStorageRuntime = Readonly<{ ready: () => Promise<boolean>; /** Migration retry state, surfaced on `/readyz` so a stuck boot is diagnosable. */ schema: () => SchemaDetail; idempotencyStore: PostgresIdempotencyStore; runCommand: <T>(operation: (application: AncillaryApplicationService) => Promise<T>) => Promise<T>; handleUpstreamEvent: (envelope: EventEnvelope, stream?: string) => Promise<"ack" | "retry" | "dlq">; stop: () => Promise<void> }>;
 export async function startAncillaryStorage(redisUrl = process.env.REDIS_URL ?? "redis://localhost:6379"): Promise<AncillaryStorageRuntime> {
@@ -19,6 +20,16 @@ export async function startAncillaryStorage(redisUrl = process.env.REDIS_URL ?? 
   await connectRedisWithRetry(redis, "ancillary-outbox");
   const relay = new OutboxRelay(pool, redis, { pollIntervalMs: 250, name: "ancillary-outbox-relay", onFailure: (error) => console.error(sanitizedErrorForLog(error)) });
   const pricingGateway = farePricingGatewayFromEnv();
+  let reconciling=false;
+  const reconciliation=setInterval(()=>{
+    if(reconciling)return;
+    reconciling=true;
+    void (async()=>{
+      const rows=await pool.query("SELECT id FROM ancillary_order_items WHERE data->>'status'='REFUND_PENDING' AND data->>'paymentIntentId' IS NOT NULL ORDER BY updated_at LIMIT 25");
+      for(const row of rows.rows)await withAncillaryTransaction(pool,service=>service.reconcileRefund(row.id,`corr-${uuidV7()}`),pricingGateway);
+    })().catch(error=>console.error(sanitizedErrorForLog(error))).finally(()=>{reconciling=false;});
+  },1000);
+  reconciliation.unref();
   relay.start();
   return {
     ready: migrationsAwareReadiness(migrations, pool),
@@ -34,7 +45,7 @@ export async function startAncillaryStorage(redisUrl = process.env.REDIS_URL ?? 
       throw error;
     }),
     // Stop the migration retry first: otherwise a shutdown during the retry window leaves a backoff timer running and can issue queries against a pool that is being torn down.
-    stop: async () => { await migrations.stop(); await relay.stop(); redisClientLiveness(redis)?.dispose(); await Promise.allSettled([redis.quit(), pool.end()]); },
+    stop: async () => { clearInterval(reconciliation); await migrations.stop(); await relay.stop(); redisClientLiveness(redis)?.dispose(); await Promise.allSettled([redis.quit(), pool.end()]); },
   };
 }
 async function withAncillaryTransaction<T>(pool: Pool, operation: (application: AncillaryApplicationService, client: any) => Promise<T>, pricingGateway?: AncillaryPricingGateway): Promise<T> {
