@@ -7,7 +7,6 @@ import java.util.Optional;
 import javax.sql.DataSource;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.context.annotation.Primary;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Repository;
@@ -36,15 +35,12 @@ public class PostgresReservationPaymentRequestRepository implements ReservationP
 
     @Override
     public ReservationPaymentRequest saveIfAbsent(ReservationPaymentRequest request) {
-        try {
-            jdbc.update(
-                "INSERT INTO reservation_payment_requests(segment_booking_id, data) VALUES (?, ?::jsonb)",
-                request.segmentBookingId(),
-                JacksonPaymentJson.reservationJson(request, objectMapper)
-            );
-            return request;
-        } catch (DuplicateKeyException exception) {
-            return findBySegmentBookingId(request.segmentBookingId()).orElseThrow(() -> exception);
-        }
+        int inserted = jdbc.update(
+            "INSERT INTO reservation_payment_requests(segment_booking_id, data) VALUES (?, ?::jsonb) ON CONFLICT (segment_booking_id) DO NOTHING",
+            request.segmentBookingId(),
+            JacksonPaymentJson.reservationJson(request, objectMapper)
+        );
+        if (inserted == 1) return request;
+        return findBySegmentBookingId(request.segmentBookingId()).orElseThrow(() -> new IllegalStateException("Reservation payment request disappeared"));
     }
 }
