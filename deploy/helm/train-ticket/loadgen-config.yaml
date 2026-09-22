@@ -94,19 +94,15 @@ run:
 # enabled a journey named here and in no persona has weight zero and never
 # runs.
 #
-# Measured: legacy, transfer, disruption, group_booking and campaign were named
-# here and in none of the three personas, so five of the fifteen journeys never
-# executed on the deployed profile while this block appeared to give them
-# weight. Every journey named here now appears in at least one persona.
+# Every journey named here appears in at least one persona.
 # ---------------------------------------------------------------------------
 journey_mix:
   browse: 50        # search (+ maybe quote) and leave — high weight for RPS
-  purchase: 20      # full funnel: traveler -> search -> quote -> offer -> order -> pay -> ticket
+  purchase: 26      # full funnel: traveler -> search -> quote -> offer -> order -> pay -> ticket
   refund: 8         # refund one of their own completed purchases
   change: 5         # change case on a completed purchase
   fulfillment: 7    # board + complete (or no-show) with an issued entitlement
   support: 4        # open a support case about one of their orders
-  legacy: 6         # whole lifecycle through the legacy ACL facade
   ride: 5           # dispatch ride request lifecycle
   disruption: 1     # low-frequency ops disruption recovery drill
   transfer: 1        # low-frequency transfer-management drill
@@ -142,9 +138,6 @@ behavior:
 
   # fulfillment variant
   p_no_show: 0.15             # else: board + complete
-
-  # legacy facade
-  p_legacy_cancel: 0.30       # cancel after ticket_issue instead of boarding
 
   # dispatch ride branch probabilities
   ride_branches: { complete: 0.75, driver_cancel_reassign: 0.10, user_cancel: 0.10, no_show: 0.05 }
@@ -595,14 +588,8 @@ personas:
   # the one that keeps the middle of both ranges populated.
   power_user:
     weight: 15
-    # legacy belongs here, and only here. The legacy facade drives the whole
-    # lifecycle synchronously through one service, so the persona that never
-    # abandons is the one that reaches its later steps; a persona that abandons
-    # after search would exercise the facade's first call and nothing behind
-    # it.
     journey_weights:
-      {purchase: 40, browse: 20, refund: 10, change: 10, fulfillment: 10, ride: 10,
-       legacy: 8}
+      {purchase: 48, browse: 20, refund: 10, change: 10, fulfillment: 10, ride: 10}
     overrides:
       p_new_account: 0.05
       p_abandon_after_search: 0.0
