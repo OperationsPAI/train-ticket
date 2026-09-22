@@ -177,31 +177,15 @@ public class RedisEventSubscriber implements EventSubscriber {
         this.closeable = closeable;
         this.consumedEvents = Objects.requireNonNull(consumedEvents, "consumedEvents is required");
         this.eventConsumerTracer = Objects.requireNonNull(eventConsumerTracer, "eventConsumerTracer is required");
-        this.pollExecutor = Executors.newSingleThreadExecutor(namedThreadFactory("redis-subscriber-poll"));
-        // BOUNDED queue, not Executors.newFixedThreadPool's unbounded one.
-        //
-        // With an unbounded queue the poll loop could submit without limit, so the
-        // only thing capping in-flight work was MAX_IN_FLIGHT at 10,000 -- against
-        // a handler pool of 1-8 threads. Messages sat in the queue holding an
-        // in-flight slot while Redis' pending timer ran, XAUTOCLAIM redelivered
-        // them, and the redelivered copies were then dropped by claimInFlight
-        // because the slot was still held. journey-order logged 1,948
-        // "in-flight bound reached" lines in a 2,000-line sample, with delivery
-        // counts of 10-11 on its oldest pending entries and a backlog of 72,281
-        // that grew steadily while the consumer looked busy.
-        //
-        // The queue is sized off the thread count so the two cannot drift: enough
-        // depth to keep the handlers fed across a poll, not enough to accumulate a
-        // shadow backlog invisible to Redis. submitHandle already handles
-        // RejectedExecutionException by releasing the in-flight slot -- that catch
-        // was unreachable until now, which is a hint the bounded queue was the
-        // original intent.
+        this.pollExecutor = Executors.newCachedThreadPool(namedThreadFactory("redis-subscriber-poll"));
+        // Processing overflow on the polling thread applies backpressure before the next read.
+        // Every delivered entry is handled without waiting for the pending recovery interval.
         this.handlerExecutor = new ThreadPoolExecutor(
             consumerThreads, consumerThreads,
             0L, TimeUnit.MILLISECONDS,
             new ArrayBlockingQueue<>(Math.max(consumerThreads * 4, 16)),
             namedThreadFactory("redis-subscriber-handler"),
-            new ThreadPoolExecutor.AbortPolicy());
+            new ThreadPoolExecutor.CallerRunsPolicy());
     }
 
     @Override
@@ -212,7 +196,9 @@ public class RedisEventSubscriber implements EventSubscriber {
             throw new SubscribeFailedException("at least one stream is required", null);
         }
         running.set(true);
-        pollExecutor.submit(() -> poll(streamNames, group, consumerName, handler));
+        for (String stream : streamNames) {
+            pollExecutor.submit(() -> poll(List.of(stream), group, consumerName, handler));
+        }
     }
 
     public void recoverOnce(String stream, String group, String consumerName, EventHandler handler) {
@@ -238,9 +224,11 @@ public class RedisEventSubscriber implements EventSubscriber {
                         pruneDeadConsumersQuietly(stream, group, consumerName);
                     }
                     recover(stream, group, consumerName, handler);
-                    for (RedisStreamOperations.StreamEntry message : streams.readGroup(stream, group, consumerName)) {
+                    List<RedisStreamOperations.StreamEntry> messages = streams.readGroup(stream, group, consumerName);
+                    for (RedisStreamOperations.StreamEntry message : messages) {
                         submitHandle(stream, group, consumerName, message, handler);
                     }
+                    if (messages.isEmpty()) sleepQuietly(20);
                     backoffSeconds = INITIAL_BACKOFF_SECONDS;
                 } catch (RuntimeException exception) {
                     if (Thread.currentThread().isInterrupted()) {
