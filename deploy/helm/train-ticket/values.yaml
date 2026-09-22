@@ -592,13 +592,21 @@ services:
       limits: { cpu: '8', memory: 6Gi }
   trip-planning:
     db: trip_planning
+    strategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxUnavailable: 0
+        maxSurge: 1
+    terminationGracePeriodSeconds: 45
+    lifecycle:
+      preStop:
+        exec:
+          command: ["sleep", "10"]
     env:
       MIGRATIONS_DIR: /app/migrations
-    # trip-planning is CPU-bound on search, so it gets a 2-core ceiling on a
-    # smaller memory footprint than the shared default.
     resources:
-      requests: { cpu: 50m, memory: 64Mi }
-      limits: { cpu: '2', memory: 256Mi }
+      requests: { cpu: 250m, memory: 256Mi }
+      limits: { cpu: '2', memory: 1Gi }
   ancillary-service:
     db: ancillary_service
     strategy:
