@@ -109,7 +109,7 @@ export function startSubscriber<T extends SupervisedConsumer = RedisStreamEventS
 }
 
 async function subscribeOnce(application: LoyaltyMembershipApplicationService): Promise<RedisStreamEventSubscriber> {
-  const subscriber = new RedisStreamEventSubscriber(undefined, undefined, { thrownHandlerErrors: "dlq" });
+  const subscriber = new RedisStreamEventSubscriber(undefined, undefined, { thrownHandlerErrors: "retry" });
   try {
     await subscriber.subscribe([JOURNEY_ORDER_STREAM, PAYMENT_STREAM, POST_SALES_STREAM], "loyalty-membership", consumerName(), async (envelope) => {
       if (envelope.eventType === "JourneyOrderCreated") {
