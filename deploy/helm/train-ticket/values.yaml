@@ -788,6 +788,7 @@ services:
     db: customer_service
     env:
       CONSUMER_THREADS: "4"   # 5 streams
+      CONSUMER_BATCH_CONCURRENCY: "4"
     # 4 consumer threads do not fit in the default 500m CPU limit. Raising
     # CONSUMER_THREADS without raising this caused a CrashLoopBackOff: the
     # threads saturated half a core working through the backlog, the HTTP thread

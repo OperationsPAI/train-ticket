@@ -69,6 +69,10 @@ class StaleOnResolveRepository implements CustomerServiceRepository {
     return this.caseSnapshot ? [SupportCase.fromSnapshot(this.caseSnapshot)] : [];
   }
 
+  async findCasesByReferences(): Promise<SupportCase[]> {
+    throw new Error("Reference lookup is not supported by this concurrency test repository");
+  }
+
   async listOpenCasesForEvaluation(): Promise<SupportCase[]> {
     return [];
   }

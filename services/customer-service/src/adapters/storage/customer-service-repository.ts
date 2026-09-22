@@ -21,8 +21,9 @@ export class PostgresCustomerServiceRepository implements CustomerServiceReposit
   constructor(private readonly client: PoolClient) {}
 
   async findCase(caseId: string): Promise<Readonly<{ aggregate: SupportCase; version: bigint }> | undefined> {
-    const record = await new SnapshotRepository<StoredSupportCaseSnapshot>(this.client, "support_case_snapshots").get(caseId);
-    return record ? { aggregate: SupportCase.fromSnapshot(reviveSupportCase(record.data)), version: record.version } : undefined;
+    const result = await this.client.query("SELECT version, data FROM support_case_snapshots WHERE id = $1 FOR UPDATE", [caseId]);
+    const record = result.rows[0];
+    return record ? { aggregate: SupportCase.fromSnapshot(reviveSupportCase(record.data)), version: BigInt(record.version) } : undefined;
   }
 
   async saveNewCase(snapshot: SupportCaseSnapshot): Promise<SnapshotRecord<StoredSupportCaseSnapshot>> {
@@ -45,7 +46,18 @@ export class PostgresCustomerServiceRepository implements CustomerServiceReposit
       `SELECT data
        FROM support_case_snapshots
        WHERE COALESCE(data->>'status', '') NOT IN ('Resolved', 'Closed')
-       ORDER BY updated_at`,
+       ORDER BY updated_at, id
+       LIMIT 100 FOR UPDATE SKIP LOCKED`,
+    ) as QueryResult<{ data: StoredSupportCaseSnapshot }>;
+    return result.rows.map((row) => SupportCase.fromSnapshot(reviveSupportCase(row.data)));
+  }
+
+  async findCasesByReferences(references: readonly Readonly<Record<string, unknown>>[]): Promise<SupportCase[]> {
+    if (references.length === 0) return [];
+    const predicates = references.map((_, index) => `data @> $${index + 1}::jsonb`);
+    const result = await this.client.query(
+      `SELECT data FROM support_case_snapshots WHERE ${predicates.join(" OR ")} ORDER BY id`,
+      references.map((reference) => JSON.stringify(reference)),
     ) as QueryResult<{ data: StoredSupportCaseSnapshot }>;
     return result.rows.map((row) => SupportCase.fromSnapshot(reviveSupportCase(row.data)));
   }
@@ -66,8 +78,9 @@ export class PostgresCustomerServiceRepository implements CustomerServiceReposit
   }
 
   async findTimeline(caseId: string): Promise<Readonly<{ aggregate: CaseTimeline; version: bigint }> | undefined> {
-    const record = await new SnapshotRepository<StoredCaseTimelineSnapshot>(this.client, "case_timelines").get(caseId);
-    return record ? { aggregate: CaseTimeline.fromSnapshot(reviveTimeline(record.data)), version: record.version } : undefined;
+    const result = await this.client.query("SELECT version, data FROM case_timelines WHERE id = $1 FOR UPDATE", [caseId]);
+    const record = result.rows[0];
+    return record ? { aggregate: CaseTimeline.fromSnapshot(reviveTimeline(record.data)), version: BigInt(record.version) } : undefined;
   }
 
   async saveNewTimeline(snapshot: CaseTimelineSnapshot): Promise<SnapshotRecord<StoredCaseTimelineSnapshot>> {

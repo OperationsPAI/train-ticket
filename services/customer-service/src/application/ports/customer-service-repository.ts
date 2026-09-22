@@ -16,6 +16,7 @@ export interface CustomerServiceRepository {
   saveNewCase(snapshot: SupportCaseSnapshot): Promise<{ version: bigint }>;
   saveCase(snapshot: SupportCaseSnapshot, expectedVersion: bigint): Promise<{ version: bigint }>;
   listCases(): Promise<SupportCase[]>;
+  findCasesByReferences(references: readonly Readonly<Record<string, unknown>>[]): Promise<SupportCase[]>;
   listOpenCasesForEvaluation(): Promise<SupportCase[]>;
   findDuplicateOpenCase(snapshot: SupportCaseSnapshot): Promise<SupportCaseSnapshot | undefined>;
   findTimeline(caseId: string): Promise<Readonly<{ aggregate: CaseTimeline; version: bigint }> | undefined>;
