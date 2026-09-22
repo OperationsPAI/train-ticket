@@ -58,6 +58,10 @@ public class InMemoryPostSalesRepository implements PostSalesRepository {
             .toList();
     }
 
+    @Override public java.util.List<PostSalesCase> findAppliedCasesForOrder(String journeyOrderId) {
+        return byId.values().stream().filter(item -> item.journeyOrderId().equals(journeyOrderId) && item.status() == PostSalesCaseStatus.APPLIED).toList();
+    }
+
     private static boolean isRefundConflictCase(PostSalesCase postSalesCase) {
         return postSalesCase.caseType() == PostSalesCaseType.REFUND
             || postSalesCase.caseType() == PostSalesCaseType.CANCELLATION
