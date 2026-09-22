@@ -937,6 +937,16 @@ services:
           command: ["sleep", "10"]
   payment-channel:
     db: payment_channel
+    strategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxUnavailable: 0
+        maxSurge: 1
+    terminationGracePeriodSeconds: 45
+    lifecycle:
+      preStop:
+        exec:
+          command: ["sleep", "10"]
     # A daily channel statement is one jsonb row holding every reconciliation
     # line for that channel and date, and the loadgen appends one per channel
     # order. On this cluster channel_statement_snapshots held 18 rows in 119 MB
