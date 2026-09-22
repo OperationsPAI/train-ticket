@@ -247,6 +247,12 @@ class PostgresAssessmentRepository:
     def complete_booking_request(self, saga_id: str) -> None:
         self.with_connection(lambda conn: conn.execute("UPDATE booking_risk_requests SET completed_at=now() WHERE saga_id=%s", (saga_id,)))
 
+    def recoverable_booking_orders(self) -> tuple[str, ...]:
+        def read(conn: Any) -> tuple[str, ...]:
+            rows = conn.execute("SELECT DISTINCT q.order_id FROM booking_risk_requests q WHERE q.completed_at IS NULL AND EXISTS (SELECT 1 FROM risk_assessment_snapshots s WHERE s.data->>'subjectRef'=q.order_id AND s.data->>'scenario'='order_risk') ORDER BY q.order_id LIMIT 100").fetchall()
+            return tuple(row[0] for row in rows)
+        return self.with_connection(read)
+
     def find(self, assessment_id: str) -> RiskAssessmentResult | None:
         def read(conn: Any) -> RiskAssessmentResult | None:
             snap = self._assessments.get(conn, assessment_id)
