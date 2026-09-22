@@ -514,6 +514,13 @@ impl PostgresCapacityService {
             .load_hold(hold_id)
             .await?
             .ok_or_else(|| AppError::NotFound("hold not found".into()))?;
+        let segment_ref: String = sqlx::query_scalar(
+            "SELECT service_segment_ref FROM inventory_pool_snapshots WHERE id = $1",
+        )
+        .bind(&snapshot.data.inventory_pool_id)
+        .fetch_one(self.pool())
+        .await
+        .map_err(to_app_storage)?;
         let hold = snapshot.data.try_into_domain()?;
         let status = match hold.state {
             CapacityHoldState::Requested => "REQUESTED",
@@ -525,12 +532,8 @@ impl PostgresCapacityService {
         };
         Ok(crate::application::GetHoldResponse {
             hold_id: hold.hold_id.to_string(),
-            segment_ref: hold
-                .scope
-                .references
-                .segment_booking_ref
-                .clone()
-                .unwrap_or_default(),
+            segment_ref,
+            segment_booking_ref: hold.scope.references.segment_booking_ref.clone(),
             status: status.to_string(),
             held_until: unix_millis_to_rfc3339(hold.expires_at),
             requested_at: unix_millis_to_rfc3339(hold.requested_at),

@@ -656,12 +656,8 @@ impl CapacityService {
                 };
                 return Ok(GetHoldResponse {
                     hold_id: hold.hold_id.to_string(),
-                    segment_ref: hold
-                        .scope
-                        .references
-                        .segment_booking_ref
-                        .clone()
-                        .unwrap_or_default(),
+                    segment_ref: pool.identity.service_segment_ref.clone(),
+                    segment_booking_ref: hold.scope.references.segment_booking_ref.clone(),
                     status: status.to_string(),
                     held_until: unix_millis_to_rfc3339(hold.expires_at),
                     requested_at: unix_millis_to_rfc3339(hold.requested_at),
@@ -944,6 +940,7 @@ pub struct ReleaseHoldResponse {
 pub struct GetHoldResponse {
     pub hold_id: String,
     pub segment_ref: String,
+    pub segment_booking_ref: Option<String>,
     pub status: String,
     pub held_until: String,
     pub requested_at: String,
