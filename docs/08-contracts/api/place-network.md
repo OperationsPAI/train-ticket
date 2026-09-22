@@ -64,7 +64,10 @@ Registers a new geographic place.
 
 **GET** `/api/v1/places?limit=20&offset=0&status=ACTIVE`
 
-**Query parameters:** `limit`, `offset`, `status` (optional filter)
+**Query parameters:** `limit`, `offset`, `status` (optional filter), `code` (optional repeated exact filter, at most 100 values).
+For example, `?status=ACTIVE&code=BJP&code=SHH` selects matching active places.
+Pagination and `total` apply to the filtered result.
+Blank code values return `VALIDATION_FAILED`.
 
 **Response (200):** Paginated response with `items`, `total`, `limit`, `offset`.
 
