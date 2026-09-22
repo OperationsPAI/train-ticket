@@ -47,7 +47,8 @@ public class PostgresPaymentIntentRepository implements PaymentIntentRepository 
     @Override
     public Optional<PaymentIntent> findLatestByBusinessRef(String businessRef) {
         Optional<String> id = jdbc.query(
-            "SELECT data->>'paymentIntentId' AS id FROM payment_intent_snapshots WHERE data->>'businessRef' = ? ORDER BY data->>'paymentIntentId' DESC LIMIT 1",
+            "SELECT id FROM payment_intent_snapshots WHERE data->>'businessRef' = ? "
+                + "ORDER BY (data->'domainEvents'->0->>'occurredAt')::timestamptz DESC, id DESC LIMIT 1",
             rs -> rs.next() ? Optional.of(rs.getString("id")) : Optional.empty(),
             businessRef
         );
