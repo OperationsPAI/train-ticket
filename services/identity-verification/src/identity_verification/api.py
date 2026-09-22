@@ -8,7 +8,7 @@ from typing import Any, Protocol
 
 from fastapi import FastAPI, Request, Response
 from train_ticket_platform.idempotency import BoundedInMemoryIdempotencyStore, IdempotencyStore, configure_idempotency_middleware
-from train_ticket_platform.messaging import RedisEventSubscriber
+from .adapters.messaging.subscriber import RedisEventSubscriber
 from train_ticket_platform.observability import init_opentelemetry
 from train_ticket_platform.storage import DatabaseConfig, DatabasePool, OutboxRelay, PostgresIdempotencyStore, ReadinessGate, run_migrations
 from train_ticket_platform.ids import new_uuid7
