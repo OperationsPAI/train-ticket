@@ -9,6 +9,7 @@ import { PostgresAncillaryRepository } from "./repository.js";
 import { HttpAncillaryReferences } from "../../references.js";
 import { HttpAncillaryPayments } from "../../payments.js";
 import { uuidV7 } from "@trainticket/ts-kit";
+import { handlesAncillaryEvent } from "../messaging/event-filter.js";
 
 export type AncillaryStorageRuntime = Readonly<{ ready: () => Promise<boolean>; /** Migration retry state, surfaced on `/readyz` so a stuck boot is diagnosable. */ schema: () => SchemaDetail; idempotencyStore: PostgresIdempotencyStore; runCommand: <T>(operation: (application: AncillaryApplicationService) => Promise<T>) => Promise<T>; handleUpstreamEvent: (envelope: EventEnvelope, stream?: string) => Promise<"ack" | "retry" | "dlq">; stop: () => Promise<void> }>;
 export async function startAncillaryStorage(redisUrl = process.env.REDIS_URL ?? "redis://localhost:6379"): Promise<AncillaryStorageRuntime> {
@@ -36,17 +37,21 @@ export async function startAncillaryStorage(redisUrl = process.env.REDIS_URL ?? 
     schema: () => migrations.detail(),
     idempotencyStore: new PostgresIdempotencyStore(pool),
     runCommand: (operation) => withAncillaryTransaction(pool, operation, pricingGateway),
-    handleUpstreamEvent: (envelope, stream) => withAncillaryTransaction(pool, async (application, client) => {
-      const guard = new ProcessedEventsGuard(client);
-      if (!await guard.tryStart(envelope.eventId, stream)) return "ack";
-      return application.handleJourneyOrderCancelled(envelope);
-    }, pricingGateway).catch((error: unknown) => {
-      if (error instanceof OptimisticConcurrencyConflict) throw new HandlerError("transient", error.message, { cause: error });
-      throw error;
-    }),
+    handleUpstreamEvent: (envelope, stream) => handleAncillaryUpstreamEvent(pool, envelope, stream, pricingGateway),
     // Stop the migration retry first: otherwise a shutdown during the retry window leaves a backoff timer running and can issue queries against a pool that is being torn down.
     stop: async () => { clearInterval(reconciliation); await migrations.stop(); await relay.stop(); redisClientLiveness(redis)?.dispose(); await Promise.allSettled([redis.quit(), pool.end()]); },
   };
+}
+export async function handleAncillaryUpstreamEvent(pool: Pool, envelope: EventEnvelope, stream?: string, pricingGateway?: AncillaryPricingGateway): Promise<"ack" | "retry" | "dlq"> {
+  if (!handlesAncillaryEvent(envelope)) return "ack";
+  return withAncillaryTransaction(pool, async (application, client) => {
+    const guard = new ProcessedEventsGuard(client);
+    if (!await guard.tryStart(envelope.eventId, stream)) return "ack";
+    return application.handleJourneyOrderCancelled(envelope);
+  }, pricingGateway).catch((error: unknown) => {
+    if (error instanceof OptimisticConcurrencyConflict) throw new HandlerError("transient", error.message, { cause: error });
+    throw error;
+  });
 }
 async function withAncillaryTransaction<T>(pool: Pool, operation: (application: AncillaryApplicationService, client: any) => Promise<T>, pricingGateway?: AncillaryPricingGateway): Promise<T> {
   return withTransaction(pool, async (client) => operation(new AncillaryApplicationService(new PostgresAncillaryRepository(client), new TransactionalOutboxPublisher(new OutboxAppender(client)), pricingGateway, new HttpAncillaryReferences(),new HttpAncillaryPayments()), client));
