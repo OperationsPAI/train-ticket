@@ -220,6 +220,7 @@ export function createApp(instrumentation: InstrumentationHooks = {}, dependenci
       channelId?: string;
       itineraryRef?: string;
       travelerRefs?: string[];
+      fareQuoteRef?: string;
       quoteRequestId?: string;
     };
   }>("/api/v1/offers", async (request, reply) => {
@@ -238,12 +239,13 @@ export function createApp(instrumentation: InstrumentationHooks = {}, dependenci
             throw new ValidationError(validationError);
           }
 
-          const { accountId, channelId, itineraryRef, travelerRefs, quoteRequestId } = request.body;
+          const { accountId, channelId, itineraryRef, travelerRefs, fareQuoteRef, quoteRequestId } = request.body;
           const { response: responseBody } = await runWithOfferService(upstreamRepository, (service) => service.quoteOffer({
             accountId: accountId!,
             channelId: channelId!,
             itineraryRef: itineraryRef!,
             travelerRefs: travelerRefs!,
+            fareQuoteRef: fareQuoteRef!,
             quoteRequestId,
           }, ctx.correlationId));
 
@@ -318,6 +320,9 @@ function validateQuoteOfferRequest(body: Record<string, unknown>): string | null
   }
   if (typeof body.itineraryRef !== "string" || (body.itineraryRef as string).trim().length === 0) {
     return "itineraryRef is required and must be a non-empty string";
+  }
+  if (typeof body.fareQuoteRef !== "string" || body.fareQuoteRef.trim().length === 0) {
+    return "fareQuoteRef is required and must be a non-empty string";
   }
   if (!Array.isArray(body.travelerRefs) || body.travelerRefs.length === 0) {
     return "travelerRefs is required and must be a non-empty array of strings";
