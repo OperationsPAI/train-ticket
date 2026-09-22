@@ -87,6 +87,22 @@ def quoted(rule_set: FareRuleSet | None = None, quote_id: str = "quote-1"):
 
 
 class FarePricingDomainTest(unittest.TestCase):
+    def test_fixed_discounts_are_limited_to_the_adjusted_base_fare(self) -> None:
+        rules = draft_rule_set(
+            rule("base", RuleKind.BASE_FARE, "10.00"),
+            rule("tax", RuleKind.TAX, "2.00"),
+            rule("first", RuleKind.DISCOUNT, "6.00"),
+            rule("second", RuleKind.DISCOUNT, "9.00"),
+        ).publish(NOW)
+        quote = calculate_fare_quote(quote_id="capped-discounts", input_hash="discounts",
+            traveler_refs=("traveler",), channel="web", rule_set=rules, requested_currency="USD",
+            quoted_at=NOW, ttl=timedelta(minutes=15), seat_class="STANDING")
+        self.assertEqual(quote.breakdown.base_fare, Money("7.00", "USD"))
+        self.assertEqual(quote.breakdown.total, Money("2.00", "USD"))
+        self.assertEqual([component.amount for component in quote.breakdown.discounts], [Money("6.00", "USD"), Money("1.00", "USD")])
+        self.assertEqual(quote.breakdown.discounts[1].explanation.as_mapping()["requestedMinorUnits"], "900")
+        self.assertEqual(quote.breakdown.discounts[1].explanation.as_mapping()["appliedMinorUnits"], "100")
+
     def test_rule_set_validation_requires_one_base_fare_and_one_currency(self) -> None:
         with self.assertRaisesRegex(PricingError, "exactly one base fare"):
             draft_rule_set(rule("tax-only", RuleKind.TAX, "1.00")).validate_for_publication()
