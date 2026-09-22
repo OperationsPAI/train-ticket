@@ -15,12 +15,13 @@ public record JourneyOrderResult(
     boolean riskClear,
     String cancellationReason,
     List<com.trainticket.journeyorder.domain.TravelerRef> travelers,
-    List<com.trainticket.journeyorder.domain.SegmentOrderSnapshot> segments
+    List<com.trainticket.journeyorder.domain.SegmentOrderSnapshot> segments,
+    List<AncillaryItemDto> ancillaryItems
 ) {
     public JourneyOrderResult(String orderId, String accountId, String offerId, MonetarySummaryDto monetarySummary,
                               String status, List<String> travelerRefs, List<String> segmentRefs, Instant createdAt,
                               boolean riskClear, String cancellationReason) {
-        this(orderId,accountId,offerId,monetarySummary,status,travelerRefs,segmentRefs,createdAt,riskClear,cancellationReason,List.of(),List.of());
+        this(orderId,accountId,offerId,monetarySummary,status,travelerRefs,segmentRefs,createdAt,riskClear,cancellationReason,List.of(),List.of(),List.of());
     }
     public JourneyOrderResult(String orderId, String accountId, String offerId, MonetarySummaryDto monetarySummary,
                               String status, List<String> travelerRefs, List<String> segmentRefs, Instant createdAt) {
@@ -44,4 +45,5 @@ public record JourneyOrderResult(
     }
 
     public record MoneyDto(String currency, long minorUnits) {}
+    public record AncillaryItemDto(String ancillaryOrderItemId,MoneyDto amount,boolean cancelled,boolean independentlySettled) {}
 }
