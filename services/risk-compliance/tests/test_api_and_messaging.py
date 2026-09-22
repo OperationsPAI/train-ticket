@@ -916,3 +916,67 @@ def test_identity_purchase_limit_fact_lifecycle_updates_same_fact_id() -> None:
         and "IDENTITY_PURCHASE_LIMIT_DUPLICATE" in signal["rawValue"]
         for signal in publisher.envelopes[-1].payload["signals"]
     )
+
+
+def test_liveness_probes_do_not_queue_behind_the_risk_evaluations() -> None:
+    # The regression this pins, and the mechanism is the thread pool rather
+    # than the event loop.
+    #
+    # FastAPI runs a `def` endpoint in anyio's shared pool, which holds 40
+    # threads for the whole process. Every risk evaluation is a `def` path
+    # doing blocking work, so under load the evaluations own all 40 and a `def`
+    # probe waits for one to finish. An `async def` probe runs on the event
+    # loop and cannot be starved by a saturated pool.
+    #
+    # Measured on legacy-acl: the pod restarted 78 times in 9 hours on
+    # "Liveness probe failed: context deadline exceeded" while its CPU peaked
+    # at 9% of its limit.
+    #
+    # Asserted as a property of the route rather than by saturating a real
+    # pool: filling 40 threads takes 40 concurrent blocking requests, and a
+    # test that does that is slow and timing-dependent. What has to hold is
+    # that the probe never enters the pool at all.
+    import asyncio
+    import inspect
+
+    from fastapi.routing import APIRoute
+
+    app = fake_app()
+    probes = {"/healthz", "/health", "/live"}
+    seen = set()
+    for route in app.routes:
+        if not isinstance(route, APIRoute) or route.path not in probes:
+            continue
+        seen.add(route.path)
+        assert asyncio.iscoroutinefunction(route.endpoint), (
+            f"{route.path} is a plain def, so FastAPI serves it from the shared "
+            f"40-thread pool that the risk evaluations occupy for the length of "
+            f"their blocking work, and kubelet restarts the pod"
+        )
+        assert inspect.signature(route.endpoint).parameters == {}, (
+            f"{route.path} takes a dependency, which may reintroduce blocking "
+            f"work onto the event loop"
+        )
+    assert seen == probes, f"probe routes missing from the app: {probes - seen}"
+
+
+def test_readiness_probes_stay_in_the_thread_pool_because_they_query_postgres() -> None:
+    # _storage_ready runs a blocking `SELECT 1` through the connection pool. On
+    # the event loop that query would block every other request in the process,
+    # which is worse than the thread pool contention above.
+    import asyncio
+
+    from fastapi.routing import APIRoute
+
+    app = fake_app()
+    readiness = {"/readyz", "/ready"}
+    seen = set()
+    for route in app.routes:
+        if not isinstance(route, APIRoute) or route.path not in readiness:
+            continue
+        seen.add(route.path)
+        assert not asyncio.iscoroutinefunction(route.endpoint), (
+            f"{route.path} calls _storage_ready, which executes SELECT 1 "
+            f"synchronously, so as a coroutine it would block the event loop"
+        )
+    assert seen == readiness, f"readiness routes missing from the app: {readiness - seen}"

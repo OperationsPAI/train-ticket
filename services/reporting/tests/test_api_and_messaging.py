@@ -497,6 +497,75 @@ class MessagingTest(unittest.TestCase):
         self.assertEqual(calls, ["evt-redis-duplicate"])
         self.assertEqual(acks, ["1-0", "1-1"])
 
+
+class ProbeConcurrencyTest(unittest.TestCase):
+    # The regression this pins, and the mechanism is the thread pool rather
+    # than the event loop.
+    #
+    # FastAPI runs a `def` endpoint in anyio's shared pool, which holds 40
+    # threads for the whole process. Every reporting query is a `def` path
+    # doing blocking database work, so under load the queries own all 40 and a
+    # `def` probe waits for one to finish. An `async def` probe runs on the
+    # event loop and cannot be starved by a saturated pool.
+    #
+    # Measured on legacy-acl: the pod restarted 78 times in 9 hours on
+    # "Liveness probe failed: context deadline exceeded" while its CPU peaked
+    # at 9% of its limit.
+    #
+    # Asserted as a property of the route rather than by saturating a real
+    # pool: filling 40 threads takes 40 concurrent blocking requests, and a
+    # test that does that is slow and timing-dependent. What has to hold is
+    # that the probe never enters the pool at all.
+    def test_liveness_probes_do_not_queue_behind_the_reporting_queries(self) -> None:
+        import asyncio
+        import inspect
+
+        from fastapi.routing import APIRoute
+
+        app = create_app()
+        probes = {"/healthz", "/health", "/live"}
+        seen = set()
+        for route in app.routes:
+            if not isinstance(route, APIRoute) or route.path not in probes:
+                continue
+            seen.add(route.path)
+            self.assertTrue(
+                asyncio.iscoroutinefunction(route.endpoint),
+                f"{route.path} is a plain def, so FastAPI serves it from the shared "
+                f"40-thread pool that the reporting queries occupy for the length "
+                f"of their blocking database work, and kubelet restarts the pod",
+            )
+            self.assertEqual(
+                inspect.signature(route.endpoint).parameters,
+                {},
+                f"{route.path} takes a dependency, which may reintroduce blocking "
+                f"work onto the event loop",
+            )
+        self.assertEqual(seen, probes, f"probe routes missing from the app: {probes - seen}")
+
+    def test_readiness_probes_stay_in_the_thread_pool_because_they_query_postgres(self) -> None:
+        # _storage_ready runs a blocking `SELECT 1` through the connection
+        # pool. On the event loop that query would block every other request in
+        # the process, which is worse than the thread pool contention above.
+        import asyncio
+
+        from fastapi.routing import APIRoute
+
+        app = create_app()
+        readiness = {"/readyz", "/ready"}
+        seen = set()
+        for route in app.routes:
+            if not isinstance(route, APIRoute) or route.path not in readiness:
+                continue
+            seen.add(route.path)
+            self.assertFalse(
+                asyncio.iscoroutinefunction(route.endpoint),
+                f"{route.path} calls _storage_ready, which executes SELECT 1 "
+                f"synchronously, so as a coroutine it would block the event loop",
+            )
+        self.assertEqual(seen, readiness, f"readiness routes missing from the app: {readiness - seen}")
+
+
 class PostgresProjectionTest(unittest.TestCase):
     def _projection_service(self) -> tuple[object, object]:
         from reporting.adapters.storage.postgres import PostgresReportingApplicationService

@@ -96,20 +96,24 @@ def configure_runtime_endpoints(app: FastAPI, tracer: TraceHook | None = None, o
             _emit_trace(tracer, "http.request.complete", {**attrs, "status_code": response.status_code})
             return response
 
+    # The probes are coroutines so they never queue behind the recovery operations.
+    # FastAPI serves a `def` endpoint from anyio's shared 40-thread pool, and the recovery operations are `def` paths that hold a thread for the length of their blocking downstream chain.
+    # Measured on legacy-acl: the pod restarted 78 times in 9 hours on "Liveness probe failed: context deadline exceeded" while its CPU peaked at 9% of its limit.
+    # health() and profile() are constant returns, and the readiness gate is an in-memory boolean, so on the event loop these cost nothing and a saturated pool cannot starve them.
     @app.get("/health")
-    def health_endpoint() -> dict[str, object]:
+    async def health_endpoint() -> dict[str, object]:
         return {"status": health(), "service": profile()}
 
     @app.get("/healthz")
-    def healthz_endpoint() -> dict[str, str]:
+    async def healthz_endpoint() -> dict[str, str]:
         return {"status": health()}
 
     @app.get("/live")
-    def live_endpoint() -> dict[str, str]:
+    async def live_endpoint() -> dict[str, str]:
         return {"status": health()}
 
     @app.get("/ready")
-    def ready_endpoint(response: Response) -> dict[str, str]:
+    async def ready_endpoint(response: Response) -> dict[str, str]:
         gate = getattr(app.state, "readiness", None)
         if gate is not None and not gate.ready:
             response.status_code = 503
@@ -117,8 +121,8 @@ def configure_runtime_endpoints(app: FastAPI, tracer: TraceHook | None = None, o
         return {"status": health()}
 
     @app.get("/readyz")
-    def readyz_endpoint(response: Response) -> dict[str, str]:
-        return ready_endpoint(response)
+    async def readyz_endpoint(response: Response) -> dict[str, str]:
+        return await ready_endpoint(response)
 
     @app.get("/metadata")
     def metadata_endpoint() -> dict[str, object]:
