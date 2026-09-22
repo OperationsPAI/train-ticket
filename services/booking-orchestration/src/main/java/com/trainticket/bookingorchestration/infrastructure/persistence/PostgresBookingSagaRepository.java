@@ -91,10 +91,11 @@ public class PostgresBookingSagaRepository implements BookingSagaRepository {
     }
 
     private Optional<BookingSaga> findOne(String sql, String value) {
-        return jdbc.query(
+        Optional<String> id = jdbc.query(
             sql,
-            rs -> rs.next() ? findById(rs.getString("id")) : Optional.empty(),
+            rs -> rs.next() ? Optional.of(rs.getString("id")) : Optional.empty(),
             value
         );
+        return id.flatMap(this::findById);
     }
 }
