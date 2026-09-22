@@ -30,11 +30,8 @@ Activation-wave rulings:
   `OPTIONS_GENERATED`, `AWAITING_USER_CHOICE`, `EXECUTING_RECOVERY`,
   `MANUAL_REVIEW`, `RECOVERED`, `DECLINED`, `FAILED`, `CLOSED`.
 - `RecoveryOptionSet` supports `WAIT`, `REFUND`, `COMPENSATION`, scoped
-  `REACCOMMODATION`, and `MANUAL`. RULING (2026-07-09):
-  `REACCOMMODATION` is generated only for `disruptionType=MISSED_CONNECTION`
-  cases reported by `reportedBy.actorType=SYSTEM` with
-  `evidence.sourceSystem=TRANSFER_MANAGEMENT`; all other disruption types and
-  case sources still defer `REACCOMMODATION` to a later wave.
+  `REACCOMMODATION`, and `MANUAL`.
+  `REACCOMMODATION` requires `disruptionType=PARTIAL`, an explicit `connectionId`, `reportedBy.actorType=SYSTEM`, and `evidence.sourceSystem=TRANSFER_MANAGEMENT`.
 - Automatic rules may select `WAIT` only for single-option WAIT sets. A Transfer
   Management missed-connection set containing `WAIT` plus `REACCOMMODATION`
   enters `AWAITING_USER_CHOICE` instead of WAIT auto-through. `WAIT` completes as
@@ -387,9 +384,8 @@ are part of this normative enum.
 | `events:fulfillment` | `SegmentDelayed`, `SegmentCancelled` | Resolve `segmentRef` to affected orders and open `DELAY` / `CANCELLATION` recovery with `evidence.sourceSystem=FULFILLMENT`. |
 | `events:provider-integration` | `SegmentDelayed`, `SegmentCancelled` | Resolve `segmentRef` to affected orders and open `DELAY` / `CANCELLATION` recovery with `evidence.sourceSystem=PROVIDER_INTEGRATION`. |
 
-Service Plan disruption sources remain deferred. Transfer Management protected
-missed-connection reports arrive over HTTP with `disruptionType=MISSED_CONNECTION`,
-`reportedBy.actorType=SYSTEM`, and `evidence.sourceSystem=TRANSFER_MANAGEMENT`.
+Service Plan disruption sources remain deferred.
+Transfer Management reports missed protected connections over HTTP with `disruptionType=PARTIAL`, an explicit `connectionId`, `reportedBy.actorType=SYSTEM`, and `evidence.sourceSystem=TRANSFER_MANAGEMENT`.
 
 ## Downstream touchpoints
 

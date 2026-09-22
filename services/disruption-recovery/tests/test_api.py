@@ -7,7 +7,7 @@ import re as _re
 
 def report_body(order="ord-0194f2e0-7b3e-7610-8000-000000000001", auto=None):
     body = {
-        "disruptionType": "SERVICE_DELAY",
+        "disruptionType": "DELAY",
         "scheduledServiceRef": "ssch-0194f2e0-7b3e-7610-8000-000000000001",
         "segmentRef": "seg-0194f2e0-7b3e-7610-8000-000000000002",
         "serviceDate": "2026-08-02",
@@ -126,7 +126,8 @@ def test_transfer_management_missed_connection_report_values_are_accepted() -> N
     app = create_app(store=InMemoryStore())
     client = TestClient(app)
     body = {
-        "disruptionType": "MISSED_CONNECTION",
+        "disruptionType": "PARTIAL",
+        "connectionId": "con-0194f2e0-7b3e-7610-8000-000000000333",
         "segmentRef": "seg-0194f2e0-7b3e-7610-8000-000000000222",
         "serviceDate": "2026-08-02",
         "evidence": {
@@ -141,7 +142,8 @@ def test_transfer_management_missed_connection_report_values_are_accepted() -> N
     response = client.post("/api/v1/disruptions", json=body, headers={"Idempotency-Key": "0194f2e0-7b3e-7610-8000-000000000114"})
     assert response.status_code == 202
     data = response.json()
-    assert data["disruption"]["disruptionType"] == "MISSED_CONNECTION"
+    assert data["disruption"]["disruptionType"] == "PARTIAL"
+    assert data["disruption"]["classification"]["type"] == "PARTIAL"
     assert data["disruption"]["evidence"]["sourceSystem"] == "TRANSFER_MANAGEMENT"
     assert data["disruption"]["reportedBy"]["actorType"] == "SYSTEM"
 
@@ -163,7 +165,8 @@ class FakeTransferDownstream:
 
 def missed_connection_body():
     body = report_body("ord-0194f2e0-7b3e-7610-8000-000000000556")
-    body["disruptionType"] = "MISSED_CONNECTION"
+    body["disruptionType"] = "PARTIAL"
+    body["connectionId"] = "con-0194f2e0-7b3e-7610-8000-000000000333"
     body.pop("scheduledServiceRef", None)
     body["evidence"] = {"evidenceRef": "con-0194f2e0-7b3e-7610-8000-000000000333", "sourceSystem": "TRANSFER_MANAGEMENT", "sourceRecordId": "evt-0194f2e0-7b3e-7610-8000-000000000444", "summary": "Protected missed connection"}
     body["reportedBy"] = {"actorType": "SYSTEM", "actorId": "transfer-management"}
