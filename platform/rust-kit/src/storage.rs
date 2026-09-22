@@ -386,22 +386,30 @@ pub fn spawn_outbox_relay(pool: PgPool, redis_url: String) -> tokio::task::JoinH
 #[cfg(feature = "redis-impl")]
 pub async fn run_outbox_relay(pool: PgPool, client: redis::Client, config: OutboxRelayConfig) {
     let interval = config.poll_interval.min(Duration::from_millis(500));
-    let mut tick = tokio::time::interval(interval);
-    let mut polls: u64 = 0;
-    loop {
-        tick.tick().await;
-        if let Err(error) = relay_once(&pool, &client, config.batch_size).await {
-            log::error!("outbox relay failed: {error}");
+    let delivery = async {
+        let mut tick = tokio::time::interval(interval);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            if let Err(error) = relay_once(&pool, &client, config.batch_size).await {
+                log::error!("outbox relay failed: {error}");
+            }
         }
-        polls = polls.wrapping_add(1);
-        if polls % CLEANUP_EVERY_N == 0 {
+    };
+    let retention = async {
+        let period = interval * CLEANUP_EVERY_N;
+        let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
             cleanup(&pool).await;
         }
-    }
+    };
+    tokio::join!(delivery, retention);
 }
 
-/// Polls between retention sweeps, matching the other kits.
-const CLEANUP_EVERY_N: u64 = 20;
+/// Retention cadence in delivery intervals.
+const CLEANUP_EVERY_N: u32 = 20;
 
 /// Rows per retention DELETE.
 const CLEANUP_BATCH_SIZE: i64 = 1_000;
@@ -427,19 +435,19 @@ pub(crate) const RETENTION_SWEEPS: [(&str, &str); 3] = [
         "outbox",
         "DELETE FROM outbox WHERE ctid IN (SELECT ctid FROM outbox \
          WHERE published_at IS NOT NULL AND published_at < now() - interval '30 seconds' \
-         LIMIT $1 FOR UPDATE SKIP LOCKED)",
+         ORDER BY published_at LIMIT $1 FOR UPDATE SKIP LOCKED)",
     ),
     (
         "processed_events",
         "DELETE FROM processed_events WHERE ctid IN (SELECT ctid FROM processed_events \
          WHERE processed_at < now() - interval '5 minutes' \
-         LIMIT $1 FOR UPDATE SKIP LOCKED)",
+         ORDER BY processed_at LIMIT $1 FOR UPDATE SKIP LOCKED)",
     ),
     (
         "idempotency_records",
         "DELETE FROM idempotency_records WHERE ctid IN (SELECT ctid FROM idempotency_records \
          WHERE created_at < now() - interval '10 minutes' \
-         LIMIT $1 FOR UPDATE SKIP LOCKED)",
+         ORDER BY created_at LIMIT $1 FOR UPDATE SKIP LOCKED)",
     ),
 ];
 
