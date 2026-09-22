@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -74,8 +75,16 @@ func TestOnlyReservationEventsArePersisted(t *testing.T) {
 		t.Fatal(err)
 	}
 	event := application.EventEnvelope{EventID: ids.NewEventID(), EventType: "SegmentReservationRequested", Producer: "booking-orchestration", CorrelationID: ids.NewCorrelationID(), Payload: body}
-	for attempt := 0; attempt < 2; attempt++ {
-		if err := handler(ctx, event); err != nil {
+	var workers sync.WaitGroup
+	errors := make(chan error, 8)
+	for attempt := 0; attempt < 8; attempt++ {
+		workers.Add(1)
+		go func() { defer workers.Done(); errors <- handler(ctx, event) }()
+	}
+	workers.Wait()
+	close(errors)
+	for err := range errors {
+		if err != nil {
 			t.Fatal(err)
 		}
 	}
