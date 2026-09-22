@@ -37,6 +37,11 @@ func (s *ReservationService) within(ctx context.Context, fn func(context.Context
 }
 
 func (s *ReservationService) RequestReservation(ctx context.Context, cmd application.RequestProviderReservationCommand) (application.ProviderReservationResult, error) {
+	if _, transactional := txFromContext(ctx); transactional {
+		if _, err := s.db.DBFor(ctx).Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "provider-reservation:"+cmd.SegmentBookingID); err != nil {
+			return application.ProviderReservationResult{}, err
+		}
+	}
 	if existing, err := s.findReservation(ctx, cmd.SegmentBookingID); err == nil {
 		return existing, nil
 	} else if !errors.Is(err, application.ErrNotFound) {
@@ -82,6 +87,11 @@ func (s *ReservationService) RequestReservation(ctx context.Context, cmd applica
 }
 
 func (s *ReservationService) CancelReservation(ctx context.Context, cmd application.CancelProviderReservationCommand) (application.CancelProviderReservationResult, error) {
+	if _, transactional := txFromContext(ctx); transactional {
+		if _, err := s.db.DBFor(ctx).Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "provider-reservation:"+cmd.SegmentBookingID); err != nil {
+			return application.CancelProviderReservationResult{}, err
+		}
+	}
 	if _, err := s.findReservation(ctx, strings.TrimSpace(cmd.SegmentBookingID)); err != nil {
 		return application.CancelProviderReservationResult{}, err
 	}
