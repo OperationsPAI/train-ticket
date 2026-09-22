@@ -74,9 +74,9 @@ public class OutboxRelay implements AutoCloseable {
     }
 
     /** Rows per retention DELETE. Small enough to finish quickly on an unindexed column. */
-    private static final int CLEANUP_BATCH_SIZE = 5_000;
+    private static final int CLEANUP_BATCH_SIZE = 1_000;
     /** Batches per table per sweep. Bounds one pass; the next pass resumes. */
-    private static final int CLEANUP_MAX_BATCHES = 20;
+    private static final int CLEANUP_MAX_BATCHES = 1;
 
     private void safePollOnce() {
         try {
