@@ -46,14 +46,16 @@ public class DbIdempotencyStore implements IdempotencyStore {
     @Override
     public StoredResponse saveIfAbsent(String key, StoredResponse response) {
         try {
-            jdbc.update(
-                "INSERT INTO idempotency_records(key, request_hash, status_code, response_body) VALUES (?, ?, ?, ?::jsonb)",
+            int updated = jdbc.update(
+                "INSERT INTO idempotency_records(key, request_hash, status_code, response_body) VALUES (?, ?, ?, ?::jsonb) "
+                    + "ON CONFLICT (key) DO UPDATE SET status_code=EXCLUDED.status_code, response_body=EXCLUDED.response_body "
+                    + "WHERE idempotency_records.status_code >= 500 AND idempotency_records.request_hash=EXCLUDED.request_hash",
                 requireText(key, "key"),
                 response.fingerprint(),
                 response.status(),
                 toJson(response)
             );
-            return response;
+            return updated == 1 ? response : find(key).orElseThrow(() -> new IllegalStateException("idempotency conflict record missing"));
         } catch (DuplicateKeyException exception) {
             return find(key).orElseThrow(() -> exception);
         }
