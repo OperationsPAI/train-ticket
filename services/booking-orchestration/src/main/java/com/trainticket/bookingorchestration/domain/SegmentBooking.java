@@ -202,7 +202,14 @@ public final class SegmentBooking {
     }
 
     public void failReservation(String reason) {
-        requireStatus(SegmentBookingStatus.REQUESTED, SegmentBookingStatus.HOLDING, SegmentBookingStatus.CANCEL_REQUESTED);
+        if (status == SegmentBookingStatus.CONFIRMED && capacityHoldId == null) {
+            if (providerReference != null) {
+                record(new ProviderCancellationRequired(nextEventId(), segmentBookingId, now(), providerReference,
+                    "capacity reservation failed"));
+            }
+        } else {
+            requireStatus(SegmentBookingStatus.REQUESTED, SegmentBookingStatus.HOLDING, SegmentBookingStatus.CANCEL_REQUESTED);
+        }
         this.status = SegmentBookingStatus.FAILED;
         this.failureReason = requireText(reason, "reason");
         record(new SegmentReservationFailed(nextEventId(), segmentBookingId, now(), failureReason));
