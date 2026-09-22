@@ -36,7 +36,8 @@ test("ancillary uses its own real payment and settled refund",{skip:!process.env
     const replay=await run(service=>service.preparePayment(selected.ancillaryOrderItemId,correlation));
     assert.equal(replay.paymentIntentId,prepared.paymentIntentId);
     await assert.rejects(run(service=>service.confirmOrderItem(selected.ancillaryOrderItemId,{},correlation)),/not fully captured/);
-    await request(`/api/v1/payment-intents/${prepared.paymentIntentId}/capture`,{channelRef:{channel:"ALIPAY_SIM"}});
+    const captured=await request(`/api/v1/payment-intents/${prepared.paymentIntentId}/capture`,{channelRef:{channel:"ALIPAY_SIM"}});
+    assert.equal(captured.status,"CAPTURED");
     let payment:any;
     for(let attempt=0;attempt<40;attempt++){payment=await request(`/api/v1/payment-intents/${prepared.paymentIntentId}`);if(payment.status==="CAPTURED")break;await new Promise(resolve=>setTimeout(resolve,250));}
     assert.equal(payment.status,"CAPTURED");assert.equal(payment.businessRef,selected.ancillaryOrderItemId);assert.equal(payment.payerRef,source.order.accountId);assert.equal(payment.purpose,"ancillary");
