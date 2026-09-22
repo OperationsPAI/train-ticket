@@ -179,6 +179,7 @@ class OrderManagementServiceConcurrencyTest {
         List<EventSubscriber.HandlerResult> results = runConcurrently(List.of(
             () -> service.handle(duplicate),
             () -> service.handle(duplicate)));
+        repository.armed.set(false);
 
         long successes = results.stream().filter(r -> r instanceof EventSubscriber.Success).count();
         assertTrue(successes >= 1, "at least one delivery must apply, got: " + results);
@@ -286,12 +287,10 @@ class OrderManagementServiceConcurrencyTest {
         }
 
         @Override
-        public boolean isEventProcessed(String eventId) {
-            boolean processed = super.isEventProcessed(eventId);
-            if (!processed) {
-                await();
-            }
-            return processed;
+        public java.util.Optional<OrderManagementService.StoredOrder> findOrder(String orderId) {
+            var stored = super.findOrder(orderId);
+            await();
+            return stored;
         }
 
         private void await() {
