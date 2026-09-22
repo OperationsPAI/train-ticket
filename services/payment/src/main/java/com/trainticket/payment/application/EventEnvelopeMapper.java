@@ -61,7 +61,9 @@ public final class EventEnvelopeMapper {
                 payload.put("paymentIntentId", captured.paymentIntentId());
                 payload.put("intentId", captured.paymentIntentId());
                 payload.put("businessRef", captured.businessRef());
-                payload.put("orderId", captured.businessRef());
+                if (captured.businessRef().startsWith("ord-")) payload.put("orderId", captured.businessRef());
+                if (captured.purpose() != null) payload.put("purpose", captured.purpose());
+                if (captured.payerRef() != null) payload.put("payerRef", captured.payerRef());
                 payload.put("capturedAmount", money(captured.capturedAmount()));
                 payload.put("amountMinor", captured.capturedAmount().toMinorUnits());
                 payload.put("capturedAt", captured.envelope().occurredAt());
