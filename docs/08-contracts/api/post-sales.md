@@ -42,6 +42,10 @@ timestamps, and Money.
 
 **Error codes:** `VALIDATION_FAILED`, `NOT_FOUND`, `REFUND_ALREADY_IN_PROGRESS`, `ORDER_NOT_REFUNDABLE`, `DOMAIN_RULE_VIOLATION`
 
+An exclusive refund, cancellation or change cannot reuse a ticket or booking already covered by an applied exclusive case.
+Such requests return `ORDER_NOT_REFUNDABLE`.
+Replaying the original idempotency key returns the original case, and independent compensation requests remain available.
+
 ### Evaluate Post-Sales Eligibility
 
 **POST** `/api/v1/post-sales-cases/{caseId}/evaluate`

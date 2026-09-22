@@ -35,6 +35,7 @@ public class PostgresPostSalesRepository implements PostSalesRepository {
     }
 
     @Override public void save(PostSalesCase postSalesCase) {
+        lockOrder(postSalesCase.journeyOrderId());
         if (isRefundConflictCase(postSalesCase) && isActive(postSalesCase)) {
             reserveActiveRefundSlot(postSalesCase);
         }
@@ -43,6 +44,10 @@ public class PostgresPostSalesRepository implements PostSalesRepository {
         if (isRefundConflictCase(postSalesCase) && !isActive(postSalesCase)) {
             releaseActiveRefundSlot(postSalesCase);
         }
+    }
+
+    @Override public void lockOrder(String journeyOrderId) {
+        jdbc.query("SELECT pg_advisory_xact_lock(hashtextextended(?,0))", rs -> { }, "post-sales-order:" + journeyOrderId);
     }
 
     @Override public Optional<PostSalesCase> findById(String caseId) {
@@ -96,6 +101,11 @@ public class PostgresPostSalesRepository implements PostSalesRepository {
         if (!postSalesCase.caseId().equals(reservedCaseId)) {
             throw new RefundAlreadyInProgressException(reservedCaseId);
         }
+    }
+
+    @Override public List<PostSalesCase> findAppliedCasesForOrder(String journeyOrderId) {
+        return jdbc.query("SELECT version,data::text AS data FROM post_sales_case_snapshots WHERE data->>'journeyOrderId'=? AND data->>'status'='APPLIED' ORDER BY id",
+            (rs,row) -> toCase(readSnapshot(rs.getString("data"))).withVersion(rs.getLong("version")),journeyOrderId);
     }
 
     private void releaseActiveRefundSlot(PostSalesCase postSalesCase) {
