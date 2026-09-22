@@ -110,8 +110,13 @@ func JourneyPurchase(ctx context.Context, p *Providers) (string, error) {
 		AncillaryOrderItem: ancItem,
 	})
 
-	// Risk gate — quick check, don't wait for full saga completion
-	status := pollOrderQuick(ctx, p, orderID, 3)
+	status, err := awaitOrderRisk(ctx, p, orderID)
+	if err != nil {
+		return "", err
+	}
+	if status == "RISK_DENIED" {
+		return "risk_rejected", nil
+	}
 	if status != "" && containsBlock(status) {
 		review := NewWorkItem("risk")
 		review.Order = orderID
@@ -191,6 +196,13 @@ func JourneyPurchase(ctx context.Context, p *Providers) (string, error) {
 	if err := p.PaymentCapture(ctx, intentID, paymentChannel, faultSeed); err != nil {
 		return "", err
 	}
+	paid, err := awaitPaymentCaptured(ctx, p, intentID)
+	if err != nil {
+		return "", err
+	}
+	if !paid {
+		return "payment_rejected", nil
+	}
 
 	// Ticket issuing via staff
 	tick := NewWorkItem("ticketing")
@@ -209,21 +221,8 @@ func JourneyPurchase(ctx context.Context, p *Providers) (string, error) {
 	entVal, _ := tick.GetResult("entitlement")
 	ent, _ := entVal.(string)
 
-	// After ticketing, check order status once — the saga may still be
-	// in INVOICING (async), so we accept any non-cancelled status.
-	code, orderData, _ := p.API.Request(ctx, "GET", "journey-order",
-		"/api/v1/journey-orders/"+url.PathEscape(orderID),
-		nil, nil, nil, "poll-order")
-	final := ""
-	if code == 200 {
-		final = getString(orderData, "status")
-	}
-	if final == "CANCELLED" || final == "FAILED" {
-		// Paid for, then the order came back cancelled. The system answered
-		// and the answer was no.
-		return "", &StepError{Step: "confirm",
-			Detail: fmt.Sprintf("order %s ended %s", orderID, final),
-			Kind:   FailureRejected}
+	if err := awaitOrderConfirmed(ctx, p, orderID); err != nil {
+		return "", err
 	}
 
 	purchase := &Purchase{
@@ -284,13 +283,13 @@ func handleNoCapacityWaitlist(ctx context.Context, p *Providers, account, travel
 
 	code, waitlist, err := p.API.Request(ctx, "POST", "waitlist", "/api/v1/waitlist-requests",
 		map[string]interface{}{
-			"accountId":            account,
-			"travelerRef":          traveler,
-			"segmentRef":           segment,
-			"itineraryRef":         itinerary,
-			"paymentGuaranteeRef":  paymentIntent,
-			"intentFingerprint":    intentFp,
-			"deadline":             deadline.Format("2006-01-02T15:04:05Z"),
+			"accountId":           account,
+			"travelerRef":         traveler,
+			"segmentRef":          segment,
+			"itineraryRef":        itinerary,
+			"paymentGuaranteeRef": paymentIntent,
+			"intentFingerprint":   intentFp,
+			"deadline":            deadline.Format("2006-01-02T15:04:05Z"),
 		}, nil, []int{200, 201, 409}, "waitlist-create")
 	if err != nil {
 		return "", err
@@ -406,6 +405,77 @@ func pollOrderLong(ctx context.Context, p *Providers, orderID string, maxAttempt
 	return ""
 }
 
+func awaitOrderRisk(ctx context.Context, p *Providers, orderID string) (string, error) {
+	for attempt := 0; attempt < p.Cfg.Polling.Attempts; attempt++ {
+		_, data, err := p.API.Request(ctx, "GET", "journey-order", "/api/v1/journey-orders/"+url.PathEscape(orderID), nil, nil, []int{200}, "risk-status")
+		if err != nil {
+			return "", err
+		}
+		status := getString(data, "status")
+		if status == "CANCELLED" || status == "FAILED" {
+			if getString(data, "cancellationReason") == "HIGH_RISK_SIGNAL" {
+				return "RISK_DENIED", nil
+			}
+			return "", &StepError{Step: "risk-status", Kind: FailureRejected, Detail: fmt.Sprintf("order %s ended %s: %s", orderID, status, getString(data, "cancellationReason"))}
+		}
+		if cleared, _ := data["riskClear"].(bool); cleared {
+			return status, nil
+		}
+		if containsBlock(status) {
+			return status, nil
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(time.Duration(p.Cfg.Polling.IntervalSeconds * float64(time.Second))):
+		}
+	}
+	return "", &StepError{Step: "risk-status", Kind: FailureUnfulfilled, Detail: "risk assessment did not complete for " + orderID}
+}
+
+func awaitOrderConfirmed(ctx context.Context, p *Providers, orderID string) error {
+	for attempt := 0; attempt < p.Cfg.Polling.Attempts; attempt++ {
+		_, data, err := p.API.Request(ctx, "GET", "journey-order", "/api/v1/journey-orders/"+url.PathEscape(orderID), nil, nil, []int{200}, "confirm")
+		if err != nil {
+			return err
+		}
+		status := getString(data, "status")
+		if status == "CONFIRMED" {
+			return nil
+		}
+		if status == "CANCELLED" || status == "FAILED" {
+			return &StepError{Step: "confirm", Kind: FailureRejected, Detail: fmt.Sprintf("order %s ended %s", orderID, status)}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(p.Cfg.Polling.IntervalSeconds * float64(time.Second))):
+		}
+	}
+	return &StepError{Step: "confirm", Kind: FailureUnfulfilled, Detail: "order did not reach CONFIRMED: " + orderID}
+}
+
+func awaitPaymentCaptured(ctx context.Context, p *Providers, intentID string) (bool, error) {
+	for attempt := 0; attempt < p.Cfg.Polling.Attempts; attempt++ {
+		_, data, err := p.API.Request(ctx, "GET", "payment", "/api/v1/payment-intents/"+url.PathEscape(intentID), nil, nil, []int{200}, "payment-status")
+		if err != nil {
+			return false, err
+		}
+		switch getString(data, "status") {
+		case "CAPTURED":
+			return true, nil
+		case "FAILED", "CANCELLED", "EXPIRED":
+			return false, nil
+		}
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-time.After(time.Duration(p.Cfg.Polling.IntervalSeconds * float64(time.Second))):
+		}
+	}
+	return false, &StepError{Step: "payment-status", Kind: FailureUnfulfilled, Detail: "payment did not reach CAPTURED: " + intentID}
+}
+
 func pollOrderQuick(ctx context.Context, p *Providers, orderID string, maxAttempts int) string {
 	for i := 0; i < maxAttempts; i++ {
 		code, data, _ := p.API.Request(ctx, "GET", "journey-order",
@@ -413,7 +483,7 @@ func pollOrderQuick(ctx context.Context, p *Providers, orderID string, maxAttemp
 			nil, nil, nil, "poll-order")
 		if code == 200 {
 			status := getString(data, "status")
-			if containsBlock(status) {
+			if containsBlock(status) || status == "CANCELLED" || status == "FAILED" {
 				return status
 			}
 		}

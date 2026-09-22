@@ -477,6 +477,14 @@ func (s *ScalperSim) GrabJourney(ctx context.Context) (string, error) {
 	}
 	orderID := getString(order, "orderId")
 	s.burstPause(ctx)
+	provider := NewProviders(s.cfg, s.api, s.reg, s.stats, s.rng)
+	riskStatus, err := awaitOrderRisk(ctx, provider, orderID)
+	if err != nil {
+		return "", err
+	}
+	if riskStatus == "RISK_DENIED" {
+		return "risk_rejected", nil
+	}
 
 	// Inline reservation via Redis
 	saga, sb, noCapacity, err := s.requestInlineReservation(ctx, orderID, segment, tvl)
@@ -516,6 +524,13 @@ func (s *ScalperSim) GrabJourney(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	paid, err := awaitPaymentCaptured(ctx, provider, intentID)
+	if err != nil {
+		return "", err
+	}
+	if !paid {
+		return "payment_rejected", nil
+	}
 	s.burstPause(ctx)
 
 	// Inline ticketing
@@ -532,18 +547,8 @@ func (s *ScalperSim) GrabJourney(ctx context.Context) (string, error) {
 	}
 	ent := getString(tickData, "entitlementId")
 
-	// Quick confirm check — don't block on invoicing lag
-	code, orderCheck, _ := s.api.Request(ctx, "GET", "journey-order",
-		"/api/v1/journey-orders/"+url.PathEscape(orderID),
-		nil, headers, nil, "scalper-poll-order")
-	final := ""
-	if code == 200 {
-		final = getString(orderCheck, "status")
-	}
-	if final == "CANCELLED" || final == "FAILED" {
-		return "", &StepError{Step: "scalper-confirm",
-			Detail: fmt.Sprintf("order %s ended %s", orderID, final),
-			Kind:   FailureRejected}
+	if err := awaitOrderConfirmed(ctx, provider, orderID); err != nil {
+		return "", err
 	}
 
 	purchase := &Purchase{
