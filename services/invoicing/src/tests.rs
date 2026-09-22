@@ -499,7 +499,6 @@ async fn saga_invoice_requested_is_idempotent() {
 async fn saga_invoice_requested_skips_incomplete_payload() {
     let publisher = std::sync::Arc::new(InMemoryEventPublisher::default());
     let svc = InMemoryInvoicingService::new(publisher.clone());
-    // Missing paymentRef
     let envelope = rust_kit::messaging::EventEnvelope::new(
         "InvoiceRequested",
         rust_kit::messaging::now_rfc3339_utc(),
@@ -507,8 +506,7 @@ async fn saga_invoice_requested_skips_incomplete_payload() {
         None::<String>,
         "booking-orchestration",
         serde_json::json!({
-            "sagaId": "saga-003",
-            "journeyOrderId": "jo-003"
+            "sagaId": "saga-003"
         }),
     );
     svc.apply_subscribed_event(envelope).await.unwrap();
