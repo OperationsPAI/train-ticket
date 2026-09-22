@@ -373,7 +373,7 @@ public final class PaymentIntent {
         this.channelRef = (this.channelRef == null ? new ChannelRef(channel, null, null, channelTransactionId, null, null, null) : this.channelRef.withTransaction(channelTransactionId));
         domainEvents.add(new PaymentCaptured(
             createEnvelope("PaymentCaptured", occurredAt, causationId, correlationId),
-            paymentIntentId, businessRef, captureAmount, requireText(channel, "channel"), requireText(channelTransactionId, "channelTransactionId"), this.channelRef
+            paymentIntentId, businessRef, captureAmount, requireText(channel, "channel"), requireText(channelTransactionId, "channelTransactionId"), this.channelRef, purpose, payerRef
         ));
     }
 
