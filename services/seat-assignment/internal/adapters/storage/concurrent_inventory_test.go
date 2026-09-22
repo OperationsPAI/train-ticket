@@ -55,6 +55,16 @@ func TestConcurrentInventoryCommands(t *testing.T) {
 		t.Fatal(err)
 	}
 	tx := NewTransactor(pool)
+	if err := tx.Within(ctx, func(outer context.Context) error {
+		return tx.Within(outer, func(inner context.Context) error {
+			if tx.DBFor(outer) != tx.DBFor(inner) {
+				return fmt.Errorf("nested operation acquired a different transaction")
+			}
+			return nil
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	repo := NewRepository(tx)
 	svc := application.New(repo, NewOutboxPublisher(tx), tx.Within)
 	const count = 20
