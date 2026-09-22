@@ -49,6 +49,7 @@ pub trait InvoicingApi: Send + Sync {
     ) -> Result<EInvoiceRequest, InvoicingError>;
     async fn get_request(&self, id: String) -> Result<EInvoiceRequest, InvoicingError>;
     async fn get_invoice(&self, id: String) -> Result<EInvoice, InvoicingError>;
+    async fn get_amount_basis(&self, order_id: String) -> Result<AmountBasis, InvoicingError>;
     async fn list_invoices(
         &self,
         order_id: String,
@@ -475,6 +476,10 @@ fn amount_basis_matches_projection(requested: &AmountBasis, projected: &AmountBa
 
 #[async_trait]
 impl InvoicingApi for InMemoryInvoicingService {
+    async fn get_amount_basis(&self, order_id: String) -> Result<AmountBasis, InvoicingError> {
+        self.state.lock().unwrap().amounts.get(&order_id).cloned()
+            .ok_or_else(|| InvoicingError::NotFound("amount basis not yet available".into()))
+    }
     async fn create_title(
         &self,
         cmd: CreateInvoiceTitleCommand,
