@@ -19,7 +19,7 @@ LOGGER = logging.getLogger(__name__)
 
 def handle_capacity_snapshot_updated(service: FarePricingService, envelope: EventEnvelope) -> None:
     """Cache CapacitySnapshotUpdated events for quote-time dynamic pricing."""
-    if envelope.event_type != CAPACITY_EVENT_TYPE:
+    if envelope.producer != "capacity-availability" or envelope.event_type != CAPACITY_EVENT_TYPE:
         return
     snapshot = capacity_snapshot_from_payload(envelope.payload)
     service.upsert_capacity_snapshot(snapshot)
@@ -27,7 +27,7 @@ def handle_capacity_snapshot_updated(service: FarePricingService, envelope: Even
 
 def handle_identity_verification_event(service: FarePricingService, envelope: EventEnvelope) -> None:
     """Maintain fare-pricing's read-only eligibility-certificate model."""
-    if envelope.producer != "identity-verification":
+    if envelope.producer != "identity-verification" or envelope.eventType not in IDENTITY_VERIFICATION_EVENT_TYPES:
         return
     certificate = eligibility_certificate_from_payload(envelope.payload) if envelope.eventType in ELIGIBILITY_CERTIFICATE_EVENT_TYPES else None
     usage_counts = _eligibility_usage_counts_from_payload(envelope.payload) if envelope.eventType in ELIGIBILITY_USAGE_EVENT_TYPES else None
