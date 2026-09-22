@@ -96,6 +96,13 @@ public class BookingOrchestrationController {
             .orElseGet(() -> notFound("No saga for order: " + orderId, httpRequest));
     }
 
+    @GetMapping(value = "/segment-bookings/{segmentBookingId}", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<?> getSegmentBooking(@PathVariable String segmentBookingId, HttpServletRequest httpRequest) {
+        return service.getSegmentBooking(segmentBookingId)
+            .<ResponseEntity<?>>map(ResponseEntity::ok)
+            .orElseGet(() -> notFound("Segment booking not found: " + segmentBookingId, httpRequest));
+    }
+
     @PostMapping(value = "/booking-sagas/{sagaId}/request-reservation",
                  consumes = MediaType.APPLICATION_JSON_VALUE,
                  produces = MediaType.APPLICATION_JSON_VALUE)
