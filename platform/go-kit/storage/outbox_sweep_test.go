@@ -146,9 +146,24 @@ func TestCleanupSweepsAllThreeTablesWithCtidSubquery(t *testing.T) {
 	}
 	for _, sql := range db.statutes {
 		// A plain `DELETE ... LIMIT` is not valid Postgres; the bound must be
-		// inside the ctid subquery.
-		if !strings.Contains(sql, "LIMIT $1)") {
+		// inside the ctid subquery, which is the part that ends in `)`.
+		if !strings.Contains(sql, "LIMIT $1") || !strings.HasSuffix(strings.TrimSpace(sql), ")") {
 			t.Fatalf("limit must be parameterized inside the subquery: %s", sql)
+		}
+	}
+}
+
+// Two relays sweeping the same table pick their rows independently, so without
+// SKIP LOCKED they lock the same rows in opposite orders and deadlock. The
+// deployed cluster logged 76 deadlocks in one window, every one of them two
+// retention statements waiting on each other, and the loser's batch rolled
+// back. Several services run more than one process, each with its own relay.
+func TestEverySweepClaimsItsRowsWithSkipLocked(t *testing.T) {
+	db := &sweepDB{script: func(int) (int64, error) { return 0, nil }}
+	(&OutboxRelay{db: db}).cleanup(context.Background())
+	for _, sql := range db.statutes {
+		if !strings.Contains(sql, "FOR UPDATE SKIP LOCKED") {
+			t.Fatalf("concurrent sweepers would contend for the same rows: %s", sql)
 		}
 	}
 }

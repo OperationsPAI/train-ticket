@@ -45,6 +45,22 @@ class OutboxRelaySweepTest {
         }
     }
 
+    @Test
+    void everySweepClaimsItsRowsWithSkipLocked() {
+        // Two relays sweeping the same table pick their rows independently, so
+        // without SKIP LOCKED they lock the same rows in opposite orders and
+        // deadlock. The deployed cluster logged 76 deadlocks in one window,
+        // every one of them two retention statements waiting on each other.
+        RecordingJdbc recording = new RecordingJdbc();
+        relayOn(recording).cleanup();
+        for (String statement : recording.statements) {
+            assertTrue(
+                statement.contains("FOR UPDATE SKIP LOCKED"),
+                "concurrent sweepers would contend for the same rows: " + statement
+            );
+        }
+    }
+
     // The scheduler that services actually use is LazyRedisOutboxRelayLifecycle,
     // which drives the relay itself instead of calling start(). It called
     // pollOnce() directly and so never swept: `n_tup_del` on idempotency_records

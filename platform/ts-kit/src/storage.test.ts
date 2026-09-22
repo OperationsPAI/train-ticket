@@ -279,6 +279,66 @@ describe("OutboxRelay", () => {
   });
 });
 
+/** Pool that answers an empty outbox and an exhausted sweep, recording both. */
+class FakeSweepPool {
+  public readonly calls: QueryCall[] = [];
+
+  async query(sql: string, params: unknown[]) {
+    this.calls.push({ sql, params });
+    if (sql.includes("SELECT seq, stream, envelope")) {
+      return { rows: [], rowCount: 0 };
+    }
+    return { rows: [], rowCount: 0 };
+  }
+}
+
+/** Statements the relay's own loop issues over enough polls to trigger a sweep. */
+async function sweepStatements(): Promise<string[]> {
+  const pool = new FakeSweepPool();
+  const relay = new OutboxRelay(pool as never, new FakePipelineRedis() as never, {
+    pollIntervalMs: 1,
+    trackLiveness: false,
+  });
+  relay.start();
+  const deadline = Date.now() + 5_000;
+  while (!pool.calls.some((call) => call.sql.includes("DELETE FROM idempotency_records")) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  await relay.stop();
+  return pool.calls.map((call) => call.sql);
+}
+
+describe("OutboxRelay retention sweep", () => {
+  it("sweeps all three platform tables as it polls", async () => {
+    const statements = await sweepStatements();
+    for (const table of ["outbox", "processed_events", "idempotency_records"]) {
+      assert.ok(
+        statements.some((sql) => sql.includes(`DELETE FROM ${table} WHERE ctid IN`)),
+        `no batched ctid sweep for ${table}`,
+      );
+    }
+  });
+
+  it("claims its rows with SKIP LOCKED so concurrent sweepers do not deadlock", async () => {
+    // offer-management runs three pods, each with its own relay. Without SKIP
+    // LOCKED two sweeps pick overlapping rows and lock them in opposite
+    // orders: the deployed cluster logged 76 deadlocks in one window, every one
+    // of them two retention statements waiting on each other.
+    const statements = (await sweepStatements()).filter((sql) => sql.includes("WHERE ctid IN"));
+    assert.ok(statements.length > 0, "the relay issued no retention sweep at all");
+    for (const sql of statements) {
+      assert.ok(sql.includes("FOR UPDATE SKIP LOCKED"), `concurrent sweepers would contend: ${sql}`);
+    }
+  });
+
+  it("bounds each sweep statement rather than deleting a whole backlog at once", async () => {
+    const statements = (await sweepStatements()).filter((sql) => sql.includes("WHERE ctid IN"));
+    for (const sql of statements) {
+      assert.ok(sql.includes("LIMIT $1"), `an unbounded sweep deletes the backlog in one transaction: ${sql}`);
+    }
+  });
+});
+
 describe("OutboxRelay stream cap", () => {
   it("defaults its XADD cap to the configured EVENT_STREAM_MAXLEN", async () => {
     const pool = new FakeOutboxPool();

@@ -137,16 +137,26 @@ const cleanupMaxBatches = 20
 // every event handler in the service slower.
 func (r *OutboxRelay) cleanup(ctx context.Context) {
 	r.sweep(ctx, "outbox", `DELETE FROM outbox WHERE ctid IN (SELECT ctid FROM outbox `+
-		`WHERE published_at IS NOT NULL AND published_at < now() - interval '30 seconds' LIMIT $1)`)
+		`WHERE published_at IS NOT NULL AND published_at < now() - interval '30 seconds' `+
+		`LIMIT $1 FOR UPDATE SKIP LOCKED)`)
 	r.sweep(ctx, "processed_events", `DELETE FROM processed_events WHERE ctid IN (SELECT ctid FROM processed_events `+
-		`WHERE processed_at < now() - interval '5 minutes' LIMIT $1)`)
+		`WHERE processed_at < now() - interval '5 minutes' `+
+		`LIMIT $1 FOR UPDATE SKIP LOCKED)`)
 	r.sweep(ctx, "idempotency_records", `DELETE FROM idempotency_records WHERE ctid IN (SELECT ctid FROM idempotency_records `+
-		`WHERE created_at < now() - interval '10 minutes' LIMIT $1)`)
+		`WHERE created_at < now() - interval '10 minutes' `+
+		`LIMIT $1 FOR UPDATE SKIP LOCKED)`)
 }
 
 // sweep runs one batched retention sweep. Uses `ctid IN (SELECT ... LIMIT n)`
 // because a plain `DELETE ... LIMIT` is not valid in Postgres, and the subquery
 // keeps the row set bounded whether or not the retention column is indexed.
+//
+// The subquery takes FOR UPDATE SKIP LOCKED so that concurrent sweepers claim
+// disjoint rows. Several services run more than one process, each with its own
+// relay, and without it the subquery picks an arbitrary row set, so two sweeps
+// lock the same rows in opposite orders and deadlock. The deployed cluster
+// logged 76 deadlocks in one window, every one of them two of these statements
+// waiting on each other, and the loser's whole batch rolled back.
 func (r *OutboxRelay) sweep(ctx context.Context, table string, batchedDelete string) {
 	var removed int64
 	for batch := 0; batch < cleanupMaxBatches; batch++ {
