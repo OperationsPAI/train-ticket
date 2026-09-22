@@ -16,7 +16,16 @@ async fn main() {
         .await
         .expect("failed to bind HTTP listener");
     log::info!("capacity-availability HTTP server listening on 0.0.0.0:{port}");
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("failed to register SIGTERM handler");
     axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            tokio::select! {
+                _ = terminate.recv() => {}
+                result = tokio::signal::ctrl_c() => result.expect("failed to receive interrupt"),
+            }
+            log::info!("capacity-availability draining active HTTP requests");
+        })
         .await
         .expect("capacity-availability HTTP server failed");
 }
