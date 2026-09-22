@@ -208,8 +208,6 @@ class IdempotencyMiddleware:
         scope = idempotency_scope(request)
         request.state.idempotency_decision = IdempotencyDecision(scope=scope, key=canonical_key, fingerprint=fingerprint)
         existing = await run_in_threadpool(self._store.get, scope, canonical_key)
-        if existing is None:
-            existing = await run_in_threadpool(self._store.get, f"{request.method.upper()} {request.url.path}", canonical_key)
         if existing is not None:
             if existing.fingerprint != fingerprint:
                 return key_reused_response(request, self._error_body_factory)
