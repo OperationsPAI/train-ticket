@@ -183,7 +183,26 @@ func postSalesCase(ctx context.Context, p *Providers, purchase *Purchase, caseTy
 		return "", err
 	}
 
-	return caseID, nil
+	for attempt := 0; attempt < p.Cfg.Polling.Attempts; attempt++ {
+		_, details, err := p.API.Request(ctx, "GET", "post-sales",
+			"/api/v1/post-sales-cases/"+url.PathEscape(caseID), nil, nil, []int{200}, "case-status")
+		if err != nil {
+			return "", err
+		}
+		status := getString(details, "status")
+		if status == "APPLIED" {
+			return caseID, nil
+		}
+		if status == "FAILED" || status == "REJECTED" || status == "CANCELLED" {
+			return "", &StepError{Step: "case-status", Kind: FailureRejected, Detail: "post sales case " + caseID + " ended " + status}
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(time.Duration(p.Cfg.Polling.IntervalSeconds * float64(time.Second))):
+		}
+	}
+	return "", &StepError{Step: "case-status", Kind: FailureUnfulfilled, Detail: "post sales case did not reach APPLIED: " + caseID}
 }
 
 func postSalesFailureStatus(purchase *Purchase) string {

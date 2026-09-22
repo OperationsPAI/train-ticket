@@ -715,7 +715,7 @@ func capturingPostSalesHandler(dst *map[string]interface{}) http.Handler {
 			*dst = body
 			return 201, map[string]interface{}{"caseId": "psc-1"}
 		}
-		return 200, map[string]interface{}{"caseId": "psc-1", "status": "APPROVED"}
+		return 200, map[string]interface{}{"caseId": "psc-1", "status": "APPLIED"}
 	})
 }
 
