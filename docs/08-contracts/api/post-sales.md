@@ -37,6 +37,7 @@ timestamps, and Money.
 | `journeyOrderId` | string | Parent order. |
 | `caseType` | enum | Case type. |
 | `status` | enum | `OPENED`, `EVALUATING`, `APPROVED`, `REJECTED`, `APPLIED`, `FAILED` |
+| `releasedOrderItemRefs` | string[] | Persisted capacity release confirmations within the case scope. All scoped ticket reservations must be released before the capacity execution phase completes. |
 | `createdAt` | timestamp | Creation time. |
 
 **Error codes:** `VALIDATION_FAILED`, `NOT_FOUND`, `REFUND_ALREADY_IN_PROGRESS`, `ORDER_NOT_REFUNDABLE`, `DOMAIN_RULE_VIOLATION`
