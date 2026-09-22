@@ -31,22 +31,22 @@ func (r *FulfillmentRepository) Save(ctx context.Context, record *domain.Fulfill
 		return err
 	}
 	repo := storage.NewSnapshotRepository(r.db.DBFor(ctx), fulfillmentRecordTable)
-	snap, ok, err := repo.Get(ctx, string(record.FulfillmentRecordID))
-	if err != nil {
-		return err
-	}
-	if !ok {
+	if record.Version == 0 {
 		if err := repo.Insert(ctx, string(record.FulfillmentRecordID), data); err != nil {
 			if errors.Is(err, storage.ErrConflict) {
 				return fmt.Errorf("%w: fulfillment record already exists", application.ErrConflict)
 			}
 			return err
 		}
+		record.Version = 1
 		return nil
 	}
-	_, err = repo.Save(ctx, string(record.FulfillmentRecordID), snap.Version, data)
+	version, err := repo.Save(ctx, string(record.FulfillmentRecordID), record.Version, data)
 	if errors.Is(err, storage.ErrConflict) {
 		return fmt.Errorf("%w: fulfillment record changed", application.ErrConflict)
+	}
+	if err == nil {
+		record.Version = version
 	}
 	return err
 }
@@ -59,11 +59,24 @@ func (r *FulfillmentRepository) FindByID(ctx context.Context, id domain.Fulfillm
 	if !ok {
 		return nil, application.ErrNotFound
 	}
-	return decodeRecord(snap.Data)
+	record, err := decodeRecord(snap.Data)
+	if err == nil {
+		record.Version = snap.Version
+	}
+	return record, err
 }
 
 func (r *FulfillmentRepository) FindByEntitlementSegment(ctx context.Context, entitlementID domain.EntitlementRef, segmentBookingID domain.SegmentBookingRef, segmentRef domain.SegmentRef) (*domain.FulfillmentRecord, error) {
-	rows, err := r.db.DBFor(ctx).Query(ctx, `SELECT data FROM fulfillment_record_snapshots WHERE data->>'entitlementId' = $1 AND data->>'segmentBookingId' = $2 AND data->>'segmentRef' = $3 LIMIT 1`, string(entitlementID), string(segmentBookingID), string(segmentRef))
+	if _, transactional := txFromContext(ctx); transactional {
+		key, err := json.Marshal([]string{string(entitlementID), string(segmentBookingID), string(segmentRef)})
+		if err != nil {
+			return nil, err
+		}
+		if _, err := r.db.DBFor(ctx).Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "fulfillment:"+string(key)); err != nil {
+			return nil, err
+		}
+	}
+	rows, err := r.db.DBFor(ctx).Query(ctx, `SELECT version,data FROM fulfillment_record_snapshots WHERE data->>'entitlementId' = $1 AND data->>'segmentBookingId' = $2 AND data->>'segmentRef' = $3 LIMIT 1`, string(entitlementID), string(segmentBookingID), string(segmentRef))
 	if err != nil {
 		return nil, err
 	}
@@ -72,10 +85,15 @@ func (r *FulfillmentRepository) FindByEntitlementSegment(ctx context.Context, en
 		return nil, application.ErrNotFound
 	}
 	var raw json.RawMessage
-	if err := rows.Scan(&raw); err != nil {
+	var version int64
+	if err := rows.Scan(&version, &raw); err != nil {
 		return nil, err
 	}
-	return decodeRecord(raw)
+	record, err := decodeRecord(raw)
+	if err == nil {
+		record.Version = version
+	}
+	return record, err
 }
 
 func (r *FulfillmentRepository) SaveSegmentStatus(ctx context.Context, record *domain.SegmentStatusRecord) (bool, error) {
