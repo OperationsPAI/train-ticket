@@ -1,6 +1,9 @@
 package main
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // JourneyFulfillment boards + completes (or no-shows) a purchased entitlement.
 func JourneyFulfillment(ctx context.Context, p *Providers) (string, error) {
@@ -10,7 +13,7 @@ func JourneyFulfillment(ctx context.Context, p *Providers) (string, error) {
 	}
 
 	if p.Chance("p_no_show") {
-		_, record, err := p.API.Request(ctx, "POST", "fulfillment",
+		_, record, err := fulfillmentRequest(ctx, p,
 			"/api/v1/fulfillment-records/no-show",
 			map[string]interface{}{
 				"entitlementId":    purchase.Entitlement,
@@ -19,7 +22,7 @@ func JourneyFulfillment(ctx context.Context, p *Providers) (string, error) {
 				"travelerId":       purchase.Traveler,
 				"segmentRef":       purchase.Seg,
 				"reason":           "BOARDING_WINDOW_EXPIRED",
-			}, nil, []int{200, 201}, "no-show")
+			}, "no-show")
 		if err != nil {
 			p.Reg.ReleasePurchase(purchase, "confirmed")
 			return "", err
@@ -29,7 +32,7 @@ func JourneyFulfillment(ctx context.Context, p *Providers) (string, error) {
 		return "no_show", nil
 	}
 
-	_, record, err := p.API.Request(ctx, "POST", "fulfillment",
+	_, record, err := fulfillmentRequest(ctx, p,
 		"/api/v1/fulfillment-records/boarding",
 		map[string]interface{}{
 			"entitlementId":    purchase.Entitlement,
@@ -40,7 +43,7 @@ func JourneyFulfillment(ctx context.Context, p *Providers) (string, error) {
 			"source":           "GATE",
 			"sourceEventId":    "gate-" + UUID7(),
 			"occurredAt":       NowISO(),
-		}, nil, []int{200, 201}, "boarding")
+		}, "boarding")
 	if err != nil {
 		p.Reg.ReleasePurchase(purchase, "confirmed")
 		return "", err
@@ -73,4 +76,23 @@ func JourneyFulfillment(ctx context.Context, p *Providers) (string, error) {
 		Account:           purchase.Account,
 	})
 	return "fulfilled", nil
+}
+
+func fulfillmentRequest(ctx context.Context, p *Providers, path string, body map[string]interface{}, step string) (int, map[string]interface{}, error) {
+	headers := map[string]string{"Idempotency-Key": UUID7()}
+	for attempt := 0; ; attempt++ {
+		var expected []int
+		if attempt < p.Cfg.Polling.Attempts-1 {
+			expected = []int{404}
+		}
+		code, data, err := p.API.PollRequest(ctx, "POST", "fulfillment", path, body, headers, []int{200, 201}, step, expected)
+		if code != 404 || attempt >= p.Cfg.Polling.Attempts-1 {
+			return code, data, err
+		}
+		select {
+		case <-ctx.Done():
+			return 0, nil, ctx.Err()
+		case <-time.After(time.Duration(p.Cfg.Polling.IntervalSeconds * float64(time.Second))):
+		}
+	}
 }
