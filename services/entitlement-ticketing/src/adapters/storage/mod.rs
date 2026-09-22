@@ -610,6 +610,7 @@ impl PostgresEntitlementService {
         fingerprint: &str,
         correlation_id: &str,
     ) -> PgResult<IssueEntitlementResponse> {
+        let preconditions = crate::issue_facts::resolve(command, correlation_id).await?;
         let seat_key = if command.needs_seat_assignment() {
             Some(seat_assignment_idempotency_key(command)?)
         } else {
@@ -679,7 +680,7 @@ impl PostgresEntitlementService {
                     command_id: CommandId::new(format!("cmd-{}", uuid::Uuid::now_v7()))
                         .map_err(ApiErrorKind::from)?,
                     idempotency_key: aggregate.idempotency_key().clone(),
-                    preconditions: default_preconditions().map_err(ApiErrorKind::from)?,
+                    preconditions,
                     credential_ref: credential_ref(&credential_no).map_err(ApiErrorKind::from)?,
                     refund_request_fact: None,
                     audit: audit_builder(correlation_id, "HTTP issue entitlement")
