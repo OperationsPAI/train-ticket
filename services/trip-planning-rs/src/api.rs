@@ -6,17 +6,15 @@ use axum::{
     http::StatusCode,
     routing::{get, post},
 };
-use chrono::{DateTime, Duration, NaiveDate, TimeZone, Utc};
+use chrono::{NaiveDate, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use shared_kernel::RequestContext;
 use std::sync::Arc;
 
 use crate::application::AppState;
 use crate::domain::{
-    AvailabilityHint, Itinerary, LegCandidate, PriceHint,
-    search_itineraries, PreferenceConstraints, TripIntent,
+    Itinerary, search_itineraries, PreferenceConstraints, TripIntent,
 };
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -163,20 +161,27 @@ async fn search_itineraries_handler(
         departure_date,
     );
 
-    let candidate_pool: Vec<Itinerary> = if real_candidates.is_empty() {
-        // Provide a contract-compatible fallback candidate
-        vec![contract_candidate(
-            &intent.origin_ref,
-            &intent.destination_ref,
-            &req.departure_date,
-            &req.channel,
-        )]
-    } else {
-        real_candidates
-            .into_iter()
-            .map(|c| candidate_for_intent(c, &intent.origin_ref, &intent.destination_ref))
-            .collect()
-    };
+    // No candidate means no itinerary. An empty result is the honest answer and
+    // the one every caller already handles: the load generator records
+    // `available-train: no routes` as a real user outcome, and the legacy facade
+    // returns "no itinerary found".
+    //
+    // It used to synthesise one instead, with a segment ref of its own making
+    // (`contract_candidate` below). That is worse than an empty result rather
+    // than a softer version of it: the caller receives something that looks
+    // bookable, quotes and offers against a segment no other service knows, and
+    // the refusal surfaces three services later as offer-management's
+    // `No consumed Fare Pricing quote`, which names neither this service nor the
+    // missing inventory.
+    //
+    // Measured: 7119 of 15017 itineraries offer-management projected in four
+    // minutes carried a synthetic `seg-web-...` ref, and that refusal was 634 of
+    // 763 recorded journey failures while every consumer sat caught up with its
+    // stream.
+    let candidate_pool: Vec<Itinerary> = real_candidates
+        .into_iter()
+        .map(|c| candidate_for_intent(c, &intent.origin_ref, &intent.destination_ref))
+        .collect();
 
     let result = search_itineraries(&intent, &candidate_pool);
     let selected: Vec<_> = result
@@ -277,74 +282,6 @@ fn validate_search_request(req: &SearchRequest) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-fn contract_candidate(
-    origin_ref: &str,
-    destination_ref: &str,
-    departure_date: &str,
-    channel: &str,
-) -> Itinerary {
-    let departure_time = format!("{}T09:00:00+00:00", departure_date);
-    let dep: DateTime<Utc> = DateTime::parse_from_rfc3339(&departure_time)
-        .unwrap()
-        .with_timezone(&Utc);
-    let arr = dep + Duration::hours(1);
-
-    let normalized_channel: String = channel
-        .to_lowercase()
-        .chars()
-        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-        .collect();
-    let normalized_channel = if normalized_channel.is_empty() {
-        "default".to_string()
-    } else {
-        normalized_channel
-    };
-
-    let service_plan_ref = format!("sp-{}-{}", normalized_channel, departure_date);
-    let mut hasher = Sha256::new();
-    hasher.update(format!("{}|{}", origin_ref, destination_ref).as_bytes());
-    let route_digest = format!("{:x}", hasher.finalize());
-    let route_digest = &route_digest[..12];
-    let service_segment_ref = format!(
-        "seg-{}-{}-{}",
-        normalized_channel, departure_date, route_digest
-    );
-
-    let leg = LegCandidate {
-        service_plan_ref,
-        service_segment_ref: service_segment_ref.clone(),
-        origin_stop_ref: origin_ref.to_string(),
-        destination_stop_ref: destination_ref.to_string(),
-        departure_time: dep,
-        arrival_time: arr,
-        mode: "train".to_string(),
-        stop_refs: vec![origin_ref.to_string(), destination_ref.to_string()],
-        segment_refs: vec![service_segment_ref.clone()],
-    };
-    let itin_ref = Itinerary::compute_ref(&[leg.clone()]);
-
-    Itinerary {
-        itinerary_ref: itin_ref,
-        legs: vec![leg],
-        price_hint: Some(PriceHint {
-            amount_minor: 0,
-            currency: "CNY".to_string(),
-            snapshot_ref: format!("fare-snapshot:{}", service_segment_ref),
-            captured_at: dep,
-            confidence: 50,
-        }),
-        availability_hint: Some(AvailabilityHint {
-            status: "UNKNOWN".to_string(),
-            snapshot_ref: format!("availability-snapshot:{}", service_segment_ref),
-            captured_at: dep,
-            confidence: 50,
-        }),
-        planning_snapshot_refs: vec![format!("planning-snapshot:{}", service_segment_ref)],
-        search_origin_ref: None,
-        search_destination_ref: None,
-    }
 }
 
 fn candidate_for_intent(

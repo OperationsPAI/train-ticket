@@ -339,8 +339,29 @@ bootstrap:
     from_days: 1      # T+1  -- a business traveller books for tomorrow
     to_days: 45       # T+45 -- a casual traveller books six weeks out
   # Station pairs per date, divided across the active lines and spread over each
-  # line's distance spectrum, so every persona's distance band has inventory.
-  services_per_date: 24
+  # line's distance spectrum.
+  #
+  # 600 rather than 24, which is every pair the four active lines offer. The
+  # topology has 498 of them (120 + 120 + 153 + 105), so 24 covered 4.8% while
+  # the personas draw trips from all of it, and 95% of searches found no real
+  # inventory.
+  #
+  # What trip-planning does then is the part that matters. With no candidate in
+  # its plan index it returns a contract-compatible fallback whose segment ref
+  # it invents (`contract_candidate` in services/trip-planning-rs/src/api.rs),
+  # so the client quotes and offers against a segment no other service knows.
+  # offer-management then refuses the offer, because it derives the fare quote's
+  # lookup key from the itinerary's own segment refs and no stored quote carries
+  # that key.
+  #
+  # Measured: 7119 of 15017 itineraries projected in four minutes carried a
+  # synthetic `seg-web-...` ref, and `No consumed Fare Pricing quote` was 634 of
+  # the 763 recorded journey failures while the consumer sat fully caught up
+  # with its stream. So this was never the lag it looked like.
+  #
+  # The cost is bounded: plan_segments holds 10MB for the 11817 pair-dates it
+  # has now, and full coverage is 498 x 45 = 22410, so under 2x.
+  services_per_date: 600
   service_number_base: 5000    # G<base+n> to avoid clashing with e2e's G1234
 
   # The fare rule set an eligibility certificate discounts against.
