@@ -58,6 +58,7 @@ public final class PostSalesMapper {
         body.put("caseType", postSalesCase.caseType().name());
         body.put("status", contractStatus(postSalesCase.status()));
         body.put("scope", postSalesCase.scope());
+        body.put("releasedOrderItemRefs", postSalesCase.releasedOrderItems());
         body.put("reasonCode", postSalesCase.reasonCode());
         body.put("actorRef", postSalesCase.actorRef());
         if (postSalesCase.decision() != null) {
