@@ -80,7 +80,6 @@ def configure_runtime_endpoints(app: FastAPI, tracer: TraceHook | None = None, o
 
     # The probes are coroutines so they never queue behind the verification operations.
     # FastAPI serves a `def` endpoint from anyio's shared 40-thread pool, and the verification operations are `def` paths that hold a thread for the length of their blocking work.
-    # Measured on legacy-acl: the pod restarted 78 times in 9 hours on "Liveness probe failed: context deadline exceeded" while its CPU peaked at 9% of its limit.
     # health() and profile() are constant returns, and the readiness gate is an in-memory boolean, so on the event loop these cost nothing and a saturated pool cannot starve them.
     @app.get("/health")
     async def health_endpoint() -> dict[str, object]: return {"status": health(), "service": profile()}

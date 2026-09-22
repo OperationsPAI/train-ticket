@@ -55,7 +55,7 @@ The e2e suite now has 12 scripts and 159+ assertions.
 ### DLQ audit wave (DONE)
 
 Live-cluster DLQ attribution under continuous load drove a taxonomy hardening
-pass across consumers (REQ-088..091 + payment/legacy-acl hotfixes): notification
+pass across consumers (REQ-088..091 + payment hotfixes): notification
 trigger contract validation, capacity sold-out fast-fail via
 `CapacityHoldFailed(NO_AVAILABLE_CAPACITY)`, booking-orchestration terminal-state
 triage, journey-order catch-all classification, payment zero-refund no-op, and

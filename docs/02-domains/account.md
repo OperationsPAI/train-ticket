@@ -202,7 +202,6 @@ Account 的目标是把“谁在使用平台、以什么身份使用、拥有哪
 - 钱包/积分/券 ACL：Account 只保存 `WalletRef`、points account ref、coupon wallet ref 和展示摘要；余额、冻结、核销、退款回钱包由 Payment、Wallet 或 Promotion 拥有。
 - 客服与后台 ACL：所有人工改联系方式、冻结、解冻、解绑、恢复账户的动作都必须转为 Account 命令，带 operator、caseRef、reason 和证据引用。
 - 隐私与合规 ACL：同意条款版本、地区、语言和采集来源必须标准化，便于 Legal、Reporting 和数据治理系统消费。
-- Legacy ACL：旧账号表、登录表、会员表、企业用户表、常旅客关系表迁移期通过防腐层转换为 Account 聚合事件，禁止新域直接依赖旧表字段。
 
 ## 11. 当前服务迁移影响
 

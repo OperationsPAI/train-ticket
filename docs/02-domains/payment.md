@@ -614,14 +614,6 @@ Payment channel 防腐层负责把渠道差异转换为平台统一语义：
 - 若 adapters 归属 Payment，仍应以 ACL 接口隔离渠道 SDK 和报文，避免渠道概念污染核心聚合。
 - 两种部署方式都必须保证：Payment 的 `Outbox` 事件是内部系统唯一可信的资金事实来源。
 
-### 10.4 Legacy ACL
-
-当前 `ts-inside-payment-service`、`ts-payment-service` 及相关调用方在迁移期应通过 Legacy ACL 接入：
-
-- 把旧接口中的 order status update、ticket side effect、notification side effect 拆出为事件消费方行为。
-- 把旧 payment success/fail callback 转换为 `RecordChannelCallback` + `ApplyChannelCallbackToPayment`。
-- 把旧 refund amount/rule 计算从 Payment 调用链迁移到 Post Sales 或 Disruption Recovery。
-
 ## 11. 当前服务迁移影响
 
 | Current Service | Current Concern | Target Impact |
