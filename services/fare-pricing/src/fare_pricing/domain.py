@@ -761,7 +761,20 @@ def calculate_fare_quote(
     taxes = tuple(_component(rule) for rule in rule_set.rules if rule.kind is RuleKind.TAX)
     fees = tuple(_component(rule) for rule in rule_set.rules if rule.kind is RuleKind.FEE)
     active_discount_types = active_discount_types or set()
-    discounts = tuple(_component(rule) for rule in rule_set.rules if rule.kind is RuleKind.DISCOUNT and _discount_allowed(rule, active_discount_types))
+    remaining_fare = base_fare.amount
+    applied_discounts: list[PriceComponent] = []
+    for rule in rule_set.rules:
+        if rule.kind is not RuleKind.DISCOUNT or not _discount_allowed(rule, active_discount_types):
+            continue
+        applied = min(rule.amount.amount, remaining_fare)
+        explanation = PriceExplanation(rule.explanation.code, {
+            **rule.explanation.as_mapping(),
+            "requestedMinorUnits": rule.amount.amount_minor,
+            "appliedMinorUnits": Money(applied, normalized_currency).amount_minor,
+        })
+        applied_discounts.append(PriceComponent(rule.rule_id, Money(applied, normalized_currency), explanation, rule.refundable))
+        remaining_fare -= applied
+    discounts = tuple(applied_discounts)
     subtotal = FareBreakdown(base_fare, taxes, fees, discounts, pricing_components=pricing_components).total
     dynamic_adjustment, capacity_component = _dynamic_capacity_adjustment(subtotal, rule_set.dynamic_pricing_bands, capacity_snapshots)
     if dynamic_adjustment is not None:
