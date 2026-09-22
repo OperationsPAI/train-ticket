@@ -149,7 +149,7 @@ class PostgresIdentityVerificationStore(InMemoryStore):
 
     def get_credential(self, credential_id: str) -> CredentialRecord:
         def read(conn: Any) -> CredentialRecord:
-            snap = self._credentials.get(conn, credential_id)
+            snap = conn.execute("SELECT version, data FROM credential_record_snapshots WHERE id=%s FOR UPDATE", (credential_id,)).fetchone()
             if snap is None: raise NotFoundError(f"credential not found: {credential_id}")
             version, data = snap; self._remember("credential", credential_id, version); return credential_from_json(data, version)
         return self._with_conn(read)
