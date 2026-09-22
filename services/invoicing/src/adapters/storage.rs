@@ -303,10 +303,9 @@ macro_rules! delegate_mutation {
 #[async_trait::async_trait]
 impl InvoicingApi for PostgresInvoicingService {
     async fn get_amount_basis(&self, order_id: String) -> Result<AmountBasis, InvoicingError> {
-        let row: Option<(Value,)> = sqlx::query_as("SELECT data FROM invoicing_projection_rows WHERE kind='amounts' AND id=$1")
-            .bind(order_id).fetch_optional(self.pool()).await.map_err(internal)?;
-        let (data,) = row.ok_or_else(|| InvoicingError::NotFound("amount basis not yet available".into()))?;
-        serde_json::from_value(data).map_err(internal)
+        let (service, _) = Self::engine();
+        self.load_order_context(&service, &order_id).await?;
+        service.get_amount_basis(order_id).await
     }
     async fn create_title(
         &self,

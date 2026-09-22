@@ -230,9 +230,15 @@ impl InMemoryInvoicingService {
         }
         let travelers = array_strings(&e.payload, "travelerRefs");
         let segments = array_strings(&e.payload, "segmentRefs");
+        let expected_total = e.payload.get("monetarySummary").and_then(|summary| summary.get("total"))
+            .map(|amount| serde_json::from_value::<Money>(amount.clone())).transpose()
+            .map_err(|error| InvoicingError::ValidationFailed(error.to_string()))?;
         let mut s = self.state.lock().unwrap();
         if let Some(existing) = s.orders.get_mut(&order_id) {
             existing.account_id = account_id;
+            if e.event_type == "JourneyOrderConfirmed" || existing.expected_total.is_none() {
+                existing.expected_total = expected_total;
+            }
             for t in &travelers {
                 if !existing.traveler_refs.contains(t) {
                     existing.traveler_refs.push(t.clone());
@@ -250,6 +256,7 @@ impl InMemoryInvoicingService {
                     account_id,
                     traveler_refs: travelers,
                     segment_refs: segments,
+                    expected_total,
                 },
             );
         }
@@ -470,6 +477,8 @@ pub(crate) struct OrderProjection {
     pub account_id: String,
     pub traveler_refs: Vec<String>,
     pub segment_refs: Vec<String>,
+    #[serde(default)]
+    pub expected_total: Option<Money>,
 }
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct IdemRecord {
@@ -494,8 +503,14 @@ fn amount_basis_matches_projection(requested: &AmountBasis, projected: &AmountBa
 #[async_trait]
 impl InvoicingApi for InMemoryInvoicingService {
     async fn get_amount_basis(&self, order_id: String) -> Result<AmountBasis, InvoicingError> {
-        self.state.lock().unwrap().amounts.get(&order_id).cloned()
-            .ok_or_else(|| InvoicingError::NotFound("amount basis not yet available".into()))
+        let state = self.state.lock().unwrap();
+        let basis = state.amounts.get(&order_id).cloned()
+            .ok_or_else(|| InvoicingError::NotFound("amount basis not yet available".into()))?;
+        if state.orders.get(&order_id).and_then(|order| order.expected_total.as_ref())
+            .is_some_and(|total| *total != basis.total_amount) {
+            return Err(InvoicingError::NotFound("complete amount basis not yet available".into()));
+        }
+        Ok(basis)
     }
     async fn create_title(
         &self,
@@ -772,6 +787,9 @@ impl InvoicingApi for InMemoryInvoicingService {
                     "missing finance-settlement amount basis projection for order".into(),
                 ));
             };
+            if order.expected_total.as_ref().is_some_and(|total| *total != projected_amount.total_amount) {
+                return Err(InvoicingError::PreconditionFailed("missing finance-settlement components for complete order amount".into()));
+            }
             if !amount_basis_matches_projection(&cmd.amount_basis, projected_amount) {
                 return Err(InvoicingError::PreconditionFailed(
                     "amountBasis does not match consumed finance-settlement projection".into(),
