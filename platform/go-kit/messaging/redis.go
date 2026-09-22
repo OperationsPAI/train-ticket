@@ -165,6 +165,7 @@ type Subscription struct {
 	Streams      []string
 	Group        string
 	ConsumerName string
+	EventFilter  func(EventEnvelope) bool
 }
 
 func StreamName(producer string) string {
@@ -195,7 +196,7 @@ func (b *RedisEventBus) Subscribe(ctx context.Context, sub Subscription, handler
 		b.wg.Add(1)
 		go func(stream string) {
 			defer b.wg.Done()
-			b.consumeLoop(runCtx, []string{stream}, sub.Group, sub.ConsumerName, handler)
+			b.consumeLoop(runCtx, []string{stream}, sub.Group, sub.ConsumerName, handler, sub.EventFilter)
 		}(stream)
 	}
 	return nil
@@ -223,7 +224,7 @@ func (b *RedisEventBus) pruneDeadConsumers(ctx context.Context, stream, group, s
 		}
 	}
 }
-func (b *RedisEventBus) consumeLoop(ctx context.Context, streams []string, group, consumer string, handler Handler) {
+func (b *RedisEventBus) consumeLoop(ctx context.Context, streams []string, group, consumer string, handler Handler, filter func(EventEnvelope) bool) {
 	for _, s := range streams {
 		b.pruneDeadConsumers(ctx, s, group, consumer)
 	}
@@ -240,11 +241,11 @@ func (b *RedisEventBus) consumeLoop(ctx context.Context, streams []string, group
 			return
 		case <-ticker.C:
 			for _, s := range streams {
-				b.recoverPending(ctx, s, group, consumer, handler)
+				b.recoverPending(ctx, s, group, consumer, handler, filter)
 			}
 		default:
 		}
-		result, err := b.client.XReadGroup(ctx, &redis.XReadGroupArgs{Group: group, Consumer: consumer, Streams: append(append([]string{}, streams...), ids...), Count: 10, Block: b.cfg.ReadBlock}).Result()
+		result, err := b.client.XReadGroup(ctx, &redis.XReadGroupArgs{Group: group, Consumer: consumer, Streams: append(append([]string{}, streams...), ids...), Count: 100, Block: b.cfg.ReadBlock}).Result()
 		if err != nil {
 			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
 				return
@@ -270,13 +271,11 @@ func (b *RedisEventBus) consumeLoop(ctx context.Context, streams []string, group
 		}
 		backoff = time.Second
 		for _, stream := range result {
-			for _, msg := range stream.Messages {
-				b.processMessage(ctx, stream.Stream, group, consumer, msg, handler)
-			}
+			b.processBatch(ctx, stream.Stream, group, consumer, stream.Messages, handler, filter)
 		}
 	}
 }
-func (b *RedisEventBus) recoverPending(ctx context.Context, stream, group, consumer string, handler Handler) {
+func (b *RedisEventBus) recoverPending(ctx context.Context, stream, group, consumer string, handler Handler, filter func(EventEnvelope) bool) {
 	start := "0-0"
 	for {
 		messages, next, err := b.client.XAutoClaim(ctx, &redis.XAutoClaimArgs{Stream: stream, Group: group, Consumer: consumer, MinIdle: b.cfg.RecoveryMinIdle, Start: start, Count: 100}).Result()
@@ -289,13 +288,30 @@ func (b *RedisEventBus) recoverPending(ctx context.Context, stream, group, consu
 		if len(messages) == 0 {
 			return
 		}
-		for _, m := range messages {
-			b.processMessage(ctx, stream, group, consumer, m, handler)
-		}
+		b.processBatch(ctx, stream, group, consumer, messages, handler, filter)
 		if next == "0-0" || next == start {
 			return
 		}
 		start = next
+	}
+}
+func (b *RedisEventBus) processBatch(ctx context.Context, stream, group, consumer string, messages []redis.XMessage, handler Handler, filter func(EventEnvelope) bool) {
+	ignored := make([]string, 0, len(messages))
+	for _, message := range messages {
+		if filter != nil {
+			raw, ok := message.Values[EnvelopeField].(string)
+			var envelope EventEnvelope
+			if ok && json.Unmarshal([]byte(raw), &envelope) == nil && envelope.Validate() == nil && !filter(envelope) {
+				ignored = append(ignored, message.ID)
+				continue
+			}
+		}
+		b.processMessage(ctx, stream, group, consumer, message, handler)
+	}
+	if len(ignored) > 0 {
+		if err := b.client.XAck(ctx, stream, group, ignored...).Err(); err != nil {
+			log.Printf("WARN %sservice=%s stream=%s batch acknowledgement failed; messages remain pending: %v", goruntime.TraceLogFields(ctx), group, stream, err)
+		}
 	}
 }
 func (b *RedisEventBus) processMessage(ctx context.Context, stream, group, consumer string, message redis.XMessage, handler Handler) {
