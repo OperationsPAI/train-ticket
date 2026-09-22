@@ -7,7 +7,7 @@ RUN --mount=type=cache,target=/root/.m2 mvn -q -f platform/java-kit/pom.xml -Dsk
 COPY services/booking-orchestration/pom.xml ./services/booking-orchestration/pom.xml
 RUN --mount=type=cache,target=/root/.m2 mvn -q -f services/booking-orchestration/pom.xml -DskipTests dependency:go-offline
 COPY services/booking-orchestration/src ./services/booking-orchestration/src
-RUN --mount=type=cache,target=/root/.m2 mvn -q -f services/booking-orchestration/pom.xml -DskipTests package
+RUN --mount=type=cache,target=/root/.m2 mvn -q -f platform/java-kit/pom.xml -DskipTests install && mvn -q -f services/booking-orchestration/pom.xml -DskipTests package
 
 FROM eclipse-temurin:25-jre
 RUN useradd --system --create-home --home-dir /home/app app
