@@ -4,7 +4,6 @@ import hashlib
 import json
 import logging
 import threading
-import time
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -46,17 +45,12 @@ from reporting.ids import prefixed_uuid7
 from train_ticket_platform.events import EventEnvelope
 from train_ticket_platform.storage import OutboxAppender, ProcessedEventsGuard, SnapshotRepository
 
-try:  # pragma: no cover - exercised only with psycopg installed at runtime
-    from psycopg.types.json import Jsonb
-except Exception:  # pragma: no cover
-    Jsonb = None  # type: ignore[assignment]
+from psycopg.types.json import Jsonb
 
 logger = logging.getLogger(__name__)
 
 _PAYMENT_CAPTURED_EVENT_TYPES = ("PaymentCaptured", "RevenueRecognized", "PaymentSucceeded")
 _REVENUE_REFRESH_INTERVAL = 30.0
-_ANOMALY_EVAL_INTERVAL = 30.0
-_ANOMALY_EVAL_BATCH = 100
 
 # How far back the anomaly rules can see. REVENUE_DROP compares the last hour
 # against the same hour yesterday, which is the longest window any rule reads;
@@ -67,7 +61,7 @@ _DETECTION_WINDOW = timedelta(days=1, hours=1)
 
 
 def _json_payload(value: Mapping[str, Any]) -> Any:
-    return Jsonb(dict(value)) if Jsonb is not None else json.dumps(dict(value), separators=(",", ":"))
+    return Jsonb(dict(value))
 
 
 def _dt(value: datetime | str | None) -> str | None:
@@ -267,10 +261,8 @@ class PostgresReportingApplicationService:
         self._metrics = SnapshotRepository("metric_definition_snapshots")
         self._dashboards = SnapshotRepository("dashboard_read_model_snapshots")
         self._detector = AnomalyDetector()
-        self._revenue_refresh_lock = threading.Lock()
-        self._last_revenue_refresh: float = 0.0
-        self._last_anomaly_eval: float = 0.0
-        self._events_since_anomaly_eval: int = 0
+        self._refresh_stop = threading.Event()
+        self._refresh_thread: threading.Thread | None = None
         self._seed_defaults()
 
     def _seed_defaults(self) -> None:
@@ -317,35 +309,20 @@ class PostgresReportingApplicationService:
         from train_ticket_platform.messaging import HandlerResult
         if not reporting_applies_event_type(envelope.eventType):
             return HandlerResult.success()
-        needs_revenue_refresh = False
         try:
             with self._pool.connection() as conn:
                 with conn.transaction():
                     if not self._processed.try_mark_processed(conn, envelope.eventId, f"events:{envelope.producer}"):
                         return HandlerResult.success()
                     normalized = operational_event_from_envelope(envelope)
-                    self._save_metric_event(conn, normalized)
-                    if normalized.event_type in _PAYMENT_CAPTURED_EVENT_TYPES:
-                        needs_revenue_refresh = True
-                    self._events_since_anomaly_eval += 1
-                    now = time.monotonic()
-                    if now - self._last_anomaly_eval >= _ANOMALY_EVAL_INTERVAL or self._events_since_anomaly_eval >= _ANOMALY_EVAL_BATCH:
-                        aggregator = self._load_aggregator(conn, since=utc_now() - _DETECTION_WINDOW)
-                        newly_detected = self._detector.evaluate(aggregator)
-                        active = self._detector.list_active()
-                        self._resolve_inactive_anomalies(conn, [anomaly.rule_id for anomaly in active])
-                        for anomaly in active:
-                            changed = self._save_anomaly(conn, anomaly)
-                            if changed and any(item.rule_id == anomaly.rule_id for item in newly_detected):
-                                self._append_anomaly_actions(conn, anomaly, envelope)
-                        self._last_anomaly_eval = time.monotonic()
-                        self._events_since_anomaly_eval = 0
-                    dashboards = self._all_dashboards(conn, for_update=True)
-                    for dashboard, version in dashboards:
-                        if dashboard_consumes_event(dashboard, envelope.eventType):
-                            self._maybe_rebuild(conn, dashboard.mark_stale(), version, envelope)
-            if needs_revenue_refresh:
-                self._throttled_revenue_refresh()
+                    if not self._save_metric_event(conn, normalized):
+                        return HandlerResult.success()
+                    conn.execute(
+                        "INSERT INTO reporting_projection_refresh_requests(event_type,generation,source_event) VALUES (%s,1,%s) "
+                        "ON CONFLICT(event_type) DO UPDATE SET generation=reporting_projection_refresh_requests.generation+1, "
+                        "source_event=EXCLUDED.source_event,updated_at=now()",
+                        (envelope.eventType, Jsonb(envelope.to_dict())),
+                    )
         except Exception as exc:
             # Log with the traceback. This is the handler production actually uses
             # -- the in-memory ReportingApplicationService has its own, and probing
@@ -365,15 +342,66 @@ class PostgresReportingApplicationService:
             return HandlerResult.transient_error(f"{type(exc).__name__}: {exc}")
         return HandlerResult.success()
 
-    def _save_metric_event(self, conn: Any, event: OperationalEvent) -> None:
-        conn.execute(
+    def start_projection_refresh(self) -> None:
+        if self._refresh_thread is not None and self._refresh_thread.is_alive():
+            return
+        self._refresh_stop.clear()
+        self._refresh_thread = threading.Thread(target=self._refresh_loop, name="reporting-projections", daemon=True)
+        self._refresh_thread.start()
+
+    def stop_projection_refresh(self) -> None:
+        self._refresh_stop.set()
+        if self._refresh_thread is not None:
+            self._refresh_thread.join(timeout=60)
+
+    def _refresh_loop(self) -> None:
+        while not self._refresh_stop.is_set():
+            try:
+                self.refresh_pending_projections()
+            except Exception:
+                logger.exception("reporting projection refresh failed; durable requests remain pending")
+            self._refresh_stop.wait(_REVENUE_REFRESH_INTERVAL)
+
+    def refresh_pending_projections(self) -> int:
+        with self._pool.connection() as conn:
+            with conn.transaction():
+                if not conn.execute("SELECT pg_try_advisory_xact_lock(hashtextextended('reporting:projection-refresh',0))").fetchone()[0]:
+                    return 0
+                pending = conn.execute(
+                    "SELECT event_type,generation,refreshed_generation,source_event "
+                    "FROM reporting_projection_refresh_requests WHERE generation>refreshed_generation ORDER BY event_type"
+                ).fetchall()
+                if not pending:
+                    return 0
+                source = EventEnvelope.from_json_dict(pending[-1][3])
+                if any(row[0] in _PAYMENT_CAPTURED_EVENT_TYPES for row in pending):
+                    self._refresh_revenue_views(conn)
+                aggregator = self._load_aggregator(conn, since=utc_now() - _DETECTION_WINDOW)
+                self._detector.evaluate(aggregator)
+                active = self._detector.list_active()
+                self._resolve_inactive_anomalies(conn, [anomaly.rule_id for anomaly in active])
+                for anomaly in active:
+                    changed = self._save_anomaly(conn, anomaly)
+                    if changed:
+                        self._append_anomaly_actions(conn, anomaly, source)
+                for dashboard, version in self._all_dashboards(conn, for_update=True):
+                    delta = sum(row[1] - row[2] for row in pending if dashboard_consumes_event(dashboard, row[0]))
+                    if delta:
+                        count = (dashboard.current_snapshot.event_count if dashboard.current_snapshot else 0) + delta
+                        self._maybe_rebuild(conn, dashboard.mark_stale(), version, source, count)
+                for event_type, generation, _, _ in pending:
+                    conn.execute("UPDATE reporting_projection_refresh_requests SET refreshed_generation=%s WHERE event_type=%s", (generation, event_type))
+        return sum(row[1] - row[2] for row in pending)
+
+    def _save_metric_event(self, conn: Any, event: OperationalEvent) -> bool:
+        row = conn.execute(
             """
             INSERT INTO reporting_metric_events(
               event_id, event_type, occurred_at, route_id, service_date, seat_class,
               amount, currency, channel, passenger_type, capacity, confirmed,
               booking_latency_ms, flags
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (event_id) DO NOTHING
+            ON CONFLICT (event_id) DO NOTHING RETURNING event_id
             """,
             (
                 event.event_id,
@@ -391,7 +419,8 @@ class PostgresReportingApplicationService:
                 event.booking_latency_ms,
                 _json_payload(_flags_from_event(event)),
             ),
-        )
+        ).fetchone()
+        return row is not None
 
     def _refresh_revenue_views(self, conn: Any) -> None:
         for view_name in (
@@ -399,22 +428,7 @@ class PostgresReportingApplicationService:
             "reporting_revenue_by_seat_class",
             "reporting_revenue_breakdowns",
         ):
-            conn.execute(f"REFRESH MATERIALIZED VIEW {view_name}")
-
-    def _throttled_revenue_refresh(self) -> None:
-        now = time.monotonic()
-        if now - self._last_revenue_refresh < _REVENUE_REFRESH_INTERVAL:
-            return
-        if not self._revenue_refresh_lock.acquire(blocking=False):
-            return
-        try:
-            if now - self._last_revenue_refresh < _REVENUE_REFRESH_INTERVAL:
-                return
-            with self._pool.connection() as conn:
-                self._refresh_revenue_views(conn)
-            self._last_revenue_refresh = time.monotonic()
-        finally:
-            self._revenue_refresh_lock.release()
+            conn.execute(f"REFRESH MATERIALIZED VIEW CONCURRENTLY {view_name}")
 
     def _load_aggregator(self, conn: Any, *, since: datetime | None = None) -> MetricAggregator:
         # The window is spliced into the WHERE clause rather than passed as a
@@ -458,11 +472,12 @@ class PostgresReportingApplicationService:
     def _processed_count(self, conn: Any) -> int:
         return int(conn.execute("SELECT count(*) FROM processed_events").fetchone()[0])
 
-    def _maybe_rebuild(self, conn: Any, dashboard: DashboardReadModel, version: int, envelope: EventEnvelope) -> None:
+    def _maybe_rebuild(self, conn: Any, dashboard: DashboardReadModel, version: int, envelope: EventEnvelope, event_count: int | None = None) -> None:
         if dashboard.status is not ReadModelStatus.STALE:
             return
         now = utc_now()
-        event_count = self._next_rebuild_event_count(dashboard, self._processed_count(conn))
+        if event_count is None:
+            event_count = self._next_rebuild_event_count(dashboard, self._processed_count(conn))
         digest = "sha256-" + hashlib.sha256(f"{dashboard.dashboard_id}:{event_count}:{rfc3339_utc(now)}".encode()).hexdigest()[:16]
         rebuild_id = prefixed_uuid7("rebuild")
         rebuilt = dashboard.rebuild(rebuild_id, now, event_count, digest)
