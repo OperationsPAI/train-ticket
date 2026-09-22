@@ -27,6 +27,7 @@ DEAD_CONSUMER_IDLE_MS = 5 * 60 * 1000
 # far above the poll cadence so the sweep's XINFO CONSUMERS per stream stays
 # negligible.
 PRUNE_INTERVAL_MS = 60 * 1000
+RECOVERY_INTERVAL_MS = 1000
 POLL_BLOCK_MS = int(os.environ.get("CONSUMER_BLOCK_MS", "100"))
 POLL_COUNT = int(os.environ.get("CONSUMER_BATCH_COUNT", "100"))
 LOGGER = logging.getLogger(__name__)
@@ -200,14 +201,17 @@ class RedisEventSubscriber(EventSubscriber):
         self._prune_dead_consumers(streams_tuple, group, consumer_name)
         recovering = True
         next_prune_at = time.monotonic() + (PRUNE_INTERVAL_MS / 1000)
+        next_recovery_at = time.monotonic() + (RECOVERY_INTERVAL_MS / 1000)
         self._stop_requested.clear()
         while not self._stop_requested.is_set():
             try:
                 now = time.monotonic()
                 if now >= next_prune_at:
                     self._prune_dead_consumers(streams_tuple, group, consumer_name)
-                    self._recover_idle_pending(streams_tuple, group, consumer_name, handler)
                     next_prune_at = now + (PRUNE_INTERVAL_MS / 1000)
+                if now >= next_recovery_at:
+                    self._recover_idle_pending(streams_tuple, group, consumer_name, handler)
+                    next_recovery_at = now + (RECOVERY_INTERVAL_MS / 1000)
                 if recovering:
                     recovering = self._recover_own_pending(streams_tuple, group, consumer_name, handler)
                 results = self._client.xreadgroup(
