@@ -149,7 +149,16 @@ func (s *Service) CreateRefund(ctx context.Context, r CreateRefundRequest) (*dom
 	if order.Channel != r.Channel {
 		return nil, derr("DOMAIN_RULE_VIOLATION", "refund channel must match original order")
 	}
-	sum, _ := s.repo.SumRefundsForOrder(ctx, r.ChannelOrderID)
+	if order.PaymentIntentID != r.PaymentIntentID || order.ChannelTransactionID != r.OriginalChannelTransactionID {
+		return nil, derr("DOMAIN_RULE_VIOLATION", "refund must reference the original payment intent and transaction")
+	}
+	if order.Amount.Currency != r.Amount.Currency {
+		return nil, derr("DOMAIN_RULE_VIOLATION", "refund currency must match original order")
+	}
+	sum, err := s.repo.SumRefundsForOrder(ctx, r.ChannelOrderID)
+	if err != nil {
+		return nil, err
+	}
 	if sum+r.Amount.MinorUnits > order.Amount.MinorUnits {
 		return nil, derr("DOMAIN_RULE_VIOLATION", "refund amount exceeds original order")
 	}
