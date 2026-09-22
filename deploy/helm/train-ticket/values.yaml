@@ -551,6 +551,16 @@ services:
           command: ["sleep", "10"]
   fare-pricing:
     db: fare_pricing
+    strategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxUnavailable: 0
+        maxSurge: 1
+    terminationGracePeriodSeconds: 45
+    lifecycle:
+      preStop:
+        exec:
+          command: ["sleep", "10"]
     env:
       IDENTITY_VERIFICATION_URL: http://identity-verification:8080
       # The kit's default is 10 per pool and this service runs 4 uvicorn workers,
@@ -801,6 +811,16 @@ services:
       limits: { cpu: '4', memory: 2Gi }
   risk-compliance:
     db: risk_compliance
+    strategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxUnavailable: 0
+        maxSurge: 1
+    terminationGracePeriodSeconds: 45
+    lifecycle:
+      preStop:
+        exec:
+          command: ["sleep", "10"]
   corporate-travel:
     db: corporate_travel
   account:
