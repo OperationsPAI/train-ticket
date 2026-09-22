@@ -705,6 +705,16 @@ services:
       # release names none, so retiring a reader is a release change rather than
       # a new image.
       FULFILLMENT_BOARDING_SOURCES: "GATE,STATION,PROVIDER"
+    strategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxUnavailable: 0
+        maxSurge: 1
+    terminationGracePeriodSeconds: 45
+    lifecycle:
+      preStop:
+        exec:
+          command: ["sleep", "10"]
   post-sales:
     db: post_sales
     env:
@@ -845,6 +855,16 @@ services:
       PLACE_NETWORK_URL: http://place-network:8080
   seat-assignment:
     db: seat_assignment
+    strategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxUnavailable: 0
+        maxSurge: 1
+    terminationGracePeriodSeconds: 45
+    lifecycle:
+      preStop:
+        exec:
+          command: ["sleep", "10"]
   payment-channel:
     db: payment_channel
     # A daily channel statement is one jsonb row holding every reconciliation
