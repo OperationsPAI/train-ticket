@@ -124,7 +124,11 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         String identityIdempotencyKey = identityIdempotencyKey(idempotencyKey, request);
         String departureDate=resolved.segments().getFirst().departureTime().atOffset(java.time.ZoneOffset.UTC).toLocalDate().toString();
         JourneyOrderRequest identityRequest = new JourneyOrderRequest(request.accountId(),request.offerId(),request.offerVersion(),request.travelerRefs(),request.segmentRefs(),departureDate,request.productCode(),request.sourceIp());
-        IdentityVerificationPort.PreOrderCheckResult identityResult = identityVerification.preOrderCheck(identityRequest, orderIntentId, identityIdempotencyKey, correlationId);
+        Instant requestedAt = resolved.offer().quotedAt();
+        if(com.trainticket.platformkit.idempotency.UuidV7.isValid(idempotencyKey)) {
+            requestedAt = Instant.ofEpochMilli(UUID.fromString(idempotencyKey).getMostSignificantBits() >>> 16);
+        }
+        IdentityVerificationPort.PreOrderCheckResult identityResult = identityVerification.preOrderCheck(identityRequest, orderIntentId, identityIdempotencyKey, correlationId,requestedAt);
         if (identityResult.rejected() || identityResult.manualReviewRequired()) {
             throw new ApiException(ApiErrorCode.PRECONDITION_FAILED, "Identity verification is not passed for all travelers");
         }
