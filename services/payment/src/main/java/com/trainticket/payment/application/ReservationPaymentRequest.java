@@ -24,6 +24,15 @@ public record ReservationPaymentRequest(
         Objects.requireNonNull(requestedAt, "requestedAt is required");
     }
 
+    public ReservationPaymentRequest requireSameReservation(ReservationPaymentRequest request) {
+        if (!segmentBookingId.equals(request.segmentBookingId()) || !journeyOrderId.equals(request.journeyOrderId())
+            || !segmentRef.equals(request.segmentRef()) || !travelerRef.equals(request.travelerRef())
+            || !idempotencyKey.equals(request.idempotencyKey())) {
+            throw new IllegalArgumentException("Reservation payment request references changed");
+        }
+        return this;
+    }
+
     private static String requireText(String value, String name) {
         if (Objects.requireNonNull(value, name + " is required").isBlank()) {
             throw new IllegalArgumentException(name + " must not be blank");
