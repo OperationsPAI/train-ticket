@@ -13,7 +13,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 @Component
 @ConditionalOnProperty(name = "ADMIN_AUDIT_REDIS_ENABLED", havingValue = "true", matchIfMissing = true)
 public class AdminAuditSubscriptionRunner implements CommandLineRunner {
-    public static final List<String> SUBSCRIBED_STREAMS = List.of("events:customer-service", "events:legacy-acl");
+    public static final List<String> SUBSCRIBED_STREAMS = List.of("events:customer-service");
     static final String CONSUMER_GROUP = "admin-audit";
 
     private final EventSubscriber subscriber;
