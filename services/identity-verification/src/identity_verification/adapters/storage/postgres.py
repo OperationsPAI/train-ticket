@@ -159,6 +159,8 @@ class PostgresIdentityVerificationStore(InMemoryStore):
 
     def find_credential_duplicate(self, traveler_id: str, document_type: str, document_hash: str, material_fingerprint: str, snapshot_version: str) -> CredentialRecord | None:
         def read(conn: Any) -> CredentialRecord | None:
+            key = json.dumps([traveler_id, document_type, document_hash, material_fingerprint, snapshot_version])
+            conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (key,))
             row = conn.execute("SELECT id, version, data FROM credential_record_snapshots WHERE data->>'travelerId'=%s AND data->>'documentType'=%s AND data->>'documentHash'=%s AND data->>'materialFingerprint'=%s AND data->>'profileSnapshotVersion'=%s LIMIT 1", (traveler_id, document_type, document_hash, material_fingerprint, snapshot_version)).fetchone()
             if not row: return None
             self._remember("credential", str(row[0]), int(row[1])); return credential_from_json(row[2], int(row[1]))
