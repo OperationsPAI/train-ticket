@@ -14,5 +14,7 @@ public record GetJourneyOrderResponse(
     @JsonProperty("segmentRefs") List<String> segmentRefs,
     @JsonProperty("createdAt") Instant createdAt,
     @JsonProperty("riskClear") boolean riskClear,
-    @JsonProperty("cancellationReason") String cancellationReason
+    @JsonProperty("cancellationReason") String cancellationReason,
+    @JsonProperty("travelers") List<com.trainticket.journeyorder.domain.TravelerRef> travelers,
+    @JsonProperty("segments") List<com.trainticket.journeyorder.domain.SegmentOrderSnapshot> segments
 ) {}

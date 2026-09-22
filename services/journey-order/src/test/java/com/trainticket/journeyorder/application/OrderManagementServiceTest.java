@@ -3,6 +3,7 @@ package com.trainticket.journeyorder.application;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static com.trainticket.journeyorder.application.OrderCreationFixture.createOrder;
 
 import com.trainticket.platformkit.messaging.InMemoryEventBus;
 import com.trainticket.platformkit.messaging.InMemoryEventPublisher;
@@ -51,7 +52,7 @@ class OrderManagementServiceTest {
         var request = new JourneyOrderRequest("account-1", "offer-1", 1,
             List.of("tvl-1"), List.of("seg-1"));
 
-        JourneyOrderResult result = service.createOrder(request, "idem-1", "corr-1");
+        JourneyOrderResult result = createOrder(service, request, "idem-1", "corr-1");
 
         assertEquals("account-1", result.accountId());
         assertEquals("offer-1", result.offerId());
@@ -70,7 +71,7 @@ class OrderManagementServiceTest {
         var request = new JourneyOrderRequest("account-1", "offer-1", 1,
             List.of("tvl-1"), List.of("seg-1"));
 
-        service.createOrder(request, "idem-contract-created", "corr-1");
+        createOrder(service, request, "idem-contract-created", "corr-1");
 
         Map<String, Object> payload = (Map<String, Object>) published().getFirst().payload();
         // `segments` carries each segment's departureTime, which post-sales needs to
@@ -99,7 +100,7 @@ class OrderManagementServiceTest {
         var request = new JourneyOrderRequest("account-1", "offer-1", 1,
             List.of("tvl-1"), List.of("seg-1"), null, null, "203.0.113.10");
 
-        service.createOrder(request, "idem-contract-created-ip", "corr-1");
+        createOrder(service, request, "idem-contract-created-ip", "corr-1");
 
         Map<String, Object> payload = (Map<String, Object>) published().getFirst().payload();
         assertEquals("203.0.113.10", payload.get("sourceIp"));
@@ -110,8 +111,8 @@ class OrderManagementServiceTest {
         var request = new JourneyOrderRequest("account-1", "offer-1", 1,
             List.of("tvl-1"), List.of("seg-1"));
 
-        JourneyOrderResult r1 = service.createOrder(request, "idem-same", "corr-1");
-        JourneyOrderResult r2 = service.createOrder(request, "idem-same", "corr-1");
+        JourneyOrderResult r1 = createOrder(service, request, "idem-same", "corr-1");
+        JourneyOrderResult r2 = createOrder(service, request, "idem-same", "corr-1");
 
         assertEquals(r1.orderId(), r2.orderId());
         assertEquals(r1.monetarySummary(), r2.monetarySummary());
@@ -127,10 +128,10 @@ class OrderManagementServiceTest {
         var differentRequest = new JourneyOrderRequest("account-1", "offer-2", 1,
             List.of("tvl-1"), List.of("seg-1"));
 
-        service.createOrder(request, "idem-reused", "corr-1");
+        createOrder(service, request, "idem-reused", "corr-1");
 
         assertThrows(OrderManagementService.IdempotencyKeyReused.class, () ->
-            service.createOrder(differentRequest, "idem-reused", "corr-1"));
+            createOrder(service, differentRequest, "idem-reused", "corr-1"));
     }
 
     @Test
@@ -147,7 +148,7 @@ class OrderManagementServiceTest {
             List.of("tvl-1"),
             List.of("seg-1")
         );
-        JourneyOrderResult created = beforeRestart.createOrder(createRequest, "idem-restart-create", "corr-1");
+        JourneyOrderResult created = createOrder(beforeRestart, createRequest, "idem-restart-create", "corr-1");
         CancelJourneyOrderResult cancelled = beforeRestart.cancelOrder(
             new CancelJourneyOrderRequest(created.orderId(), "restart check"),
             "idem-restart-cancel",
@@ -157,8 +158,8 @@ class OrderManagementServiceTest {
 
         OrderManagementService afterRestart = new OrderManagementService(publisher, FIXED_CLOCK, repository);
 
-        assertEquals(created.orderId(), afterRestart
-            .createOrder(createRequest, "idem-restart-create", "corr-2")
+        assertEquals(created.orderId(), createOrder(afterRestart,
+            createRequest, "idem-restart-create", "corr-2")
             .orderId());
         assertEquals(cancelled, afterRestart.cancelOrder(
             new CancelJourneyOrderRequest(created.orderId(), "restart check"),
@@ -176,7 +177,7 @@ class OrderManagementServiceTest {
             FIXED_CLOCK,
             repository
         );
-        JourneyOrderResult created = expiryService.createOrder(
+        JourneyOrderResult created = createOrder(expiryService,
             new JourneyOrderRequest("account-expiry", "offer-expiry", 1, List.of("tvl-1"), List.of("seg-1")),
             "idem-payment-expiry",
             "corr-1"
@@ -227,7 +228,7 @@ class OrderManagementServiceTest {
             FIXED_CLOCK,
             repository
         );
-        JourneyOrderResult created = expiryService.createOrder(
+        JourneyOrderResult created = createOrder(expiryService,
             new JourneyOrderRequest("account-timedout", "offer-timedout", 1, List.of("tvl-1"), List.of("seg-1")),
             "idem-payment-timedout",
             "corr-1"
@@ -268,7 +269,7 @@ class OrderManagementServiceTest {
     void entitlementIssuedOnCancelledOrderAckSkipsWithoutStateChange() {
         InMemoryJourneyOrderStateRepository repository = new InMemoryJourneyOrderStateRepository();
         OrderManagementService orderService = new OrderManagementService(envelope -> published.add(envelope), FIXED_CLOCK, repository);
-        JourneyOrderResult created = orderService.createOrder(
+        JourneyOrderResult created = createOrder(orderService,
             new JourneyOrderRequest("account-entitlement", "offer-entitlement", 1, List.of("tvl-1"), List.of("seg-1")),
             "idem-entitlement-cancelled",
             "corr-1"
@@ -324,7 +325,7 @@ class OrderManagementServiceTest {
         OrderManagementService orderService = new OrderManagementService(
             envelope -> published.add(envelope), FIXED_CLOCK, repository);
 
-        JourneyOrderResult created = orderService.createOrder(
+        JourneyOrderResult created = createOrder(orderService,
             new JourneyOrderRequest("account-retry", "offer-retry", 1,
                 List.of("tvl-1"), List.of("seg-1")),
             "idem-retry", "corr-1");
@@ -410,7 +411,7 @@ class OrderManagementServiceTest {
     void getOrderReturnsCreatedOrder() {
         var request = new JourneyOrderRequest("account-1", "offer-1", 1,
             List.of("tvl-1"), List.of("seg-1"));
-        JourneyOrderResult created = service.createOrder(request, "idem-get", "corr-1");
+        JourneyOrderResult created = createOrder(service,request, "idem-get", "corr-1");
 
         Optional<JourneyOrderResult> found = service.getOrder(created.orderId());
         assertTrue(found.isPresent());
@@ -420,10 +421,10 @@ class OrderManagementServiceTest {
 
     @Test
     void listOrdersFiltersByAccount() {
-        service.createOrder(
+        createOrder(service,
             new JourneyOrderRequest("account-1", "offer-1", 1, List.of("tvl-1"), List.of("seg-1")),
             "idem-list-a1", "corr-1");
-        service.createOrder(
+        createOrder(service,
             new JourneyOrderRequest("account-2", "offer-2", 1, List.of("tvl-2"), List.of("seg-2")),
             "idem-list-a2", "corr-2");
 
@@ -436,7 +437,7 @@ class OrderManagementServiceTest {
     void cancelOrderChangesStatus() {
         var request = new JourneyOrderRequest("account-1", "offer-1", 1,
             List.of("tvl-1"), List.of("seg-1"));
-        JourneyOrderResult created = service.createOrder(request, "idem-cancel", "corr-1");
+        JourneyOrderResult created = createOrder(service,request, "idem-cancel", "corr-1");
 
         CancelJourneyOrderResult cancelled = service.cancelOrder(
             new CancelJourneyOrderRequest(created.orderId(), "change of plans"),
@@ -457,7 +458,7 @@ class OrderManagementServiceTest {
 
     @Test
     void riskAssessmentAllowRecordsExplicitConfirmationCondition() {
-        JourneyOrderResult created = service.createOrder(
+        JourneyOrderResult created = createOrder(service,
             new JourneyOrderRequest("account-risk", "offer-risk", 1, List.of("tvl-1"), List.of("seg-1")),
             "idem-risk-allow", "corr-1");
         published.clear();
@@ -493,7 +494,7 @@ class OrderManagementServiceTest {
 
     @Test
     void riskBlockAppliedCancelsOrderAndLiftedDoesNotReviveCancelledOrder() {
-        JourneyOrderResult created = service.createOrder(
+        JourneyOrderResult created = createOrder(service,
             new JourneyOrderRequest("account-risk", "offer-block", 1, List.of("tvl-1"), List.of("seg-1")),
             "idem-risk-block", "corr-1");
         published.clear();
@@ -546,7 +547,7 @@ class OrderManagementServiceTest {
 
     @Test
     void unknownAccountProjectionAllowsOrderCreation() {
-        JourneyOrderResult result = service.createOrder(
+        JourneyOrderResult result = createOrder(service,
             new JourneyOrderRequest("acct-unknown", "offer-unknown", 1, List.of("tvl-1"), List.of("seg-1")),
             "idem-account-unknown", "corr-1");
 
@@ -557,26 +558,26 @@ class OrderManagementServiceTest {
     @Test
     void frozenAndClosedAccountProjectionRejectsNewOrderCreationAndUnfreezeRestoresIt() {
         service.handle(accountEvent("evt-0194f2e0-7b3e-7610-8284-5c26e8b0ca01", "AccountCreated", "acct-gated"));
-        service.createOrder(
+        createOrder(service,
             new JourneyOrderRequest("acct-gated", "offer-before-freeze", 1, List.of("tvl-1"), List.of("seg-1")),
             "idem-account-before-freeze", "corr-1");
 
         service.handle(accountEvent("evt-0194f2e0-7b3e-7610-8284-5c26e8b0ca02", "AccountFrozen", "acct-gated"));
         var frozen = assertThrows(com.trainticket.journeyorder.domain.DomainRuleViolation.class, () ->
-            service.createOrder(
+            createOrder(service,
                 new JourneyOrderRequest("acct-gated", "offer-frozen", 1, List.of("tvl-1"), List.of("seg-1")),
                 "idem-account-frozen", "corr-1"));
         assertEquals(com.trainticket.platformkit.http.ApiErrorCode.DOMAIN_RULE_VIOLATION, frozen.code());
 
         service.handle(accountEvent("evt-0194f2e0-7b3e-7610-8284-5c26e8b0ca03", "AccountUnfrozen", "acct-gated"));
-        JourneyOrderResult afterUnfreeze = service.createOrder(
+        JourneyOrderResult afterUnfreeze = createOrder(service,
             new JourneyOrderRequest("acct-gated", "offer-after-unfreeze", 1, List.of("tvl-1"), List.of("seg-1")),
             "idem-account-after-unfreeze", "corr-1");
         assertEquals("CREATED", afterUnfreeze.status());
 
         service.handle(accountEvent("evt-0194f2e0-7b3e-7610-8284-5c26e8b0ca04", "AccountClosed", "acct-gated"));
         assertThrows(com.trainticket.journeyorder.domain.DomainRuleViolation.class, () ->
-            service.createOrder(
+            createOrder(service,
                 new JourneyOrderRequest("acct-gated", "offer-closed", 1, List.of("tvl-1"), List.of("seg-1")),
                 "idem-account-closed", "corr-1"));
     }
@@ -615,7 +616,7 @@ class OrderManagementServiceTest {
     void ancillaryOrderItemSelectedAddsOrderDetailWithEventIdDedup() {
         InMemoryJourneyOrderStateRepository repository = new InMemoryJourneyOrderStateRepository();
         OrderManagementService orderService = new OrderManagementService(envelope -> published.add(envelope), FIXED_CLOCK, repository);
-        JourneyOrderResult created = orderService.createOrder(
+        JourneyOrderResult created = createOrder(orderService,
             new JourneyOrderRequest("account-ancillary", "offer-ancillary", 1, List.of("tvl-1"), List.of("seg-1")),
             "idem-ancillary-selected",
             "corr-1"
@@ -643,7 +644,7 @@ class OrderManagementServiceTest {
     void connectionMissedRecordsRecoveryDisplay() {
         InMemoryJourneyOrderStateRepository repository = new InMemoryJourneyOrderStateRepository();
         OrderManagementService orderService = new OrderManagementService(envelope -> published.add(envelope), FIXED_CLOCK, repository);
-        JourneyOrderResult created = orderService.createOrder(
+        JourneyOrderResult created = createOrder(orderService,
             new JourneyOrderRequest("account-transfer", "offer-transfer", 1, List.of("tvl-1"), List.of("seg-1")),
             "idem-transfer-missed",
             "corr-1"
@@ -728,7 +729,7 @@ class OrderManagementServiceTest {
     void verificationPassedLinksTravelerStatus() {
         InMemoryJourneyOrderStateRepository repository = new InMemoryJourneyOrderStateRepository();
         OrderManagementService orderService = new OrderManagementService(envelope -> published.add(envelope), FIXED_CLOCK, repository);
-        JourneyOrderResult created = orderService.createOrder(
+        JourneyOrderResult created = createOrder(orderService,
             new JourneyOrderRequest("account-verification", "offer-verification", 1, List.of("tvl-verified"), List.of("seg-1")),
             "idem-verification-passed",
             "corr-1"
@@ -773,7 +774,7 @@ class OrderManagementServiceTest {
             repository,
             identity
         );
-        JourneyOrderResult created = orderService.createOrder(
+        JourneyOrderResult created = createOrder(orderService,
             new JourneyOrderRequest("account-identity-confirm", "offer-identity-confirm", 1, List.of("tvl-1"), List.of("seg-1")),
             "idem-identity-confirm",
             "corr-0194f2e0-7b3e-7610-8284-5c26e8b0d100"
