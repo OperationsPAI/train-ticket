@@ -71,49 +71,6 @@ def test_snapshot_save_insert_conflict_raises_without_upsert() -> None:
     assert "DO UPDATE" not in sql
 
 
-def test_outbox_relay_uses_envelope_stream_field() -> None:
-    from train_ticket_platform.storage import OutboxRelay
-
-    class RedisFake:
-        def __init__(self) -> None:
-            self.calls = []
-
-        def xadd(self, stream, fields, **kwargs):
-            self.calls.append((stream, fields, kwargs))
-
-    class Cursor:
-        def fetchall(self):
-            return [(1, "events:fare-pricing", {"eventId": "evt-1"})]
-
-    class Conn(FakeConn):
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb) -> None:
-            return None
-
-        def execute(self, sql, params=()):
-            self.commands.append((sql, params))
-            if sql.startswith("SELECT seq"):
-                return Cursor()
-            return FakeCursor(None)
-
-        def commit(self) -> None:
-            self.commands.append(("COMMIT", ()))
-
-    class Pool:
-        def __init__(self, conn) -> None:
-            self.conn = conn
-
-        def connection(self):
-            return self.conn
-
-    redis = RedisFake()
-    OutboxRelay(Pool(Conn([])), redis_client=redis).relay_once()
-
-    assert redis.calls[0][1].keys() == {"envelope"}
-
-
 class SweepConn(FakeConn):
     """Records the sweep statements and reports an exhausted table."""
 

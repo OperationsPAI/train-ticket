@@ -336,19 +336,20 @@ class OutboxRelay:
             )
 
     def relay_once(self, *, limit: int = 100) -> int:
-        published = 0
         with self._pool.connection() as conn:
             rows = conn.execute(
                 "SELECT seq, stream, envelope FROM outbox WHERE published_at IS NULL ORDER BY seq LIMIT %s FOR UPDATE SKIP LOCKED",
                 (limit,),
             ).fetchall()
-            for seq, stream, envelope in rows:
-                payload = envelope if isinstance(envelope, str) else json.dumps(envelope, separators=(",", ":"))
-                self._redis.xadd(stream, {"envelope": payload}, maxlen=MAXLEN, approximate=True)
-                conn.execute("UPDATE outbox SET published_at = now() WHERE seq = %s AND published_at IS NULL", (seq,))
-                published += 1
+            if rows:
+                with self._redis.pipeline(transaction=False) as pipeline:
+                    for _, stream, envelope in rows:
+                        payload = envelope if isinstance(envelope, str) else json.dumps(envelope, separators=(",", ":"))
+                        pipeline.xadd(stream, {"envelope": payload}, maxlen=MAXLEN, approximate=True)
+                    pipeline.execute()
+                conn.execute("UPDATE outbox SET published_at = now() WHERE seq = ANY(%s) AND published_at IS NULL", ([row[0] for row in rows],))
             conn.commit()
-        return published
+        return len(rows)
 
 
 class ProcessedEventsGuard:
