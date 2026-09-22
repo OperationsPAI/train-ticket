@@ -37,6 +37,10 @@ the original `DRAFT` response; reusing it with a different body is rejected.
 `discount`, `refund_fee`, `change_fee`. `amount` uses shared `Money` shape with
 integer `minorUnits`. `explanation` is `{code, parameters}`.
 
+Fixed discounts apply in rule order up to the remaining adjusted base fare.
+Taxes and fees remain payable.
+Each applied discount records `requestedMinorUnits` and `appliedMinorUnits` in its explanation.
+
 **Response (201):** Full fare rule set with `ruleSetId`, `status=DRAFT`, and the
 submitted fields.
 
