@@ -96,6 +96,7 @@ public class ChangeExecutionService {
             if(!"CANCELLED".equals(text(booking,"status")))return change;
             JsonNode hold=get("capacity-availability","/api/v1/capacity-holds/"+text(booking,"capacityHoldId"),correlation);
             if(!"RELEASED".equals(text(hold,"status")))return change;
+            if(!change.releasedOrderItems().contains(bookingId))return cases.recordChangeCapacityReleased(caseId,bookingId);
         }
         Money refund=change.decision().amountSnapshot().refundAmount();
         if(!refund.isZero()) {
