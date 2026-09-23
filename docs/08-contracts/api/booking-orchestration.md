@@ -14,6 +14,17 @@ services (not end-user clients).
 
 ## Internal Endpoints
 
+### Cancel a replacement during capacity compensation
+
+`POST /api/v1/internal/change-compensations/{bookingId}` accepts `caseId` and requires `X-Correlation-Id`.
+The service reads the case and requires an executing change with persisted `capacity-rejected` evidence and a recorded reference to the replacement booking.
+Any recorded original ticket void or applied order change prevents this operation.
+The replacement must belong to the case and order.
+An issued replacement requires its ticket void confirmation before direct reservation cancellation.
+Successful cancellation persists `CHANGE_CAPACITY_UNAVAILABLE` and publishes one `SegmentBookingCancelled` event.
+Repeated cancellation returns the terminal booking without another event.
+Post Sales separately verifies Hold release, original ticket preservation and difference payment settlement before completing compensation.
+
 ### Reserve a Change Replacement
 
 `POST /api/v1/internal/change-reservations` accepts `caseId`, `segmentRef` and `travelerRef`, with `Idempotency-Key` and `X-Correlation-Id` headers.
