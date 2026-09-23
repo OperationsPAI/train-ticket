@@ -92,6 +92,24 @@ func TestRecordedServiceSegmentIsReadableWithoutChangingSupply(t *testing.T) {
 	if actual.SegmentRef != source.Segment.SegmentRef || actual.ScheduledServiceRef != source.Service.ScheduledServiceRef || !actual.DepartureTime.Equal(source.Segment.DepartureTime) || actual.OriginStopRef != source.Segment.OriginStopRef || actual.DestinationStopRef != source.Segment.DestinationStopRef {
 		t.Fatalf("segment differs: %+v", actual)
 	}
+	for attempt := 0; attempt < 2; attempt++ {
+		response, err := http.Get(server.URL + "/api/v1/internal/service-segments/" + source.Segment.SegmentRef + "/supply")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var supply application.SegmentSupply
+		err = json.NewDecoder(response.Body).Decode(&supply)
+		response.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.StatusCode != 200 || supply.SegmentRef != source.Segment.SegmentRef || supply.ScheduledServiceRef != source.Service.ScheduledServiceRef || supply.ServiceDate != source.Service.DepartureTime.UTC().Format("2006-01-02") {
+			t.Fatalf("supply=%+v status=%d", supply, response.StatusCode)
+		}
+		if supply.Interval.FromSeq != 0 || supply.Interval.ToSeq != 1 || len(supply.Stops) != 2 || supply.Stops[0].NodeRef != source.Service.OriginNodeID || supply.Stops[1].NodeRef != source.Service.DestinationNodeID || supply.StopSequenceVersion == "" {
+			t.Fatalf("ordered source=%+v", supply)
+		}
+	}
 	for _, offset := range []int{0, 1} {
 		listed, err := http.Get(fmt.Sprintf("%s/api/v1/service-segments?scheduledServiceRef=%s&limit=1&offset=%d", server.URL, source.Service.ScheduledServiceRef, offset))
 		if err != nil {
