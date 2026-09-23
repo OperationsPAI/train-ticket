@@ -168,6 +168,7 @@ public final class PostSalesMapper {
             payload.put("orderId", applied.journeyOrderId());
             payload.put("caseType",applied.caseType().name());
             if(sourceCase!=null)payload.put("scope",sourceCase.scope());
+            if(sourceCase!=null && sourceCase.decision()!=null)payload.put("retainedFee",money(sourceCase.decision().amountSnapshot().feeAmount()));
             payload.put("resultSummary", resultSummary(applied));
         } else if (event instanceof PostSalesExecutionStarted executionStarted) {
             payload.put("orderedSteps", executionStarted.orderedSteps().stream().map(Enum::name).toList());
