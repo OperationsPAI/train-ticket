@@ -5,6 +5,7 @@ pub fn subscribed_streams() -> Vec<String> {
         post_sales_stream(),
         admin_audit_stream(),
         booking_orchestration_stream(),
+        rust_kit::messaging::stream_for_producer("payment"),
     ]
 }
 pub fn journey_order_stream() -> String {
