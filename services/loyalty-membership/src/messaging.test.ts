@@ -58,8 +58,9 @@ describe("payment event consumption", () => {
       producer: "payment",
       payload: {
         paymentIntentId: "pi-msg",
+        purpose: "purchase",
         businessRef: "ord-pay-msg",
-        accountId: "acct-pay-msg",
+        payerRef: "acct-pay-msg",
         capturedAmount: { currency: "CNY", minorUnits: 50_000 },
         capturedAt: "2026-07-10T10:00:00.000Z",
         seatClass: "BUSINESS_CLASS",
@@ -86,8 +87,9 @@ describe("payment event consumption", () => {
       producer: "payment",
       payload: {
         paymentIntentId: "pi-travel",
+        purpose: "purchase",
         businessRef: "ord-travel",
-        accountId: "acct-travel",
+        payerRef: "acct-travel",
         capturedAmount: { currency: "CNY", minorUnits: 50_000 },
         capturedAt: "2026-07-13T10:00:00.000Z",
         travelDate: "2026-07-11",
@@ -114,8 +116,9 @@ describe("payment event consumption", () => {
       producer: "payment",
       payload: {
         paymentIntentId: "pi-nodate",
+        purpose: "purchase",
         businessRef: "ord-nodate",
-        accountId: "acct-nodate",
+        payerRef: "acct-nodate",
         capturedAmount: { currency: "CNY", minorUnits: 50_000 },
         capturedAt: "2026-09-06T10:00:00.000Z",
       },
@@ -137,7 +140,7 @@ describe("post-sales event consumption", () => {
     const service = new LoyaltyMembershipApplicationService(repository, publisher);
     await service.accrueFromPaymentCaptured({ orderId: "ord-refund-msg", accountId: "acct-refund-msg", ticketPrice: { currency: "CNY", minorUnits: 100_000 }, sourceEventId: "evt-pay-refund", confirmedAt: new Date("2026-07-10T10:00:00.000Z"), correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c444" });
 
-    await handlePostSalesApplied(service, createEventEnvelope({ eventType: "PostSalesApplied", producer: "post-sales", payload: { caseId: "psc-refund", orderId: "ord-refund-msg", resultSummary: { description: "refund applied" } } }));
+    await handlePostSalesApplied(service, createEventEnvelope({ eventType: "PostSalesApplied", producer: "post-sales", payload: { caseId: "psc-refund", caseType:"REFUND", orderId: "ord-refund-msg", resultSummary: { description: "refund applied" } } }));
 
     const member = await repository.findByAccountId("acct-refund-msg");
     assert.ok(member);

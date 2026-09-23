@@ -167,6 +167,8 @@ export async function handleJourneyOrderCreated(application: LoyaltyMembershipAp
 
 export async function handlePostSalesApplied(application: LoyaltyMembershipApplicationService, envelope: EventEnvelope): Promise<void> {
   const payload = envelope.payload;
+  const caseType = stringField(payload.caseType, "caseType");
+  if (!["REFUND", "CANCELLATION", "REBOOK"].includes(caseType)) return;
   const orderId = stringField(payload.orderId, "orderId");
   const caseId = optionalStringField(payload.caseId) ?? optionalStringField(payload.postSalesCaseId);
   if (!caseId) {
@@ -186,10 +188,10 @@ export async function handlePostSalesApplied(application: LoyaltyMembershipAppli
 
 export async function handlePaymentCaptured(application: LoyaltyMembershipApplicationService, envelope: EventEnvelope): Promise<void> {
   const payload = envelope.payload;
-  const orderId = stringField(payload.businessRef ?? payload.orderId, "businessRef");
-  if (orderId.startsWith("aoi-")) return;
-  const accountId = optionalStringField(payload.accountId);
-  const capturedAmount = objectField(payload.capturedAmount ?? payload.amount, "capturedAmount");
+  if (stringField(payload.purpose, "purpose") !== "purchase") return;
+  const orderId = stringField(payload.businessRef, "businessRef");
+  const accountId = stringField(payload.payerRef, "payerRef");
+  const capturedAmount = objectField(payload.capturedAmount, "capturedAmount");
   const minorUnits = integerField(capturedAmount.minorUnits, "capturedAmount.minorUnits");
   const currency = stringField(capturedAmount.currency, "capturedAmount.currency");
   const capturedAt = new Date(typeof payload.capturedAt === "string" ? payload.capturedAt : envelope.occurredAt);
