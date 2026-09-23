@@ -1,12 +1,17 @@
-# entitlement-ticketing
+# Entitlement and Ticketing
 
-Domain: Entitlement & Ticketing
+Rust service for ticket issuance, lifecycle, PostgreSQL persistence, Seat Assignment integration and Redis event processing.
 
-Language: rust
+Last updated: 2026-09-23.
 
-Phase: phase-1-domain-foundation
+## Seat allocation and failures
 
-Status: REQ-013 domain foundation
+Train issuance validates accepted booking and payment facts and requests an allocation before committing a ticket.
+The returned `seatRef` records the assigned seat, berth or standing outcome.
+Standing has no physical SeatUnit and follows the [standing capacity policy](../../docs/08-contracts/standing-capacity-policy.md).
+Valid Seat Assignment business errors preserve their HTTP status, code and message.
+Transport failures and invalid downstream responses return `UNAVAILABLE`.
+See the [HTTP API](../../docs/08-contracts/api/entitlement-ticketing.md) for required supply references and error behavior.
 
 ## Owns
 
@@ -26,10 +31,8 @@ Status: REQ-013 domain foundation
 
 ## Boundary
 
-This slice is domain-only. It stores references to JourneyOrder, SegmentBooking,
-Segment, Traveler, Booking, Capacity, Payment, Risk, and Fulfillment concepts
-but does not import their internals. It publishes ticketing lifecycle events;
-it does not mutate order, payment, inventory, or provider booking state.
+The service consumes accepted business facts and publishes ticket lifecycle events.
+It coordinates allocation through Seat Assignment's API and does not directly update order, payment or inventory databases.
 
 ## Commands
 
@@ -65,6 +68,10 @@ it does not mutate order, payment, inventory, or provider booking state.
 ```bash
 cd services/entitlement-ticketing && cargo test
 ```
+
+`seat_rejection_live` uses `TEST_FULL_CLASS_CHANGE` containing a recorded replacement case and `SEAT_ASSIGNMENT_BASE_URL` pointing to the real service.
+Run `cargo test seat_rejection_live -- --ignored --nocapture` to verify that a full business class retains its 422 business rejection across repeated allocation attempts.
+The test checks unchanged physical supply and allocations and does not invoke ticket issuance or payment capture.
 
 ## Runtime Baseline
 
