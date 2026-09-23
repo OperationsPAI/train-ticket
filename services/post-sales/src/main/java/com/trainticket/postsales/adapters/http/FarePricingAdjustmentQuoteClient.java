@@ -57,6 +57,21 @@ public class FarePricingAdjustmentQuoteClient implements AdjustmentQuotePort {
         body.put("entitlementIds", request.entitlementIds());
         body.put("journeyOrderId", request.journeyOrderId());
         body.put("segmentRefs", request.segmentRefs());
+        if ("CHANGE".equals(request.purpose())) {
+            if (request.targetOfferId() == null || request.targetOfferId().isBlank()) throw new com.trainticket.postsales.domain.DomainRuleViolation("change requires a selected target offer");
+            Map<String, Object> target = offerClient.get().uri("/api/v1/offers/{id}",request.targetOfferId()).retrieve().body(MAP_TYPE);
+            if (target == null || !request.targetOfferId().equals(target.get("offerId"))
+                || !java.util.Objects.equals(order.get("accountId"),target.get("accountId"))) throw new IllegalStateException("target offer does not belong to the original account");
+            if (!(target.get("expiresAt") instanceof String expiry) || !java.time.Instant.now().isBefore(java.time.Instant.parse(expiry))) throw new IllegalStateException("target offer has expired");
+            var travelers = asMap(target.get("passengerMix")).get("travelers");
+            java.util.Set<String> targetTravelers = new java.util.HashSet<>();
+            if (travelers instanceof java.util.List<?> list) for (Object traveler : list) targetTravelers.add(String.valueOf(asMap(traveler).get("travelerId")));
+            Object originalTravelers = order.get("travelerRefs");
+            if (!(originalTravelers instanceof java.util.List<?> list) || !targetTravelers.equals(new java.util.HashSet<>(list))) throw new IllegalStateException("target offer travelers differ from the original order");
+            Map<String, Object> targetPrice = asMap(target.get("priceSnapshot"));
+            if (!(targetPrice.get("fareQuoteRef") instanceof String targetQuoteId) || targetQuoteId.isBlank()) throw new IllegalStateException("target offer has no fare quote");
+            body.put("targetQuoteId",targetQuoteId);
+        }
         Map<String, Object> response = restClient.post()
                 .uri("/api/v1/adjustment-quotes")
                 .header("Idempotency-Key", request.idempotencyKey())

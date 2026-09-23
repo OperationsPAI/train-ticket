@@ -25,7 +25,24 @@ public final class PostSalesCase {
     private PostSalesDecision decision;
     private PostSalesExecutionPlan executionPlanAggregate;
     private String terminalReason;
+    private String targetOfferId;
     private long version;
+
+    public String targetOfferId() { return targetOfferId; }
+
+    public PostSalesCase withTargetOfferId(String targetOfferId) {
+        this.targetOfferId = targetOfferId;
+        return this;
+    }
+
+    public void selectChangeOffer(String offerId) {
+        if (caseType != PostSalesCaseType.CHANGE) throw new DomainRuleViolation("only CHANGE cases accept a target offer");
+        String selected = PostSalesScope.requireText(offerId, "targetOfferId");
+        if (targetOfferId != null && !targetOfferId.equals(selected)) throw new DomainRuleViolation("change target offer is already assigned");
+        if (targetOfferId != null) return;
+        if (decision != null || status != PostSalesCaseStatus.OPENED) throw new DomainRuleViolation("target offer must be selected before evaluation");
+        targetOfferId = selected;
+    }
 
     private PostSalesCase(
         String caseId,

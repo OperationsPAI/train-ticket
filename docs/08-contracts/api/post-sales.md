@@ -13,6 +13,14 @@ timestamps, and Money.
 
 ## Endpoints
 
+### Select a Change Target
+
+`POST /api/v1/post-sales-cases/{caseId}/target-offer` accepts `targetOfferId` and requires `Idempotency-Key`.
+The selection is persisted before evaluation and repeated identical selections return the same case.
+A different selection or a selection after evaluation is rejected.
+The case details include `targetOfferId`.
+Evaluation resolves the exact target fare quote from that offer and checks account, travelers and validity.
+
 ### Open Post-Sales Case
 
 **POST** `/api/v1/post-sales-cases`

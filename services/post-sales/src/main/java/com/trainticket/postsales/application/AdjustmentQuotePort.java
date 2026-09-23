@@ -16,8 +16,13 @@ public interface AdjustmentQuotePort {
         List<String> entitlementIds,
         String journeyOrderId,
         List<String> segmentRefs,
-        String idempotencyKey
-    ) { }
+        String idempotencyKey,
+        String targetOfferId
+    ) {
+        public AdjustmentQuoteRequest(String purpose, List<String> entitlementIds, String journeyOrderId, List<String> segmentRefs, String idempotencyKey) {
+            this(purpose, entitlementIds, journeyOrderId, segmentRefs, idempotencyKey, null);
+        }
+    }
 
     record AdjustmentQuoteResult(
         String adjustmentQuoteId,
