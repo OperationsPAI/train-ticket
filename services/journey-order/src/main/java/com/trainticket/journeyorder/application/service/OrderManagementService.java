@@ -585,6 +585,10 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
 
     private EventSubscriber.HandlerResult handleEntitlementIssued(EventEnvelope envelope) {
         requirePayloadFields(envelope, "entitlementId", "journeyOrderId", "segmentBookingId", "travelerRef", "segmentRef", "issuePurpose", "credentialNo", "credentialType", "issuedAt");
+        if ("REPLACEMENT".equals(requiredTextPayload(envelope, "issuePurpose"))) {
+            // OrderChangeService verifies replacement tickets and applies the complete change.
+            return new EventSubscriber.Success();
+        }
         StoredOrder stored = storedOrderFromPayload(envelope);
         JourneyOrder order = stored.order();
         int eventCount = order.domainEvents().size();
