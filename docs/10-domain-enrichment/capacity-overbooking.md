@@ -35,6 +35,9 @@ Standing snapshots report `physicalCapacity=0`; the separately calculated quota 
 `capacity_supply_observations` records the map version and supply used for admission.
 `InventoryPool.physical_units` separates current assignable supply from known historical unit references.
 Original Hold identifiers and audit snapshots remain readable through migration and release.
+HTTP and event reservation requests resolve the existing Hold by `segmentBookingId` under the reservation lock.
+Different request keys for the same accepted booking retain one Hold identity and do not reacquire released capacity.
+New Hold references store the actual `journeyOrderId` separately from `segmentBookingId`.
 Historical source lookup runs before the inventory transaction, with at most eight concurrent upstream reservation lookups per service instance.
 Each verified reservation is committed independently so a refused admission retains its source facts.
 Repeated queries and process restarts reuse these immutable PostgreSQL records.
