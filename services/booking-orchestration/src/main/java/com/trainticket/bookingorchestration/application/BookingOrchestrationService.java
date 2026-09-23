@@ -88,13 +88,13 @@ public class BookingOrchestrationService {
             return new SegmentBookingDetail(booking.segmentBookingId(), record.sagaId(), booking.journeyOrderId(),
                 booking.segmentRef(), booking.travelerRef(), booking.status().name(),
                 booking.capacityHoldId().orElse(null), booking.entitlementId().orElse(null),
-                booking.failureReason().orElse(null),booking.bookingPurpose());
+                booking.failureReason().orElse(null),booking.bookingPurpose(), booking.classRef(), booking.offerItemRef(), booking.scheduledServiceRef(), booking.serviceDate());
         });
     }
 
     @Transactional
     public SegmentBookingDetail requestChangeReservation(String caseId, String orderId, String offerItemId, String segmentRef,
-        String travelerRef, String classRef, String correlationId) {
+        String travelerRef, String classRef, String scheduledServiceRef, String serviceDate, String correlationId) {
         for (String value : List.of(caseId,orderId,offerItemId,segmentRef,travelerRef,classRef)) {
             if (value.isBlank()) throw new IllegalArgumentException("change reservation references must not be blank");
         }
@@ -116,11 +116,13 @@ public class BookingOrchestrationService {
             publishEvents(saga.pullEvents(),correlationId,PrefixedIds.newCommandId());
         }
         if (!saga.journeyOrderId().equals(orderId)) throw new PreconditionFailedException("change saga belongs to another order",null);
-        var booking = SegmentBooking.requestReservation("sb-" + foldedId("change-booking:" + bookingKey),orderId,offerItemId,segmentRef,travelerRef,purpose,clock).withClassRef(classRef);
+        var booking = SegmentBooking.requestReservation("sb-" + foldedId("change-booking:" + bookingKey),orderId,offerItemId,segmentRef,travelerRef,purpose,clock).withClassRef(classRef)
+            .withSupplyReference(scheduledServiceRef, serviceDate);
         segmentBookings.save(booking,sagaId);
         eventPublisher.publish(new EventEnvelope(PrefixedIds.newEventId(),"SegmentReservationRequested",clock.instant(),correlationId,
             PrefixedIds.newCommandId(),PRODUCER,1,Map.of("segmentBookingId",booking.segmentBookingId(),"journeyOrderId",orderId,
-                "segmentRef",segmentRef,"travelerRef",travelerRef,"idempotencyKey",booking.idempotencyKey(),"classRef",classRef,"postSalesCaseId",caseId)));
+                "segmentRef",segmentRef,"travelerRef",travelerRef,"idempotencyKey",booking.idempotencyKey(),"classRef",classRef,"postSalesCaseId",caseId,
+                "scheduledServiceRef",scheduledServiceRef,"serviceDate",serviceDate)));
         return getSegmentBooking(booking.segmentBookingId()).orElseThrow();
     }
 
@@ -184,11 +186,13 @@ public class BookingOrchestrationService {
         if (existing.isPresent()) {
             var booking = existing.get().booking();
             if (!sagaId.equals(existing.get().sagaId()) || !facts.offerItemRef().equals(booking.offerItemRef())
-                || !facts.classRef().equals(booking.classRef())) throw new PreconditionFailedException("reservation already has different commercial facts", null);
+                || !facts.classRef().equals(booking.classRef()) || !facts.scheduledServiceRef().equals(booking.scheduledServiceRef())
+                || !facts.serviceDate().equals(booking.serviceDate())) throw new PreconditionFailedException("reservation already has different commercial facts", null);
             return new RequestReservationResult(booking.segmentBookingId(), booking.status().name());
         }
         var booking = SegmentBooking.requestReservation(command.segmentBookingId(), facts.orderId(), facts.offerItemRef(),
-            facts.segmentRef(), facts.travelerRef(), "purchase", clock).withClassRef(facts.classRef());
+            facts.segmentRef(), facts.travelerRef(), "purchase", clock).withClassRef(facts.classRef())
+            .withSupplyReference(facts.scheduledServiceRef(), facts.serviceDate());
         segmentBookings.save(booking, sagaId);
         eventPublisher.publish(new EventEnvelope(PrefixedIds.newEventId(), "SegmentReservationRequested", clock.instant(),
             correlationId, PrefixedIds.newCommandId(), PRODUCER, 1,
@@ -1116,7 +1120,8 @@ public class BookingOrchestrationService {
     public record RequestReservationResult(String segmentBookingId, String status) {}
     public record SegmentBookingDetail(String segmentBookingId, String sagaId, String journeyOrderId,
                                        String segmentRef, String travelerRef, String status,
-                                       String capacityHoldId, String entitlementId, String failureReason, String bookingPurpose) {}
+                                       String capacityHoldId, String entitlementId, String failureReason, String bookingPurpose,
+                                       String classRef, String offerItemRef, String scheduledServiceRef, String serviceDate) {}
     public record MarkTicketedCommand(String segmentBookingId, String entitlementId) {}
     public record MarkTicketedResult(String segmentBookingId, String status) {}
     public record SagaDetail(String sagaId, String journeyOrderId, String status, String idempotencyKey,
