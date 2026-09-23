@@ -2,6 +2,10 @@
 
 Last updated: 2026-09-23
 
+New `SeatAllocated` and `StandingAssigned` payloads include `requestedClassRef` and `issuePurpose` from the accepted allocation request.
+These fields retain the original purchased class even when standing is accepted as a substitution.
+Allocation replay validates those fields and the original preferences without publishing another success event.
+
 ## Scope and activation-wave rulings
 
 This contract promotes the Seat Assignment lifecycle from

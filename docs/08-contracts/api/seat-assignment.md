@@ -400,6 +400,8 @@ internal to bounded-context integration and is not a customer seat-selection API
 ### Read physical capacity and standing quota facts
 
 Repeating an allocation for the same reservation validates the recorded allocation's original composition, including a retired composition.
+New allocation records include `requestedClassRef` and `issuePurpose` for replay validation.
+Standing substitutions retain the originally requested seated class and the accepted standing preference.
 It preserves the original allocation and seat reference without consuming another unit or emitting another allocation event.
 New allocation requests still require a currently published composition.
 
