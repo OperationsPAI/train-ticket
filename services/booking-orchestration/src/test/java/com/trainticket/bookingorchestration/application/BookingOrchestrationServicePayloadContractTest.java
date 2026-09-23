@@ -279,7 +279,7 @@ class BookingOrchestrationServicePayloadContractTest {
             "idempotentReplay", true))));
 
         assertTrue(published.getPublished().isEmpty());
-        assertEquals("SEAT_ASSIGNING", service.getSaga(start.sagaId()).orElseThrow().status());
+        assertEquals("WAITING_PAYMENT", service.getSaga(start.sagaId()).orElseThrow().status());
     }
 
     @Test
@@ -510,7 +510,7 @@ class BookingOrchestrationServicePayloadContractTest {
         assertTrue(published.getPublished().stream().anyMatch(envelope -> envelope.eventType().equals("SegmentReservationConfirmed")));
         assertTrue(published.getPublished().stream().noneMatch(envelope -> envelope.eventType().equals("SegmentReservationFailed")));
         assertTrue(published.getPublished().stream().noneMatch(envelope -> envelope.eventType().equals("SegmentBookingCancelled")));
-        assertEquals("SEAT_ASSIGNING", service.getSaga(start.sagaId()).orElseThrow().status());
+        assertEquals("WAITING_PAYMENT", service.getSaga(start.sagaId()).orElseThrow().status());
     }
 
     @Test
@@ -570,7 +570,7 @@ class BookingOrchestrationServicePayloadContractTest {
     }
 
     @Test
-    void seatAllocatedAdvancesSagaFromSeatAssigningToAwaitingPayment() {
+    void allocationUsesBookingFactsWhilePaymentWaits() {
         var published = new TestEventPublisher();
         var service = new BookingOrchestrationService(
             Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC), published);
@@ -583,7 +583,6 @@ class BookingOrchestrationServicePayloadContractTest {
 
         passRiskAssessment(service, start.sagaId());
 
-        // Reserve step succeeds via CapacityHeld -> saga moves to SEAT_ASSIGNING
         service.handleUpstreamEvent(new EventEnvelope(
             "evt-0194f2e0-7b3e-7610-8284-ccc000000002", "CapacityHeld",
             Instant.parse("2026-07-05T10:01:00Z"), "corr-0194f2e0-7b3e-7610-8284-ccc000000003", "cmd-0194f2e0-7b3e-7610-8284-ccc000000004",
@@ -595,17 +594,17 @@ class BookingOrchestrationServicePayloadContractTest {
                 "idempotencyKey", "ord-seat:seg-001:tvl-123:purchase",
                 "expiresAt", "2026-07-05T10:08:00Z",
                 "idempotentReplay", false)));
-        assertEquals("SEAT_ASSIGNING", service.getSaga(start.sagaId()).orElseThrow().status());
+        assertEquals("WAITING_PAYMENT", service.getSaga(start.sagaId()).orElseThrow().status());
         published.clear();
 
-        // SeatAllocated -> saga moves to WAITING_PAYMENT
         var result = service.handleUpstreamEvent(new EventEnvelope(
             "evt-0194f2e0-7b3e-7610-8284-ccc000000006", "SeatAllocated",
             Instant.parse("2026-07-05T10:02:00Z"), "corr-0194f2e0-7b3e-7610-8284-ccc000000007", "cmd-0194f2e0-7b3e-7610-8284-ccc000000008",
             "seat-assignment", 1, Map.of(
-                "sagaId", start.sagaId(),
                 "segmentBookingId", "sb-0194f2e0-7b3e-7610-8284-ccc000000001",
-                "seatAllocationRef", "seat-12A")));
+                "journeyOrderId", "ord-seat", "travelerRef", "tvl-123", "segmentRef", "seg-001",
+                "capacityHoldId", "hold-0194f2e0-7b3e-7610-8284-ccc000000005",
+                "seatAllocationId", "seat-12A", "seatRef", Map.of("seatAllocationId", "seat-12A"))));
 
         assertInstanceOf(HandlerResult.Success.class, result);
         assertEquals("WAITING_PAYMENT", service.getSaga(start.sagaId()).orElseThrow().status());
@@ -652,9 +651,10 @@ class BookingOrchestrationServicePayloadContractTest {
             "evt-0194f2e0-7b3e-7610-8284-ddd000000006", "SeatAllocated",
             Instant.parse("2026-07-05T10:02:00Z"), "corr-0194f2e0-7b3e-7610-8284-ddd000000007", "cmd-0194f2e0-7b3e-7610-8284-ddd000000008",
             "seat-assignment", 1, Map.of(
-                "sagaId", start.sagaId(),
                 "segmentBookingId", "sb-0194f2e0-7b3e-7610-8284-ddd000000001",
-                "seatAllocationRef", "seat-15B")));
+                "journeyOrderId", "ord-invoice", "travelerRef", "tvl-123", "segmentRef", "seg-001",
+                "capacityHoldId", "hold-0194f2e0-7b3e-7610-8284-ddd000000005",
+                "seatAllocationId", "seat-15B", "seatRef", Map.of("seatAllocationId", "seat-15B"))));
         assertEquals("WAITING_PAYMENT", service.getSaga(start.sagaId()).orElseThrow().status());
 
         // PaymentCaptured -> TICKETING

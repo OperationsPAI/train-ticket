@@ -14,8 +14,7 @@ public sealed interface SegmentBookingEvent extends DomainEvent permits SegmentB
     SegmentBookingEvent.SegmentBookingCancelRequested,
     SegmentBookingEvent.SegmentBookingCancelled,
     SegmentBookingEvent.ProviderConfirmationReceivedAfterCancellation,
-    SegmentBookingEvent.ProviderCancellationRequired,
-    SegmentBookingEvent.SeatAllocationRequested {
+    SegmentBookingEvent.ProviderCancellationRequired {
 
     record SegmentReservationRequested(String eventId, String aggregateId, Instant occurredAt, String journeyOrderId,
                                        String segmentRef, String travelerRef, String idempotencyKey)
@@ -65,8 +64,4 @@ public sealed interface SegmentBookingEvent extends DomainEvent permits SegmentB
         implements SegmentBookingEvent {
     }
 
-    record SeatAllocationRequested(String eventId, String aggregateId, Instant occurredAt,
-                                   String sagaId, String segmentRef, String travelerRef)
-        implements SegmentBookingEvent {
-    }
 }

@@ -571,58 +571,24 @@ public class BookingOrchestrationService {
 
     private void handleSeatAllocated(Map<String, Object> payload, String correlationId, String causationId) {
         String allocationId = text(payload.get("seatAllocationId"));
-        if (allocationId != null) {
-            String bookingId = text(payload.get("segmentBookingId"));
-            if (bookingId == null) throw new IllegalArgumentException("seat allocation requires segmentBookingId");
-            var record = segmentBookings.findById(bookingId).orElseThrow(() -> new RetryLaterException("seat allocation booking is not available"));
-            SegmentBooking booking = record.booking();
-            if (!booking.journeyOrderId().equals(text(payload.get("journeyOrderId")))
-                || !booking.travelerRef().equals(text(payload.get("travelerRef")))
-                || !booking.segmentRef().equals(text(payload.get("segmentRef")))
-                || !booking.capacityHoldId().orElse("").equals(text(payload.get("capacityHoldId")))) {
-                throw new IllegalArgumentException("seat allocation references another reservation");
-            }
-            if (!(payload.get("seatRef") instanceof Map<?, ?> seat)
-                || !allocationId.equals(text(seat.get("seatAllocationId")))) {
-                throw new IllegalArgumentException("seat allocation reference is inconsistent");
-            }
-            if (booking.seatAllocationRef().filter(allocationId::equals).isPresent()) return;
-            booking.assignSeat(allocationId);
-            segmentBookings.save(booking, record.sagaId());
-            return;
+        if (allocationId == null) throw new IllegalArgumentException("seat allocation requires seatAllocationId");
+        String bookingId = text(payload.get("segmentBookingId"));
+        if (bookingId == null) throw new IllegalArgumentException("seat allocation requires segmentBookingId");
+        var record = segmentBookings.findById(bookingId).orElseThrow(() -> new RetryLaterException("seat allocation booking is not available"));
+        SegmentBooking booking = record.booking();
+        if (!booking.journeyOrderId().equals(text(payload.get("journeyOrderId")))
+            || !booking.travelerRef().equals(text(payload.get("travelerRef")))
+            || !booking.segmentRef().equals(text(payload.get("segmentRef")))
+            || !booking.capacityHoldId().orElse("").equals(text(payload.get("capacityHoldId")))) {
+            throw new IllegalArgumentException("seat allocation references another reservation");
         }
-        String sagaId = text(payload.get("sagaId"));
-        String segmentBookingId = firstText(payload, "segmentBookingId", "segmentBookingRef");
-        String seatAllocationRef = text(payload.get("seatAllocationRef"));
-        if (sagaId == null || segmentBookingId == null) {
-            throw new IllegalArgumentException("SeatAllocated payload requires sagaId and segmentBookingId");
+        if (!(payload.get("seatRef") instanceof Map<?, ?> seat)
+            || !allocationId.equals(text(seat.get("seatAllocationId")))) {
+            throw new IllegalArgumentException("seat allocation reference is inconsistent");
         }
-        BookingSaga saga = sagas.findById(sagaId).orElse(null);
-        if (saga == null) {
-            LOGGER.warn("Ack-skipping SeatAllocated: unknown saga {}", sagaId);
-            return;
-        }
-        if (saga.status() != BookingSagaStatus.SEAT_ASSIGNING) {
-            LOGGER.warn("Ack-skipping SeatAllocated: saga {} not in SEAT_ASSIGNING (status={})", sagaId, saga.status());
-            return;
-        }
-        SegmentBooking booking = bySegmentBookingId(segmentBookingId);
-        if (booking != null && seatAllocationRef != null) {
-            booking.assignSeat(seatAllocationRef);
-            segmentBookings.save(booking, sagaId);
-        }
-        String stepKey = sagaId + ":seat:" + (booking != null ? booking.segmentRef() : segmentBookingId);
-        try {
-            saga.recordStepSucceeded(stepKey);
-        } catch (IllegalArgumentException ex) {
-            LOGGER.warn("Ack-skipping SeatAllocated: unknown step key {} for saga {}", stepKey, sagaId);
-            return;
-        }
-        if (allSeatAssignStepsSucceeded(saga)) {
-            saga.advanceTo(BookingSagaStatus.AWAITING_PAYMENT);
-        }
-        sagas.save(saga, correlationId);
-        publishEvents(saga.pullEvents(), correlationId, causationId);
+        if (booking.seatAllocationRef().filter(allocationId::equals).isPresent()) return;
+        booking.assignSeat(allocationId);
+        segmentBookings.save(booking, record.sagaId());
     }
 
     private void handleInvoiceGenerated(Map<String, Object> payload, String correlationId, String causationId) {
@@ -643,12 +609,6 @@ public class BookingOrchestrationService {
         saga.complete();
         sagas.save(saga, correlationId);
         publishEvents(saga.pullEvents(), correlationId, causationId);
-    }
-
-    private boolean allSeatAssignStepsSucceeded(BookingSaga saga) {
-        return saga.steps().stream()
-            .filter(step -> step.name().startsWith("seat-assign-"))
-            .allMatch(step -> step.status() == BookingStepStatus.SUCCEEDED);
     }
 
     private boolean allSegmentsTicketed(String sagaId) {
@@ -699,10 +659,6 @@ public class BookingOrchestrationService {
             plan.add(BookingSaga.stepPlan("reserve-" + segmentRef, sagaId + ":" + segmentRef,
                 Duration.ofMinutes(5), 3, "release-capacity"));
         }
-        for (String segmentRef : segmentRefs) {
-            plan.add(BookingSaga.stepPlan("seat-assign-" + segmentRef, sagaId + ":seat:" + segmentRef,
-                Duration.ofMinutes(2), 2, "release-seat"));
-        }
         plan.add(BookingSaga.stepPlan("invoice", sagaId + ":invoice",
             Duration.ofMinutes(2), 1, "none"));
         return BookingSaga.start(sagaId, journeyOrderId, "1", "purchase", plan, clock);
@@ -726,10 +682,9 @@ public class BookingOrchestrationService {
         try {
             saga.recordStepSucceeded(stepKey);
             if (allReserveStepsSucceeded(saga)) {
-                saga.advanceTo(BookingSagaStatus.SEAT_ASSIGNING);
+                saga.advanceTo(BookingSagaStatus.AWAITING_PAYMENT);
                 sagas.save(saga, correlationId);
                 publishEvents(saga.pullEvents(), correlationId, causationId);
-                publishSeatAllocationRequests(saga, correlationId, causationId);
             } else {
                 sagas.save(saga, correlationId);
                 publishEvents(saga.pullEvents(), correlationId, causationId);
@@ -743,15 +698,6 @@ public class BookingOrchestrationService {
         return saga.steps().stream()
             .filter(step -> step.name().startsWith("reserve-"))
             .allMatch(step -> step.status() == BookingStepStatus.SUCCEEDED);
-    }
-
-    private void publishSeatAllocationRequests(BookingSaga saga, String correlationId, String causationId) {
-        for (SegmentBooking booking : segmentBookingsForSaga(saga.sagaId())) {
-            List<DomainEvent> seatEvents = List.of(new SegmentBookingEvent.SeatAllocationRequested(
-                UUID.randomUUID().toString(), booking.segmentBookingId(), clock.instant(),
-                saga.sagaId(), booking.segmentRef(), booking.travelerRef()));
-            publishEvents(seatEvents, correlationId, causationId);
-        }
     }
 
     private void safeAdvance(BookingSaga saga, BookingSagaStatus nextStatus) {
@@ -821,9 +767,6 @@ public class BookingOrchestrationService {
             case BookingEvent.InvoiceRequested invoiceReq -> Optional.of(new ContractEvent(
                 "InvoiceRequested",
                 new InvoiceRequestedPayload(invoiceReq.aggregateId(), invoiceReq.journeyOrderId(), invoiceReq.paymentRef())));
-            case SegmentBookingEvent.SeatAllocationRequested seatReq -> Optional.of(new ContractEvent(
-                "SeatAllocationRequested",
-                new SeatAllocationRequestedPayload(seatReq.aggregateId(), seatReq.sagaId(), seatReq.segmentRef(), seatReq.travelerRef())));
             case SegmentBookingEvent.ProviderReferenceAttached ignored -> Optional.empty();
             case SegmentBookingEvent.ProviderReservationTimedOut ignored -> Optional.empty();
             case SegmentBookingEvent.SegmentBookingCancelRequested ignored -> Optional.empty();
@@ -1116,8 +1059,6 @@ public class BookingOrchestrationService {
     public record BookingSagaCompletedPayload(String sagaId, String journeyOrderId) {}
     public record BookingSagaFailedPayload(String sagaId, String journeyOrderId, String reason) {}
     public record RiskAssessmentRequestedPayload(String sagaId, String journeyOrderId, String accountId) {}
-    public record SeatAllocationRequestedPayload(String segmentBookingId, String sagaId, String segmentRef,
-                                                  String travelerRef) {}
     public record InvoiceRequestedPayload(String sagaId, String journeyOrderId, String paymentRef) {}
 
     public record StartSagaCommand(String journeyOrderId, String accountId, String offerId,

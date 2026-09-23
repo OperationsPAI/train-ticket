@@ -611,7 +611,8 @@ impl PostgresEntitlementService {
         fingerprint: &str,
         correlation_id: &str,
     ) -> PgResult<IssueEntitlementResponse> {
-        let preconditions = crate::issue_facts::resolve(command, correlation_id).await?;
+        let (preconditions, resolved) = crate::issue_facts::resolve(command, correlation_id).await?;
+        let command = &resolved;
         let seat_key = if command.needs_seat_assignment() {
             Some(seat_assignment_idempotency_key(command)?)
         } else {

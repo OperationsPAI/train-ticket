@@ -31,8 +31,12 @@ struct ChangeAuthorization {
 #[serde(rename_all = "camelCase")]
 struct CapacityDetails {
     hold_id: String,
+    segment_ref: String,
+    segment_booking_ref: String,
     traveler_ref: Option<String>,
     status: String,
+    capacity_unit_ref: String,
+    interval: StationIntervalDto,
 }
 
 #[derive(Deserialize)]
@@ -57,6 +61,7 @@ struct PaymentDetails {
 #[serde(rename_all = "camelCase")]
 struct OrderDetails {
     order_id: String,
+    offer_id: String,
     account_id: String,
     status: String,
     risk_clear: bool,
@@ -106,7 +111,7 @@ async fn read<T: DeserializeOwned>(
 pub(crate) async fn resolve(
     command: &IssueEntitlementRequest,
     correlation_id: &str,
-) -> ApiResult<IssuePreconditions> {
+) -> ApiResult<(IssuePreconditions, IssueEntitlementRequest)> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
@@ -156,6 +161,8 @@ pub(crate) async fn resolve(
     )
     .await?;
     if capacity.hold_id != hold_id
+        || capacity.segment_ref != command.segment_ref
+        || capacity.segment_booking_ref != command.segment_booking_id
         || capacity.traveler_ref.as_deref() != Some(command.traveler_ref.as_str())
         || capacity.status != "CONFIRMED"
     {
@@ -188,6 +195,7 @@ pub(crate) async fn resolve(
             "order, traveler or risk state does not permit issuance".into(),
         ));
     }
+    let mut offer_id = order.offer_id.clone();
     let payment_fact_id = if let Some(case_id) = change_case {
         let authorization: ChangeAuthorization = read(&client,"post-sales","POST_SALES_BASE_URL",
             &format!("/api/v1/post-sales-cases/{case_id}/issue-authorization/{}",command.segment_booking_id),correlation_id).await?;
@@ -196,6 +204,9 @@ pub(crate) async fn resolve(
             || authorization.traveler_ref != command.traveler_ref || authorization.segment_ref != command.segment_ref {
             return Err(ApiErrorKind::PreconditionFailed("change authorization does not match replacement issuance".into()));
         }
+        let change: Value = read(&client, "post-sales", "POST_SALES_BASE_URL",
+            &format!("/api/v1/post-sales-cases/{case_id}"), correlation_id).await?;
+        offer_id = required_field(&change, "targetOfferId")?.to_owned();
         authorization.payment_intent_id
     } else {
     let payment: PaymentDetails = read(
@@ -222,8 +233,33 @@ pub(crate) async fn resolve(
     }
     payment.payment_intent_id
     };
+    let offer: Value = read(&client, "offer-management", "OFFER_MANAGEMENT_BASE_URL",
+        &format!("/api/v1/offers/{offer_id}"), correlation_id).await?;
+    if required_field(&offer, "offerId")? != offer_id || required_field(&offer, "accountId")? != order.account_id {
+        return Err(ApiErrorKind::PreconditionFailed("issuance offer references another order account".into()));
+    }
+    let itinerary: Value = read(&client, "trip-planning", "TRIP_PLANNING_BASE_URL",
+        &format!("/api/v1/itineraries/{}", required_field(&offer, "itineraryRef")?), correlation_id).await?;
+    let leg = itinerary.get("legs").and_then(Value::as_array)
+        .and_then(|legs| legs.iter().find(|leg| leg.get("serviceSegmentRef").and_then(Value::as_str) == Some(command.segment_ref.as_str())))
+        .ok_or_else(|| ApiErrorKind::PreconditionFailed("issuance segment is absent from purchased itinerary".into()))?;
+    let fare: Value = read(&client, "fare-pricing", "FARE_PRICING_BASE_URL",
+        &format!("/api/v1/fare-quotes/{}", required_field(&offer, "fareQuoteRef")?), correlation_id).await?;
+    let class = required_field(&fare["breakdown"]["seatClassMultiplier"], "seatClass")?;
+    let departure = required_field(leg, "departureTime")?;
+    let date = chrono::DateTime::parse_from_rfc3339(departure)
+        .map_err(|error| ApiErrorKind::PreconditionFailed(error.to_string()))?
+        .with_timezone(&chrono::Utc).date_naive().to_string();
+    let mut resolved = command.clone();
+    verify_and_set(&mut resolved.scheduled_service_ref, required_field(leg, "servicePlanRef")?.to_owned(), "scheduledServiceRef")?;
+    verify_and_set(&mut resolved.service_date, date, "serviceDate")?;
+    verify_and_set(&mut resolved.capacity_hold_id, hold_id.clone(), "capacityHoldId")?;
+    verify_and_set(&mut resolved.capacity_unit_ref, capacity.capacity_unit_ref, "capacityUnitRef")?;
+    verify_and_set(&mut resolved.interval, capacity.interval, "interval")?;
+    verify_and_set(&mut resolved.class_ref, class.to_owned(), "classRef")?;
+    verify_and_set(&mut resolved.expires_at, departure.to_owned(), "expiresAt")?;
     let now = UnixMillis::new(current_unix_millis());
-    Ok(IssuePreconditions::accepted(
+    Ok((IssuePreconditions::accepted(
         AcceptedFact::new(
             BookingFactRef::new(booking.segment_booking_id).map_err(ApiErrorKind::from)?,
             BookingAcceptance::SegmentReservationConfirmed,
@@ -249,5 +285,18 @@ pub(crate) async fn resolve(
             RiskAcceptance::Allowed,
             now,
         ),
-    ))
+    ), resolved))
+}
+
+fn required_field<'a>(value: &'a Value, field: &str) -> ApiResult<&'a str> {
+    value.get(field).and_then(Value::as_str).filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiErrorKind::PreconditionFailed(format!("issuance facts missing {field}")))
+}
+
+fn verify_and_set<T: PartialEq>(field: &mut Option<T>, authoritative: T, name: &str) -> ApiResult<()> {
+    if field.as_ref().is_some_and(|supplied| supplied != &authoritative) {
+        return Err(ApiErrorKind::PreconditionFailed(format!("requested {name} differs from issuance facts")));
+    }
+    *field = Some(authoritative);
+    Ok(())
 }
