@@ -21,6 +21,7 @@ Capacity change compensation is deployed in revision 259, with validated loadgen
 Invoice creation reuses its transaction connection in revision 261.
 Synchronous accepted order policy inputs are deployed in revision 262.
 Elapsed difference payment handling is deployed in revision 263 and the recorded zero capture case completed compensation.
+Expired target handling is deployed with loadgen in revision 264 and verified against a recorded case with unchanged original tickets.
 Check `helm history` and the deployed image digests for the live release; repository HEAD and the running images can differ.
 
 ## Verified behavior
@@ -71,7 +72,10 @@ Historical purchase reconstruction must use the original accepted source when im
 
 Recorded sold out cases `psc-01a0cdac-da33-7fd4-a442-bdafdf12c14d` and `psc-01a0cdef-0d3c-7fa8-8b77-d13ed8e8766b` completed capacity compensation.
 The paid partial issuance case `psc-01a0ce4b-329a-7f9c-8958-689fadc80160` verified replacement ticket voiding, full difference refund settlement, original ticket preservation and terminal replay.
+Its settled difference refund is CNY 195.00.
 These cases now end with `CHANGE_CAPACITY_UNAVAILABLE`, and loadgen records the checked outcome as `change_unavailable`.
+The elapsed payment scenario `psc-01a0ce5a-4179-705d-92fa-a97251e0432d` completed `CHANGE_PAYMENT_TERMINATED` with zero captured funds and two preserved original tickets.
+The expired target case `psc-01a0ce4d-dd0b-7fe3-8fd2-93a528ef2850` completed `CHANGE_OFFER_EXPIRED` without creating replacement bookings or a difference payment.
 
 The remaining acceptance work includes:
 
