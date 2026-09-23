@@ -30,9 +30,18 @@ import org.springframework.web.bind.annotation.RestController;
 public class BookingOrchestrationController {
 
     private final BookingOrchestrationService service;
+    private final com.trainticket.bookingorchestration.application.ReservationFactsResolver facts;
 
     public BookingOrchestrationController(BookingOrchestrationService service) {
+        this(service, new com.trainticket.bookingorchestration.application.ReservationFactsResolver(
+            org.springframework.web.client.RestClient.builder(), new com.fasterxml.jackson.databind.ObjectMapper(), "http://%s:8080"));
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public BookingOrchestrationController(BookingOrchestrationService service,
+        com.trainticket.bookingorchestration.application.ReservationFactsResolver facts) {
         this.service = service;
+        this.facts = facts;
     }
 
     public record StartSagaRequest(
@@ -117,9 +126,12 @@ public class BookingOrchestrationController {
             return validationError(errors, httpRequest);
         }
 
+        String correlation = getCorrelationId(httpRequest);
+        var saga = service.getSaga(sagaId).orElseThrow(() -> new NotFoundException("Booking saga not found: " + sagaId));
+        var accepted = facts.resolve(saga.journeyOrderId(), request.segmentRef(), request.travelerRef(), correlation);
         var result = service.requestReservation(sagaId,
             new RequestReservationCommand(request.segmentRef(), request.travelerRef(), request.segmentBookingId()),
-            idempotencyKey, getCorrelationId(httpRequest));
+            accepted, correlation);
         return ResponseEntity.ok(new RequestReservationResponse(result.segmentBookingId(), result.status()));
     }
 
