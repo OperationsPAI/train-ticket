@@ -103,6 +103,7 @@ pub fn router_with_postgres_state(service: Arc<PostgresInvoicingService>) -> Rou
     let metadata = serde_json::to_value(metadata()).unwrap_or_else(|_| json!({}));
     let standard = Router::new()
         .route("/api/v1/internal/invoice-amount-bases/{order_id}/rebuild",post(rebuild_amount_basis))
+        .route("/api/v1/internal/red-flush-reconciliations/{case_id}",post(reconcile_red_flush))
         .route("/health", get(health_handler))
         .route("/healthz", get(health_handler))
         .route("/live", get(live_handler))
@@ -129,6 +130,18 @@ async fn rebuild_amount_basis(
     match service.rebuild_amount_basis(&order_id,context.correlation_id()).await {
         Ok(basis) => Json(basis).into_response(),
         Err(error) => api_error_response(error,crate::utils::canonical_corr(context.correlation_id())),
+    }
+}
+
+async fn reconcile_red_flush(
+    Extension(service):Extension<Arc<PostgresInvoicingService>>,
+    Extension(context):Extension<shared_kernel::RequestContext>,
+    axum::extract::Path(case_id):axum::extract::Path<String>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    match service.reconcile_red_flush(&case_id,context.correlation_id()).await {
+        Ok(())=>Json(json!({"caseId":case_id,"status":"RECONCILED"})).into_response(),
+        Err(error)=>api_error_response(error,crate::utils::canonical_corr(context.correlation_id())),
     }
 }
 pub(crate) fn routes<S: InvoicingApi + 'static>(service: Arc<S>) -> Router {
