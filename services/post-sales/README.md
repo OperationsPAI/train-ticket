@@ -27,6 +27,7 @@ The replay must preserve the case version and outbox count, with empty pending l
 All handlers, Redis operations, transactions, repositories and outbox writes in this test are real.
 
 The recorded run on 2026-09-23 completed both capacity releases in 37 milliseconds with five background lock waits and sixteen queued events.
+The isolated subscriber is deployed in revision 277, whose complete broad live regression passes in 225.475 seconds.
 This is an isolated regression result; deployment latency still depends on the shared database and workload.
 The test writes source and replay message IDs, completed case data, outbox records and observed timing to `target/recorded-tests/capacity-isolation.json`.
 Its PostgreSQL schema and Redis keys are removed after execution, and the JSON evidence remains available.
