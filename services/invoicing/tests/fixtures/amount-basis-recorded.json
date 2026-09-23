@@ -1,0 +1,459 @@
+{
+  "recordedFrom": "Redis Streams events:journey-order and events:finance-settlement, captured 2026-09-23; historical PostgreSQL invoice projections from goal-invoice-connection-source.json",
+  "orderId": "ord-01a0cec1-fe29-7fe4-885d-b6462585a390",
+  "orderEvents": [
+    {
+      "id": "1790175215160-1",
+      "envelope": {
+        "eventId": "evt-01a0cec1-fe29-7041-b0e4-da72b8f01488",
+        "payload": {
+          "offerId": "off-01a0cec1-fdf4-7825-a391-ff6e49b91efc",
+          "orderId": "ord-01a0cec1-fe29-7fe4-885d-b6462585a390",
+          "segments": [
+            {
+              "origin": "tnd-01a0c6fd-a375-7a56-ae06-4cb836f005d8",
+              "segmentRef": "seg-01a0c700-5275-7000-a83d-b22ae11d9063",
+              "arrivalTime": "2026-10-16T11:48:00Z",
+              "destination": "tnd-01a0c6fd-a399-7368-9d1a-7540bb811e53",
+              "departureTime": "2026-10-16T10:00:00Z",
+              "transportMode": "TRAIN"
+            }
+          ],
+          "sourceIp": "2001:db8:3163:12df:9d9e:2ff0:1134:c492",
+          "accountId": "acc-01a0cec1-e29f-7f75-8bdc-4007bcf0fe94",
+          "createdAt": "2026-09-23T14:53:35.145451797Z",
+          "segmentRefs": [
+            "seg-01a0c700-5275-7000-a83d-b22ae11d9063"
+          ],
+          "travelerRefs": [
+            {
+              "travelerId": "tvl-01a0cec1-e2a9-7029-941f-5dfac98900c0",
+              "travelerType": "STUDENT"
+            }
+          ],
+          "monetarySummary": {
+            "total": {
+              "currency": "CNY",
+              "minorUnits": 7050
+            },
+            "currency": "CNY",
+            "feeTotal": {
+              "currency": "CNY",
+              "minorUnits": 0
+            },
+            "subtotal": {
+              "currency": "CNY",
+              "minorUnits": 7050
+            },
+            "taxTotal": {
+              "currency": "CNY",
+              "minorUnits": 0
+            },
+            "payableTotal": {
+              "currency": "CNY",
+              "minorUnits": 7050
+            },
+            "discountTotal": {
+              "currency": "CNY",
+              "minorUnits": 0
+            },
+            "cancelledTotal": {
+              "currency": "CNY",
+              "minorUnits": 0
+            }
+          }
+        },
+        "producer": "journey-order",
+        "eventType": "JourneyOrderCreated",
+        "occurredAt": "2026-09-23T14:53:35.145451797Z",
+        "causationId": "cmd-01a0cec1-fe29-702e-a6ad-2ab26f80d293",
+        "traceparent": "00-5189505304db595b00ad8fc6f7261678-272bcf351379243f-01",
+        "correlationId": "corr-01a0cec1-fe02-7fea-a0cd-51a0b19eecb9",
+        "schemaVersion": 1
+      }
+    },
+    {
+      "id": "1790175221116-1",
+      "envelope": {
+        "eventId": "evt-01a0cec2-1554-702b-accc-1043b090ed75",
+        "payload": {
+          "orderId": "ord-01a0cec1-fe29-7fe4-885d-b6462585a390",
+          "accountId": "acc-01a0cec1-e29f-7f75-8bdc-4007bcf0fe94",
+          "confirmedAt": "2026-09-23T14:53:41.034Z",
+          "monetarySummary": {
+            "total": {
+              "currency": "CNY",
+              "minorUnits": 7050
+            },
+            "currency": "CNY",
+            "feeTotal": {
+              "currency": "CNY",
+              "minorUnits": 0
+            },
+            "subtotal": {
+              "currency": "CNY",
+              "minorUnits": 7050
+            },
+            "taxTotal": {
+              "currency": "CNY",
+              "minorUnits": 0
+            },
+            "payableTotal": {
+              "currency": "CNY",
+              "minorUnits": 7050
+            },
+            "discountTotal": {
+              "currency": "CNY",
+              "minorUnits": 0
+            },
+            "cancelledTotal": {
+              "currency": "CNY",
+              "minorUnits": 0
+            }
+          }
+        },
+        "producer": "journey-order",
+        "eventType": "JourneyOrderConfirmed",
+        "occurredAt": "2026-09-23T14:53:41.034Z",
+        "causationId": "evt-01a0cec2-152c-7dc0-94c8-c9bf7ee3bd98",
+        "traceparent": "00-a6b6acdead231514a9cb002eaa4f994f-2488c67c8fa0a096-01",
+        "correlationId": "corr-01a0cec2-152c-7dc0-94c8-c9a82ce6f68e",
+        "schemaVersion": 1
+      }
+    }
+  ],
+  "financeEvents": [
+    {
+      "id": "1790175219496-0",
+      "envelope": {
+        "eventId": "evt-01a0cec2-0efe-705c-accb-54dba0c607c7",
+        "payload": {
+          "amount": {
+            "currency": "CNY",
+            "minorUnits": 7050
+          },
+          "orderId": "ord-01a0cec1-fe29-7fe4-885d-b6462585a390",
+          "metadata": {
+            "eventId": "evt-01a0cec2-0efe-705c-accb-54dba0c607c7",
+            "attributes": {
+              "componentCode": "fare",
+              "revenueRecognitionId": "01a0cec2-0efe-7fa6-8493-0d033dc853a5"
+            },
+            "occurredAt": "2026-09-23T14:53:39.454579091Z",
+            "causationId": "cmd-01a0cec2-0e81-7696-8d56-e51ed4a487aa",
+            "correlationId": "corr-01a0cec2-0e81-707a-bfd8-c0dba5d6a8b3",
+            "schemaVersion": 1,
+            "sourceCommandId": "cmd-01a0cec2-0e81-7696-8d56-e51ed4a487aa"
+          },
+          "orderItemId": "ord-01a0cec1-fe29-7fe4-885d-b6462585a390",
+          "componentCode": "fare",
+          "sourceEventId": "evt-01a0cec2-0ea4-7f94-ab3d-40e8e3a6a1f1",
+          "revenueRecognitionId": "01a0cec2-0efe-7fa6-8493-0d033dc853a5",
+          "recognitionPolicyVersion": "payment-capture-v1"
+        },
+        "producer": "finance-settlement",
+        "eventType": "RevenueRecognized",
+        "occurredAt": "2026-09-23T14:53:39.454579091Z",
+        "causationId": "cmd-01a0cec2-0e81-7696-8d56-e51ed4a487aa",
+        "traceparent": "00-46180373ad61176a0599f7cebf23bdd8-edb66d12bddcc984-01",
+        "correlationId": "corr-01a0cec2-0e81-707a-bfd8-c0dba5d6a8b3",
+        "schemaVersion": 1
+      }
+    }
+  ],
+  "net": {
+    "created": {
+      "eventId": "evt-01a0ccf6-257b-7f94-ba13-ca367bd19ba5",
+      "payload": {
+        "offerId": "off-01a0ccf6-20c6-701a-8bb4-7cdb5e045412",
+        "orderId": "ord-01a0ccf6-257b-7053-9fda-8c08f9b3307e",
+        "segments": [
+          {
+            "origin": "tnd-01a0c6e0-e190-7d80-ad35-b29d0cd895bd",
+            "segmentRef": "seg-01a0c6e3-2357-7000-8af0-0577779fa4f4",
+            "arrivalTime": "2026-10-10T17:47:00Z",
+            "destination": "tnd-01a0c6e0-e1d8-734a-94d9-89956ef4326a",
+            "departureTime": "2026-10-10T14:55:00Z",
+            "transportMode": "TRAIN"
+          }
+        ],
+        "sourceIp": "2001:db8:fa96:5508:816b:b801:0021:56dd",
+        "accountId": "acc-01a0ccf5-fe76-7054-b8f6-9d106832ddd3",
+        "createdAt": "2026-09-23T06:31:18.651272858Z",
+        "segmentRefs": [
+          "seg-01a0c6e3-2357-7000-8af0-0577779fa4f4"
+        ],
+        "travelerRefs": [
+          {
+            "travelerId": "tvl-01a0ccf6-00dd-701c-9a00-4a33441238aa",
+            "travelerType": "ADULT"
+          }
+        ],
+        "monetarySummary": {
+          "total": {
+            "currency": "CNY",
+            "minorUnits": 11150
+          },
+          "currency": "CNY",
+          "feeTotal": {
+            "currency": "CNY",
+            "minorUnits": 0
+          },
+          "subtotal": {
+            "currency": "CNY",
+            "minorUnits": 11150
+          },
+          "taxTotal": {
+            "currency": "CNY",
+            "minorUnits": 0
+          },
+          "payableTotal": {
+            "currency": "CNY",
+            "minorUnits": 11150
+          },
+          "discountTotal": {
+            "currency": "CNY",
+            "minorUnits": 0
+          },
+          "cancelledTotal": {
+            "currency": "CNY",
+            "minorUnits": 0
+          }
+        }
+      },
+      "producer": "journey-order",
+      "eventType": "JourneyOrderCreated",
+      "occurredAt": "2026-09-23T06:31:18.651272858Z",
+      "causationId": "cmd-01a0ccf6-257b-705e-b348-856750f327aa",
+      "traceparent": "00-e66e27a221fda948edbd635a261ba01c-2af3169947a36ad9-01",
+      "correlationId": "corr-01a0ccf6-2183-7f9b-8a13-154df05fd554",
+      "schemaVersion": 1
+    },
+    "adjusted": {
+      "eventId": "evt-01a0ccf8-d8cf-7015-943d-20add666055b",
+      "payload": {
+        "orderId": "ord-01a0ccf6-257b-7053-9fda-8c08f9b3307e",
+        "accountId": "acc-01a0ccf5-fe76-7054-b8f6-9d106832ddd3",
+        "monetarySummary": {
+          "total": {
+            "currency": "CNY",
+            "minorUnits": 558
+          },
+          "currency": "CNY",
+          "feeTotal": {
+            "currency": "CNY",
+            "minorUnits": 558
+          },
+          "subtotal": {
+            "currency": "CNY",
+            "minorUnits": 11150
+          },
+          "taxTotal": {
+            "currency": "CNY",
+            "minorUnits": 0
+          },
+          "payableTotal": {
+            "currency": "CNY",
+            "minorUnits": 558
+          },
+          "discountTotal": {
+            "currency": "CNY",
+            "minorUnits": 0
+          },
+          "cancelledTotal": {
+            "currency": "CNY",
+            "minorUnits": 11150
+          }
+        },
+        "postSalesCaseId": "psc-01a0ccf8-d790-700c-a266-d6e1b4247c97"
+      },
+      "producer": "journey-order",
+      "eventType": "JourneyOrderPostSalesAdjusted",
+      "occurredAt": "2026-09-23T06:34:15.586685256Z",
+      "causationId": "evt-01a0ccf8-d8a4-7071-abca-b7dc79a9d391",
+      "traceparent": "00-c071e582fcc34330510991b98d8df29e-4cb592ad57fa1e39-03",
+      "correlationId": "corr-01a0ccf8-d7e7-701e-879b-09257f7470aa",
+      "schemaVersion": 1
+    },
+    "finance": [
+      {
+        "eventId": "evt-01a0ccf8-30f8-7fc3-ba60-c2fc7992af7e",
+        "payload": {
+          "amount": {
+            "currency": "CNY",
+            "minorUnits": 11150
+          },
+          "orderId": "ord-01a0ccf6-257b-7053-9fda-8c08f9b3307e",
+          "metadata": {
+            "eventId": "evt-01a0ccf8-30f8-7fc3-ba60-c2fc7992af7e",
+            "attributes": {
+              "componentCode": "fare",
+              "revenueRecognitionId": "01a0ccf8-30f8-7f99-81e8-fa67ac171cda"
+            },
+            "occurredAt": "2026-09-23T06:33:32.664086507Z",
+            "causationId": "cmd-01a0ccf8-3097-7996-aa0e-b8570903ea40",
+            "correlationId": "corr-01a0ccf8-3099-7fe2-97f8-8ed16b0cc956",
+            "schemaVersion": 1,
+            "sourceCommandId": "cmd-01a0ccf8-3097-7996-aa0e-b8570903ea40"
+          },
+          "orderItemId": "ord-01a0ccf6-257b-7053-9fda-8c08f9b3307e",
+          "componentCode": "fare",
+          "sourceEventId": "evt-01a0ccf8-30cc-704d-ac15-b219ae7013b2",
+          "revenueRecognitionId": "01a0ccf8-30f8-7f99-81e8-fa67ac171cda",
+          "recognitionPolicyVersion": "payment-capture-v1"
+        },
+        "producer": "finance-settlement",
+        "eventType": "RevenueRecognized",
+        "occurredAt": "2026-09-23T06:33:32.664086507Z",
+        "causationId": "cmd-01a0ccf8-3097-7996-aa0e-b8570903ea40",
+        "traceparent": "00-eccda30374908b9e71c2e930a000e5f9-28434e8268735fc4-01",
+        "correlationId": "corr-01a0ccf8-3099-7fe2-97f8-8ed16b0cc956",
+        "schemaVersion": 1
+      },
+      {
+        "eventId": "evt-01a0ccf8-d8d1-700b-90f0-2ad2b52906bb",
+        "payload": {
+          "amount": {
+            "currency": "CNY",
+            "minorUnits": 10592
+          },
+          "orderId": "ord-01a0ccf6-257b-7053-9fda-8c08f9b3307e",
+          "metadata": {
+            "eventId": "evt-01a0ccf8-d8d1-700b-90f0-2ad2b52906bb",
+            "attributes": {
+              "reversalReason": "post-sales refund applied",
+              "revenueRecognitionId": "01a0ccf8-30f8-7f99-81e8-fa67ac171cda",
+              "originalSourceEventId": "evt-01a0ccf8-30cc-704d-ac15-b219ae7013b2"
+            },
+            "occurredAt": "2026-09-23T06:34:15.633235593Z",
+            "causationId": "evt-01a0ccf8-d844-7630-82f6-56bcbcb269e3",
+            "correlationId": "corr-01a0ccf8-d7e7-701e-879b-09257f7470aa",
+            "schemaVersion": 1,
+            "sourceCommandId": "evt-01a0ccf8-d844-7630-82f6-56bcbcb269e3"
+          },
+          "orderItemId": "ord-01a0ccf6-257b-7053-9fda-8c08f9b3307e",
+          "componentCode": "fare",
+          "sourceEventId": "evt-01a0ccf8-d8a4-7071-abca-b7dc79a9d391",
+          "reversalReason": "post-sales refund applied",
+          "revenueRecognitionId": "01a0ccf8-30f8-7f99-81e8-fa67ac171cda"
+        },
+        "producer": "finance-settlement",
+        "eventType": "RevenueRecognitionReversed",
+        "occurredAt": "2026-09-23T06:34:15.633235593Z",
+        "causationId": "evt-01a0ccf8-d844-7630-82f6-56bcbcb269e3",
+        "traceparent": "00-115fb40183cb4ff4df9fa8bd8783f2fe-0e8d2803ac423d3b-03",
+        "correlationId": "corr-01a0ccf8-d7e7-701e-879b-09257f7470aa",
+        "schemaVersion": 1
+      }
+    ],
+    "netMinor": 558
+  },
+  "legacy": {
+    "title": {
+      "status": "ACTIVE",
+      "titleId": "ivt-01a0ce4d-864d-77a2-95ed-da592e25c1c8",
+      "version": 1,
+      "accountId": "acc-01a0ce4d-3532-7826-b0a1-5edd03970a9e",
+      "createdAt": "2026-09-23T12:46:22.285Z",
+      "isDefault": true,
+      "titleName": "个人",
+      "titleType": "PERSONAL",
+      "updatedAt": "2026-09-23T12:46:22.285Z",
+      "validFrom": "2026-09-23T12:46:22.285Z"
+    },
+    "request": {
+      "status": "ISSUED",
+      "orderId": "ord-01a0ce4d-47c4-706d-a9e2-fd55cad49834",
+      "titleId": "ivt-01a0ce4d-864d-77a2-95ed-da592e25c1c8",
+      "version": 4,
+      "accountId": "acc-01a0ce4d-3532-7826-b0a1-5edd03970a9e",
+      "createdAt": "2026-09-23T12:46:22.324Z",
+      "updatedAt": "2026-09-23T12:46:22.324Z",
+      "eInvoiceId": "ein-01a0ce4d-8674-7a91-88ed-2173e07538d9",
+      "simSeedRef": "loadgen-accept",
+      "amountBasis": {
+        "taxLines": [
+          {
+            "taxCode": "VAT_SIM",
+            "taxAmount": {
+              "currency": "CNY",
+              "minorUnits": 0
+            },
+            "taxableAmount": {
+              "currency": "CNY",
+              "minorUnits": 8650
+            },
+            "taxRateBasisPoints": 0
+          }
+        ],
+        "basisType": "REVENUE_RECOGNITION",
+        "totalAmount": {
+          "currency": "CNY",
+          "minorUnits": 8650
+        },
+        "amountBasisHash": "sha256:41702c89bc4e2bc5259329195946c275a28183ae4a784e3000f18b7298c0f98d",
+        "revenueRecognitionIds": [
+          "01a0ce4d-6f6d-7019-bd4c-7d781225d6ca"
+        ]
+      },
+      "invoiceScope": {
+        "scopeType": "ORDER"
+      },
+      "titleVersion": 1,
+      "gatewayProfile": "SIM_TAX_BUREAU_CN_V1",
+      "clientRequestId": "01a0ce4d-866d-7379-ac30-a47644db96f1",
+      "invoiceRequestId": "ivr-01a0ce4d-8674-7a91-88ed-216147bc11ef",
+      "recipientEmailMasked": "l***@example.com"
+    },
+    "projections": [
+      {
+        "id": "ord-01a0ce4d-47c4-706d-a9e2-fd55cad49834",
+        "data": {
+          "taxLines": [
+            {
+              "taxCode": "VAT_SIM",
+              "taxAmount": {
+                "currency": "CNY",
+                "minorUnits": 0
+              },
+              "taxableAmount": {
+                "currency": "CNY",
+                "minorUnits": 8650
+              },
+              "taxRateBasisPoints": 0
+            }
+          ],
+          "basisType": "REVENUE_RECOGNITION",
+          "totalAmount": {
+            "currency": "CNY",
+            "minorUnits": 8650
+          },
+          "amountBasisHash": "sha256:41702c89bc4e2bc5259329195946c275a28183ae4a784e3000f18b7298c0f98d",
+          "revenueRecognitionIds": [
+            "01a0ce4d-6f6d-7019-bd4c-7d781225d6ca"
+          ]
+        },
+        "kind": "amounts"
+      },
+      {
+        "id": "ord-01a0ce4d-47c4-706d-a9e2-fd55cad49834",
+        "data": {
+          "account_id": "acc-01a0ce4d-3532-7826-b0a1-5edd03970a9e",
+          "updated_at": "2026-09-23T12:46:19.495Z",
+          "segment_refs": [
+            "seg-01a0c6e2-c9e7-7000-830d-4e686d89986c"
+          ],
+          "traveler_refs": [
+            "tvl-01a0ce4d-3546-7fd5-bd55-aa54725e590c",
+            "tvl-01a0ce4d-3555-7f8a-a7e5-8896a6117f60"
+          ],
+          "expected_total": {
+            "currency": "CNY",
+            "minorUnits": 8650
+          }
+        },
+        "kind": "orders"
+      }
+    ]
+  }
+}

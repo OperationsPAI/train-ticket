@@ -142,7 +142,7 @@ async fn deterministic_sim_accepts_and_rejects_by_seed() {
     let publisher = std::sync::Arc::new(InMemoryEventPublisher::default());
     let svc = InMemoryInvoicingService::new(publisher.clone());
     let title = svc.create_title(title_cmd(), key(), corr()).await.unwrap();
-    svc.apply_subscribed_event(rust_kit::messaging::EventEnvelope::new("JourneyOrderConfirmed", rust_kit::messaging::now_rfc3339_utc(), corr(), Some(format!("evt-{}", uuid::Uuid::now_v7())), "journey-order", serde_json::json!({"orderId":"ord-ok","accountId":"acc-test","travelerRefs":["tvl-1"],"segmentRefs":["seg-1"]}))).await.unwrap();
+    svc.apply_subscribed_event(rust_kit::messaging::EventEnvelope::new("JourneyOrderConfirmed", rust_kit::messaging::now_rfc3339_utc(), corr(), Some(format!("evt-{}", uuid::Uuid::now_v7())), "journey-order", serde_json::json!({"orderId":"ord-ok","accountId":"acc-test","travelerRefs":["tvl-1"],"segmentRefs":["seg-1"],"monetarySummary":{"total":amount().total_amount}}))).await.unwrap();
     let basis = project_amount(&svc, "ord-ok", "evt-01900000-0000-7000-8000-000000000001").await;
     let req = svc
         .request_invoice(
@@ -174,7 +174,7 @@ async fn deterministic_sim_accepts_and_rejects_by_seed() {
         corr(),
         Some(format!("evt-{}", uuid::Uuid::now_v7())),
         "journey-order",
-        serde_json::json!({"orderId":"ord-rej","accountId":"acc-test"}),
+        serde_json::json!({"orderId":"ord-rej","accountId":"acc-test","monetarySummary":{"total":amount().total_amount}}),
     ))
     .await
     .unwrap();
@@ -223,7 +223,7 @@ async fn post_sales_refund_observes_and_completes_red_flush() {
         corr(),
         Some(format!("evt-{}", uuid::Uuid::now_v7())),
         "journey-order",
-        serde_json::json!({"orderId":"ord-ref","accountId":"acc-test"}),
+        serde_json::json!({"orderId":"ord-ref","accountId":"acc-test","monetarySummary":{"total":amount().total_amount}}),
     ))
     .await
     .unwrap();
