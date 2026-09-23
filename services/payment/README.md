@@ -1,14 +1,7 @@
-# payment
+# Payment
 
-Domain: Payment
-
-Language: java
-
-Phase: phase-1-domain-foundation
-
-Status: REQ-012 domain foundation
-
-Work Package: REQ-012-Payment-domain-foundation
+Java service for payment intents, refunds, callback identity and late payment handling.
+Remaining work is tracked in [TODO](../../docs/TODO.md).
 
 ## Owns
 

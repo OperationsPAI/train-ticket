@@ -1,6 +1,9 @@
 # Post Sales Events & Commands
 
-Last updated: 2026-09-23.
+Last updated: 2026-09-24.
+
+Runtime baseline: Helm revision 279.
+Remaining work is tracked in [TODO](../../TODO.md).
 
 Capacity release handling selects only cases with an unrecorded release that are approved, executing, or applied changes needing release evidence.
 Already recorded releases and other terminal cases do not reacquire the order lock.
@@ -149,7 +152,7 @@ Zero amounts have no wallet issuance or `issued` record and retain an empty `ver
 |---|---|
 | **Producer** | post-sales |
 | **Consumers** | journey-order, notification |
-| **Trigger** | All post-sales execution steps completed. |
+| **Trigger** | The completion condition for the case type is satisfied. |
 
 **Payload:**
 
@@ -163,10 +166,14 @@ Zero amounts have no wallet issuance or `issued` record and retain an empty `ver
 | `retainedFee` | Money | yes | Assessed fee from the decision snapshot. Journey Order records refund fees once per case and skips `COMPENSATION` results. |
 | `compensation` | object or null | for COMPENSATION | Recorded `compensationOperations.issued` wallet response, including `benefitId`, account, case and `issuedAmount`; null for a zero approved amount. |
 
+Ordinary refund and cancellation cases can publish this event after all scoped capacity releases are recorded.
+The event alone does not establish Payment refund settlement.
+Change completion follows recorded order application and required original capacity release.
 For `COMPENSATION`, this event follows verified wallet execution and successful completion of `ISSUE_COMPENSATION_CREDIT` and `APPLY_RESULT`.
 Journey Order, Finance Settlement and Invoicing skip their refund result processing for this case type.
 The original order, invoice basis, tickets, seat reservations and captured payment are preserved by this compensation flow.
-Wallet's `BenefitIssued` carries the benefit issuance and ledger delta for financial attribution.
+Wallet's `BenefitIssued` supplies the compensation issuance cost and ledger delta for financial attribution.
+Compensation approval and completion do not add another issuance cost.
 An execution call on an already `APPLIED` or `FAILED` compensation case returns its existing state without publishing another completion event.
 
 ### PostSalesFailed

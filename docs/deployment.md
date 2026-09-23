@@ -1,363 +1,162 @@
-# Train-Ticket 部署指南
+# Train Ticket 部署指南
 
-## 快速开始
+## 当前常驻环境
 
-Helm 是唯一的部署路径。原先 `deploy/` 下的 kustomize 覆盖层已经退役并删除，
-所有清单都由 chart `deploy/helm/train-ticket` 渲染。
+常驻 Helm release 为 `train-ticket`，命名空间为 `train-ticket`。
+当前 revision 279 的运行证据与既有测试结果统一见[当前状态](00-current-status.md)。
+全部待办统一见 [TODO](TODO.md)。
+本文中的构建、部署和测试入口仅供新环境使用，或者在后续明确开展更新并验证前提后使用。
+本次文档收尾不执行构建、部署或新增测试。
 
-### 1. 构建并推送镜像
+禁止对当前 resident279 执行默认 `make deploy`、`make deploy-fast`、其依赖部署目标或缺少完整配置的 Helm upgrade。
+Makefile 默认使用 `IMAGE_TAG=local` 和单独的 `values-cluster.yaml`，无法据此保留常驻 release 的完整配置与逐服务镜像引用。
+`deploy-fast` 仍会应用 Helm 配置、执行种子脚本和冒烟写入，不能作为当前常驻环境的配置更新捷径。
 
-```bash
-# 构建所有 39 个服务镜像并推送到 Docker Hub
-DOCKER_BUILDKIT=1 skaffold build -d opspai --tag latest
-```
+常驻 Skaffold profile 按以下顺序加载配置：
 
-`skaffold.yaml` 里的 artifact 名不带前缀，registry 由 `-d` 给出。
-写在文件里的前缀会被折进仓库名（`opspai/account` 配 `-d mirrors.tencent.com/microservice`
-得到 `mirrors.tencent.com/microservice/opspai_account`），所以前缀放在命令行上，
-同一份 artifact 列表才能同时服务 Docker Hub 和集群 registry。
+1. [values-cluster.yaml](../deploy/helm/values-cluster.yaml) 指定镜像仓库和存储类型。
+2. [values-case.yaml](../deploy/helm/values-case.yaml) 指定集中遥测、stdout 记录和 600 秒负载周期。
+3. [values-resident.yaml](../deploy/helm/values-resident.yaml) 启用常驻 exporter 和 loadgen PVC。
 
-本地 kind 集群走另一条路：`deploy/build-images.sh` 从**渲染后的 release**
-（`deploy/render-manifests.sh`）里提取 `train-ticket/<name>:` 镜像列表，
-构建后 `kind load` 侧载进节点，因此列表不可能与集群实际拉取的镜像不一致。
+[skaffold.yaml](../skaffold.yaml) 使用 `inputDigest` 生成镜像标签，通过 `setValueTemplates` 传入 `services.<name>.image` 和 `loadgen.image`。
+chart 的镜像函数优先使用这些完整镜像引用。
+后续更新常驻环境时，需要根据已部署的 Helm values、manifest 和镜像 digest 验证更新内容，并保留不属于该次更新的镜像引用。
+仓库当前代码、未提交改动与运行中镜像的对应关系见[当前状态](00-current-status.md)。
 
-### 2. 部署到 K8s 集群
+## 新测试环境的部署入口
 
-```bash
-# 开发环境（单 PG 分片，最小资源）
-helm upgrade --install train-ticket deploy/helm/train-ticket \
-  --namespace train-ticket --create-namespace --wait
+Helm chart 位于 [deploy/helm/train-ticket](../deploy/helm/train-ticket)。
+服务与镜像清单由 chart 和 Skaffold 文件定义，文档不维护固定镜像数量。
+基础工具包括 Docker、kubectl、Helm 3、Bash、Python 3 与 PyYAML。
+kind 路径还需要已经创建的独立 kind 集群，Skaffold 路径需要 Skaffold。
 
-# 开发集群（镜像走 registry + local-path StorageClass）
-helm upgrade --install train-ticket deploy/helm/train-ticket \
-  -f deploy/helm/values-cluster.yaml \
-  --namespace train-ticket --create-namespace --wait
+### 独立 kind 测试环境
 
-# 生产环境（6 PG 分片，充足资源，镜像走代理）
-helm upgrade --install train-ticket deploy/helm/train-ticket \
-  -f deploy/helm/values-prod.yaml \
-  --namespace train-ticket-prod --create-namespace --wait
-```
-
-用 `upgrade --install` 而不是 `install`：它是幂等的，重复执行安全，也是应用变更的
-预期方式。`--wait` 会阻塞到每个 Deployment 都 Available。
-
-kind 集群上一条命令就够：
+现有 `make deploy` 脚本可用于新建的独立 kind 测试环境。
+`deploy/build-images.sh` 根据渲染清单构建 `train-ticket/<service>:<tag>` 并执行 `kind load`。
+`values-cluster.yaml` 指向镜像仓库，因此新 kind 环境必须提供与本地加载镜像名称一致的 values 文件。
+[部署资产说明](../deploy/README.md#separate-kind-cluster) 给出了该文件的完整最小示例。
+以下示例假设已创建 `train-ticket-test` 集群与该环境的 `deploy/helm/values-test.local.yaml`，并已验证默认 StorageClass 和基础设施镜像可用。
 
 ```bash
-make deploy        # 完整流程：构建镜像 + 安装 + 建库校验 + 种子数据 + 冒烟验证
-make deploy-fast   # 同上，但跳过 39 个镜像的重建（chart-only 变更用这个）
+# New, separate kind test environment only; verify prerequisites first.
+make deploy KIND_CLUSTER=train-ticket-test KCTX=kind-train-ticket-test \
+  NAMESPACE=train-ticket-test IMAGE_TAG=local \
+  HELM_VALUES=deploy/helm/values-test.local.yaml
 ```
 
-详见 `deploy/README.md`。
+该目标依次构建并加载镜像、应用 Helm、检查数据库、重启使用相同标签的业务 Deployment、处理未就绪服务、写入种子数据并执行冒烟验证。
+`make deploy-fast` 跳过镜像构建和显式镜像重启阶段，仍执行其余步骤。
+各部署阶段通过 Makefile 前置依赖连接，执行后面的目标也会触发前面的步骤。
+默认命令的目标命名空间仍是 `train-ticket`，新环境必须显式设置 `KCTX`、`KIND_CLUSTER` 和 `NAMESPACE`。
 
-### 2b. 部署到真集群（经镜像仓库）
+### 使用镜像仓库的新测试环境
 
-`make deploy` 只服务 kind：它最后一步是 `kind load docker-image`，镜像从不经过仓库，
-所以它部署不了这台机器以外的任何集群。真集群走另一条路径，多一个**推镜像**的步骤：
+Skaffold `case` profile 使用 `values-cluster.yaml` 和 `values-case.yaml`，通过命名空间区分测试 release。
+该 profile 要求集中存储 `clickhouse.telemetry.svc.cluster.local` 已经可用，并验证目标环境的 StorageClass 与镜像仓库访问。
 
 ```bash
-# 1. 推镜像（9 GB，改清单/values 时不必重推）
-make push-images LOCAL_TAG=local IMAGE_TAG=20260913 \
-  HELM_VALUES="deploy/helm/values-prod.yaml deploy/helm/values-acr.yaml"
-
-# 2. 部署 + 校验 + 灌种子 + 冒烟
-make deploy-acr KCTX=<context> NAMESPACE=train-ticket-prod IMAGE_TAG=20260913
+# New test namespace only; verify context, registry, storage and telemetry first.
+skaffold run -p case --kube-context <test-context> \
+  -n tt-case-<id> -d <reachable-registry>/<organization>
 ```
 
-`values-acr.yaml` 是环境档案，叠在 `values-prod.yaml` 上，承载四处**目标环境强制**
-的差异（文件里逐条写了原因）：
-
-1. **镜像走单个仓库**。`global.imageRepo=trainticket` 把 45 个镜像全部收进一个仓库，
-   用 tag 区分（`journey-order-20260913`、`postgres-16-alpine`）。39 个服务各占一个
-   仓库的话，公开/私有开关和仓库配额都要按 39 份来配。
-2. **infra 镜像一并镜像进去**。不能沿用 `imageRegistry`——`pair-cn-*` 是 docker.io 的
-   加速镜像所以 `library/postgres` 能透传，普通仓库不能。把 infra 打回 docker.io 也不行：
-   该集群到 `auth.docker.io` 超时，`curlimages/curl`、`jaegertracing/all-in-one`、
-   `axllent/mailpit` 全部 ImagePullBackOff（`postgres`/`redis` 能起来只是节点上有缓存）。
-   所以 release 只依赖一个可达的仓库。
-3. **StorageClass 换 `juicefs-sc`**。`ebs-ssd` 是 Volces VKE 的，这里不存在。
-4. **loadgen 从 30 副本降到 3**。30 是给 20 节点压测集群的，首次起来就压满整栈不是
-   验证顺序该有的样子。
-
-改动落在 chart 和脚本里：`_helpers.tpl` 的 `train-ticket.image` / `train-ticket.infraImage`、
-`deploy/push-images.sh`（新增）、`deploy/helm/values-acr.yaml`（新增），以及
-`render-manifests.sh` / `verify-databases.sh` 支持多 `-f` 分层。
-
-**已知限制**：`deploy/seed.sh`、`deploy/smoke.sh` 和整个 `deploy/e2e/` 套件都通过
-`kubectl exec` 把 curl 打进一个 pod 来做 HTTP 调用。如果 kubeconfig 指向的是
-**路径式反代端点**（如 `https://<ip>:8443/school`）且该代理不转发 `Upgrade`，
-exec 和 port-forward 都会以 `Upgrade request required` 失败，而 `get` / `logs`
-正常——在这种情况下部署和建库能做，种子数据和冒烟做不了，需要一个到 API server
-直连的 kubeconfig。区分方法：
-
-```bash
-kubectl -n train-ticket-prod exec deploy/redis -- redis-cli ping   # 通即可
-```
-
-### 3. 自定义部署
-
-```bash
-# 使用镜像代理
-helm upgrade --install train-ticket deploy/helm/train-ticket \
-  --set global.imageRegistry=pair-cn-guangzhou.cr.volces.com
-
-# 指定 StorageClass
-helm upgrade --install train-ticket deploy/helm/train-ticket \
-  --set postgres.storage.storageClass=ebs-ssd
-```
-
-### 4. 建库（自动，无需手工步骤）
-
-数据库由 chart hook 创建：`deploy/helm/train-ticket/templates/db-bootstrap.yaml`
-按分片渲染出 Job（默认 profile 下是 `postgres-core-bootstrap`），注解为
-`helm.sh/hook: pre-upgrade,post-install`，所以每次 `helm upgrade --install` 都会
-对运行中的 Postgres 执行一次，缺哪个库补哪个库，失败则整个 release 失败。
-
-为什么是 `pre-upgrade` 而不是 `post-upgrade`：upgrade 的顺序是「应用资源 →
-`--wait` 阻塞到全部 Available → post-upgrade hook」。而**新增一个数据库的那次
-upgrade，同时也在滚动依赖这个库的服务**——该 Pod 永远无法 Available，`--wait`
-会一直阻塞到 `--timeout` 用完，本该建库的 hook 根本轮不到执行，形成死锁。
-`pre-upgrade` 没有这个问题：上一版 release 的 Postgres 还在跑，库先建好，服务再
-滚上去。`post-install` 覆盖另一种情况——全新安装时 pre-install 阶段还没有服务器
-可连，而空 PGDATA 意味着 initdb 已经建好了一切，它只是 `helm uninstall` 之后数据卷
-仍然残留这种边角情况的兜底。
-
-`postgres-<shard>-initdb` ConfigMap（挂在 `/docker-entrypoint-initdb.d`）**只在
-PGDATA 为空时执行**，chart 挂的是 PVC，所以在已初始化的卷上往
-`postgres.instances.<shard>.databases` 里加名字对 `helm upgrade` 是无效的——这就是
-`group_booking` 长期缺失的原因。hook 之外还有 `deploy/verify-databases.sh`，它从
-渲染后的 release 里读 `@postgres-<shard>:5432/<db>` DSN 逐分片核对，能抓到 hook
-结构上抓不到的那一类 bug：DSN 指向了任何分片列表里都没有的库。
-
----
-
-## 架构概览
-
-### 服务清单（39 个微服务）
-
-| 分类 | 服务 | 语言 | 说明 |
-|------|------|------|------|
-| **核心购票链** | journey-order | Java | 订单聚合 |
-| | booking-orchestration | Java | Saga 编排 |
-| | trip-planning | Python | 行程搜索 |
-| | fare-pricing | Python | 票价计算 |
-| | offer-management | Java | 报价管理 |
-| | capacity-availability | Rust | 余票管理 |
-| **支付链** | payment | Java | 支付意向+扣款 |
-| | payment-channel | Java | 支付渠道 |
-| | entitlement-ticketing | Rust | 出票 |
-| **售后** | post-sales | Java | 退票/改签 |
-| | finance-settlement | Java | 结算 |
-| **用户** | account | TypeScript | 账户 |
-| | traveler-profile | TypeScript | 旅客档案 |
-| | identity-verification | Python | 身份验证 |
-| **新服务 (Wave B-E)** | loyalty-membership | TypeScript | 会员积分 |
-| | travel-insurance | Go | 旅行保险 |
-| | group-booking | Java | 团体预订 |
-| | corporate-travel | Python | 企业差旅 |
-| | marketing-campaign | Java | 营销活动 |
-| **其他** | 20 个辅助服务 | 多语言 | 风控/通知/审计等 |
-
-### 基础设施
-
-| 组件 | 说明 | 生产配置 |
-|------|------|---------|
-| PostgreSQL | 关系数据库（6 分片，每片一个 Deployment + Service `postgres-<shard>`） | 热分片 4c/8g |
-| Redis | 事件总线 (Streams) + 缓存 | 4c/8g, maxmemory 6GB |
-| Jaeger | 分布式链路追踪（Badger 持久卷） | `jaeger.storage.size` / `jaeger.retention.spanStoreTtl` |
-| OTel Collector | 遥测收集 | - |
-| Mailpit | 邮件模拟 | - |
-
----
-
-## PG 分库策略
-
-生产环境（`values-prod.yaml`）使用 6 个 PG 分片，按访问模式分组：
-
-```
-postgres-hot   ← journey_order, booking_orchestration              (2 库，写密集)
-postgres-txn   ← payment, entitlement_ticketing, post_sales...     (5 库，事务链)
-postgres-read  ← trip_planning, fare_pricing, offer_management...  (7 库，读密集)
-postgres-user  ← account, traveler_profile, identity_verification  (3 库)
-postgres-event ← notification, reporting, risk_compliance...       (4 库，事件侧)
-postgres-core  ← 其余 17 个库                                       (轻负载)
-```
-
-每个分片是独立的 Deployment + Service，名字就是 `postgres-<shard>`。另外还有一个名为
-`postgres` 的 Service，但它是指向默认分片（`postgres.defaultInstance`）的
-ExternalName 别名，**没有任何 Pod**——所以 `kubectl exec deploy/postgres` 不再可用，
-要连数据库请用具体分片，例如 `kubectl exec deploy/postgres-core`。
-
-开发集群 profile（`values-cluster.yaml`）只有一个 `core` 分片，38 个库全在里面。
-
-在 `values-prod.yaml` 中通过 `pgInstance` 字段配置每个服务的 PG 路由：
-
-```yaml
-services:
-  journey-order:
-    db: journey_order
-    pgInstance: hot        # → postgres-hot:5432
-  trip-planning:
-    db: trip_planning
-    pgInstance: read       # → postgres-read:5432
-  account:
-    db: account
-    # 不设 pgInstance → 默认 postgres.defaultInstance，即 postgres-core:5432
-```
-
-所有分片 `databases` 的并集必须覆盖每个服务的 `services.<name>.db`；漏一个的表现是
-服务能启动、能连上服务器，但第一次查询就失败。`deploy/verify-databases.sh` 就是用来
-把这件事变响的。
-
----
-
-## 压测指南
-
-### Loadgen 配置
-
-集群里实际生效的配置是 `deploy/helm/train-ticket/loadgen-config.yaml`（chart 把它渲染成
-`loadgen-config` ConfigMap，并把内容的哈希写进 Pod 注解，所以改完这个文件重新
-`helm upgrade` / `make deploy-fast` 会自动滚动 Deployment）。
-`deploy/loadgen-go/config.yaml` 只是本地开发样例，不进集群。
-
-```yaml
-# deploy/helm/train-ticket/loadgen-config.yaml
-run:
-  mode: closed-loop                         # 或 open-loop（按 target_rps 定速）
-  workers: 50                               # 并发虚拟用户（goroutine）
-  think_time_seconds: { min: 0, max: 0 }    # 压测 profile 用零思考时间
-staff:
-  workers: 60                               # 队列消费侧，需随 workers 同步放大
-```
-
-Loadgen 是单进程 Go 程序（`deploy/loadgen-go`），并发来自 goroutine，
-没有多进程 fan-out。提高单 pod 吞吐请调 `run.workers`（以及相应的
-`staff.workers`），不要再设 `LOADGEN_PROCESSES`——该变量属于已删除的
-Python 实现，现在不起任何作用。
-
-### 阶梯压测
-
-```bash
-# 逐步增加 loadgen pod 数量，观察延迟拐点
-for pods in 1 2 4 8 12 16; do
-  kubectl -n train-ticket-prod scale deployment loadgen --replicas=$pods
-  sleep 40
-  # 收集 RPS + p95 延迟 + PG CPU
-done
-```
-
-### 单实例基线（2c/6g 服务, 4c/8g PG）
-
-| 负载 | RPS | jo p95 | 瓶颈 |
-|------|-----|--------|------|
-| 轻 (~50 RPS) | 49 | 13ms | 无 |
-| 中 (~150 RPS) | 149 | 90ms | PG 事务排队 |
-| 高 (~200 RPS) | 193 | 453ms | PG 饱和 |
-
-### 已知瓶颈及优化
-
-| 瓶颈 | 根因 | 已做优化 |
-|------|------|---------|
-| Event consumer lag | XREADGROUP BLOCK 2s COUNT 10 | → BLOCK 100ms COUNT 100 (env 可调) |
-| PG 表膨胀 | outbox/processed_events 不清理 | → relay 自动清理 (每 20 次 poll) |
-| PG 单实例争用 | 38 库共享 1 PG | → 6 PG 分片（`postgres.instances` + 每服务 `pgInstance`） |
-| Redis OOM | maxmemory 512MB + noeviction | → 生产 6GB maxmemory / 8Gi limit（kind 3GB / 4Gi） |
-| Loadgen 单进程 | 旧 Python asyncio 单核 ~10 RPS | → 改写为 Go，单进程 goroutine 并发（`run.workers`） |
-
----
-
-## 运维手册
-
-### 常用命令
-
-```bash
-# 查看所有 pod 状态
-kubectl -n train-ticket-prod get pods
-
-# 查看服务延迟
-kubectl -n train-ticket-prod logs -l app.kubernetes.io/name=loadgen --tail=2 | grep '\[stats\]'
-
-# 查看 PG CPU
-kubectl -n train-ticket-prod top pod -l app.kubernetes.io/component=database
-
-# 查看 event consumer lag
-kubectl -n train-ticket-prod exec deploy/redis -- redis-cli XINFO GROUPS events:journey-order
-
-# 清理 PG 表膨胀（紧急）。注意要指定具体分片：`postgres` 是 ExternalName 别名，
-# 没有 Pod，exec 不了。journey_order 在 hot 分片上。
-kubectl -n train-ticket-prod exec deploy/postgres-hot -- psql -U trainticket -d journey_order \
-  -c "DELETE FROM outbox WHERE published_at IS NOT NULL; VACUUM;"
-
-# 正确性验证
-python3 deploy/stress/auditor.py --scenario deploy/stress/scenarios/s1-rush.yaml
-python3 deploy/stress/oracle-new-services.py
-```
-
-### 环境变量调优
-
-| 变量 | 默认 | 说明 |
-|------|------|------|
-| `CONSUMER_THREADS` | 1 | Java 服务 event consumer 线程数 |
-| `CONSUMER_BLOCK_MS` | 100 | XREADGROUP 阻塞超时 (ms) |
-| `CONSUMER_BATCH_COUNT` | 100 | XREADGROUP 每次读取条数 |
-| `OUTBOX_POLL_INTERVAL_MS` | 50 | Outbox relay 轮询间隔 |
-| `GOMAXPROCS` | CPU limit | Loadgen Go 运行时并行度（与 cgroup CPU limit 对齐） |
-| `PLATFORM_JAVA_KIT_REDIS_ENABLED` | false | Java 服务启用 Redis event subscriber |
-
-### post-sales 特殊配置
-
-post-sales 有自己的 Redis 配置（不使用 platform-kit 的），需要：
-```bash
-kubectl set env deployment/post-sales \
-  SPRING_MAIN_ALLOW_BEAN_DEFINITION_OVERRIDING=true \
-  PLATFORM_JAVA_KIT_REDIS_ENABLED-  # 删除此变量
-```
-
----
-
-## CI/CD 流程
-
-```bash
-# 1. 代码变更后构建
-DOCKER_BUILDKIT=1 skaffold build -d opspai --tag latest
-
-# 2. 部署到生产
-helm upgrade --install train-ticket deploy/helm/train-ticket \
-  -f deploy/helm/values-prod.yaml \
-  -n train-ticket-prod --wait
-
-# 3. 验证
-python3 deploy/stress/oracle-new-services.py   # 15/15 PASS
-python3 deploy/stress/auditor.py --scenario deploy/stress/scenarios/s1-rush.yaml  # 6/6 PASS
-```
-
-## 常驻部署：一条命令完成构建、推送、升级
-
-```bash
-skaffold run -p resident -d mirrors.tencent.com/microservice
-```
-
-`resident` profile 带部署阶段，装的是 `train-ticket` 命名空间里那一份常驻 release，
-values 层叠顺序与手工安装时相同：`values-cluster.yaml`、`values-case.yaml`、
-`values-resident.yaml`。
-
-它与 `make deploy` 的差别在标签。chart 的 `global.imageTag` 固定为 `local`，
-重新构建之后 pod spec 一个字节都没变，helm 报告 release 未变化，运行中的 pod
-继续使用旧镜像，所以 `make deploy-roll` 必须重启全部 39 个 deployment
-（`Makefile:191` 记录了这一点）。`skaffold.yaml` 使用 `inputDigest` 按内容打标签，
-内容变了标签就变，pod spec 随之改变，helm 只滚动内容确实改变的那些服务，
-其余服务渲染结果完全一致，不会重启。
-
-单个服务的重新部署因此不需要任何 `kubectl` 命令：
-
-```bash
-# 只构建内容变化的服务，推送，升级 release,等待就绪
-skaffold run -p resident -d mirrors.tencent.com/microservice
-```
-
-需要按名字限定构建范围时用 `-b`：
-
-```bash
-skaffold run -p resident -d mirrors.tencent.com/microservice -b identity-verification
-```
+`skaffold build` 仅构建和推送镜像。
+部署阶段位于 profile 中，`resident` profile 指向常驻命名空间，不能用于本次文档收尾。
+使用 `-b` 限定构建对象不等于保留其他部署对象，后续更新仍需要检查完整渲染结果与已部署镜像引用。
+
+### Production 与 ACR 配置
+
+[values-prod.yaml](../deploy/helm/values-prod.yaml) 定义分片数据库和服务资源配置。
+[values-acr.yaml](../deploy/helm/values-acr.yaml) 叠加指定仓库布局与目标环境配置。
+现有 `make push-images` 和 `make deploy-acr` 可供经过前提验证的新目标环境使用。
+
+| 入口 | 输入与行为 |
+| --- | --- |
+| `deploy/build-images.sh` | 构建本地镜像；`LOAD_INTO_KIND=0` 时仅构建。 |
+| `make push-images` | 根据 `HELM_VALUES` 渲染目标镜像名称，将 `LOCAL_TAG` 对应的本地镜像推送为 `IMAGE_TAG`。 |
+| `make deploy-acr` | 按 `HELM_VALUES_ACR` 的顺序应用配置，再执行数据库校验、服务就绪处理、种子数据和冒烟验证。 |
+| `deploy/render-manifests.sh` | 输出指定 values 的渲染结果，供镜像与服务清单检查使用。 |
+
+`global.imageRepo` 非空时，业务镜像使用 `<registry>/<org>/<repo>:<service>-<tag>` 布局。
+基础设施镜像由 `train-ticket.infraImage` 根据仓库配置生成。
+推送脚本要求本地源镜像存在，使用同一组 values 和标签才能与后续部署对应。
+
+这些 values 文件包含具体环境的存储名称，不能直接视为任意集群的安装配置。
+例如 ACR 文件为 PostgreSQL 设置 `juicefs-sc`，为 ClickHouse 和 Prometheus 设置 `ebs-ssd`。
+新环境必须验证这些 StorageClass 以及基础设施镜像和 curl 镜像的可用性。
+种子脚本和 E2E 脚本使用 `kubectl exec`，API 代理必须支持流式连接升级。
+`SMOKE_IMAGE` 仅作用于冒烟探测 Pod，种子脚本的 curl Pod 仍使用脚本中指定的镜像。
+相关后续工作统一记录于 [TODO](TODO.md)。
+
+## 数据库与基础设施
+
+每个 `postgres.instances.<name>` 渲染为独立 PostgreSQL Deployment、Service 和 PVC。
+业务服务通过 `services.<name>.db` 指定数据库，通过 `pgInstance` 指定分片；缺省分片由 `postgres.defaultInstance` 决定。
+`postgres` Service 是默认分片的 ExternalName 别名，没有对应 Pod。
+数据库操作需要使用具体分片，例如 `postgres-core`。
+
+| 配置 | 分片 |
+| --- | --- |
+| chart 默认配置与 cluster profile | `core` |
+| production profile | `hot`、`txn`、`read`、`user`、`event`、`core` |
+
+数据库清单必须覆盖渲染后的全部业务 DSN。
+[db-bootstrap.yaml](../deploy/helm/train-ticket/templates/db-bootstrap.yaml) 根据各分片的数据库清单生成 `pre-upgrade,post-install` hook。
+Job 等待 PostgreSQL 可连接后创建缺失数据库并授予权限，执行期限为 300 秒。
+初始化 ConfigMap 仅在 PostgreSQL 数据目录为空时运行。
+服务启动时执行自己的 schema migration。
+[verify-databases.sh](../deploy/verify-databases.sh) 读取渲染后的数据库引用并逐分片核查。
+
+| 组件 | 当前配置职责 |
+| --- | --- |
+| PostgreSQL | 持久业务记录、事件 outbox 与消费记录。 |
+| Redis Streams | 事件传输；chart 不为 Redis 挂载持久卷，也未启用 AOF。 |
+| OTel gateway | 接收服务通过 OTLP 发送的遥测。 |
+| OTel agent | 采集 Pod 日志和节点信号。 |
+| OTel cluster collector | 采集 Kubernetes 对象、事件及 Prometheus federation 数据。 |
+| ClickHouse | 存储日志、trace 和指标；resident 与 case 使用集中实例。 |
+| Prometheus | 采集指标并保存本地查询窗口。 |
+| Mailpit | 接收模拟邮件的 SMTP 服务。 |
+
+Redis 可连接不能证明事件已经消费，数据库存在不能证明业务流程已经完成。
+业务验收需要同时查看客户端记录、业务引用和消费证据。
+
+## 常驻 loadgen 配置与数据
+
+运行配置由 [loadgen-config.yaml](../deploy/helm/train-ticket/loadgen-config.yaml) 渲染为 `loadgen-config` ConfigMap，挂载到 `/etc/loadgen/config.yaml`。
+镜像不包含运行配置。
+[deploy/loadgen-go/config.yaml](./config.yaml) 是本地开发样例。
+修改 ConfigMap 源文件会改变 Pod 的 `checksum/config`，后续 Helm 更新可能替换 loadgen Pod。
+
+| 项目 | 当前常驻值 |
+| --- | --- |
+| `loadgen.statePersistence.enabled` | `true` |
+| `loadgen.statePersistence.claimName` | `loadgen-resident-state` |
+| `loadgen.statePersistence.storageClass` | `local-path` |
+| Deployment strategy | `Recreate` |
+| `run.mode` | `open-loop` |
+| `run.target_rps` | `20`，单位为每秒发起的 journey 数。 |
+| `target.request_timeout_seconds` | `10` |
+| `loadgen.diurnalPeriodSeconds` | `600`，通过 `LOADGEN_DIURNAL_PERIOD_SECONDS` 覆盖文件中的 1800。 |
+| 记录输出 | `/data/requests.jsonl` 和 stdout。 |
+
+`closed-loop` 使用 `run.workers` 个客户 worker，吞吐受响应时间、思考时间和会话间隔共同影响。
+`open-loop` 根据 `run.target_rps` 和 `run.arrival` 发起 journey，每次到达创建独立 goroutine，`run.workers` 不限制其客户并发。
+一个 journey 可以发出多个 HTTP 请求，因此 `target_rps` 不能直接当作 HTTP RPS。
+staff 与 scalper 分别使用 `staff.workers` 和 `scalper.workers`。
+
+`/data` 同时保存 registry、操作 checkpoint 和请求记录。
+常驻更新必须保留 PVC、记录设置、600 秒周期、目标值 20 与 10 秒超时。
+文件轮换仍限制历史记录长度，PVC 不等于完整验收窗口的永久归档。
+完整字段、补偿成功与失败状态及恢复行为见 [loadgen README](./README.md)。
+
+## 验证入口的使用范围
+
+`deploy/seed.sh` 创建引用数据并暂停、恢复目标环境的 loadgen。
+`make e2e` 也会暂停目标 loadgen，重启用例会替换服务 Pod。
+`make smoke` 会创建业务数据并核查 PostgreSQL 持久记录。
+这些入口供后续新测试环境验证使用，不能作为当前 resident 的只读状态查询。
+
+既有测试结果与稳定运行窗口记录统一见[当前状态](00-current-status.md)。
+全部剩余验收条件和实现工作统一见 [TODO](TODO.md)。
