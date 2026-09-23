@@ -29,6 +29,7 @@ Policy evaluation performs external reads outside database transactions in revis
 Seat allocation replay uses its recorded composition in revision 268, including when that composition has been retired.
 The six class initial purchase regression at revision 268 passes in 97.152 seconds.
 Revision 269 submits all traveler replacements before confirmation waits; its live partial paid change scenario validates submission order and complete compensation in 25.510 seconds.
+Revision 270 records requested class and issue purpose for standing substitution replay, and its six class purchase test passes in 93.644 seconds.
 Check `helm history` and the deployed image digests for the live release; repository HEAD and the running images can differ.
 
 ## Verified behavior
@@ -52,6 +53,8 @@ These tests establish their covered outcomes and do not certify every resident r
 The revision 262 broad regression passes eligibility, recovery, multiple traveler purchase and post sales, and protected transfer checks in 238.495 seconds.
 The same broad regression at revision 264 passes in 225.767 seconds, including the deployed expiry handling and current loadgen behavior.
 The broad regression passes at revision 266 in 239.548 seconds and at revision 267 in 230.630 seconds.
+Revision 269's broad regression failed while waiting for a compensation case to complete; the recorded case later reached `APPLIED`.
+Current service quality compensation still follows ticket cancellation and refund actions, so the preservation of original travel rights requires a separate business behavior correction.
 Complete peak period and durable replay acceptance remain open.
 The continuous 600 second recording ending at 12:58:47 UTC contains 711900 requests and 10348 failed journeys, with request P99 reaching the 10 second deadline.
 That window spans several deployment revisions and is diagnostic evidence for peak latency.
