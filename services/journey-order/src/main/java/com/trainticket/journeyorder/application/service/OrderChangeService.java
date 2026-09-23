@@ -53,21 +53,16 @@ public class OrderChangeService {
             }
         }
         for(JsonNode ref:change.path("scope").path("entitlementRefs"))if(!"VOIDED".equals(text(get("entitlement-ticketing","/api/v1/entitlements/"+ref.asText(),correlation),"status")))throw new DomainRuleViolation("original ticket has not been voided");
-        JsonNode original=get("payment","/api/v1/payment-intents/"+text(target.path("payment"),"paymentIntentId"),correlation);
-        Money due=money(change.path("decision").path("amountDue")),refund=money(change.path("decision").path("refundableAmount"));
-        if(!due.isZero()){
-            JsonNode payment=get("payment","/api/v1/payment-intents/"+text(operations.path("difference-payment"),"paymentIntentId"),correlation);
-            if(!caseId.equals(text(payment,"businessRef")) || !order.accountId().equals(text(payment,"payerRef")) || !"CAPTURED".equals(text(payment,"status")) || !due.equals(money(payment.path("capturedAmount"))) || !money(payment.path("refundedAmount")).isZero())throw new DomainRuleViolation("change payment mismatch");
-        }
-        if(!refund.isZero()){
-            JsonNode returned=get("payment","/api/v1/refunds/"+text(operations.path("difference-refund"),"refundId"),correlation);
-            if(!"SETTLED".equals(text(returned,"status")) || !caseId.equals(text(returned,"businessCaseRef")) || !refund.equals(money(returned.path("amount"))))throw new DomainRuleViolation("change refund has not settled");
-        }
         Money fee=money(change.path("decision").path("changeAssessment").path("changeFee"));
-        Money expected=money(original.path("capturedAmount")).plus(due).minus(money(original.path("refundedAmount")));
-        if(!expected.equals(money(offer.path("total")).plus(fee)))throw new DomainRuleViolation("change funds do not cover target fare and fee");
+        Money retained=Money.zero(fee.currency());
+        for(OrderItem item:order.orderItems())if(!item.cancelled() && item.retainedOnChange() && !item.independentlySettled())retained=retained.plus(item.amount());
+        JsonNode settlement=get("post-sales","/api/v1/post-sales-cases/"+caseId+"/settlement",correlation);
+        if(!caseId.equals(text(settlement,"caseId")) || !orderId.equals(text(settlement,"journeyOrderId")))throw new DomainRuleViolation("change settlement identity mismatch");
+        Money expected=money(settlement.path("balance"));
+        if(!expected.equals(money(offer.path("total")).plus(fee).plus(retained)))throw new DomainRuleViolation("change funds do not cover target fare and retained fees");
         JsonNode downstream=offer.path("downstreamReference");
         order.applyChange(caseId,new OfferSnapshotRef(text(offer,"offerId"),offer.path("offerVersion").asInt(),Instant.parse(text(offer,"createdAt")),Instant.parse(text(offer,"expiresAt")),text(downstream,"priceSnapshotRef"),text(downstream,"ruleSnapshotRef")),segments,items,fee,Instant.now());
+        if(!expected.equals(order.monetarySummary().payableTotal()))throw new DomainRuleViolation("replacement order total differs from its settled funds");
         repository.saveOrder(order,stored.idempotencyKey());
         return Map.of("orderId",orderId,"caseId",caseId,"status",order.state().name(),"offerId",order.offerSnapshot().offerId());
     }

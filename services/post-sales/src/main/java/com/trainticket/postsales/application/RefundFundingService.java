@@ -42,6 +42,51 @@ public class RefundFundingService {
         if(remaining!=0)throw new DomainRuleViolation("available original and change payments do not cover the approved refund");
         cases.assignRefundPayments(caseId,allocations);
     }
+    public List<JsonNode> changePayments(PostSalesCase current,String payer,boolean includeCurrent,String correlation) {
+        Map<String,String> sources=new LinkedHashMap<>();
+        JsonNode root=read("/api/v1/payment-intents/by-business/"+current.journeyOrderId(),correlation);
+        sources.put(text(root,"paymentIntentId"),current.journeyOrderId());
+        var changes=new ArrayList<>(cases.appliedChanges(current.journeyOrderId()));
+        changes.sort(Comparator.comparing(PostSalesCase::createdAt));
+        if(includeCurrent && changes.stream().noneMatch(change->change.caseId().equals(current.caseId())))changes.add(current);
+        Map<String,Money> expected=new HashMap<>();
+        for(var change:changes) {
+            Money due=change.decision().amountSnapshot().extraChargeAmount();
+            if(due.isZero())continue;
+            var difference=change.changeOperations().get("difference-payment");
+            if(difference==null)throw new DomainRuleViolation("change funding requires its recorded payment");
+            String id=String.valueOf(difference.get("paymentIntentId"));
+            if(sources.putIfAbsent(id,PostSalesMapper.prefixed(change.caseId(),"psc-"))!=null)throw new DomainRuleViolation("change payment is assigned more than once");
+            expected.put(id,due);
+        }
+        List<JsonNode> payments=new ArrayList<>();
+        for(var source:sources.entrySet()) {
+            JsonNode payment=source.getKey().equals(text(root,"paymentIntentId"))?root:read("/api/v1/payment-intents/"+source.getKey(),correlation);
+            String purpose=expected.containsKey(source.getKey())?"change":"purchase";
+            if(!source.getValue().equals(text(payment,"businessRef")) || !payer.equals(text(payment,"payerRef"))
+                || !purpose.equals(text(payment,"purpose")) || !"CAPTURED".equals(text(payment,"status")))throw new DomainRuleViolation("change funding payment identity mismatch");
+            Money captured=money(payment.path("capturedAmount")),returned=money(payment.path("refundedAmount"));
+            if(returned.compareTo(captured)>0 || !captured.equals(money(payment.path("amount"))))throw new DomainRuleViolation("change funding payment amount mismatch");
+            if(expected.containsKey(source.getKey()) && !expected.get(source.getKey()).equals(captured))throw new DomainRuleViolation("change payment differs from its approved amount");
+            if(PostSalesMapper.prefixed(current.caseId(),"psc-").equals(source.getValue()) && !returned.isZero())throw new DomainRuleViolation("current change payment has already been refunded");
+            payments.add(payment);
+        }
+        return List.copyOf(payments);
+    }
+    public static Money balance(List<JsonNode> payments) {
+        if(payments.isEmpty())throw new DomainRuleViolation("change funding requires payments");
+        Money total=Money.zero(money(payments.getFirst().path("capturedAmount")).currency());
+        for(JsonNode payment:payments) {
+            Money captured=money(payment.path("capturedAmount")),returned=money(payment.path("refundedAmount"));
+            returned.compareTo(captured);
+            total=total.add(Money.fromMinorUnits(Math.subtractExact(captured.toMinorUnits(),returned.toMinorUnits()),captured.currency().getCurrencyCode()));
+        }
+        return total;
+    }
+    public static Money money(JsonNode node) {
+        if(!node.path("minorUnits").isIntegralNumber())throw new DomainRuleViolation("funding amount must contain integer minorUnits");
+        return Money.fromMinorUnits(node.path("minorUnits").asLong(),text(node,"currency"));
+    }
     private JsonNode read(String path,String correlation){return client.get().uri(path).header("X-Correlation-Id",correlation==null?"":correlation).exchange((request,response)->{
         if(!response.getStatusCode().is2xxSuccessful())throw new IllegalStateException("refund payment lookup returned "+response.getStatusCode());return mapper.readTree(response.getBody());});}
     private static String text(JsonNode node,String field){String value=node.path(field).asText();if(value.isBlank())throw new DomainRuleViolation("refund funding missing "+field);return value;}
