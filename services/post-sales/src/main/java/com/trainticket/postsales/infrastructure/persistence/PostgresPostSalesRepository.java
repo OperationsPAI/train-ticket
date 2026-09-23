@@ -92,6 +92,21 @@ public class PostgresPostSalesRepository implements PostSalesRepository {
     }
 
 
+    @Override public List<PostSalesCase> findPendingCapacityRelease(String booking) {
+        try {
+            String scope=objectMapper.writeValueAsString(List.of(booking));
+            String predicate="data->'scope'->'orderItemRefs' @> ?::jsonb "
+                +"AND NOT (COALESCE(data->'releasedOrderItems','[]'::jsonb) @> ?::jsonb) "
+                +"AND (data->>'status' IN ('APPROVED','EXECUTING') OR (data->>'status'='APPLIED' AND data->>'caseType'='CHANGE'))";
+            List<String> orders=jdbc.queryForList("SELECT DISTINCT data->>'journeyOrderId' AS order_id FROM post_sales_case_snapshots WHERE "+predicate+" ORDER BY order_id",String.class,scope,scope);
+            orders.forEach(this::lockOrder);
+            var result=new ArrayList<PostSalesCase>();
+            for(String order:orders)result.addAll(jdbc.query("SELECT version,data::text AS data FROM post_sales_case_snapshots WHERE "+predicate+" AND data->>'journeyOrderId'=? ORDER BY id FOR UPDATE",
+                (rs,index)->toCase(readSnapshot(rs.getString("data"))).withVersion(rs.getLong("version")),scope,scope,order));
+            return result;
+        } catch(com.fasterxml.jackson.core.JsonProcessingException error) {throw new IllegalStateException("capacity release reference could not be encoded",error);}
+    }
+
     private void reserveActiveRefundSlot(PostSalesCase postSalesCase) {
         try {
             jdbc.update(
