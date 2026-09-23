@@ -142,3 +142,25 @@ func TestPaidInsuranceConcurrentIssuanceAndReferenceValidation(t *testing.T) {
 		t.Fatal("unrelated ancillary reference accepted")
 	}
 }
+
+func TestSettledPremiumRefundMatchesPolicy(t *testing.T) {
+	if os.Getenv("TEST_REFUNDED_INSURANCE_POLICY") == "" {
+		t.Skip("actual refunded insurance policy required")
+	}
+	input, err := os.ReadFile(os.Getenv("TEST_REFUNDED_INSURANCE_POLICY"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var policy domain.Policy
+	if err = json.Unmarshal(input, &policy); err != nil {
+		t.Fatal(err)
+	}
+	verifier := application.PurchaseVerifier{Client: &http.Client{Timeout: 5 * time.Second}, BaseURLTemplate: os.Getenv("TEST_SERVICE_BASE_TEMPLATE")}
+	if err := verifier.VerifyRefund(context.Background(), policy, os.Getenv("TEST_INSURANCE_REFUND_ID")); err != nil {
+		t.Fatal(err)
+	}
+	policy.AncillaryOrderItemID = policy.JourneyOrderID
+	if err := verifier.VerifyRefund(context.Background(), policy, os.Getenv("TEST_INSURANCE_REFUND_ID")); err == nil {
+		t.Fatal("refund for another item accepted")
+	}
+}
