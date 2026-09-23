@@ -138,7 +138,7 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
 
     public static boolean handlesEvent(String eventType) {
         return switch (eventType) {
-            case "PaymentIntentCreated", "JourneyOrderCreated", "SegmentReservationRequested", "PaymentCaptured",
+            case "PaymentIntentCreated", "JourneyOrderCreated", "SegmentReservationRequested", "PaymentCaptured", "RefundSettled",
                  "ProviderReservationConfirmed", "SegmentBookingCancelled", "PostSalesApproved", "PostSalesApplied",
                  "BenefitIssued", "BenefitRedeemed", "BenefitRedemptionReversed", "BenefitRevoked", "BenefitExpired",
                  "AncillaryOrderItemFulfilled", "AncillaryOrderItemCancelled", "AncillaryOrderItemRefundPending",
@@ -177,6 +177,7 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             case "PostSalesApplied" -> {
                 if (service != null) applyPostSales(envelope, payload);
             }
+            case "RefundSettled" -> resumeSettledPostSales(envelope,payload);
             case "BenefitIssued", "BenefitRedeemed", "BenefitRedemptionReversed", "BenefitRevoked", "BenefitExpired" -> recordBenefitCostEntry(envelope, payload);
             case "AncillaryOrderItemFulfilled", "AncillaryOrderItemCancelled", "AncillaryOrderItemRefundPending", "AncillaryOrderItemRefunded", "AncillaryFulfillmentFactRecorded" -> handleAncillaryFinancialEvent(envelope, payload);
             case "ChannelStatementGenerated", "ChannelStatementFrozen" -> recordChannelStatement(envelope, payload);
@@ -189,6 +190,19 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
                 // Streams contain event types that do not affect finance settlement.
             }
         }
+    }
+
+    private void resumeSettledPostSales(EventEnvelope envelope,Map<String,Object> payload) {
+        if(changePayments==null)throw new IllegalStateException("payment facts client is required");
+        var refund=changePayments.read("payment","/api/v1/refunds/"+text(payload,"refundId"),envelope.correlationId());
+        String caseId=refund.path("businessCaseRef").asText();
+        if(!caseId.startsWith("psc-"))return;
+        var current=changePayments.read("post-sales","/api/v1/post-sales-cases/"+caseId,envelope.correlationId());
+        if(!"APPLIED".equals(current.path("status").asText()))return;
+        String order=current.path("journeyOrderId").asText();
+        service.lockOrder(order);
+        if(!"CHANGE".equals(current.path("caseType").asText()) && serviceRevenue(order).stream().noneMatch(item->"change-payment".equals(item.componentCode()) || item.reversalAmounts().keySet().stream().anyMatch(ref->ref.startsWith("rf-"))))return;
+        applyPostSales(envelope,Map.of("caseId",caseId,"orderId",order,"caseType",current.path("caseType").asText()));
     }
 
     @SuppressWarnings("unchecked")
