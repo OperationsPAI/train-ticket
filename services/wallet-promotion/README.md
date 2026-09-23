@@ -66,4 +66,4 @@ It verifies eight concurrent requests, service reconstruction, amount conflict a
 The verified run completed both live tests in 4.792 seconds, with one benefit, ledger entry and `BenefitIssued` retained per case.
 
 Loadgen's `TestLiveWalletCompensationPreservesPaidTravel` contains assertions for an equal wallet balance increment, three case and wallet issuance replays with stable identities, preserved tickets, seats, Holds, payments and ancillary item, and completed fulfillment.
-That focused test has not yet been run against live services.
+The focused test passes against revision 274 in 17.031 seconds with an approved CNY 8.86 credit and successful subsequent fulfillment.
