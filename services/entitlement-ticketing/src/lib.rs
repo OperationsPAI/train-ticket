@@ -2325,15 +2325,25 @@ async fn allocate_seat_for_issue(
         })?;
     if !response.status().is_success() {
         let status = response.status();
-        let text = response.text().await.unwrap_or_default();
+        let body = response.text().await.map_err(|error| ApiErrorKind::Unavailable(error.to_string()))?;
         log::warn!(
             "seat assignment downstream error code={} message={}",
             status.as_u16(),
-            text
+            body
         );
-        return Err(ApiErrorKind::Unavailable(
-            "seat assignment unavailable".into(),
-        ));
+        #[derive(Deserialize)]
+        struct SeatError { code: String, message: String }
+        let error: SeatError = serde_json::from_str(&body)
+            .map_err(|_| ApiErrorKind::Unavailable("seat assignment returned an invalid error response".into()))?;
+        return Err(match (status.as_u16(), error.code.as_str()) {
+            (400, "VALIDATION_FAILED") => ApiErrorKind::ValidationFailed(error.message),
+            (404, "NOT_FOUND") => ApiErrorKind::NotFound(error.message),
+            (409, "CONFLICT") => ApiErrorKind::Conflict(error.message),
+            (412, "PRECONDITION_FAILED") => ApiErrorKind::PreconditionFailed(error.message),
+            (422, "IDEMPOTENCY_KEY_REUSED") => ApiErrorKind::IdempotencyKeyReused(error.message),
+            (422, "DOMAIN_RULE_VIOLATION") => ApiErrorKind::DomainRuleViolation(error.message),
+            _ => ApiErrorKind::Unavailable("seat assignment unavailable".into()),
+        });
     }
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -2346,6 +2356,9 @@ async fn allocate_seat_for_issue(
         .map_err(|e| ApiErrorKind::Unavailable(e.to_string()))?;
     Ok(Some(allocation.seat_ref))
 }
+
+#[cfg(test)]
+mod seat_rejection_live;
 
 /// Build the CLIENT-span context for the outbound seat-assignment call.
 ///
