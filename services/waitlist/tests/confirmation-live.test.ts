@@ -7,6 +7,7 @@ import { OutboxAppender, withTransaction } from "@trainticket/ts-kit";
 import { WaitlistApplicationService } from "../src/application.js";
 import { WaitlistEntry } from "../src/domain.js";
 import { PostgresWaitlistRepository, TransactionalOutboxPublisher } from "../src/storage.js";
+import { createWaitlistEventHandler } from "../src/subscriber.js";
 
 test("recorded order facts control waitlist fulfillment and cancellation with durable replay", {
   skip: !process.env.TEST_DATABASE_URL || !process.env.TEST_WAITLIST_CONFIRMATION_SOURCE,
@@ -39,6 +40,29 @@ test("recorded order facts control waitlist fulfillment and cancellation with du
     const afterExpiry = new Date(now.getTime() + 3_600_000);
     assert.equal((await repository.findExpiredOffers(afterExpiry)).length, 0);
     await pool.query("UPDATE waitlist_entries SET offer_expires_at=now()-interval '1 minute' WHERE entry_id=$1", [entry.entryId]);
+    const locked = await pool.connect();
+    try {
+      await locked.query("BEGIN");
+      await locked.query("SELECT entry_id FROM waitlist_entries WHERE entry_id=$1 FOR UPDATE", [entry.entryId]);
+      const application = new WaitlistApplicationService(repository, new TransactionalOutboxPublisher(new OutboxAppender(pool)));
+      const handler = createWaitlistEventHandler({
+        handleCapacityFreed: application.handleCapacityFreed.bind(application),
+        handleJourneyOrderCancelled: application.handleJourneyOrderCancelled.bind(application),
+        handleJourneyOrderConfirmed: orderId => withTransaction(pool, async client => {
+          await client.query("SET LOCAL lock_timeout='100ms'");
+          return new WaitlistApplicationService(new PostgresWaitlistRepository(client), new TransactionalOutboxPublisher(new OutboxAppender(client)))
+            .handleJourneyOrderConfirmed(orderId);
+        }),
+      });
+      const result = await handler(source.event);
+      assert.equal(result.ok, false);
+      if (result.ok) throw new Error("locked confirmation must remain retryable");
+      assert.equal(result.kind, "transient");
+      assert.equal((await pool.query("SELECT count(*) FROM outbox")).rows[0].count, "0");
+    } finally {
+      await locked.query("ROLLBACK");
+      locked.release();
+    }
     await apply(service => service.handleJourneyOrderConfirmed(source.event.payload.orderId, source.event.correlationId));
     assert.equal((await repository.get(entry.entryId))?.status, "FULFILLED");
     const event = (await pool.query("SELECT envelope FROM outbox WHERE envelope->>'eventType'='WaitlistFulfilled'")).rows;
