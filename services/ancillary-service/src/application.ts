@@ -783,6 +783,36 @@ export class AncillaryApplicationService {
     const refund=await this.payments.refundFor(item,correlation);
     if(refund)await this.refunded(id,{refundRef:refund.refundId,refundedAmount:refund.amount,refundedAt:new Date().toISOString()},correlation);
   }
+  async prepareLatePaymentResolution(id:string,correlation:string):Promise<AncillaryOrderItemSnapshot>{
+    const snapshot=await this.requireOrderItem(id);
+    if(!this.payments)throw new DomainError("PAYMENT_REQUIRED","Payment dependency is required");
+    if(snapshot.status==="REFUNDED"){
+      await this.payments.settledRefund(snapshot,snapshot.refundId!,correlation);
+      return snapshot;
+    }
+    if(!["SELECTED","CANCELLED","REFUND_PENDING"].includes(snapshot.status))throw new DomainError("INVALID_ORDER_ITEM_TRANSITION","Late payment refund requires an unconfirmed ancillary item");
+    await this.payments.validateLatePayment(snapshot,correlation);
+    if(snapshot.status==="REFUND_PENDING")return snapshot;
+    const item=AncillaryOrderItem.fromSnapshot(snapshot);
+    item.cancel({reasonCode:"ANCILLARY_LATE_PAYMENT",source:"SYSTEM"});
+    const cancelled=item.toSnapshot();
+    item.suggestRefund({reasonCode:"ANCILLARY_LATE_PAYMENT"});
+    await this.repository.saveOrderItem(item.toSnapshot());
+    if(snapshot.status!=="CANCELLED")await this.publish(correlation,"AncillaryOrderItemCancelled",id,cancelled.aggregateVersion,
+      {...cancelEventBase(cancelled),reasonCode:"ANCILLARY_LATE_PAYMENT",source:"SYSTEM",previousStatus:snapshot.status,status:"CANCELLED",cancelledAt:cancelled.updatedAt,aggregateVersion:cancelled.aggregateVersion});
+    return item.toSnapshot();
+  }
+  async resolveLatePayment(id:string,correlation:string):Promise<AncillaryOrderItemSnapshot>{
+    const snapshot=await this.requireOrderItem(id);
+    if(!this.payments)throw new DomainError("PAYMENT_REQUIRED","Payment dependency is required");
+    if(snapshot.status==="REFUNDED"){
+      await this.payments.settledRefund(snapshot,snapshot.refundId!,correlation);
+      return snapshot;
+    }
+    if(snapshot.status!=="REFUND_PENDING" || snapshot.refundReason!=="ANCILLARY_LATE_PAYMENT")throw new DomainError("INVALID_ORDER_ITEM_TRANSITION","Late refund must be prepared before submission");
+    const refund=await this.payments.resolveLatePayment(snapshot,correlation);
+    return this.refunded(id,{refundRef:refund.refundId,refundedAmount:refund.amount,refundedAt:new Date().toISOString(),reasonCode:"ANCILLARY_LATE_PAYMENT"},correlation);
+  }
   async listOrderItems(
     filters: OrderItemFilters,
   ): Promise<Paged<AncillaryOrderItemSnapshot>> {
