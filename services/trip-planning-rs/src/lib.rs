@@ -23,7 +23,6 @@ const CONSUMER_GROUP: &str = "trip-planning";
 const SUBSCRIPTION_STREAMS: &[&str] = &[
     "events:place-network",
     "events:service-plan",
-    "events:capacity-availability",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -116,15 +115,15 @@ pub async fn build_runtime() -> Router {
 
     // Start event subscriber
     log::info!("trip-planning initializing Redis subscriber");
-    let subscriber = rust_kit::messaging::redis_runtime::RedisEventSubscriber::from_env()
-        .expect("failed to create Redis event subscriber");
-
-    let streams: Vec<String> = SUBSCRIPTION_STREAMS.iter().map(|s| s.to_string()).collect();
-    let handler_state = state.clone();
     let consumer = consumer_name();
-
-    tokio::spawn(async move {
-        if let Err(e) = subscriber
+    for stream in SUBSCRIPTION_STREAMS {
+        let subscriber = rust_kit::messaging::redis_runtime::RedisEventSubscriber::from_env()
+            .expect("failed to create Redis event subscriber").with_event_filter(PlanIndex::handles_event);
+        let handler_state=state.clone();
+        let streams=vec![stream.to_string()];
+        let consumer=format!("{consumer}:{}",stream);
+        tokio::spawn(async move {
+            if let Err(e) = subscriber
             .subscribe(
                 streams,
                 CONSUMER_GROUP.to_string(),
@@ -145,8 +144,9 @@ pub async fn build_runtime() -> Router {
             .await
         {
             log::error!("event subscriber failed: {}", e);
-        }
-    });
+            }
+        });
+    }
 
     log::info!("trip-planning Redis subscriber started");
     router_with_state(state)
