@@ -646,6 +646,11 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         JourneyOrder order = stored.order();
         int eventCount = order.domainEvents().size();
         try {
+            if(envelope.payload() instanceof Map<?,?> data && data.get("scope") instanceof Map<?,?> scope){
+                var segments=((List<?>)scope.get("segmentRefs")).stream().map(String::valueOf).toList();
+                var travelers=((List<?>)scope.get("travelerRefs")).stream().map(String::valueOf).toList();
+                order.applyScopedPostSalesCancellation(segments,travelers,requiredTextPayload(envelope,"caseId"),envelope.occurredAt(),envelope.eventId(),envelope.correlationId());
+            } else {
             order.applyPostSalesItemCancellation(
                 textPayload(envelope, "orderItemId", order.orderItems().getFirst().orderItemId()),
                 requiredTextPayload(envelope, "caseId"),
@@ -655,6 +660,7 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
                 envelope.eventId(),
                 envelope.correlationId()
             );
+            }
         } catch (DomainRuleViolation | IllegalStateException ex) {
             return ackSkipStateRace(envelope, order);
         }
