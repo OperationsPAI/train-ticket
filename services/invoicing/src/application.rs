@@ -574,6 +574,11 @@ pub(crate) struct OrderProjection {
     #[serde(default)]
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
+impl OrderProjection {
+    fn matches_amount_basis(&self, basis: &AmountBasis) -> bool {
+        self.expected_total.as_ref() == Some(&basis.total_amount)
+    }
+}
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct AmountHistory {
     pub recognitions: std::collections::BTreeMap<String, Money>,
@@ -611,8 +616,7 @@ impl InvoicingApi for InMemoryInvoicingService {
         let state = self.state.lock().unwrap();
         let basis = state.amounts.get(&order_id).cloned()
             .ok_or_else(|| InvoicingError::NotFound("amount basis not yet available".into()))?;
-        if state.orders.get(&order_id).and_then(|order| order.expected_total.as_ref())
-            .is_some_and(|total| *total != basis.total_amount) {
+        if !state.orders.get(&order_id).is_some_and(|order| order.matches_amount_basis(&basis)) {
             return Err(InvoicingError::NotFound("complete amount basis not yet available".into()));
         }
         Ok(basis)
@@ -892,7 +896,7 @@ impl InvoicingApi for InMemoryInvoicingService {
                     "missing finance-settlement amount basis projection for order".into(),
                 ));
             };
-            if order.expected_total.as_ref().is_some_and(|total| *total != projected_amount.total_amount) {
+            if !order.matches_amount_basis(projected_amount) {
                 return Err(InvoicingError::PreconditionFailed("missing finance-settlement components for complete order amount".into()));
             }
             if !amount_basis_matches_projection(&cmd.amount_basis, projected_amount) {
