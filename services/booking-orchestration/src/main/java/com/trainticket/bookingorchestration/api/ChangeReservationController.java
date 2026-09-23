@@ -55,7 +55,10 @@ public class ChangeReservationController {
             request.segmentRef(),request.travelerRef(),seatClass,correlation);
     }
     private JsonNode get(String base,String path,String correlation) {
-        JsonNode result=client.get().uri(base+path).header("X-Correlation-Id",correlation).retrieve().body(JsonNode.class);
+        JsonNode result=client.get().uri(base+path).header("X-Correlation-Id",correlation).exchange((request,response)->{
+            if(!response.getStatusCode().is2xxSuccessful())throw new IllegalStateException("change lookup returned "+response.getStatusCode());
+            return new com.fasterxml.jackson.databind.ObjectMapper().readTree(response.getBody());
+        });
         if (result==null) throw new IllegalStateException("missing change reference response");
         return result;
     }
