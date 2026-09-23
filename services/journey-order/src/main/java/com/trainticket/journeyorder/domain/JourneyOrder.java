@@ -264,7 +264,7 @@ public final class JourneyOrder {
         if(timeline.stream().anyMatch(fact -> "ChangeApplied".equals(fact.factType()) && caseId.equals(fact.attributes().get("postSalesCaseId"))))return;
         requireState(OrderLifecycleState.CONFIRMED,OrderLifecycleState.POST_SALES_ADJUSTED);
         String originalOffer=offerSnapshot.offerId();
-        for(OrderItem item:orderItems)if(!item.cancelled())item.cancel("CHANGE:"+caseId);
+        for(OrderItem item:orderItems)if(!item.cancelled() && !item.retainedOnChange())item.cancel("CHANGE:"+caseId);
         segments.clear();
         segments.addAll(replacementSegments);
         orderItems.addAll(replacementItems);
@@ -486,7 +486,11 @@ public final class JourneyOrder {
                 if (!binding.orderItemId().equals(item.orderItemId())) {
                     throw new DomainRuleViolation("binding item id must match owner item id");
                 }
-                if(!item.cancelled())binding.requireKnownRefs(travelerIds, segmentRefs);
+                if(!item.cancelled()) {
+                    if(item.independentlySettled()) {
+                        if(!travelerIds.contains(binding.travelerId()))throw new DomainRuleViolation("ancillary binding references unknown traveler " + binding.travelerId());
+                    } else binding.requireKnownRefs(travelerIds, segmentRefs);
+                }
             }
         }
     }
