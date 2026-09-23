@@ -14,6 +14,58 @@ fn internal(e: impl std::fmt::Display) -> InvoicingError {
 }
 
 impl PostgresInvoicingService {
+    pub async fn rebuild_amount_basis(&self, order: &str, correlation: &str) -> Result<AmountBasis, InvoicingError> {
+        let mut tx = self.pool().begin().await.map_err(internal)?;
+        for kind in ["amounts","orders"] {
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+                .bind(format!("{kind}:{order}")).execute(&mut *tx).await.map_err(internal)?;
+        }
+        let template = std::env::var("INVOICE_REFERENCE_URL_TEMPLATE").unwrap_or_else(|_| "http://%s:8080".into());
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(5)).build().map_err(internal)?;
+        let financial: Value = client.get(format!("{}/api/v1/order-revenue-bases/{order}",template.replace("%s","finance-settlement")))
+            .header("X-Correlation-Id",correlation).send().await.map_err(internal)?.error_for_status().map_err(internal)?.json().await.map_err(internal)?;
+        let observed_at = chrono::Utc::now();
+        let current: Value = client.get(format!("{}/api/v1/journey-orders/{order}",template.replace("%s","journey-order")))
+            .header("X-Correlation-Id",correlation).send().await.map_err(internal)?.error_for_status().map_err(internal)?.json().await.map_err(internal)?;
+        if financial["orderId"] != order || current["orderId"] != order { return Err(InvoicingError::DomainRuleViolation("rebuild order reference mismatch".into())); }
+        let total: Money = serde_json::from_value(financial["totalAmount"].clone()).map_err(internal)?;
+        let expected: Money = serde_json::from_value(current["monetarySummary"]["total"].clone()).map_err(internal)?;
+        if total != expected { return Err(InvoicingError::Unavailable("financial net revenue does not yet match order total".into())); }
+        let mut history = crate::application::AmountHistory::default();
+        let mut net = 0i64;
+        for item in financial["items"].as_array().ok_or_else(|| internal("revenue items missing"))? {
+            let id = item["revenueRecognitionId"].as_str().ok_or_else(|| internal("recognition identity missing"))?;
+            let amount: Money = serde_json::from_value(item["amount"].clone()).map_err(internal)?;
+            let returned: Money = serde_json::from_value(item["reversedAmount"].clone()).map_err(internal)?;
+            if amount.currency != total.currency || returned.currency != total.currency || returned.minor_units < 0 || returned.minor_units > amount.minor_units {
+                return Err(InvoicingError::DomainRuleViolation("invalid revenue component currency or reversal".into()));
+            }
+            net = net.checked_add(amount.minor_units).and_then(|value| value.checked_sub(returned.minor_units)).ok_or_else(|| internal("revenue overflow"))?;
+            if history.recognitions.insert(id.into(),amount).is_some() { return Err(internal("duplicate recognition identity")); }
+            let reversals: std::collections::BTreeMap<String, Money> = serde_json::from_value(item["reversals"].clone()).map_err(internal)?;
+            let mut reversed_total = 0i64;
+            for (reference, amount) in reversals {
+                if amount.currency != total.currency || amount.minor_units <= 0 { return Err(internal("invalid reversal details")); }
+                reversed_total = reversed_total.checked_add(amount.minor_units).ok_or_else(|| internal("reversal overflow"))?;
+                history.reversals.insert(format!("{id}:{reference}"),amount);
+            }
+            if reversed_total != returned.minor_units { return Err(InvoicingError::Unavailable("reversal details require financial reconciliation".into())); }
+        }
+        if net != total.minor_units { return Err(internal("financial component net differs from total")); }
+        let ids: Vec<String> = history.recognitions.keys().cloned().collect();
+        let basis = AmountBasis { basis_type:"REVENUE_RECOGNITION".into(), revenue_recognition_ids:ids.clone(), finance_invoice_id:None,
+            tax_lines:vec![TaxLine { tax_code:"VAT_SIM".into(),tax_rate_basis_points:0,taxable_amount:total.clone(),tax_amount:Money {currency:total.currency.clone(),minor_units:0} }],
+            total_amount:total.clone(),amount_basis_hash:crate::utils::sha256_prefixed(&crate::utils::normalize_json(&json!({"revenueRecognitionIds":ids,"totalAmount":total,"reversals":history.reversals}))) };
+        let projection = crate::application::OrderProjection { account_id: current["accountId"].as_str().ok_or_else(|| internal("order account missing"))?.into(),
+            traveler_refs:serde_json::from_value(current["travelerRefs"].clone()).map_err(internal)?,segment_refs:serde_json::from_value(current["segmentRefs"].clone()).map_err(internal)?,expected_total:Some(expected),updated_at:Some(observed_at) };
+        for (kind,data) in [("amounts",serde_json::to_value(&basis).map_err(internal)?),("amount_history",serde_json::to_value(history).map_err(internal)?),("orders",serde_json::to_value(projection).map_err(internal)?)] {
+            sqlx::query("INSERT INTO invoicing_projection_rows(kind,id,data) VALUES($1,$2,$3) ON CONFLICT(kind,id) DO UPDATE SET data=EXCLUDED.data")
+                .bind(kind).bind(order).bind(data).execute(&mut *tx).await.map_err(internal)?;
+        }
+        tx.commit().await.map_err(internal)?;
+        Ok(basis)
+    }
+
     pub async fn from_env() -> Result<Self, InvoicingError> {
         let storage = rust_kit::storage::Storage::from_env()
             .await
@@ -175,6 +227,11 @@ impl PostgresInvoicingService {
                 _ => unreachable!(),
             }
         }
+        if kind == "amounts" {
+            let history: Option<(Value,)> = sqlx::query_as("SELECT data FROM invoicing_projection_rows WHERE kind='amount_history' AND id=$1")
+                .bind(id).fetch_optional(&mut *tx).await.map_err(internal)?;
+            if let Some((data,)) = history { snapshot.amount_history.insert(id.into(),serde_json::from_value(data).map_err(internal)?); }
+        }
         let (svc, publisher) = Self::engine();
         svc.import_snapshot(snapshot);
         svc.apply_subscribed_event(envelope).await?;
@@ -188,6 +245,10 @@ impl PostgresInvoicingService {
         if let Some(data) = data {
             sqlx::query("INSERT INTO invoicing_projection_rows (kind,id,data) VALUES ($1,$2,$3) ON CONFLICT (kind,id) DO UPDATE SET data=EXCLUDED.data")
                 .bind(kind).bind(id).bind(data).execute(&mut *tx).await.map_err(internal)?;
+        }
+        if let Some(history) = snapshot.amount_history.get(id) {
+            sqlx::query("INSERT INTO invoicing_projection_rows(kind,id,data) VALUES ('amount_history',$1,$2) ON CONFLICT(kind,id) DO UPDATE SET data=EXCLUDED.data")
+                .bind(id).bind(serde_json::to_value(history).map_err(internal)?).execute(&mut *tx).await.map_err(internal)?;
         }
         for envelope in publisher.drain() {
             sqlx::query("INSERT INTO outbox (event_id,stream,envelope) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING")
@@ -217,6 +278,7 @@ impl PostgresInvoicingService {
                 | "JourneyOrderConfirmed"
                 | "JourneyOrderPostSalesAdjusted"
                 | "RevenueRecognized"
+                | "RevenueRecognitionReversed"
                 | "InvoiceGenerated"
                 | "PostSalesApproved"
                 | "PostSalesApplied"
@@ -234,7 +296,7 @@ impl PostgresInvoicingService {
     ) -> Result<(), InvoicingError> {
         let projection = match envelope.event_type.as_str() {
             "JourneyOrderCreated" | "JourneyOrderConfirmed" | "JourneyOrderPostSalesAdjusted" => Some(("orders", "orderId")),
-            "RevenueRecognized" | "InvoiceGenerated" => Some(("amounts", "orderId")),
+            "RevenueRecognized" | "RevenueRecognitionReversed" | "InvoiceGenerated" => Some(("amounts", "orderId")),
             "InvoiceRequested" if envelope.producer == "booking-orchestration" => Some(("saga_invoices", "sagaId")),
             _ => None,
         };
@@ -408,6 +470,52 @@ impl InvoicingApi for PostgresInvoicingService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires recorded invoice events and PostgreSQL"]
+    async fn recorded_reversals_update_net_basis_and_survive_replay_and_reload() {
+        let source: Value = serde_json::from_str(&std::fs::read_to_string(std::env::var("TEST_INVOICE_NET_EVENTS").unwrap()).unwrap()).unwrap();
+        let created: rust_kit::messaging::EventEnvelope = serde_json::from_value(source["created"].clone()).unwrap();
+        let adjusted: rust_kit::messaging::EventEnvelope = serde_json::from_value(source["adjusted"].clone()).unwrap();
+        let financial: Vec<rust_kit::messaging::EventEnvelope> = serde_json::from_value(source["finance"].clone()).unwrap();
+        let order = created.payload["orderId"].as_str().unwrap().to_string();
+        let schema = format!("invoice_net_{}", uuid::Uuid::now_v7().simple());
+        let url = std::env::var("TEST_DATABASE_URL").unwrap();
+        let admin = sqlx::PgPool::connect(&url).await.unwrap();
+        sqlx::query(&format!("CREATE SCHEMA {schema}")).execute(&admin).await.unwrap();
+        let search = schema.clone();
+        let pool = sqlx::postgres::PgPoolOptions::new().max_connections(3).after_connect(move |conn, _| {
+            let sql = format!("SET search_path TO {search}");
+            Box::pin(async move { sqlx::query(&sql).execute(conn).await?; Ok(()) })
+        }).connect(&url).await.unwrap();
+        let storage = rust_kit::storage::Storage::new(pool.clone());
+        storage.migrate_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations")).await.unwrap();
+        let svc = PostgresInvoicingService { storage };
+        svc.handle_subscribed_event(created.clone()).await.unwrap();
+        let reversal = financial.iter().find(|e| e.event_type == "RevenueRecognitionReversed").unwrap();
+        assert!(svc.handle_subscribed_event(reversal.clone()).await.is_err());
+        let count: (i64,) = sqlx::query_as("SELECT count(*) FROM processed_events WHERE event_id=$1").bind(&reversal.event_id).fetch_one(&pool).await.unwrap();
+        assert_eq!(count.0, 0);
+        for event in &financial { svc.handle_subscribed_event(event.clone()).await.unwrap(); }
+        svc.handle_subscribed_event(adjusted).await.unwrap();
+        let first = svc.get_amount_basis(order.clone()).await.unwrap();
+        assert_eq!(first.total_amount.minor_units,source["netMinor"].as_i64().unwrap());
+        let restarted = PostgresInvoicingService { storage: rust_kit::storage::Storage::new(pool.clone()) };
+        for event in financial.iter().rev() {
+            let mut replay = event.clone(); replay.event_id = format!("evt-{}",uuid::Uuid::now_v7());
+            restarted.handle_subscribed_event(replay).await.unwrap();
+        }
+        let mut earlier = created; earlier.event_id = format!("evt-{}",uuid::Uuid::now_v7());
+        restarted.handle_subscribed_event(earlier).await.unwrap();
+        assert_eq!(first,restarted.get_amount_basis(order.clone()).await.unwrap());
+        let mut changed = reversal.clone(); changed.event_id = format!("evt-{}",uuid::Uuid::now_v7());
+        changed.payload["amount"]["minorUnits"] = json!(reversal.payload["amount"]["minorUnits"].as_i64().unwrap()+1);
+        assert!(restarted.handle_subscribed_event(changed).await.is_err());
+        assert_eq!(first,restarted.get_amount_basis(order).await.unwrap());
+        pool.close().await;
+        sqlx::query(&format!("DROP SCHEMA {schema} CASCADE")).execute(&admin).await.unwrap();
+        admin.close().await;
+    }
 
     #[tokio::test]
     #[ignore = "requires TEST_DATABASE_URL pointing to a disposable database"]
