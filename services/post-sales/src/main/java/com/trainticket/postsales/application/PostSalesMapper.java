@@ -60,6 +60,7 @@ public final class PostSalesMapper {
         body.put("scope", postSalesCase.scope());
         body.put("targetOfferId", postSalesCase.targetOfferId());
         body.put("changeOperations",postSalesCase.changeOperations());
+        body.put("compensationOperations",postSalesCase.compensationOperations());
         body.put("refundPayments",postSalesCase.refundPayments());
         body.put("releasedOrderItemRefs", postSalesCase.releasedOrderItems());
         body.put("reasonCode", postSalesCase.reasonCode());
@@ -90,7 +91,8 @@ public final class PostSalesMapper {
         body.put("caseId", prefixed(postSalesCase.caseId(), "psc-"));
         body.put("eligible", decision.eligible());
         body.put("adjustmentQuoteId", decision.ruleSnapshot().farePricingEvaluationRef());
-        body.put("refundableAmount", money(decision.amountSnapshot().refundAmount()));
+        body.put("refundableAmount", money(decision.kind()==DecisionKind.COMPENSATION?Money.zero(decision.amountSnapshot().refundAmount().currency()):decision.amountSnapshot().refundAmount()));
+        if(decision.kind()==DecisionKind.COMPENSATION)body.put("compensationAmount",money(decision.amountSnapshot().refundAmount()));
         body.put("amountDue", money(decision.amountSnapshot().extraChargeAmount()));
         return body;
     }
@@ -170,6 +172,7 @@ public final class PostSalesMapper {
             if(sourceCase!=null)payload.put("scope",sourceCase.scope());
             if(sourceCase!=null && sourceCase.decision()!=null)payload.put("retainedFee",money(sourceCase.decision().amountSnapshot().feeAmount()));
             payload.put("resultSummary", resultSummary(applied));
+            if(sourceCase!=null && applied.caseType()==PostSalesCaseType.COMPENSATION)payload.put("compensation",sourceCase.compensationOperations().get("issued"));
         } else if (event instanceof PostSalesExecutionStarted executionStarted) {
             payload.put("orderedSteps", executionStarted.orderedSteps().stream().map(Enum::name).toList());
             payload.put("approvalRef", executionStarted.approvalRef());
@@ -192,7 +195,8 @@ public final class PostSalesMapper {
         return switch (caseType) {
             case CANCELLATION -> "CANCELLATION";
             case CHANGE, REBOOK -> "CHANGE";
-            case REFUND, COMPENSATION -> "REFUND_BY_RULE";
+            case REFUND -> "REFUND_BY_RULE";
+            case COMPENSATION -> "COMPENSATION";
         };
     }
 
@@ -205,6 +209,11 @@ public final class PostSalesMapper {
         }
         if (approved.decisionKind()==DecisionKind.CHANGE) {
             actions.put("targetOfferId",sourceCase.targetOfferId());
+            actions.put("steps",java.util.List.of());
+            return actions;
+        }
+        if(approved.decisionKind()==DecisionKind.COMPENSATION){
+            actions.put("compensation",Map.of("method","WALLET_CREDIT","amount",money(sourceCase.decision().amountSnapshot().refundAmount()),"caseId",prefixed(sourceCase.caseId(),"psc-")));
             actions.put("steps",java.util.List.of());
             return actions;
         }
@@ -250,7 +259,8 @@ public final class PostSalesMapper {
         body.put("eligible", decision.eligible());
         body.put("reasonCode", decision.reasonCode());
         body.put("adjustmentQuoteId", decision.ruleSnapshot().farePricingEvaluationRef());
-        body.put("refundableAmount", money(amount.refundAmount()));
+        body.put("refundableAmount", money(decision.kind()==DecisionKind.COMPENSATION?Money.zero(amount.refundAmount().currency()):amount.refundAmount()));
+        if(decision.kind()==DecisionKind.COMPENSATION)body.put("compensationAmount",money(amount.refundAmount()));
         body.put("amountDue", money(amount.extraChargeAmount()));
         if (decision.refundAssessment() != null) {
             body.put("refundAssessment", refundAssessment(decision.refundAssessment()));

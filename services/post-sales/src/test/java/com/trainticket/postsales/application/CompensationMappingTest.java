@@ -10,7 +10,7 @@ import org.junit.jupiter.api.Test;
 
 class CompensationMappingTest {
     @Test
-    void compensationExecutionUsesTheSupportedRefundVoidReason() {
+    void compensationExecutionIssuesWalletCreditWithoutTicketOrRefundActions() {
         Instant now = Instant.now();
         PostSalesCase source = PostSalesCase.open("ord-mapping", PostSalesCaseType.COMPENSATION,
             PostSalesScope.ticket("sb-mapping", "seg-mapping", "tvl-mapping", "ent-mapping"),
@@ -27,6 +27,9 @@ class CompensationMappingTest {
         Map<?, ?> actions = (Map<?, ?>) payload.get("approvedActions");
         assertEquals("COMPENSATION", actions.get("decisionKind"));
         List<?> steps = (List<?>) actions.get("steps");
-        assertEquals("REFUND", ((Map<?, ?>) steps.getFirst()).get("reason"));
+        assertEquals(List.of(), steps);
+        assertEquals(false,actions.containsKey("refund"));
+        assertEquals("WALLET_CREDIT",((Map<?,?>)actions.get("compensation")).get("method"));
+        assertEquals(Map.of("currency","CNY","minorUnits",1000L),((Map<?,?>)actions.get("compensation")).get("amount"));
     }
 }

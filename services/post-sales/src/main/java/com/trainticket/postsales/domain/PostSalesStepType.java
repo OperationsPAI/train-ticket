@@ -2,6 +2,7 @@ package com.trainticket.postsales.domain;
 
 public enum PostSalesStepType {
     DECISION_CONFIRMED,
+    ISSUE_COMPENSATION_CREDIT,
     HOLD_REPLACEMENT_CAPACITY,
     REQUEST_DIFFERENCE_PAYMENT,
     REQUEST_ASYNC_REFUND,

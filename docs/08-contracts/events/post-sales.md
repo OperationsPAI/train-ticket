@@ -1,10 +1,11 @@
-# Post Sales — Events & Commands
+# Post Sales Events & Commands
 
 Last updated: 2026-09-23.
 
 Capacity release handling selects only cases with an unrecorded release that are approved, executing, or applied changes needing release evidence.
 Already recorded releases and other terminal cases do not reacquire the order lock.
 An actionable release still reloads the case under the order lock before saving its result.
+Wallet compensation cases preserve their original capacity and are skipped by capacity release application.
 
 ## Published Events
 
@@ -41,8 +42,10 @@ An actionable release still reloads the case under the order lock before saving 
 |---|---|---|---|
 | `caseId` | `PostSalesCaseId` | yes | Canonical case ID (`psc-<uuid>`). |
 | `orderId` | `JourneyOrderId` | yes | Parent order ID. |
-| `requestType` | enum | yes | `CANCELLATION`, `REFUND_BY_RULE`, `CHANGE`. |
+| `requestType` | enum | yes | `CANCELLATION`, `REFUND_BY_RULE`, `CHANGE`, `COMPENSATION`. |
 | `requestedAt` | RFC3339 UTC | yes | Request timestamp. |
+
+`caseType=COMPENSATION` maps to `requestType=COMPENSATION`.
 
 ### PostSalesEligibilityEvaluated
 
@@ -101,15 +104,18 @@ An actionable release still reloads the case under the order lock before saving 
 |---|---|---|---|
 | `decisionKind` | enum | yes | `REFUND`, `CHANGE`, `COMPENSATION`. |
 | `approvalRef` | string | yes | Reference to the authorizing approval. |
-| `refund` | object | for REFUND | `{orderId, amount: Money, paymentIntentId?}` — payment resolves the intent by `orderId` (its `businessRef`) when `paymentIntentId` is absent. |
-| `steps` | object[] | yes | Execution steps. Each step has `type` plus type-specific fields: `VOID_ENTITLEMENT {entitlementId, reason, policy}`, `RELEASE_CAPACITY {segmentBookingId}`. |
+| `refund` | object | for REFUND | `{orderId, amount: Money, paymentIntentId?}`; payment resolves the intent by `orderId` (its `businessRef`) when `paymentIntentId` is absent. |
+| `compensation` | object | for COMPENSATION | `{method: "WALLET_CREDIT", amount: Money, caseId}` with the approved decision amount and canonical case ID. |
+| `steps` | object[] | yes | Empty for `COMPENSATION` and `CHANGE`. Refund execution uses `VOID_ENTITLEMENT {entitlementId, reason, policy}` and `RELEASE_CAPACITY {segmentBookingId}`. |
 
-Execution completion is choreographed: `EntitlementVoided` →
-booking-orchestration cancels the segment booking
-(`SegmentBookingCancelled` carries `capacityHoldId`) →
-capacity-availability releases the hold (`CapacityReleased` carries
-`references.segmentBookingRef`) → post-sales marks the case applied
-(`PostSalesApplied`).
+For refund execution, `EntitlementVoided` triggers booking cancellation, `SegmentBookingCancelled` carries `capacityHoldId` for Hold release, and `CapacityReleased` carries `references.segmentBookingRef` for Post Sales completion.
+For wallet compensation, `approvedActions.decisionKind=COMPENSATION` authorizes the recorded wallet credit amount and supplies an empty `steps` array.
+Payment skips refund processing for this decision kind, and the approval contains no ticket void or capacity release action.
+Original tickets, seat reservations, order and captured payment are preserved.
+Wallet issuance is requested through `POST /api/v1/benefits` by `execute-compensation`.
+Its request uses `issuanceSource=POST_SALES_COMP`, `benefitType=COMPENSATION_CREDIT`, `balanceType=PROMOTION_CREDIT` and the canonical `caseId`.
+The current request fixes a 30 day validity window when `compensationOperations.request` is created and retains those timestamps across retries.
+The HTTP evaluation response and case decision expose the approved value as `compensationAmount` and expose zero as `refundableAmount`.
 
 ### PostSalesExecutionStarted
 
@@ -127,6 +133,16 @@ capacity-availability releases the hold (`CapacityReleased` carries
 | `orderedSteps` | `PostSalesStepType[]` | yes | Ordered list of execution step types. |
 | `approvalRef` | string | yes | Reference to the approval that authorized execution. |
 
+For wallet compensation, `orderedSteps` is `ISSUE_COMPENSATION_CREDIT`, followed by `APPLY_RESULT`.
+The active executor requires the approved plan to contain `ISSUE_COMPENSATION_CREDIT` before it can issue wallet credit.
+Approval starts internal status `EXECUTING`; the HTTP representation remains `APPROVED` until the case completes.
+Execution records the full request, checked wallet issuance response and verification result in `compensationOperations.request`, `issued` and `verified`.
+Verification includes `originalTicketsPreserved`, `originalPaymentPreserved`, `paymentIntentId`, `capturedAmount`, approved `amount` and `benefitId`.
+The executor reads the original payment by order business reference and requires `CAPTURED` with zero `refundedAmount`, in addition to zero refunds for the compensation case.
+Once verification exists, `completeCompensation` records both execution steps as `SUCCEEDED` in order, then the domain applies the case.
+The credit step references the issued `benefitId`, or `zero-approved-compensation` for a zero approved amount, and `APPLY_RESULT` references the original order.
+Zero amounts have no wallet issuance or `issued` record and retain an empty `verified.benefitId`.
+
 ### PostSalesApplied
 
 | Field | Description |
@@ -142,9 +158,16 @@ capacity-availability releases the hold (`CapacityReleased` carries
 | `caseId` | `PostSalesCaseId` | yes | Case ID. |
 | `orderId` | `JourneyOrderId` | yes | Parent order. |
 | `resultSummary` | object | yes | Summary of executed actions. |
-| `caseType` | string | yes | Executed case type. CHANGE has already applied its verified replacement order. |
+| `caseType` | string | yes | Executed case type. `COMPENSATION` identifies the completed wallet compensation case; `CHANGE` has already applied its verified replacement order. |
 | `scope` | object | yes | Current traveler and segment references affected by the result. |
-| `retainedFee` | Money | yes | Assessed fee retained after the refund. Journey Order records it once per case. |
+| `retainedFee` | Money | yes | Assessed fee from the decision snapshot. Journey Order records refund fees once per case and skips `COMPENSATION` results. |
+| `compensation` | object or null | for COMPENSATION | Recorded `compensationOperations.issued` wallet response, including `benefitId`, account, case and `issuedAmount`; null for a zero approved amount. |
+
+For `COMPENSATION`, this event follows verified wallet execution and successful completion of `ISSUE_COMPENSATION_CREDIT` and `APPLY_RESULT`.
+Journey Order, Finance Settlement and Invoicing skip their refund result processing for this case type.
+The original order, invoice basis, tickets, seat reservations and captured payment are preserved by this compensation flow.
+Wallet's `BenefitIssued` carries the benefit issuance and ledger delta for financial attribution.
+An execution call on an already `APPLIED` or `FAILED` compensation case returns its existing state without publishing another completion event.
 
 ### PostSalesFailed
 
