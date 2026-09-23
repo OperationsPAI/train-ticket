@@ -1,6 +1,9 @@
 # Wallet / Promotion Events & Commands
 
-Last updated: 2026-09-23.
+Last updated: 2026-09-24.
+
+Runtime baseline: Helm revision 279.
+Remaining work is tracked in [TODO](../../TODO.md).
 
 ## Scope
 
@@ -8,7 +11,8 @@ This document covers `PromotionInstrument` lifecycle events, account wallet ledg
 Complaint compensation is driven by an HTTP issuance request carrying `issuanceSource=POST_SALES_COMP` and the canonical Post Sales `caseId`.
 The compensation executor calls wallet issuance after approval and records the returned benefit as execution evidence.
 The issuance credits the order account with the approved amount while preserving the original tickets, seat reservations, order and captured payment.
-Finance Settlement records benefit cost attribution from wallet events and skips refund result processing for `PostSalesApplied` with `caseType=COMPENSATION`.
+Finance Settlement records compensation issuance cost from `BenefitIssued` only and skips refund result processing for `PostSalesApplied` with `caseType=COMPENSATION`.
+Its cost query also contains later benefit lifecycle deltas, without another issuance charge from Post Sales approval or completion.
 Every event payload carries the `businessReason` that caused the state or balance change.
 Reason descriptions must not contain unmasked documents or other sensitive personal data.
 
@@ -95,7 +99,7 @@ Event payloads use the same seven-state enum as the HTTP API: `ISSUED`,
 | `availableAmount` | Money | yes | Available amount after issuance. |
 | `reservedAmount` | Money | yes | Reserved amount after issuance; normally zero. |
 | `issuanceSource` | enum | yes | `MANUAL_OPS`, `POST_SALES_COMP`, or `DISRUPTION_COMP`. |
-| `caseId` | string | no | Post-sales case reference when `issuanceSource` is `POST_SALES_COMP`, or Disruption Recovery case reference when `issuanceSource` is `DISRUPTION_COMP`. |
+| `caseId` | string | no | Post Sales case reference retained for `POST_SALES_COMP`; other issuance sources omit it and can retain recovery context in `businessReason`. |
 | `applicableScope` | object | yes | Benefit eligibility scope. |
 | `redemptionRule` | object | yes | Redemption rule captured at issuance. |
 | `revocationRule` | object | yes | Revocation rule captured at issuance. |
@@ -290,8 +294,8 @@ See [Post Sales events](post-sales.md) for the approval actions, execution plan 
 
 ## Accepted Commands
 
-The command list is the domain command/event table from
-`docs/02-domains/wallet-promotion.md`.
+The commands below are implemented by the wallet application service and expiry scheduler.
+The [domain design](../../02-domains/wallet-promotion.md) describes their current boundaries.
 
 | Command | Sender / Trigger | Produced event |
 |---|---|---|

@@ -228,13 +228,8 @@ build:
 # this repository deploys are different releases with different value layers and
 # neither is a default worth running by accident.
 #
-# NOTE: the artifact list above is exactly the chart's rendered image set (39
-# images: 38 services plus loadgen), so nothing here builds an image no
-# deployment consumes. The one leftover is on the other side:
-# deploy/docker/trip-planning-rs/Dockerfile is byte-identical to
-# deploy/docker/trip-planning/Dockerfile (both compile the Rust crate
-# services/trip-planning-rs) and is referenced by neither the chart nor this
-# file. See deploy/KNOWN-ISSUES.md.
+# Artifact paths and image definitions are listed above.
+# The trip-planning image builds services/trip-planning-rs.
 profiles:
   # The resident deployment: the one release that stays up, and the fault-free
   # reference every case is read against.
