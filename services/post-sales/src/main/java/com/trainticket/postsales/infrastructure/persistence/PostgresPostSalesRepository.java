@@ -71,16 +71,21 @@ public class PostgresPostSalesRepository implements PostSalesRepository {
     }
 
     @Override public List<PostSalesCase> findByOrderItemRef(String orderItemRef) {
-        // Matched with @> so idx_post_sales_case_snapshots_scope_order_items applies.
-        // The caller used to filter the whole table in Java: at 202,372 cases that
-        // deserialized 514 MB of jsonb per CapacityReleased and exhausted the heap.
         try {
             String scope = objectMapper.writeValueAsString(List.of(orderItemRef));
-            return jdbc.query(
-                "SELECT version, data::text AS data FROM post_sales_case_snapshots WHERE data->'scope'->'orderItemRefs' @> ?::jsonb ORDER BY id FOR UPDATE",
-                (rs, rowNum) -> toCase(readSnapshot(rs.getString("data"))).withVersion(rs.getLong("version")),
-                scope
-            );
+            List<String> orderIds = jdbc.queryForList(
+                "SELECT DISTINCT data->>'journeyOrderId' AS order_id FROM post_sales_case_snapshots WHERE data->'scope'->'orderItemRefs' @> ?::jsonb ORDER BY order_id",
+                String.class, scope);
+            // All writers acquire the order lock before locking case snapshots.
+            orderIds.forEach(this::lockOrder);
+            List<PostSalesCase> cases = new ArrayList<>();
+            for (String orderId : orderIds) {
+                cases.addAll(jdbc.query(
+                    "SELECT version, data::text AS data FROM post_sales_case_snapshots WHERE data->'scope'->'orderItemRefs' @> ?::jsonb AND data->>'journeyOrderId' = ? ORDER BY id FOR UPDATE",
+                    (rs, rowNum) -> toCase(readSnapshot(rs.getString("data"))).withVersion(rs.getLong("version")),
+                    scope, orderId));
+            }
+            return cases;
         } catch (com.fasterxml.jackson.core.JsonProcessingException exception) {
             throw new IllegalStateException("order item ref could not be encoded as JSON", exception);
         }
