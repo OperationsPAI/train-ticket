@@ -1,7 +1,7 @@
 import { tracedFetch, type EventPublisher } from "@trainticket/ts-kit";
 import { DomainError, WaitlistEntry, WaitlistQueue, type CreateWaitlistEntry, type FareClass, type PriorityInput, type WaitlistEntrySnapshot } from "./domain.js";
 import { HttpCapacityAvailabilityClient, HttpFarePricingClient, HttpOfferManagementClient, PromotionOrchestrator, type CapacityAvailabilityClient, type FarePricingClient, type JourneyOrderClient, type OfferManagementClient, type WaitlistCapacityFreed, type WaitlistRepository } from "./promotion.js";
-import { publishAll, waitlistCancelled, waitlistFulfilled, waitlistPaymentAuthorizationRequested, waitlistQueued, waitlistRequestCreated } from "./publisher.js";
+import { publishAll, waitlistCancelled, waitlistExpired, waitlistFulfilled, waitlistPaymentAuthorizationRequested, waitlistQueued, waitlistRequestCreated } from "./publisher.js";
 
 export type JoinWaitlistRequest = Readonly<{
   accountId: string;
@@ -103,7 +103,7 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
   async findExpiredOffers(now: Date): Promise<readonly WaitlistEntry[]> {
     return [...this.entries.values()].filter((entry) => {
       if (entry.status === "QUEUED") return hasDeadlinePassed(entry, now);
-      return entry.status === "MATCHING" && ((entry.offerExpiresAt !== null && entry.offerExpiresAt <= now) || hasDeadlinePassed(entry, now));
+      return entry.status === "MATCHING" && !entry.journeyOrderRef && ((entry.offerExpiresAt !== null && entry.offerExpiresAt <= now) || hasDeadlinePassed(entry, now));
     });
   }
 
@@ -206,6 +206,8 @@ export class WaitlistApplicationService {
     const entry = await this.requireEntry(entryId);
     entry.ensureOfferAcceptable(this.now());
     const order = await this.journeyOrder.createOrder(entry);
+    entry.linkJourneyOrder(this.now(), order.orderId);
+    await this.repository.save(entry);
     return { orderId: order.orderId, seatAssignment: order.seatAssignment ?? null };
   }
 
@@ -222,9 +224,9 @@ export class WaitlistApplicationService {
   async handleJourneyOrderConfirmed(orderId: string, correlationId?: string): Promise<WaitlistRequestResource | undefined> {
     const entry = await this.repository.findByJourneyOrderRef?.(orderId);
     if (!entry) return undefined;
-    if (entry.status === "FULFILLED") return toWaitlistRequestResource(await this.snapshot(entry));
+    if (entry.status === "FULFILLED" || entry.status === "CLOSED") return toWaitlistRequestResource(await this.snapshot(entry));
     const now = this.now();
-    entry.accept(now, orderId);
+    entry.confirmJourneyOrder(orderId);
     const snapshot = await this.repository.save(entry);
     if (this.publisher) await publishAll(this.publisher, [waitlistFulfilled(snapshot, entry.loadedVersion, orderId, correlationId, now.toISOString())]);
     return toWaitlistRequestResource(snapshot);
@@ -235,8 +237,11 @@ export class WaitlistApplicationService {
     if (!entry || entry.status !== "MATCHING") return undefined;
     const queuedAt = this.now().toISOString();
     entry.returnToQueue();
+    if (hasDeadlinePassed(entry, this.now())) entry.expire();
     const snapshot = await this.repository.save(entry);
-    if (this.publisher) await publishAll(this.publisher, [waitlistQueued(snapshot, entry.loadedVersion, correlationId, queuedAt, { journeyOrderRef: orderId })]);
+    if (this.publisher) await publishAll(this.publisher, [snapshot.status === "EXPIRED"
+      ? waitlistExpired(snapshot, entry.loadedVersion, correlationId, queuedAt)
+      : waitlistQueued(snapshot, entry.loadedVersion, correlationId, queuedAt, { journeyOrderRef: orderId })]);
     return toWaitlistRequestResource(snapshot);
   }
 
