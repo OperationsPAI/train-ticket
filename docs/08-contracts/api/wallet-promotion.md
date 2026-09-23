@@ -1,43 +1,22 @@
-# Wallet / Promotion — HTTP API
+# Wallet / Promotion HTTP API
 
-Last updated: 2026-07-08
+Last updated: 2026-09-23.
+
+`POST_SALES_COMP` issuance requires one benefit per case.
+If a benefit exists without its persisted issuance request, a new request returns HTTP 409 `CONFLICT` and preserves the existing balance.
 
 ## Overview
 
-Wallet / Promotion owns non-cash benefits: promotion instruments, the per-account
-wallet balance ledger, and idempotent benefit redemption. This contract is scoped
-to the ADR-0002 second activation wave and is bounded by
-`docs/02-domains/wallet-promotion.md`.
+Wallet / Promotion owns promotion instruments, account wallet balances and idempotent benefit redemption.
+Monetary fields use `Money` with `currency` and integer `minorUnits`.
+Complaint compensation reaches the service through an issuance request carrying `issuanceSource=POST_SALES_COMP` and `caseId`.
+Post Sales records and executes that request after approving the compensation amount.
+The original tickets, seat reservations, order and captured payment are preserved during compensation.
+Finance Settlement has benefit cost event handlers, and wallet issuance produces `BenefitIssued` for downstream consumers.
 
-Activation-wave rulings:
-
-- This wave delivers the full `PromotionInstrument` lifecycle and the per-account
-  `WalletAccount` balance ledger. Points and stored value are represented as
-  balance sub-ledgers with monetary `Money` values (`currency` + integer
-  `minorUnits`); there is no decimal or floating-point money on the wire.
-- `BenefitRedemption` is idempotent. The same benefit and the same
-  `businessReason` MUST NOT produce duplicate redemption effects. A replay of an
-  equivalent redemption returns the original redemption result; a different
-  amount or reference for the same idempotency key returns
-  `IDEMPOTENCY_KEY_REUSED`, and a conflicting same-reason redemption returns
-  `CONFLICT`.
-- Combination payment is not delivered in this wave. Payment contracts are not
-  changed. Future note: a later wave will define the "cash remaining payable"
-  interface between Wallet / Promotion and Payment.
-- Finance Settlement and Notification are event consumers at the contract
-  surface, but their concrete consumption implementations are deferred to a
-  later wave.
-- Issuance sources supported in this wave are `MANUAL_OPS`,
-  `POST_SALES_COMP`, and the additive Disruption Recovery value
-  `DISRUPTION_COMP`. Post-sales compensation is carried by the issuance request
-  as `caseId`; Disruption Recovery compensation is carried as a recovery
-  `caseId`/business reason. Wallet / Promotion does not subscribe to Post Sales
-  or Disruption Recovery streams in this wave.
-
-Field shapes reference `docs/08-contracts/shared-primitives.md` for IDs,
-timestamps, event envelope fields, pagination conventions, and `Money`. All
-timestamps are RFC3339 UTC. JSON fields are camelCase and enum values are
-SCREAMING_SNAKE_CASE.
+Field shapes reference `docs/08-contracts/shared-primitives.md` for IDs, timestamps, event envelope fields, pagination conventions and `Money`.
+All timestamps are RFC3339 UTC.
+JSON fields are camelCase and enum values are SCREAMING_SNAKE_CASE.
 
 ## Status enum
 
@@ -85,7 +64,7 @@ A `WalletAccount` is the per-account ledger view for benefit balances.
 | `reasonType` | enum | yes | SCREAMING_SNAKE_CASE reason type from the table above. |
 | `reasonCode` | string | yes | Stable business code such as `GOODWILL_COMP` or `ORDER_BENEFIT_USE`. |
 | `referenceType` | string | no | Referenced object class, for example `ORDER`, `POST_SALES_CASE`, `MANUAL_ACTION`, or `SCHEDULER_JOB`. |
-| `referenceId` | string | no | Referenced aggregate or case ID. Use `caseId` for `POST_SALES_COMP` issuance without changing the Post Sales contract. |
+| `referenceId` | string | no | Referenced aggregate or case ID. Post Sales supplies the canonical `caseId` for `POST_SALES_COMP` issuance. |
 | `description` | string | no | Human-readable operational reason. Do not include unmasked documents or other sensitive personal data. |
 
 ## Resource representations
@@ -158,9 +137,19 @@ A `WalletAccount` is the per-account ledger view for benefit balances.
 
 **POST** `/api/v1/benefits`
 
-**Idempotency:** REQUIRED (`Idempotency-Key` header). Replays with the same body
-return the original response. Reusing the same key with a different body returns
-`IDEMPOTENCY_KEY_REUSED`.
+**Idempotency:** REQUIRED (`Idempotency-Key` header as UUID v7).
+Replays with the same key and request return the stored response.
+Reusing a stored key with a different request returns HTTP 422 `IDEMPOTENCY_KEY_REUSED`.
+
+For `issuanceSource=POST_SALES_COMP`, the service also deduplicates by `caseId` independently of the HTTP idempotency key.
+The same case and an equal `IssueBenefitCommand` return the existing benefit with HTTP 201, including when a new HTTP key is supplied.
+Equality covers account, amount and currency, benefit and balance types, issuance source, case reference, applicable scope, redemption and revocation rules, validity timestamps and the complete business reason.
+A different command for an already recorded case returns HTTP 409 `CONFLICT` with message `compensation case already has another issuance request`.
+An accepted case replay adds no benefit, wallet credit, ledger entry or issuance event.
+
+The PostgreSQL implementation locks the case and receiving account with transaction advisory locks and records the original command in `compensation_issuances`.
+Its `case_id` primary key and unique `benefit_id` bind one benefit to the case.
+The issuance record, benefit, wallet ledger and event outbox are written within the issuance transaction.
 
 **Request:**
 
@@ -181,11 +170,40 @@ return the original response. Reusing the same key with a different body returns
 
 **Response (201):** `PromotionInstrument` resource.
 
-**Domain effects:** creates or updates the account's `WalletAccount`, credits the
-matching available balance, and emits `BenefitIssued`.
+**Domain effects:** An initial issuance creates or updates the account's `WalletAccount`, credits the matching available balance and emits `BenefitIssued`.
 
-**Error codes:** `VALIDATION_FAILED`, `DOMAIN_RULE_VIOLATION`,
-`IDEMPOTENCY_KEY_REUSED`, `UNAVAILABLE`
+**Error codes:** `VALIDATION_FAILED`, `DOMAIN_RULE_VIOLATION`, `CONFLICT`, `IDEMPOTENCY_KEY_REUSED`, `UNAVAILABLE`.
+
+### Approved complaint compensation request
+
+The current Post Sales executor supplies these fields to `POST /api/v1/benefits`:
+
+| Field | Value |
+|---|---|
+| `accountId` | The original order account. |
+| `amount` | The approved `decision.compensationAmount`, matching currency and minor units. |
+| `benefitType` | `COMPENSATION_CREDIT` |
+| `balanceType` | `PROMOTION_CREDIT` |
+| `issuanceSource` | `POST_SALES_COMP` |
+| `caseId` | Canonical `psc-` case ID. |
+| `applicableScope` | `scopeType=ANY_TRIP` and the approved currency. |
+| `redemptionRule` | `singleUse=false`, `requiresReservation=false`. |
+| `revocationRule` | An empty request object. |
+| `validFrom` | Time the executor creates the persisted request. |
+| `validUntil` | `validFrom` plus 30 days. |
+| `businessReason` | `reasonType=POST_SALES_COMP`, the case `reasonCode`, `referenceType=POST_SALES_CASE`, `referenceId=caseId`. |
+
+The 30 day window is supplied by the current compensation executor and retained in its persisted request across retries.
+The wallet API uses the explicit validity fields supplied by its caller.
+Post Sales uses a stable wallet idempotency key derived from the canonical case ID and `wallet-compensation` operation name.
+It records the request in `compensationOperations.request`, the checked wallet response in `issued` and the final verification in `verified`.
+The executor requires an approved plan containing `ISSUE_COMPENSATION_CREDIT` and checks the original payment is `CAPTURED` with zero `refundedAmount`.
+The verification record includes the original `paymentIntentId` and `capturedAmount`.
+It rereads positive issuance through `GET /api/v1/benefits/{benefitId}` before completing the case as `APPLIED`.
+Completion records `ISSUE_COMPENSATION_CREDIT` and `APPLY_RESULT` as `SUCCEEDED` in order.
+Public Post Sales status remains `APPROVED` during these advances.
+Zero approved amounts complete in Post Sales without calling this issuance endpoint.
+See [Post Sales execution](post-sales.md) for the advance endpoint, evidence and completion rules.
 
 ### Get Benefit
 
