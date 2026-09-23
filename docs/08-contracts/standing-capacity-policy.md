@@ -31,6 +31,9 @@ The same hold is counted once when both services have recorded it.
 
 Seat Assignment serializes admission for a scheduled service and date.
 A repeated successful reservation returns its original allocation without taking another slot.
+New allocations persist `requestedClassRef` and `issuePurpose` alongside accepted preferences.
+An accepted standing substitution replays against those original request facts, including the original purchased seat class.
+Changing the class, purpose or standing acceptance on replay returns a conflict.
 A new request at the limit returns `DOMAIN_RULE_VIOLATION` with `standing quota is exhausted`.
 Release or expiry makes the quota available again.
 The existing Capacity hold lifecycle remains authoritative for releasing holds.
