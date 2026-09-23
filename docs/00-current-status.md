@@ -26,6 +26,7 @@ Dedicated change execution lock connections and progress aware loadgen polling a
 The multi traveler purchase and post sales regression passes at that revision in 125.568 seconds.
 Post Sales HTTP virtual thread handling is deployed in revision 266 and has passed a real HTTP test with 220 waiting request bodies.
 Policy evaluation performs external reads outside database transactions in revision 267; eight concurrent evaluations return one persisted decision in its PostgreSQL test.
+Seat allocation replay uses its recorded composition in revision 268, including when that composition has been retired.
 Check `helm history` and the deployed image digests for the live release; repository HEAD and the running images can differ.
 
 ## Verified behavior
@@ -57,6 +58,8 @@ Identity verification, order creation and Post Sales requests account for the la
 The stable revision 264 window ending at 13:16:35 UTC contains 649717 requests and 2119 failed journeys, predominantly change completion and reservation confirmation waits.
 Its request P99 is 5184 milliseconds.
 The later five minute window ending at 13:26:15 UTC contains 147188 requests with zero unexpected HTTP errors or failed journeys; that window spans revisions 265 and 266 and is not a complete stable peak certification.
+The continuous 600 second window ending at 13:36:16 UTC contains 427807 requests and 49191 journeys, with zero unexpected HTTP errors or failed journeys and request P99 of 243 milliseconds.
+That window spans revisions 266 through 268, so stable release peak certification remains required.
 
 ## Supply integration
 
