@@ -406,6 +406,23 @@ func (s *Service) GetScheduledService(ctx context.Context, serviceRef string) (S
 	return state.view, nil
 }
 
+func (s *Service) GetServiceSegment(ctx context.Context, ref string) (ServiceSegment, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return ServiceSegment{}, fmt.Errorf("%w: segmentRef is required", ErrValidation)
+	}
+	if s.repository != nil {
+		return s.repository.FindServiceSegment(ctx, ref)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	segment, exists := s.segments[ref]
+	if !exists {
+		return ServiceSegment{}, fmt.Errorf("%w: service segment", ErrNotFound)
+	}
+	return segment, nil
+}
+
 func (s *Service) ListScheduledServices(ctx context.Context, query ListScheduledServicesQuery) (PaginatedScheduledServices, error) {
 	if s.repository != nil {
 		page, err := s.repository.ListScheduledServices(ctx, query)
