@@ -46,6 +46,9 @@ public class PostSalesEventHandler {
     }
 
     public EventSubscriber.HandlerResult handle(EventEnvelope envelope) {
+        if (!isInteresting(envelope.eventType())) {
+            return EventSubscriber.HandlerResult.SUCCESS;
+        }
         if (transactionTemplate == null) {
             return handleInCurrentThread(envelope, false);
         }
