@@ -30,6 +30,10 @@ Seat allocation replay uses its recorded composition in revision 268, including 
 The six class initial purchase regression at revision 268 passes in 97.152 seconds.
 Revision 269 submits all traveler replacements before confirmation waits; its live partial paid change scenario validates submission order and complete compensation in 25.510 seconds.
 Revision 270 records requested class and issue purpose for standing substitution replay, and its six class purchase test passes in 93.644 seconds.
+Revision 271 excludes completed capacity release records before acquiring order locks.
+Revision 272 exposes Service Plan segment supply with ordered stops, interval and stop sequence version.
+Revision 273 deploys wallet case issuance deduplication and compensation preservation in Payment, Journey Order, Finance Settlement and Invoicing.
+Revision 274 deploys the approved wallet compensation executor and loadgen validation.
 Check `helm history` and the deployed image digests for the live release; repository HEAD and the running images can differ.
 
 ## Verified behavior
@@ -54,7 +58,12 @@ The revision 262 broad regression passes eligibility, recovery, multiple travele
 The same broad regression at revision 264 passes in 225.767 seconds, including the deployed expiry handling and current loadgen behavior.
 The broad regression passes at revision 266 in 239.548 seconds and at revision 267 in 230.630 seconds.
 Revision 269's broad regression failed while waiting for a compensation case to complete; the recorded case later reached `APPLIED`.
-Current service quality compensation still follows ticket cancellation and refund actions, so the preservation of original travel rights requires a separate business behavior correction.
+Service quality compensation issues wallet credit for the approved amount and preserves original travel rights.
+The dedicated revision 274 two traveler test passes in 17.031 seconds, including unchanged tickets, seat allocations, Holds, payments and ancillary service, three issuance replays and subsequent fulfillment.
+Its case `psc-01a0ceba-9bb5-7fbe-ac91-2168e09ae5ad` received CNY 8.86 through benefit `ben-4f16b69f-130c-4f84-b4d2-d38604f2f3f6`.
+Finance Settlement records the same CNY 8.86 as `BenefitIssued` compensation cost with the case reference.
+The revision 272 broad regression failed on an invoice request whose order projection was not available within the existing polling window.
+The order was already confirmed, and its invoice projection subsequently became available.
 Complete peak period and durable replay acceptance remain open.
 The continuous 600 second recording ending at 12:58:47 UTC contains 711900 requests and 10348 failed journeys, with request P99 reaching the 10 second deadline.
 That window spans several deployment revisions and is diagnostic evidence for peak latency.
@@ -102,6 +111,7 @@ The remaining acceptance work includes:
 4. Other paid failure paths and eligibility behavior after changed travel dates.
 5. A complete peak traffic cycle, recorder completeness and durable consumer replay validation.
 6. Notification and loyalty dead letter attribution, insurance claim history, finance history and daily fee checks, group and corporate workflows, reporting and bootstrap coverage.
+7. Invoice amount basis readiness and timely order projection consumption.
 
 An unmeasured area has no current all clear claim.
 No workload reduction or relaxed error threshold is part of the acceptance criteria.
