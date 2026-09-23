@@ -22,6 +22,9 @@ Invoice creation reuses its transaction connection in revision 261.
 Synchronous accepted order policy inputs are deployed in revision 262.
 Elapsed difference payment handling is deployed in revision 263 and the recorded zero capture case completed compensation.
 Expired target handling is deployed with loadgen in revision 264 and verified against a recorded case with unchanged original tickets.
+Dedicated change execution lock connections and progress aware loadgen polling are deployed in revision 265.
+The multi traveler purchase and post sales regression passes at that revision in 125.568 seconds.
+Post Sales HTTP virtual thread handling is deployed in revision 266 and has passed a real HTTP test with 220 waiting request bodies.
 Check `helm history` and the deployed image digests for the live release; repository HEAD and the running images can differ.
 
 ## Verified behavior
@@ -49,6 +52,9 @@ The continuous 600 second recording ending at 12:58:47 UTC contains 711900 reque
 That window spans several deployment revisions and is diagnostic evidence for peak latency.
 Its recorder reports zero dropped records.
 Identity verification, order creation and Post Sales requests account for the largest timeout groups.
+The stable revision 264 window ending at 13:16:35 UTC contains 649717 requests and 2119 failed journeys, predominantly change completion and reservation confirmation waits.
+Its request P99 is 5184 milliseconds.
+The later five minute window ending at 13:26:15 UTC contains 147188 requests with zero unexpected HTTP errors or failed journeys; that window spans revisions 265 and 266 and is not a complete stable peak certification.
 
 ## Supply integration
 
