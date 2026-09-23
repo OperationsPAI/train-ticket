@@ -99,6 +99,29 @@ public class PostSalesApplicationService {
         return current;
     }
 
+    public PostSalesCase recordChangeOperation(String caseId, String name, Map<String,Object> result) {
+        PostSalesCase initial=get(caseId);
+        repository.lockOrder(initial.journeyOrderId());
+        PostSalesCase current=get(caseId);
+        current.recordChangeOperation(name,result);
+        repository.save(current);
+        return current;
+    }
+
+    public PostSalesCase completeChange(String caseId,String correlation) {
+        PostSalesCase initial=get(caseId);
+        repository.lockOrder(initial.journeyOrderId());
+        PostSalesCase current=get(caseId);
+        if(current.caseType()!=PostSalesCaseType.CHANGE) throw new com.trainticket.postsales.domain.DomainRuleViolation("only CHANGE execution can complete here");
+        if(current.status()==PostSalesCaseStatus.APPLIED)return current;
+        if(!current.changeOperations().containsKey("order-applied"))throw new com.trainticket.postsales.domain.DomainRuleViolation("replacement order update has not completed");
+        current.applyResult("replacement tickets and financial adjustment completed",clock.instant(),"cmd-change-applied","cmd-change-applied",correlation);
+        repository.save(current);
+        policyContextStore.findByOrderId(current.journeyOrderId()).map(PostSalesPolicyContext::incrementAppliedChangeCount).ifPresent(policyContextStore::save);
+        publishNewEvents(current);
+        return current;
+    }
+
     public PostSalesCase approve(String caseId, String sourceCommandId, String correlationId) {
         PostSalesCase postSalesCase = get(caseId);
         if (isTerminalNonRefundable(postSalesCase)) {
@@ -121,11 +144,6 @@ public class PostSalesApplicationService {
             postSalesCase = get(caseId);
         }
         postSalesCase.approve("http-approval", clock.instant(), sourceCommandId, sourceCommandId, correlationId);
-        if (postSalesCase.caseType() == PostSalesCaseType.CHANGE) {
-            policyContextStore.findByOrderId(postSalesCase.journeyOrderId())
-                .map(PostSalesPolicyContext::incrementAppliedChangeCount)
-                .ifPresent(policyContextStore::save);
-        }
         startApprovedExecution(postSalesCase, sourceCommandId, correlationId);
         return postSalesCase;
     }
@@ -258,7 +276,7 @@ public class PostSalesApplicationService {
                 ? (assessment.netRefundable().isZero() ? ChangeFinancialAction.NONE : ChangeFinancialAction.REQUEST_ASYNC_REFUND)
                 : ChangeFinancialAction.COLLECT_DIFFERENCE_PAYMENT;
             ChangeFlowSnapshot changeFlowSnapshot = new ChangeFlowSnapshot(
-                "change-offer-" + postSalesCase.caseId(),
+                postSalesCase.targetOfferId()==null?"change-offer-" + postSalesCase.caseId():postSalesCase.targetOfferId(),
                 "capacity-hold-" + postSalesCase.caseId(),
                 financialAction,
                 "void-old-entitlement-" + postSalesCase.caseId(),
@@ -467,7 +485,7 @@ public class PostSalesApplicationService {
                 postSalesCase.startExecution(now, "cmd-capacity-released", causationId, correlationId);
             }
             if (postSalesCase.status() == com.trainticket.postsales.domain.PostSalesCaseStatus.EXECUTING) {
-                if (postSalesCase.recordCapacityReleased(segmentBookingRef)) {
+                if (postSalesCase.recordCapacityReleased(segmentBookingRef) && postSalesCase.caseType()!=PostSalesCaseType.CHANGE) {
                     postSalesCase.applyResult("all scoped capacity released", now, "cmd-capacity-released", causationId, correlationId);
                 }
                 repository.save(postSalesCase);
