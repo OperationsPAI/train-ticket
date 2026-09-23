@@ -1,146 +1,130 @@
-# Phase 1 Train Ticket Contract
+# 当前业务协作与接口
 
-Last updated: 2026-06-28
+更新日期：2026 年 9 月 24 日。
 
-## 目的
+本文件说明 Helm revision 279 基线下的业务所有权、实际接口和协作事实。
+发布证据见[当前项目状态](../00-current-status.md)，各服务 API 源码入口见[领域所有权索引](domain-reduce-status.md)。
+未完成工作与验收状态统一见 [TODO](../TODO.md)。
 
-这份文档定义第一阶段火车票务重构的全局契约。它不是 API 文档，也不是数据库设计，而是后续详细 domain 设计和工程任务拆分必须共同遵守的业务边界。
+## 事实与生命周期
 
-第一阶段目标是把火车固定班次票务闭环做成可解释、可恢复、可迁移的模型：
+| 事实 | 所有者 | 关联内容 |
+|---|---|---|
+| 已接受购买来源 | Journey Order | 订单创建时的 Offer、旅客和分段引用。 |
+| 分段预订 | Booking Orchestration | Saga、SegmentBooking、旅客与执行结果。 |
+| 库存预留 | Capacity & Availability | CapacityHold、区间、有效期和确认状态。 |
+| 座位或无座分配 | Seat Assignment | SeatAllocation、编组和政策证据。 |
+| 平台支付和退款 | Payment | PaymentIntent、Refund、金额和渠道关联。 |
+| 渠道交互 | Payment Channel | ChannelOrder、ChannelRefund 和渠道账单。 |
+| 主票权益 | Entitlement & Ticketing | Entitlement、凭证、分配引用和使用状态。 |
+| 售后决策与执行 | Post Sales | Case、审批金额、目标 Offer 和执行记录。 |
+| 钱包补偿 | Wallet / Promotion | benefit、caseId、发放金额和余额。 |
+| 履约 | Fulfillment | 进站、完成和未乘车事实。 |
 
-1. 查询和报价不锁库存。
-2. 下单、占座、支付、出票拆成独立生命周期。
-3. 支付成功不等于出票成功。
-4. 出票成功不等于订单汇总已确认。
-5. 售后先决策，再作废票证，再退款。
-6. 人工和旧系统迁移不能绕过聚合命令。
+每个负责服务校验自身命令并保存状态。
+其他服务通过业务引用和事件读取结果。
+事务内业务记录与 outbox、消费者去重语义见[消息说明](../08-contracts/messaging.md)。
+历史事件恢复的验收状态见 [TODO](../TODO.md)。
 
-## 范围假设
+## 购票协作
 
-| Area | Phase 1 Assumption |
-|---|---|
-| Transport mode | 火车固定班次。 |
-| Inventory authority | 默认平台内部库存权威，支持区间座席 Hold。 |
-| Payment | 现金支付和原路退款；钱包、积分、券和多人组合支付已裁定为 future-scope。 |
-| Offer | 不锁库存，只冻结报价、规则、可用性快照和有效期。 |
-| Entitlement | 主运输票证；纸质票取票作为可选 CheckIn，不拆 CredentialRegistry。 |
-| Fulfillment | 至少记录检票或进站事实；没有可信到达数据时不自动 Used。 |
-| Provider Integration | 最小 ACL，包含支付渠道协议、供应商状态映射、幂等、raw archive 和错误归一。 |
-| Waitlist | 已裁定为独立 future-scope 上下文；第一阶段不实现。 |
-| Ancillary | 可作为独立 OrderItem 摘要，失败不阻断主票；复杂 bundle 和自动售后不进入第一阶段。 |
-| Transfer | 可保留风险披露和模型引用；第一阶段不承诺保障联乘权益。 |
-| Finance / Reporting | 消费事件和读模型，不作为第一阶段交易闭环 gate。 |
+| 业务操作 | 接口与负责服务 | 结果与下游用途 |
+|---|---|---|
+| 核对旅客及购买条件 | Traveler Profile、Identity Verification、Risk & Compliance 的档案、核验和评估接口。 | 旅客引用、资格和风险结果用于报价及下单校验。 |
+| 查询行程 | Trip Planning：`POST /api/v1/itineraries/search`。 | 候选行程及查询提示。 |
+| 获取报价 | Offer Management：`POST /api/v1/offers`。 | Offer 及价格、规则、候选引用。 |
+| 创建订单 | Journey Order：`POST /api/v1/journey-orders`。 | JourneyOrderCreated 与已接受购买来源。 |
+| 管理分段预订 | Booking：`/api/v1/internal/booking-sagas`、`/api/v1/internal/segment-bookings/{segmentBookingId}`。 | Saga、SegmentBooking 与预订进度。 |
+| 预留与确认容量 | Capacity：`POST /api/v1/capacity-holds`、`POST /api/v1/capacity-holds/{hold_id}/confirm`。 | Hold、CapacityHeld 与 CapacityHoldConfirmed。 |
+| 创建并收取支付 | Payment：`POST /api/v1/payment-intents`、`POST /api/v1/payment-intents/{paymentIntentId}/capture`。 | 平台 PaymentIntent 与 PaymentCaptured。 |
+| 执行渠道交互 | Payment Channel：`/api/v1/channel-orders`。 | 渠道提交、查询与结果事实返回 Payment。 |
+| 核对并签发权益 | Entitlement：`POST /api/v1/entitlements`。 | 核对预订、支付、Hold 和订单事实，调用 Seat Assignment 分配，产生 EntitlementIssued。 |
+| 汇总购买结果 | Booking 与 Journey Order 消费出票和资金事实。 | 更新各自分段执行状态与商业订单摘要。 |
+| 发送通知 | Notification 消费业务事件。 | 记录触达尝试并提供 trail 查询。 |
 
-## 核心写模型所有权
+搜索和报价只读取可用性信息。
+出票要求持有负责服务确认的业务事实。
+`PaymentCaptured` 表达资金已收取，`EntitlementIssued` 表达权益已签发，订单摘要由 Journey Order 自行推进。
+多人购买按旅客与分段保留预订和权益引用。
 
-| Aggregate | Owner | Owns | Does Not Own |
-|---|---|---|---|
-| TripIntent / Itinerary | Trip Planning | 查询条件、候选行程、排序解释 | 价格承诺、库存锁定、订单 |
-| Offer | Offer Management | 报价快照、规则快照、风险披露、有效期 | 库存 Hold、支付、供应商确认 |
-| JourneyOrder | Journey Order | 商业订单、OrderItem 摘要、旅客引用、订单汇总状态 | 库存、支付渠道、出票细节、供应商原始状态 |
-| SegmentBooking | Booking Orchestration | 分段预订状态、供应确认映射、Saga 进度 | 用户商业金额、支付渠道、票证凭证 |
-| CapacityHold | Capacity & Availability | 区间库存 Hold、Confirm、Release、Expire | 订单状态、支付状态、退改规则 |
-| PaymentIntent / Refund | Payment | 应收、授权、扣款、退款、渠道回调幂等 | 是否允许出票、是否允许退票、订单确认 |
-| Entitlement | Entitlement & Ticketing | 票证权益签发、作废、冻结、展示凭证 | 物理登乘事实、资金状态 |
-| FulfillmentRecord | Fulfillment | 检票、登乘、完成、NoShow 等物理事实 | 权益签发、退款规则 |
-| PostSalesCase | Post Sales | 退改 Case、规则评估、金额决策、执行步骤 | 支付渠道执行、订单内部状态直接写入 |
-| NotificationTask | Notification | 模板、收件人、渠道、发送、回执、重试 | 是否推进核心业务状态 |
-| ManualAction / AuditTrail | Admin & Audit | 权限、审批、审计、受控人工命令入口 | 目标 domain 不变量 |
+## 供给与分配
 
-## 正向购票链路
+Service Plan 的 supply 接口提供服务、日期相关运行区间、停站序列及版本依据。
+Seat Assignment 的 capacity facts 提供已发布编组与可分配供给。
+Capacity 管理 Hold 的区间占用和状态。
+Seat Assignment 管理物理座位分配、无座配额和分配重放证据。
+Entitlement 保存分配结果并形成可使用票证。
+Capacity 新联合供给仍未提交、未部署，接入工作见 [TODO](../TODO.md)。
 
-| Step | Command | Owner | Success Event | Rule |
-|---|---|---|---|---|
-| 1 | SearchItineraries | Trip Planning | ItineraryProposed | 只返回候选，不承诺可售。 |
-| 2 | QuoteOffer | Offer Management | OfferQuoted | Offer 引用 AvailabilitySnapshot 和 PriceSnapshot，不 Hold。 |
-| 3 | CreateJourneyOrder | Journey Order | JourneyOrderCreated | 必须引用有效 Offer 和旅客快照。 |
-| 4 | StartBookingSaga | Booking Orchestration | BookingSagaStarted | Saga 状态必须可查。 |
-| 5 | RequestSegmentReservation | Booking Orchestration | SegmentReservationRequested | 内部库存走 Capacity；外部供应商走 Provider Integration。 |
-| 6 | HoldCapacity | Capacity & Availability | CapacityHeld | 火车必须按车次、日期、席别、座位、区间判断冲突。 |
-| 7 | ConfirmSegmentReservation | Booking Orchestration | SegmentReservationConfirmed | 如果来自供应商，必须由 `ProviderReservationConfirmed` 映射。 |
-| 8 | MarkPendingPayment | Journey Order | JourneyOrderPendingPayment | 只发布待支付商业事实。 |
-| 9 | CreatePaymentIntent | Payment | PaymentIntentCreated | 由 Saga 或 Payment OHS 发起。 |
-| 10 | CapturePayment | Payment | PaymentCaptured | 不能直接改订单、出票或库存。 |
-| 11 | ConfirmHold | Capacity & Availability | CapacityHoldConfirmed | 只有确认后的 Hold 才可用于出票条件。 |
-| 12 | IssueEntitlement | Entitlement & Ticketing | EntitlementIssued | 必须满足 Booking、Payment、Capacity、Traveler、Risk 条件。 |
-| 13 | MarkSegmentTicketed | Booking Orchestration | SegmentTicketed | SegmentBooking 记录出票完成。 |
-| 14 | ConfirmJourneyOrder | Journey Order | JourneyOrderConfirmed | 汇总条件满足后确认订单。 |
-| 15 | ScheduleNotification | Notification | NotificationScheduled | 通知失败不回滚业务。 |
+## 退票与取消
 
-## 退票链路
+Post Sales 通过 Case 明确处理范围、退票原因、金额和批准的动作。
+Fare 计算费用与退款依据，Payment 接收资金执行要求。
+Entitlement、Booking、Capacity 和 Seat Assignment 分别记录权益作废、预订取消、Hold 释放和分配释放。
+Post Sales 收集执行事实并形成 Case 结果，Journey Order、Finance 和 Invoicing 消费对应结果。
 
-| Step | Command | Owner | Success Event | Rule |
-|---|---|---|---|---|
-| 1 | RequestPostSales | Post Sales | PostSalesRequested | 售后入口，不直接退款。 |
-| 2 | EvaluateRefundRule | Fare & Pricing / Post Sales | PostSalesEvaluated | Fare 计算规则，Post Sales 拥有 Case 决策。 |
-| 3 | ApprovePostSales | Post Sales | PostSalesApproved | 冻结规则版本和金额摘要。 |
-| 4 | VoidEntitlement | Entitlement & Ticketing | EntitlementVoided | 已 Used 不允许普通 Voided。 |
-| 5 | CancelSegmentBooking | Booking Orchestration | SegmentBookingCancelled | 外部供应商取消经 Provider Integration。 |
-| 6 | ReleaseCapacity | Capacity & Availability | CapacityReleased | 释放失败重试，不直接改订单。 |
-| 7 | RequestRefund | Payment | RefundRequested | Payment 执行资金，不重新判定规则。 |
-| 8 | SettleRefund | Payment | RefundSettled | 退款失败进入重试或人工，不恢复已作废票。 |
-| 9 | ApplyPostSalesResult | Post Sales / Journey Order | PostSalesApplied / JourneyOrderAdjusted | Post Sales 发布决策，JourneyOrder 汇总自身订单项。 |
+`PostSalesApproved` 由不同服务分别消费。
+[PaymentInboundEventHandler](../../services/payment/src/main/java/com/trainticket/payment/application/PaymentInboundEventHandler.java)按批准的退款动作发起 Refund。
+[Entitlement 事件处理](../../services/entitlement-ticketing/src/lib.rs)按批准的权益动作处理客票。
+跨服务事件消费具有各自进度，Case 完成需要核对关联结果。
+详细状态与消息处理要求见[跨域设计决策](decision-record.md)。
 
-## 改签链路
+## 改签执行
 
-第一阶段采用保守顺序：
+当前执行入口为 `POST /api/v1/post-sales-cases/{caseId}/execute-change`。
+[ChangeExecutionService](../../services/post-sales/src/main/java/com/trainticket/postsales/application/ChangeExecutionService.java)保存目标、支付、预订、出票和结算的执行记录。
 
-1. 校验旧票可改。
-2. 生成 ChangeOffer。
-3. Hold 新库存。
-4. 处理补差价；新票更便宜时可先完成改签，退款异步执行。
-5. 作废旧 Entitlement。
-6. 确认新 SegmentBooking。
-7. 签发新 Entitlement。
-8. 释放旧库存。
-9. 更新 JourneyOrder 商业汇总。
+1. 核对原订单、目标 Offer、目标行程、FareQuote 与已有支付余额，保存本次接受的目标资料。
+2. 通过 Booking 的 `POST /api/v1/internal/change-reservations` 提交全部目标旅客与分段预订。
+3. 读取替代 SegmentBooking 和 CapacityHold，确认目标容量结果。
+4. 存在应补差额时，通过 Payment 创建并完成对应 Case 的差额收款。
+5. 通过 Entitlement 签发 replacement ticket，出票授权来自 Post Sales 的 `issue-authorization/{bookingId}`。
+6. 在替代票签发完成后作废原票，等待原预订取消和原 Hold 释放。
+7. 存在应退差额时，按记录的资金来源请求退款并确认结算结果。
+8. 调用 Journey Order 的 `POST /api/v1/journey-orders/{orderId}/apply-change`，完成 Case。
 
-禁止迁移旧系统中的删单式改签。旧订单和旧票必须通过 replacement booking、旧权益作废、差价支付或退款、库存释放形成可审计链路。
+执行记录使重复推进能够读取已完成步骤。
+目标 Offer 过期、差额支付终止和容量不足分别保留明确失败原因。
+已部署的容量不足补偿会保留原票，作废已签发替代票，取消替代预订，释放替代容量，并退回已收差额。
+Booking 的 `POST /api/v1/internal/change-compensations/{bookingId}` 核对 Case 后处理替代预订。
+其他失败路径与完整验收范围见 [TODO](../TODO.md)。
 
-## 失败和晚到事件
+## 服务质量补偿与钱包补偿额度
 
-| Scenario | Required Handling |
-|---|---|
-| PaymentCaptured late after order cancelled | 创建 LatePaymentCase，自动退款或人工确认；不能直接恢复订单。 |
-| ProviderReservationConfirmed late after cancellation | 尝试供应商取消；不可取消时进入 ProviderConflictCase。 |
-| EntitlementIssued late after refund request | 先 Suspend Entitlement，再由 Post Sales 判断作废或补偿。 |
-| RefundFailed after EntitlementVoided | 重试退款或人工处理；不能静默恢复票证。 |
-| CapacityHeld but PaymentExpired | Release 或 Expire Hold，订单取消或回到可支付策略。 |
-| Ticket issued but JourneyOrder confirm failed | 重放汇总事件或人工修复订单汇总；不能重复出票。 |
+服务质量 `COMPENSATION` 的执行入口为 `POST /api/v1/post-sales-cases/{caseId}/execute-compensation`。
+[CompensationExecutionService](../../services/post-sales/src/main/java/com/trainticket/postsales/application/CompensationExecutionService.java)负责核对审批和发放结果。
 
-## 事件命名契约
+1. 读取已批准 Case，核对原订单、原票、原支付和 Case 下的退款记录。
+2. 保存批准的收款账号、金额、caseId、有效期和 Wallet 请求。
+3. 调用 Wallet 的 `POST /api/v1/benefits`，使用稳定幂等键和 Case 关联。
+4. 读取 benefit，核对接收人、金额、来源和类型，再保存执行证据。
+5. 完成 Post Sales Case，并发布业务结果。
 
-| External / ACL Fact | Internal Domain Fact |
-|---|---|
-| ProviderReservationConfirmed | SegmentReservationConfirmed |
-| ProviderReservationFailed | SegmentReservationFailed |
-| ChannelPaymentCaptured | PaymentCaptured |
-| ChannelRefundSettled | RefundSettled |
-| SupplierTicketIssued | EntitlementIssued |
-| ProviderBoardingAccepted | BoardingVerified |
+发放字段为 `benefitType=COMPENSATION_CREDIT`、`balanceType=PROMOTION_CREDIT`、`issuanceSource=POST_SALES_COMP`。
+当前请求的有效期为发放请求生成后的 30 天。
+原票、SeatAllocation、CapacityHold、原支付和附加服务保持有效。
+Payment 对该 Case 保留原收款，Finance 根据 `BenefitIssued` 记录补偿成本，Invoicing 保留原订单的金额依据。
+原路退款使用 Payment Refund，改签失败补偿使用改签执行记录，两类操作各有明确业务原因和资金关联。
 
-外部事实必须先经过 ACL 映射。核心域事件不能直接带供应商状态码作为业务状态。
+## 财务、发票与报表
 
-## 第一阶段红线
+| 处理 | 所有者与入口 | 依据 |
+|---|---|---|
+| 收入与结算 | Finance：`GET /api/v1/revenue-recognitions/{revenueRecognitionId}`、`GET /api/v1/settlements/daily/{date}`。 | 平台资金、订单、履约与售后事实。 |
+| 补偿成本 | Finance：`GET /api/v1/benefit-costs`。 | BenefitIssued 和对应 Case。 |
+| 电子发票 | Invoicing：`POST /api/v1/e-invoice-requests`。 | 订单投影、发票抬头与金额依据。 |
+| 发票金额查询 | Invoicing：`GET /api/v1/invoice-amount-bases/{order_id}`。 | 本域已持久化的金额投影。 |
+| gross captured payment | Reporting：`GET /api/v1/metrics/revenue`。 | 只累计 PaymentCaptured 金额。 |
 
-1. `PaymentCaptured` 不能直接改 JourneyOrder、Entitlement、Capacity 或 Notification。
-2. `JourneyOrder` 不能直接扣库存、调用供应商或调用支付渠道。
-3. `Provider Integration` 不能拥有 SegmentBooking 聚合。
-4. `Service Plan` 不能拥有停售限售、价格规则或用户购买资格。
-5. `Reporting` 不能提供修订单、修库存、补退款的写入口。
-6. `Customer Service` 不能直接改业务表；必须进入目标 domain 命令。
-7. `Notification` 失败不能回滚业务成功。
-8. 客户端统一通过目标业务域的命令接口修改状态。
+Reporting 现有响应字段 `totalRevenue` 和 `revenue` 表示已收款总额。
+支持的金额维度为 `route`、`seat_class`、`channel`、`passenger_type` 和 `time_period`。
+`source_context` 与 `event_type` 返回事件计数口径。
+币种、分页总额和维度完善工作见 [TODO](../TODO.md)。
 
-## 第一阶段可验收标准
+## 履约、恢复与通知
 
-| Gate | Criteria |
-|---|---|
-| Search / Offer | Search 不锁库存；Offer 有有效期、价格快照、规则快照和 AvailabilitySnapshot 引用。 |
-| Order / Booking | JourneyOrder、SegmentBooking、CapacityHold、PaymentIntent、Entitlement 分开存储和推进。 |
-| Payment | 支付回调幂等；晚到成功不会直接确认订单。 |
-| Inventory | 火车区间库存按重叠区间判断 Hold 冲突。 |
-| Ticketing | 出票失败可观察、可重试、可人工。 |
-| Post Sales | 已出票退票先作废权益再退款；退款失败不恢复票。 |
-| Client API | 购票、退票、改签和支付使用当前业务域的命令接口。 |
-| Operations | 客服和后台有 OrderTimeline、Saga 状态和人工命令审计。 |
+Fulfillment 的 boarding、completions 和 no-show 接口形成使用事实。
+Transfer Management 根据接续规则与运行信息形成接续判断。
+Disruption Recovery 保存受影响旅程的选项及选择，售后动作由 Post Sales 执行。
+Notification 保存业务通知与触达记录，`GET /api/v1/notifications/:id/trail` 提供发送尝试查询。
+Notification durable 发送队列为 WIP、未部署，工作状态见 [TODO](../TODO.md)。

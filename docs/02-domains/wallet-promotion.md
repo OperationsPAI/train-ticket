@@ -1,82 +1,73 @@
-# Wallet / Promotion Domain Design
+# Wallet Promotion 当前设计
 
-## Metadata
+更新日期：2026年9月24日。
+运行基线为 Helm revision 279，服务使用 Java 和 PostgreSQL。
+统一待办见 [TODO](../TODO.md)。
 
-| Field | Value |
+## 领域边界
+
+Wallet Promotion 拥有 `PromotionInstrument`、`WalletAccount`、`WalletBalance`、`BenefitRedemption` 和钱包账务记录。
+当前服务支持权益发放、预留、核销、释放、撤销、核销冲正和到期处理。
+账户身份由 Account 管理，现金支付和原路退款由 Payment 执行，补偿决策与金额由 Post Sales 提供。
+Wallet 保存权益及余额变化，通过事件向其他服务提供事实。
+这些接口本身不代表订单已经接入组合支付。
+
+## 权益与余额
+
+`benefitType` 支持 `BALANCE`、`COUPON`、`COMPENSATION_CREDIT`、`POINTS`。
+`balanceType` 支持 `STORED_VALUE`、`POINTS`、`PROMOTION_CREDIT`。
+每个账户按余额类型和币种记录 available、reserved 和 redeemed 金额。
+金额使用 `currency` 与整数 `minorUnits`，跨币种算术被拒绝，可用和预留余额不得为负。
+每次变更必须带有业务原因，并保存权益、钱包余额、账务记录及事件。
+
+| 状态 | 当前含义 |
 |---|---|
-| Domain | Wallet / Promotion |
-| Status | accepted-ddd-baseline |
-| Phase | future-scope |
-| Last Updated | 2026-06-28 |
-| High-Level Inputs | `docs/03-ddd-final/decision-record.md`, `docs/03-ddd-final/domain-reduce-status.md`, `docs/02-domains/payment.md`, `docs/02-domains/finance-settlement.md` |
+| `ISSUED` | 权益已发放，可按适用范围和有效期使用。 |
+| `RESERVED` | 金额已为指定业务引用预留。 |
+| `REDEEMED` | 权益已核销。 |
+| `RELEASED` | 预留金额已经释放。 |
+| `EXPIRED` | 权益已过期。 |
+| `REVOKED` | 权益已撤销。 |
+| `REVERSED` | 核销已经冲正。 |
 
-## 1. 领域目标
+核销检查状态、有效期、金额、单次使用及是否要求预留等规则。
+适用范围保存在权益中，当前核销入口不解析外部订单来核验该范围。
+同一权益和业务原因的核销通过记录去重。
+到期扫描默认每5秒运行，更新符合条件的权益并发布 `BenefitExpired`。
 
-Wallet / Promotion 负责非现金权益，包括钱包余额、储值、积分、优惠券、补偿券、营销券和权益核销。它不是 Account 的子对象，也不是 Payment 的渠道状态。
+## 售后补偿
 
-独立建模的原因是：非现金权益有发行、冻结、核销、撤销、过期、会计归属和补偿成本问题。如果放进 Account，会把展示身份和资金权益混在一起；如果放进 Payment，会让现金通道与平台权益混在一起。
+Post Sales 通过 `POST /api/v1/benefits` 发放已批准的 `COMPENSATION`。
+接收方为原订单账户，金额等于冻结的 `compensationAmount`。
+请求携带 `benefitType=COMPENSATION_CREDIT`、`balanceType=PROMOTION_CREDIT`、`issuanceSource=POST_SALES_COMP` 和规范 `caseId`。
+当前 Post Sales 请求使用 `ANY_TRIP`、允许多次使用且无需预留，并固定30天有效期。
+Wallet 使用请求提供的有效期，不自行决定补偿期限。
+零金额由 Post Sales 直接完成，不调用权益发放接口。
+补偿保留原票、座位预订、订单和已捕获支付。
 
-## 2. 边界
+`POST_SALES_COMP` 按 `caseId` 和完整 `IssueBenefitCommand` 去重，与 HTTP 幂等键独立。
+相同请求返回已有权益，不增加余额、账务记录或 `BenefitIssued`。
+账户、金额、币种、类型、规则、有效期或业务原因发生变化时返回 HTTP 409 `CONFLICT`。
+已有权益缺少原始发放请求时同样返回冲突。
+PostgreSQL 使用 Case 和账户事务锁、`compensation_issuances` 及唯一索引，保证一次发放在同一事务中保存完整记录。
 
-### In Scope
+## API 与事件
 
-- 钱包余额、储值、积分、券包和补偿权益的生命周期。
-- 权益发行、冻结、核销、撤销、过期。
-- 与订单、售后、异常恢复、客服补偿的权益引用。
-- 非现金权益的财务事件输出。
-
-### Out of Scope
-
-- 现金支付、预授权、原路退款，归 Payment。
-- 登录主体和账号状态，归 Account。
-- 收入确认、清结算、对账和发票，归 Finance Settlement。
-- 补偿原因和责任归属，归 Post Sales / Disruption Recovery / Customer Service。
-
-## 3. 聚合
-
-| Aggregate | Invariants |
+| 入口 | 用途 |
 |---|---|
-| WalletAccount | 同一 account 或 traveler 的余额账本必须可追溯；冻结和可用余额不能为负；每次变更必须有业务原因。 |
-| PromotionInstrument | 券、积分、补偿权益必须有发行来源、适用范围、有效期、核销规则和撤销规则。 |
-| BenefitRedemption | 同一权益同一业务原因不能重复核销；核销失败不能静默丢失。 |
+| `POST /api/v1/benefits` | 发放权益。 |
+| `GET /api/v1/benefits/{benefitId}` | 查询单个权益。 |
+| `GET /api/v1/benefits?byAccountId={accountId}` | 按账户分页查询，可过滤状态和类型。 |
+| `POST /api/v1/benefits/{benefitId}/reserve` | 预留金额。 |
+| `POST /api/v1/benefits/{benefitId}/redeem` | 核销金额。 |
+| `POST /api/v1/benefits/{benefitId}/release` | 释放预留金额。 |
+| `POST /api/v1/benefits/{benefitId}/revoke` | 撤销权益。 |
+| `POST /api/v1/benefits/{benefitId}/reverse-redemption` | 冲正已有核销。 |
+| `GET /api/v1/wallet-accounts/{accountId}` | 查询账户钱包余额。 |
 
-## 4. 上游和下游契约
+HTTP 写请求要求 `Idempotency-Key`，复用键且请求不同返回 `IDEMPOTENCY_KEY_REUSED`。
+领域事件包括 `BenefitIssued`、`BenefitReserved`、`BenefitRedeemed`、`BenefitReservationReleased`、`BenefitRevoked`、`BenefitRedemptionReversed` 和 `BenefitExpired`。
+事件与余额变更在本地事务中保存，通过 Outbox 发布。
+售后补偿发放成本由 Finance 消费 `BenefitIssued` 记录，补偿批准与完成事件不重复计入成本。
 
-| Direction | Context | Contract |
-|---|---|---|
-| Upstream | Account | `WalletRef`、用户展示关系。 |
-| Upstream | Post Sales / Disruption Recovery | 补偿决策、费用减免、权益发放原因。 |
-| Upstream | Journey Order / Offer Management | 可用权益查询和报价展示引用。 |
-| Downstream | Payment | 组合支付中的现金剩余应付金额。 |
-| Downstream | Finance Settlement | 权益发行、核销、过期、撤销和成本归集事件。 |
-| Downstream | Notification | 权益到账、过期提醒和核销结果通知。 |
-
-## 5. 状态机
-
-### PromotionInstrument
-
-| State | Meaning | Next |
-|---|---|---|
-| Issued | 已发放。 | Reserved, Redeemed, Expired, Revoked |
-| Reserved | 已为订单或售后临时冻结。 | Redeemed, Released, Expired |
-| Redeemed | 已核销。 | Reversed |
-| Released | 冻结释放。 | Reserved, Redeemed, Expired |
-| Expired | 已过期。 | - |
-| Revoked | 已撤销。 | - |
-| Reversed | 已冲正。 | - |
-
-## 6. 命令和事件
-
-| Command | Event |
-|---|---|
-| IssueBenefit | BenefitIssued |
-| ReserveBenefit | BenefitReserved |
-| RedeemBenefit | BenefitRedeemed |
-| ReleaseReservedBenefit | BenefitReservationReleased |
-| ExpireBenefit | BenefitExpired |
-| RevokeBenefit | BenefitRevoked |
-| ReverseRedemption | BenefitRedemptionReversed |
-
-## 7. Final DDD Decision
-
-Wallet / Promotion 已裁定为独立 future-scope 上下文。第一阶段只做现金支付、原路退款和有审计的人工现金补偿，不做积分、券、钱包余额和组合支付。
+实现入口见 [服务说明](../../services/wallet-promotion/README.md)、[应用服务](../../services/wallet-promotion/src/main/java/com/trainticket/walletpromotion/application/WalletPromotionService.java) 和 [HTTP API](../08-contracts/api/wallet-promotion.md)。

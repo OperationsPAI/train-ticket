@@ -1,6 +1,9 @@
 # Booking Orchestration — Events & Commands
 
-Last updated: 2026-09-23
+Last updated: 2026-09-24.
+
+Runtime baseline: Helm revision 279.
+Remaining work is tracked in [TODO](../../TODO.md).
 
 ## Published Events
 
@@ -43,8 +46,8 @@ Last updated: 2026-09-23
 | `offerItemRef` | string | initial purchase | Accepted commercial offer item reference. |
 | `postSalesCaseId` | string | replacement | Approved change case reference. |
 
-Initial purchase and change HTTP commands persist the accepted supply reference before publishing this event.
-These additions belong to the coordinated supply integration and are not proof that a running producer has been upgraded.
+The current source implementation persists accepted supply references for initial purchase and change HTTP commands before publishing reservation requests.
+The coordinated Booking and Capacity integration is not active in production at Helm revision 279.
 Consumers must not replace that reference with a later order's selected offer.
 Historical events require validated source records during inventory reconciliation.
 

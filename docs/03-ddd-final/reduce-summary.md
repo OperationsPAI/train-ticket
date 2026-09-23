@@ -1,117 +1,60 @@
-# DDD Final Summary
+# 当前设计摘要
 
-Last updated: 2026-06-28
+更新日期：2026 年 9 月 24 日。
 
-## 当前结论
+部署基线为 Helm revision 279，发布记录见[当前项目状态](../00-current-status.md)。
+[跨域设计决策](decision-record.md)定义所有权，[业务协作与接口](phase-1-contract.md)说明命令和事件路由，[TODO](../TODO.md)记录未完成工作。
 
-DDD map/reduce 已收敛为当前重构基线。此前需要裁决的事项已经归入三类：
+## 交易与供给
 
-1. 纳入第一阶段。
-2. 第一阶段明确不做。
-3. 作为 General Travel 后续扩展边界。
+Trip Planning 在 `services/trip-planning-rs` 使用 Rust，提供行程搜索和候选查询。
+Offer Management 保存报价、规则和可用性引用。
+搜索与报价均不建立 CapacityHold。
+Journey Order 保存订单商业事实，Booking Orchestration 管理分段预订与执行状态。
+Capacity 管理可售数量、区间 Hold、确认和释放。
+Seat Assignment 使用 Go，拥有编组、SeatMap、SeatUnit、座位分配和无座配额证据。
+Entitlement 在核对订单、预订、支付和 Hold 后获取座位分配并签发权益。
+Fulfillment 保存进站、完成和未乘车事实。
 
-这意味着当前文档可以作为 `project-index.yaml`、第一阶段重构任务拆分和后续 domain 详细设计的输入。
+Service Plan 已提供带有停站顺序、区间和版本的 segment supply 接口。
+Seat Assignment 的供给事实和无座配额执行已有部署证据。
+Capacity 新联合供给仍未提交、未部署，完整接入工作见 [TODO](../TODO.md)。
 
-## 最终文档集
+## 资金、售后与发票
 
-| Document | Role |
-|---|---|
-| `reduce-summary.md` | 当前最终结论和第一阶段范围。 |
-| `decision-record.md` | 全局 DDD 裁决和跨域边界。 |
-| `phase-1-contract.md` | 第一阶段火车票务重构契约、链路和验收 gate。 |
-| `domain-reduce-status.md` | 28 个 domain 的最终状态、阶段归属和裁决引用。 |
+| 业务事实 | 负责服务 | 协作规则 |
+|---|---|---|
+| 平台收款与退款 | Payment | 保存 PaymentIntent、Refund、资金状态和支付事件。 |
+| 渠道订单、渠道退款、渠道账单 | Payment Channel | 独立 Go 服务，通过渠道事实与 Payment 和 Finance 协作。 |
+| 退票、改签、服务质量补偿 | Post Sales | 拥有 Case、金额决策、执行计划和完成证据。 |
+| 钱包权益及核销 | Wallet / Promotion | 保存 benefit、余额、预留、核销和撤销记录。 |
+| 收入确认、结算和补偿成本 | Finance Settlement | 消费业务事实，维护财务口径和对账记录。 |
+| 电子发票、抬头、红冲、行程凭证 | Invoicing | 独立 Rust 服务，使用订单和金额投影处理申请。 |
+| 经营指标 | Reporting | 金额统计采用 gross captured payment，唯一金额来源为 PaymentCaptured。 |
 
-原 reduce 工作台中的冲突日志、集成检查清单和问题列表已经被最终文档取代。
+服务质量 `COMPENSATION` 通过 Wallet 发放钱包补偿额度。
+当前发放字段为 `benefitType=COMPENSATION_CREDIT`、`balanceType=PROMOTION_CREDIT`、`issuanceSource=POST_SALES_COMP`。
+补偿保留原票、座位分配、Hold、原支付和附加服务。
+Finance 将 `BenefitIssued` 记为补偿成本，Invoicing 保留原票对应的金额依据。
+原路退款和改签失败后的差额退款使用 Payment 的 Refund 流程。
+Reporting 的 `totalRevenue`、`revenue` 等现有字段表示 gross captured payment，财务已确认收入由 Finance 提供。
 
-## Reduce 状态
+## 身份、恢复与支撑服务
 
-| 项 | 结果 |
-|---|---|
-| Domain 数量 | 28 |
-| 真实冲突数量 | 33 |
-| 已裁决冲突 | 33 |
-| 未裁决冲突 | 0 |
-| 当前 gate | `accepted-for-phase-1-baseline` |
+Account 拥有账号状态和通知设置，Traveler Profile 拥有旅客档案。
+Identity Verification 和 Risk & Compliance 都使用 Python，分别拥有实名核验与资格事实、风险评估与处置建议。
+Disruption Recovery 管理受影响旅程的恢复 Case，Transfer Management 管理接续规则、保障责任和运行风险。
+Waitlist 使用 TypeScript，拥有候补请求和接受入口。
+Ancillary Service、Travel Insurance、Loyalty Membership、Marketing Campaign、Group Booking、Corporate Travel 和 Dispatch 的职责与源码入口见[领域所有权索引](domain-reduce-status.md)。
+接口存在说明该入口可在源码中定位，能力覆盖与未完成项见 [TODO](../TODO.md)。
 
-## 第一阶段火车重构范围
+Notification 消费业务事实并保存触达记录，发送结果不改变源业务的成功状态。
+Notification durable 发送队列为 WIP、未部署，相关工作见 [TODO](../TODO.md)。
+Customer Service 与 Admin & Audit 通过受控命令协作，目标服务保有状态转换和业务校验责任。
 
-第一阶段目标是把固定班次火车票务闭环做可信，而不是一次性实现 General Travel 全部能力。纳入第一阶段的上下文如下：
+## 目录与引用
 
-1. Place & Network
-2. Service Plan
-3. Capacity & Availability
-4. Fare & Pricing
-5. Trip Planning
-6. Offer Management
-7. Journey Order
-8. Booking Orchestration
-9. Payment
-10. Provider Integration
-11. Entitlement & Ticketing
-12. Fulfillment
-13. Post Sales
-14. Notification
-15. Admin & Audit
-16. Customer Service
-17. Traveler Profile
-18. Risk & Compliance
-
-Provider Integration 第一阶段只做最小 ACL：支付渠道协议适配、供应商状态映射、幂等、签名验签、raw archive 和错误归一，不承载核心订单规则。
-
-## 第一阶段明确不做
-
-这些是已裁定的 scope：
-
-| Capability | Decision |
-|---|---|
-| Wallet / Promotion / Points | 独立支撑上下文；第一阶段不做积分、券、钱包余额和组合支付。 |
-| Waitlist | 独立支撑上下文；第一阶段主票闭环不做候补。 |
-| Dispatch / Ride-hailing | 独立 Dispatch context；第一阶段不做网约车派单。 |
-| ProtectedConnection | Transfer Management 的合同类型；第一阶段只做 non-protected disclosure，不承诺保障联乘。 |
-| Provider-owned inventory | Capacity 统一建模；第一阶段默认平台内部库存权威。 |
-| Independent CredentialRegistry | 后续多凭证、动态码或票纸库存再拆；第一阶段作为 Entitlement 内部实体。 |
-| Full ancillary automation | 第一阶段只保证可选附加失败不阻断主票；复杂 bundle、保险激活和自动售后不做。 |
-
-## 已形成的全局决策
-
-| Area | Decision |
-|---|---|
-| Payment / Provider Integration | Payment 拥有资金语义；Provider Integration 拥有渠道协议 adapter、签名验签、Webhook 接入、raw archive 和渠道账单输入。 |
-| Payment callback | 支付回调只推进 Payment 内部状态并发布资金事实，不直接改订单、出票、库存或通知。 |
-| PaymentIntent creation | JourneyOrder 只发布待支付商业事实；Booking Orchestration 或 Payment OHS 发起 PaymentIntent。 |
-| Provider vs Segment reservation | Provider Integration 发布 `ProviderReservation*`，Booking Orchestration 映射并发布 `SegmentReservation*`。 |
-| Offer / Capacity | 第一阶段 Offer 不锁库存，只消费 AvailabilitySnapshot 和 TTL；真正 Hold 发生在 Booking。 |
-| Service Plan | Service Plan 只拥有运行计划、时刻、计划性停运和版本，不拥有停售限售。 |
-| Place mapping | Provider Integration 接收原始地点码；Place & Network 拥有标准映射和冲突处理。 |
-| Transfer boundary | Trip Planning 做售前候选和粗筛；Transfer Management 拥有 ConnectionContract、MCT 版本和运行中风险状态。 |
-| Fulfillment / Entitlement | Fulfillment 是物理履约事实权威；Entitlement 消费履约事实推进权益生命周期。 |
-| Disruption boundary | 计划性未来停运归 Service Plan；已影响订单、履约或用户的异常归 Disruption Recovery。 |
-| Monetary summary | Post Sales 发布售后决策和金额摘要；JourneyOrder 维护自身商业汇总；Finance 做对账。 |
-| ChangeOffer | Offer Management 拥有 ChangeOffer 快照；Post Sales 拥有售后 Case 和执行状态。 |
-| Ancillary optional failure | 可选附加服务失败不阻断主票 Confirmed；无 component allocation 的 bundle 不能自动售后。 |
-| Preference / Eligibility | Account 保存账号偏好；Traveler Profile 保存旅客偏好和资格事实；Fare 解释规则适用性。 |
-| Account closure | 冻结阻断新交易但不阻断既有订单通知、退款、发票和客服；注销走 AccountClosureSaga。 |
-| Risk boundary | Risk 只发布评估、挑战、拒绝或建议；源 domain 拥有自身状态机。 |
-| Sensitive data | 原始敏感数据留源域或受控证据库；跨域事件只带摘要、引用和脱敏字段。 |
-| Finance / Reporting | Finance 是财务事实和口径权威；Reporting 使用版本化 MetricDefinition，不直接从订单或支付表推导最终口径。 |
-| Manual operation | Customer Service、Admin & Audit、Reporting 不直接写业务状态，所有修正进入目标 domain 命令。 |
-| Notification | Notification 只负责触达，不参与核心业务决策；交易必要通知可绕过普通偏好。 |
-| Supplier master data | Supplier Catalog 保存供应商主数据和能力基线；Provider Integration 保存实时健康和熔断。 |
-| Client API | 购票、退票、改签和支付统一调用当前业务域的命令接口。 |
-
-## High-level 回写
-
-本轮 reduce 已回写 high-level 文档中的明显冲突：
-
-1. `context-map.md`：Service Plan 不再拥有停售限售；第一阶段加入最小 Provider Integration；候补从 Capacity 默认职责中移出。
-2. `domain-glossary.md`：Compensation 的决策归 Disruption Recovery / Post Sales / Customer Service，资金或权益执行按类型路由。
-3. `order-inventory-payment-model.md`：JourneyOrder 不直接创建 PaymentIntent。
-4. `event-storming.md`：Provider Integration 产生 `ProviderReservation*`，Booking Orchestration 产生 `SegmentReservation*`。
-5. `general-travel-ddd.md`：事件目录拆分供应商预留事实和平台分段预留事实。
-
-## 下一步
-
-1. 用 `phase-1-contract.md` 拆第一阶段重构任务。
-2. 用 `decision-record.md` 约束所有 domain 详细设计。
-3. 用 `domain-reduce-status.md` 生成 `project-index.yaml`。
-4. 在实现语言和服务形态确定后补 API 契约、AsyncAPI 或 protobuf。
+catalog 当前登记 32 个业务服务。
+源码中另外存在 Corporate Travel、Group Booking、Loyalty Membership、Marketing Campaign 和 Travel Insurance。
+全部 37 个服务的目录与语言见[语言及源码目录](../05-service-architecture/language-selection.md)，登记差异见 [TODO T10](../TODO.md#t10-reconcile-repository-metadata-and-static-checks)。
+本目录保留稳定路径，工作状态统一通过 [TODO](../TODO.md)维护。

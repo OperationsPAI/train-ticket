@@ -1,5 +1,15 @@
 # Reporting Event Contracts
 
+Last updated: 2026-09-24.
+
+Runtime baseline: Helm revision 279.
+Remaining work is tracked in [TODO](../../TODO.md).
+
+Monetary metrics consume `PaymentCaptured` only and represent gross captured amount.
+Other events can affect counts, dashboard rebuilds and anomaly evaluation without changing that amount.
+The background worker persists `ReadModelRebuilt` and `AnomalyDetected` results and notification requests for urgent anomalies.
+Current aggregation and query limits are described in [Reporting](../../02-domains/reporting.md).
+
 ## MetricDefined
 
 Produced when a new metric definition is drafted.

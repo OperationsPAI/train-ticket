@@ -1,7 +1,10 @@
 # Domain Detail Documents
 
-Last updated: 2026-06-28
+Last updated: 2026-09-24.
 
-这个目录保存每个 domain 的详细设计，包括第一阶段上下文和已裁定的 future-scope 上下文。跨域边界以 `../03-ddd-final/decision-record.md` 为准；第一阶段范围以 `../03-ddd-final/domain-reduce-status.md` 为准。
+这里记录领域职责、聚合、不变量、状态、接口和协作边界。
+当前跨域设计见 [设计入口](../03-ddd-final/README.md)，实际部署及验证见 [当前状态](../00-current-status.md)。
+通知发送队列和 Capacity 联合供给实现尚未部署，相关文档分别标明工作区行为与线上行为。
+剩余工作统一记录在 [TODO](../TODO.md)。
 
-这些文档只描述本 domain 的职责、聚合、不变量、命令、事件、状态机、读模型、ACL 和迁移影响，不替其他 domain 做内部设计。
+源码和服务接口是核对当前行为的依据，领域设计中的边界描述不能代替运行验证。

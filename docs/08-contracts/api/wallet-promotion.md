@@ -1,6 +1,9 @@
 # Wallet / Promotion HTTP API
 
-Last updated: 2026-09-23.
+Last updated: 2026-09-24.
+
+Runtime baseline: Helm revision 279.
+Remaining work is tracked in [TODO](../../TODO.md).
 
 `POST_SALES_COMP` issuance requires one benefit per case.
 If a benefit exists without its persisted issuance request, a new request returns HTTP 409 `CONFLICT` and preserves the existing balance.
@@ -33,8 +36,8 @@ the Wallet / Promotion domain document:
 | `REVOKED` | Issued benefit was administratively or commercially revoked. | - |
 | `REVERSED` | A previous redemption was reversed by a compensating business action. | - |
 
-`EXPIRED`, `REVOKED`, and `REVERSED` are terminal. `ExpireBenefit` is scheduler
-or domain-policy driven and has no public HTTP endpoint in this wave.
+`EXPIRED`, `REVOKED`, and `REVERSED` are terminal.
+The expiry scheduler runs every five seconds by default; expiry has no public HTTP endpoint.
 
 ## Wallet balance invariants
 
@@ -84,7 +87,7 @@ A `WalletAccount` is the per-account ledger view for benefit balances.
 | `reservedAmount` | Money | yes | Currently frozen amount; never negative. |
 | `redeemedAmount` | Money | yes | Amount already redeemed. |
 | `issuanceSource` | enum | yes | `MANUAL_OPS`, `POST_SALES_COMP`, or `DISRUPTION_COMP`. |
-| `caseId` | string | no | Post-sales case reference when `issuanceSource` is `POST_SALES_COMP`, or Disruption Recovery case reference when `issuanceSource` is `DISRUPTION_COMP`. |
+| `caseId` | string | no | Post Sales case reference retained for `POST_SALES_COMP`; other issuance sources omit it. |
 | `applicableScope` | object | yes | Scope/rules for eligibility. See `ApplicableScope`. |
 | `redemptionRule` | object | yes | Redemption rule such as single-use and maximum amount. See `RedemptionRule`. |
 | `revocationRule` | object | yes | Revocation rule for allowed administrative/business revoke conditions. |
@@ -160,7 +163,7 @@ The issuance record, benefit, wallet ledger and event outbox are written within 
 | `balanceType` | enum | yes | Wallet sub-ledger to credit. |
 | `amount` | Money | yes | Issued amount. `minorUnits` must be positive. |
 | `issuanceSource` | enum | yes | `MANUAL_OPS`, `POST_SALES_COMP`, or `DISRUPTION_COMP`. |
-| `caseId` | string | no | Required when `issuanceSource` is `POST_SALES_COMP` or `DISRUPTION_COMP`; ignored otherwise. |
+| `caseId` | string | conditional | Required and retained for `POST_SALES_COMP`; other sources do not retain this field in the issued benefit. Recovery references can be carried in `businessReason`. |
 | `applicableScope` | object | yes | Eligibility scope. |
 | `redemptionRule` | object | yes | Redemption rule. |
 | `revocationRule` | object | yes | Revocation rule. |
@@ -217,8 +220,8 @@ See [Post Sales execution](post-sales.md) for the advance endpoint, evidence and
 
 **GET** `/api/v1/benefits?byAccountId={accountId}&limit=20&offset=0`
 
-`byAccountId` is required and contains the owning `accountId`. Broad unfiltered
-listing is not part of this activation-wave API.
+`byAccountId` is required and contains the owning `accountId`.
+The endpoint requires an account filter.
 
 **Query parameters:**
 
@@ -382,10 +385,5 @@ Wallet / Promotion ledger view for that account.
 
 ## Bus-only behavior
 
-The following domain command from `docs/02-domains/wallet-promotion.md` has no
-public HTTP endpoint in this activation wave:
-
-- `ExpireBenefit` — triggered by the benefit `validUntil` scheduler/domain
-  policy. It moves eligible active benefits to `EXPIRED`, zeros their remaining
-  available/reserved ledger exposure without making balances negative, carries a
-  `businessReason.reasonType` of `SYSTEM_EXPIRY`, and emits `BenefitExpired`.
+`ExpireBenefit` is triggered by the expiry scheduler when `validUntil` has elapsed.
+It moves eligible active benefits to `EXPIRED`, clears their remaining available and reserved balances, carries `businessReason.reasonType=SYSTEM_EXPIRY`, and emits `BenefitExpired`.

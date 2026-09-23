@@ -4,23 +4,39 @@ Rust service for PostgreSQL inventory pools, Hold admission and lifecycle, avail
 
 ## Supply integration
 
+The combined supply implementation is an uncommitted workspace change and is not deployed.
+Booking coordinated behavior is not enabled.
+Seat Assignment's ten percent standing policy and pre-reservation SeatMap preparation are published and deployed separately.
 The supply integration reads accepted reservation references from Booking, segment schedule facts from Service Plan, and published unit or quota facts from Seat Assignment.
 Availability and admission combine active allocations with pending holds and deduplicate them by Hold identifier.
 The standing policy is documented in [Standing capacity policy](../../docs/08-contracts/standing-capacity-policy.md).
-See [integration requirements](../../docs/10-domain-enrichment/capacity-overbooking.md) for the remaining rollout gates.
-This code path is still being integrated and must not be described as deployed solely because the source tests pass.
+See [supply design and evidence](../../docs/10-domain-enrichment/capacity-overbooking.md) for the current implementation boundary.
+Remaining work is tracked in [docs/TODO.md](../../docs/TODO.md).
+
+Standing has no physical SeatUnit, coach number or seat number.
+Its limit is `floor(assignable second class seats / 10)` from the published composition.
+The combined Capacity path uses quota references as admission slots and reports `physicalCapacity=0` for standing.
+Concrete seat and berth overbooking is zero in that path.
 
 `SUPPLY_FACTS_BASE_URL_TEMPLATE` selects upstream service addresses and defaults to `http://%s:8080`.
 `DATABASE_URL`, `REDIS_URL` and `MIGRATIONS_DIR` configure persistence and messaging.
 `reservation_supply_facts` stores accepted source references and `capacity_supply_observations` stores supply evidence.
 Historical Hold identities are preserved.
+Integrated Hold placement reads the Service Plan segment supply interval and records its stop sequence digest.
+Service Plan currently creates two stop services and explicitly returns the zero based interval `[0,1)`.
+Historical occupancy must match the authoritative service date and interval.
 Multiple HTTP keys and event delivery for the same booking share one Hold identity; released bookings do not obtain another Hold through replay.
 Initial purchase history uses Journey Order's `purchase-source` endpoint; replacement history uses its change case's target Offer.
 Historical source resolution uses at most eight concurrent upstream reservation lookups per service instance and commits verified facts before inventory admission.
 Subsequent queries reuse the persisted facts, including after a process restart or a refused Hold.
+Supply queries can persist source facts and observations without creating a Hold.
+Capacity unit selection and Seat Assignment's final SeatUnit selection remain separate operations.
+Combined quantity admission does not establish exact physical unit agreement or a unified cross pool event snapshot.
 
 ## Validation
 
+Existing tests and recorded runs cover their individual scenarios; they do not establish deployment or complete booking integration.
+No tests were added or rerun for this documentation update.
 Run from the repository root:
 
 ```bash
@@ -30,7 +46,7 @@ cargo test --manifest-path services/capacity-availability/Cargo.toml --features 
 External database tests are explicitly ignored by default.
 `tests/supply_hold_live.rs` requires `TEST_DATABASE_URL`, `SUPPLY_FACTS_BASE_URL_TEMPLATE`, `TEST_SUPPLY_BOOKING`, `TEST_AVAILABLE_SUPPLY_BOOKING`, `TEST_HISTORICAL_SUPPLY_HOLD` and `TEST_EXISTING_SUPPLY_INVENTORY` when running all its tests.
 It reads actual upstream service facts and creates isolated local database schemas.
-The complete inventory test checks cold and repeated query deadlines, durable source facts, service reconstruction, and unchanged historical inventory.
+The recorded inventory test checks cold and repeated query deadlines, durable source facts, service reconstruction, and unchanged historical inventory within its sample.
 `tests/standing_supply_live.rs` uses `TEST_STANDING_SUPPLY`, `TEST_STANDING_BOOKING`, `TEST_DATABASE_URL` and `SUPPLY_FACTS_BASE_URL_TEMPLATE` to verify standing admission without physical seat creation.
 `tests/recorded_supply.rs` validates recorded composition and allocation data.
 Provide `TEST_SEAT_SUPPLY`, `TEST_SUPPLY_SEGMENT`, `TEST_SUPPLY_BOOKING` and `TEST_SUPPLY_BASE_URL_TEMPLATE` for its explicit run.

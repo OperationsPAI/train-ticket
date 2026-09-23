@@ -1,99 +1,87 @@
-# Service Plan Enrichment — Seasonal Schedules & Real-Time Delays
+# Service Plan seasonal schedules and operational facts
 
-## Context
+Last updated: 2026-09-24.
 
-**Service**: service-plan (Rust, `services/service-plan/`)
-**Current state**: 893-line domain, basic service plan CRUD with segment creation. No seasonal variations, no temporary train additions, no delay propagation.
+## Runtime and ownership
 
-## Requirements
+Service Plan is implemented in Go under `services/service-plan`.
+Its domain model is in `internal/domain/service_plan.go`, application operations are in `internal/application/service.go`, and HTTP routes are in `internal/http/router.go`.
+The [domain document](../02-domains/service-plan.md) defines its current boundary.
+Remaining work is tracked in [docs/TODO.md](../TODO.md).
 
-### R1: Seasonal Schedule Variants
+Service Plan records timetable and service availability facts.
+It does not allocate seats, admit Capacity Holds, price tickets or perform disruption compensation.
+The current HTTP creation path builds a scheduled service with exactly two stops.
+The internal segment supply endpoint reports their zero based interval as `[0,1)`.
 
-```
-Schedule periods:
-  REGULAR:      standard timetable (most of the year)
-  SPRING_RUSH:  春运 (Jan 10 - Mar 10), +30% capacity, temporary trains added
-  SUMMER_RUSH:  暑运 (Jul 1 - Aug 31), +20% capacity
-  NATIONAL_DAY: 国庆 (Sep 28 - Oct 8), +25% capacity
-  LABOR_DAY:    五一 (Apr 29 - May 5), +15% capacity
+## Seasonal periods
 
-Temporary trains (临客):
-  - Added during rush periods
-  - Same route as regular trains but different train number (prefix 'L')
-  - May have fewer stops
-  - Capacity often standing-only or second-class only
-```
+The domain selects an active period for a date and exposes its multiplier as schedule metadata.
 
-**Domain model**:
-- `SchedulePeriod`: `periodType`, `startDate`, `endDate`, `capacityMultiplier`
-- `TemporaryService`: `baseServiceRef`, `tempTrainNumber`, `periodRef`, `stopsSubset`, `availableClasses`
-- `ServicePlan` aggregate gains `activeVariant(date) → ScheduleVariant` method
-- Events: `TemporaryServiceAdded`, `TemporaryServiceRemoved`, `SchedulePeriodActivated`
+| Period | Inclusive dates | Multiplier |
+|---|---|---|
+| `REGULAR` | January 1 through December 31 | 1.00 |
+| `SPRING_RUSH` | January 10 through March 10 | 1.30 |
+| `SUMMER_RUSH` | July 1 through August 31 | 1.20 |
+| `NATIONAL_DAY` | September 28 through October 8 | 1.25 |
+| `LABOR_DAY` | April 29 through May 5 | 1.15 |
 
-### R2: Real-Time Delay Propagation
+These are the default simulation periods generated for the plan year.
+The scheduled service view includes `schedulePeriod` and `capacityMultiplier`.
+No Capacity calculation in the combined supply path multiplies physical units by these values.
+Concrete capacity comes from Seat Assignment's published composition.
+The published standing policy separately derives a quota of ten percent of assignable second class seats.
 
-```
-Delay model:
-  - Each segment has `scheduledDeparture` and `actualDeparture` (initially null)
-  - Delay at station N propagates to stations N+1, N+2, ... with dampening
-  - Dampening: each subsequent stop reduces delay by 2 minutes (crew recovery)
-  - Minimum propagated delay: 0 minutes
+## Temporary services
 
-Example:
-  Train G1 stops: Beijing → Jinan → Nanjing → Shanghai
-  Delay at Beijing: 30 minutes
-  Propagated: Jinan +28min, Nanjing +26min, Shanghai +24min
+`POST /api/v1/scheduled-services/{serviceRef}/temporary-services` accepts a temporary service reference, an `L` train number, period, stop subset and available classes.
+The application validates and stores the record in the base service's `temporaryServices` and publishes `TemporaryServiceAdded`.
+The domain's `ActiveVariant` selects unexpired temporary records for the active period.
 
-Event:
-  TrainDelayed: { serviceRef, segmentRef, delayMinutes, estimatedNewDeparture }
-  Published for each affected segment
-```
+This operation does not materialize an independent scheduled service or create a searchable segment.
+The current Trip Planning Rust event filter does not consume `TemporaryServiceAdded`.
+A stored temporary record therefore does not establish that an extra train is visible in search or available for booking.
 
-**Domain model**:
-- `DelayRecord`: `segmentRef`, `scheduledTime`, `estimatedTime`, `delayMinutes`, `source`
-- `DelayPropagator`: given delay at one stop, compute downstream delays
-- `ServicePlan` gains `recordDelay(segmentRef, delayMinutes)` → list of propagated `TrainDelayed` events
+The domain and application implement `ExpireTemporaryServices`.
+An explicit call after the period end records expiry and publishes `TemporaryServiceExpired`.
+The production process entry point does not schedule this operation, and no expiry HTTP route is registered.
+Automatic cleanup cannot be inferred from the method's existence.
 
-### R3: Temporary Train Cancellation & Restoration
+## Delay facts
 
-```
-Operations:
-  - Cancel a specific service for a specific date (not permanently)
-  - Restore a previously cancelled service
-  - Cancel all temporary services when rush period ends
+`POST /api/v1/scheduled-services/{serviceRef}/delays` accepts `segmentRef` and `delayMinutes`.
+The domain records planned and estimated times and uses two minutes of recovery per downstream stop, with zero as the minimum delay.
+The application persists delay records and publishes `TrainDelayed` with service, segment, delay minutes and estimated departure.
 
-Events:
-  TrainCancelled: { serviceRef, date, reason }
-  TrainRestored:  { serviceRef, date }
-  TemporaryServiceExpired: { serviceRef, periodEndDate }
-```
+The generic propagation algorithm supports ordered domain segments.
+The HTTP service still creates only two stops, so a multi stop domain example does not establish integrated multi stop timetable creation.
+Delay records do not overwrite the persisted segment's original planned departure and arrival fields.
+Trip Planning's current index does not consume `TrainDelayed`, so its stored search timetable does not automatically reflect this operation.
 
-**Domain model**:
-- `ServiceCancellation`: `serviceRef`, `date`, `reason`, `cancelledAt`, `restoredAt`
-- `ServicePlan` gains `cancelForDate(date, reason)` and `restoreForDate(date)`
+## Dated cancellation and restoration
 
-## Events Produced
-- `ScheduledServiceCreated` (existing)
-- `TemporaryServiceAdded` — tempServiceRef, baseServiceRef, period
-- `TrainDelayed` — serviceRef, segmentRef, delayMinutes
-- `TrainCancelled` — serviceRef, date, reason
-- `TrainRestored` — serviceRef, date
+`POST /api/v1/scheduled-services/{serviceRef}/cancellations` records a date and reason and publishes `TrainCancelled`.
+When the date matches the instance departure date, the service view becomes `CANCELLED` with `bookable=false`.
+`POST /api/v1/scheduled-services/{serviceRef}/restorations` restores an active cancellation and publishes `TrainRestored`.
+For the instance departure date, the view becomes `ACTIVE` with `bookable=true`.
 
-## Consumers
-- `trip-planning` — adjusts search results based on delays/cancellations
-- `disruption-recovery` — triggers rerouting on cancellation/severe delay
-- `notification` — sends delay alerts to affected passengers
+These operations persist planning facts.
+They do not themselves release inventory, alter existing tickets or notify every affected passenger.
+The current Trip Planning event filter has no cancellation or restoration handler.
+A successful cancellation response cannot establish that the train has disappeared from search.
 
-## Test Criteria
+## Persistence and evidence
 
-1. During SPRING_RUSH period → temporary trains visible in schedule
-2. 30min delay at origin → propagated with dampening to all downstream stops
-3. Train cancelled for specific date → not bookable, existing bookings flagged
-4. Rush period ends → temporary services auto-expired
+The production service uses `scheduled_service_snapshots`, `service_segment_snapshots`, PostgreSQL idempotency storage and an outbox relay.
+Temporary services, cancellations and delay records are stored with the scheduled service.
+Repository writes and event appends share the application UnitOfWork.
+Service reconstruction restores these operational records.
 
-## Files to Modify
+`GET /api/v1/service-segments` supports pagination by scheduled service.
+The internal `GET /api/v1/internal/service-segments/{segmentRef}/supply` validates endpoints and timestamps against that service and returns its date, ordered stops and stop sequence digest.
+Capacity's consumer of these supply facts is still uncommitted and undeployed; Booking coordinated behavior is not enabled.
 
-- `services/service-plan/src/domain.rs` — seasonal, delay propagation
-- `services/service-plan/src/api.rs` — delay recording API
-- `services/service-plan/src/application.rs`
-- `migrations/`
+Existing domain, application and HTTP tests cover their corresponding operations.
+`internal/http/segment_live_test.go` uses recorded service facts with PostgreSQL to exercise the segment reads and supply response.
+Local domain tests and existing records are not evidence that every downstream schedule effect is active.
+No new tests or deployment checks were run for this documentation update.

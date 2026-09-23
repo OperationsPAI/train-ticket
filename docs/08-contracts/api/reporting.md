@@ -1,12 +1,15 @@
 # Reporting HTTP API
 
-Last updated: 2026-09-23
+Last updated: 2026-09-24.
+
+Runtime baseline: Helm revision 279.
+Remaining work is tracked in [TODO](../../TODO.md).
 
 ## Overview
 
-Reporting manages metric definitions, dashboard read models, and report
-queries. It consumes events from all contexts and provides read-only query
-endpoints. All write commands are **bus-only**.
+Reporting manages metric definitions, dashboard read models and report queries.
+It consumes configured event streams and exposes HTTP query endpoints.
+The application also maintains dashboard rebuilds and anomalies through its background projection worker.
 
 
 Field shapes reference docs/08-contracts/shared-primitives.md for IDs
@@ -88,6 +91,11 @@ Refresh work runs when requests are pending and waits 30 seconds after each comp
 The in memory implementation requires one currency and excludes events whose amount is absent from its monetary count.
 Requests using `source_context` or `event_type` return event count reports with zero monetary fields.
 
+Operational, route and anomaly calculations load at most the latest 10000 matching events into a single currency aggregator.
+Their time windows are limited by that loaded input.
+`orders_per_second` currently returns the number of order events in the last 60 seconds.
+The trends endpoint returns one current point per metric.
+
 ## Bus-only commands
 
 | Command | Trigger | Description |
@@ -95,7 +103,3 @@ Requests using `source_context` or `event_type` return event count reports with 
 | `DefineMetric` | Admin UI | Draft a new metric definition. |
 | `PublishMetricVersion` | Admin UI | Publish a metric version. |
 | `RebuildReadModel` | Manual or scheduled | Rebuild a dashboard read model. |
-
-## Open Issues
-
-- None.

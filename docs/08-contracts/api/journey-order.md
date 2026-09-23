@@ -1,6 +1,9 @@
 # Journey Order HTTP API
 
-Last updated: 2026-09-23.
+Last updated: 2026-09-24.
+
+Runtime baseline: Helm revision 279.
+Remaining work is tracked in [TODO](../../TODO.md).
 
 ## Overview
 
@@ -11,21 +14,24 @@ Journey Order is the commercial order aggregate. It manages order creation,
 state transitions (pending payment, confirmed, adjusted), and order queries.
 It references but does not own payments, capacity, entitlements, or identity-verification facts.
 
-## ADR-0003 wave A identity-verification increment (需同波实现)
+## Identity Verification before order creation
 
-Journey Order MUST perform a pre-order identity-verification hook before accepting `POST /api/v1/journey-orders`. This is a same-wave implementation requirement, not a docs-only dependency.
+Journey Order calls Identity Verification before accepting `POST /api/v1/journey-orders`.
+This check is deployed in Helm revision 279.
+Rejected or unresolved verification prevents order creation.
 
-| Touchpoint | Required change |
+| Touchpoint | Current behavior |
 |---|---|
-| HTTP validator for `POST /api/v1/journey-orders` | Before aggregate creation, call `POST /api/v1/identity-verification/pre-order-checks` with `accountId`, `offerId`, `offerVersion`, `travelerRefs`, `segmentRefs`, a persisted `orderIntentId`, `journeyDate`, `productCode`, `limitPolicyVersion`, and a UUID-v7 `Idempotency-Key`. |
+| HTTP validator for `POST /api/v1/journey-orders` | Before aggregate creation, calls `POST /api/v1/identity-verification/pre-order-checks` using the resolved Offer, travelers, segments, stable `orderIntentId`, journey date, product and eligibility inputs, policy version and a UUID v7 `Idempotency-Key`. |
+| Create-order idempotency | Derives a stable identity check key from the HTTP key and request fingerprint, reuses it on retry, and saves the accepted check reference with the order. |
+| Validation / error mapping | `REJECT` and `MANUAL_REVIEW_REQUIRED` stop creation with `PRECONDITION_FAILED`; a response without `PASS` is unavailable. The adapter propagates policy and purchase limit errors through the existing API error mapping. |
+| Enums / state machine | A failed check prevents order creation without adding an order lifecycle state. |
 
 The order uses `productCode` and `eligibilityUsages` from the Fare Pricing quote identified by its Offer's `fareQuoteRef`.
 Each eligibility usage identifies the traveler, eligibility type and certificate reserved by Identity Verification.
-| Create-order idempotency | Persist and reuse the identity pre-order check idempotency key for retries of the same Journey Order create attempt. The API header remains the direct HTTP idempotency key; internal material folding is owned by Identity Verification. |
-| Validation / error mapping | Map Identity Verification `REJECT` and `MANUAL_REVIEW_REQUIRED` results to the existing create-order rejection path: `PRECONDITION_FAILED` (412) for unacceptable verification state, `DOMAIN_RULE_VIOLATION` (422) for policy violations, `CONFLICT` (409) for protected-scope purchase-limit conflicts, and `UNAVAILABLE` (503) for hook/read-model unavailability. |
-| Enums / state machine | Do not add a new Journey Order status for identity verification. A failed hook prevents order creation; it is not an order lifecycle transition. |
 
-The hook response fields and error semantics are defined in `docs/08-contracts/api/identity-verification.md`. All timestamps are RFC3339 UTC; propagated event correlation IDs use `corr-<uuid-v7>` and command causation IDs use `cmd-<uuid-v7>` when the create command later emits events.
+The hook response fields and error semantics are defined in `docs/08-contracts/api/identity-verification.md`.
+All timestamps are RFC3339 UTC; propagated event correlation IDs use `corr-<uuid-v7>` and command causation IDs use `cmd-<uuid-v7>` when the create command later emits events.
 
 ## Endpoints
 
@@ -53,7 +59,7 @@ The hook response fields and error semantics are defined in `docs/08-contracts/a
 | `accountId` | string | Owning account. |
 | `offerId` | string | Source offer ID. |
 | `monetarySummary` | object | Price breakdown at creation. |
-| `status` | enum | `CREATED`, `PENDING_PAYMENT`, `CONFIRMED`, `CANCELLED`, `ADJUSTED` |
+| `status` | enum | The public lifecycle mapping described below. |
 | `travelerRefs` | array | Traveler references. |
 | `segmentRefs` | string[] | Segment references. |
 | `createdAt` | timestamp | Order creation time. |
@@ -69,6 +75,9 @@ Order creation requires the offer version, account, traveler set and segment set
 An unavailable, expired or inconsistent offer cannot create a replacement-priced order.
 
 **Response (200):** Full order details including status, monetary summary, timestamps.
+
+`PENDING_CONFIRMATION` is serialized as `CREATED`, and `POST_SALES_ADJUSTED` as `ADJUSTED`.
+Other lifecycle states retain their enum spelling: `DRAFT`, `PENDING_PAYMENT`, `CONFIRMING`, `CONFIRMED`, `PARTIALLY_CONFIRMED`, `IN_TRAVEL`, `COMPLETED`, `CANCELLED`, `DISRUPTED` and `FAILED`.
 
 **Error codes:** `NOT_FOUND`
 
@@ -130,5 +139,6 @@ An unknown order returns `NOT_FOUND`.
 
 ## Supply integration
 
-The accepted purchase source endpoint supports the coordinated Capacity integration described in [capacity integration requirements](../../10-domain-enrichment/capacity-overbooking.md).
+The accepted purchase source endpoint is implemented and deployed.
+Booking accepted supply resolution is implemented in source and remains inactive in the production integration with Capacity at Helm revision 279.
 A source read alone does not establish complete historical occupancy or correct replacement compensation.
