@@ -102,6 +102,7 @@ pub fn router_with_state<S: InvoicingApi + 'static>(service: Arc<S>) -> Router {
 pub fn router_with_postgres_state(service: Arc<PostgresInvoicingService>) -> Router {
     let metadata = serde_json::to_value(metadata()).unwrap_or_else(|_| json!({}));
     let standard = Router::new()
+        .route("/api/v1/internal/invoice-amount-bases/{order_id}/rebuild",post(rebuild_amount_basis))
         .route("/health", get(health_handler))
         .route("/healthz", get(health_handler))
         .route("/live", get(live_handler))
@@ -117,6 +118,18 @@ pub fn router_with_postgres_state(service: Arc<PostgresInvoicingService>) -> Rou
         )
         .layer(Extension(service.clone()));
     apply_service_runtime(standard.merge(routes(service)))
+}
+
+async fn rebuild_amount_basis(
+    Extension(service): Extension<Arc<PostgresInvoicingService>>,
+    Extension(context): Extension<shared_kernel::RequestContext>,
+    axum::extract::Path(order_id): axum::extract::Path<String>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    match service.rebuild_amount_basis(&order_id,context.correlation_id()).await {
+        Ok(basis) => Json(basis).into_response(),
+        Err(error) => api_error_response(error,crate::utils::canonical_corr(context.correlation_id())),
+    }
 }
 pub(crate) fn routes<S: InvoicingApi + 'static>(service: Arc<S>) -> Router {
     Router::new()
