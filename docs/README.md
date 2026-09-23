@@ -1,50 +1,33 @@
-# Train Ticket / General Travel DDD 文档索引
+# Train Ticket documentation
 
-Last updated: 2026-06-28
+Last updated: 2026-09-23.
 
-## 当前入口
+## Current entry points
 
-当前项目状态入口是 `docs/00-current-status.md`。本仓库现在按 Train Ticket
-完整重写 / greenfield rebuild 初始化；旧 `WP-01` / `WP-xx` 计划只作为历史参考，
-不是当前执行 backlog。
+The [current project status](00-current-status.md) records verified runtime behavior, deployment boundaries and remaining acceptance work.
+The [loadgen guide](./README.md) describes resident configuration, persistence, operation recovery and live test commands.
+The [standing capacity policy](08-contracts/standing-capacity-policy.md) defines the versioned quota used by Seat Assignment.
+The [capacity integration requirements](10-domain-enrichment/capacity-overbooking.md) describe the coordinated inventory calculation and its remaining activation requirements.
 
-DDD 设计已经完成收敛。理解领域基线时从下面六份开始读：
+## Reference areas
 
-1. `docs/03-ddd-final/reduce-summary.md`
-2. `docs/03-ddd-final/decision-record.md`
-3. `docs/03-ddd-final/phase-1-contract.md`
-4. `docs/03-ddd-final/domain-reduce-status.md`
-5. `docs/03-ddd-final/implementation-roadmap.md`（历史 roadmap/reference；如需执行计划应重新生成）
-6. `docs/03-ddd-final/change-routing.md`
-
-## 文档分层
-
-| 层级 | 文档 | 作用 |
+| Area | Location | Scope |
 |---|---|---|
-| Final DDD | `docs/03-ddd-final/*.md` | 当前跨域边界、第一阶段契约、最终裁决和 domain 状态。 |
-| Domain Details | `docs/02-domains/*.md` | 每个 domain 的详细设计。 |
-| High-level DDD | `docs/01-ddd-high-level/*.md` | 统一语言、上下文地图、聚合、状态机、事件和 Saga。 |
-| Agentic Development | `docs/06-agentic-development/*.md` | AgentM WorkGraph / ARL 的调度、环境配置、迭代验证和 rebase merge 方法论。 |
-| Observability | `docs/07-observability/*.md` | OpenTelemetry collector、本地采集拓扑和服务运行时遥测接入契约。 |
+| HTTP APIs | `08-contracts/api/` | Request fields, response fields, errors and business operation semantics. |
+| Events | `08-contracts/events/` | Published payloads, consumed events and delivery expectations. |
+| Shared primitives | `08-contracts/shared-primitives.md` | Identifiers, money, timestamps and shared field formats. |
+| Persistence | `08-contracts/persistence.md` | Snapshot, transaction, outbox and replay requirements. |
+| Domain details | `02-domains/` | Domain ownership, aggregates and business invariants. |
+| Cross domain design | `03-ddd-final/` | Domain boundaries, decisions and change routing. |
+| Observability | `07-observability/` | Collectors, tracing, metrics and runtime integration. |
+| Performance evidence | `09-performance/` | Dated measurements and performance investigations. |
+| Domain implementation | `10-domain-enrichment/` | Implementation descriptions and integration requirements. |
+| Service operation | `services/<service>/README.md` from the repository root | Runtime configuration and executable tests for each service. |
 
-## 第一阶段重构建议
+## Documentation accuracy
 
-第一阶段不做多交通方式全量平台，而是先把火车固定班次票务闭环做可信：
-
-1. Search 不锁库存，Offer 冻结报价、规则、风险和可用性快照。
-2. JourneyOrder、SegmentBooking、CapacityHold、PaymentIntent、Entitlement 分开建模。
-3. PaymentCaptured 不直接改订单、出票、库存或通知。
-4. 已出票退票必须先作废 Entitlement，再发起 Refund。
-5. 改签不能删旧单建新单，必须走 replacement booking 和旧权益作废。
-6. 客户端统一调用当前业务域的命令和查询接口。
-
-## 后续工程化产物
-
-这些不属于当前 DDD 文档本身：
-
-1. `project-index.yaml`：基于 Final DDD 生成需求索引。
-2. API 契约：在实现语言和服务形态确定后补 OpenAPI、AsyncAPI 或 protobuf。
-3. 数据库 schema：在聚合和存储策略确定后设计。
-4. 任务拆分：从 `implementation-roadmap.md`、`phase-1-contract.md` 和 `domain-reduce-status.md` 生成。
-5. Agentic development 方法论：见 `docs/06-agentic-development/README.md`。
-6. Observability 基线：见 `docs/07-observability/README.md`。
+Use service implementations and recorded verification evidence when updating behavior descriptions.
+Record whether a change is committed, deployed or verified online.
+Dated performance reports describe their measurement window.
+Passing a focused test does not establish a complete loadgen acceptance result.
+An interface or policy change includes updates to its API or event documentation, service README and relevant operating instructions.
