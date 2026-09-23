@@ -285,6 +285,8 @@ type SeatRef struct {
 }
 
 type ContractSeatAllocation struct {
+	RequestedClassRef   string           `json:"requestedClassRef,omitempty"`
+	IssuePurpose        string           `json:"issuePurpose,omitempty"`
 	StandingPolicy      *StandingPolicy  `json:"standingPolicy,omitempty"`
 	SeatAllocationID    string           `json:"seatAllocationId"`
 	SegmentBookingID    string           `json:"segmentBookingId"`

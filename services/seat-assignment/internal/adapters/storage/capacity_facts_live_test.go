@@ -169,4 +169,107 @@ func TestRecordedCapacityFactsPreservePhysicalClassAndActiveOccupancy(t *testing
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM seat_allocations").Scan(&count); err != nil || count != len(source.Allocations) {
 		t.Fatalf("replay changed allocation count: %d %v", count, err)
 	}
+	if path := os.Getenv("TEST_STANDING_SUBSTITUTION_SOURCE"); path != "" {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var actual struct {
+			Booking struct {
+				Data struct {
+					SegmentBookingID string `json:"segmentBookingId"`
+					JourneyOrderID   string `json:"journeyOrderId"`
+					TravelerRef      string `json:"travelerRef"`
+					SegmentRef       string `json:"segmentRef"`
+					CapacityHoldID   string `json:"capacityHoldId"`
+				} `json:"data"`
+			} `json:"booking_orchestration"`
+			Case struct {
+				Data struct {
+					Operations map[string]json.RawMessage `json:"changeOperations"`
+				} `json:"data"`
+			} `json:"post_sales"`
+		}
+		if err = json.Unmarshal(raw, &actual); err != nil {
+			t.Fatal(err)
+		}
+		var confirmed struct {
+			Hold struct {
+				CapacityUnitRef string                 `json:"capacityUnitRef"`
+				Interval        domain.StationInterval `json:"interval"`
+			} `json:"hold"`
+		}
+		if err = json.Unmarshal(actual.Case.Data.Operations["confirmed:"+actual.Booking.Data.SegmentBookingID], &confirmed); err != nil {
+			t.Fatal(err)
+		}
+		var target struct {
+			Itinerary struct {
+				Legs []struct {
+					Service   string    `json:"servicePlanRef"`
+					Segment   string    `json:"serviceSegmentRef"`
+					Departure time.Time `json:"departureTime"`
+				} `json:"legs"`
+			} `json:"itinerary"`
+		}
+		if err = json.Unmarshal(actual.Case.Data.Operations["target"], &target); err != nil {
+			t.Fatal(err)
+		}
+		if len(target.Itinerary.Legs) != 1 || target.Itinerary.Legs[0].Service != source.SeatMap.ScheduledServiceRef {
+			t.Fatal("recorded replacement must belong to the full service")
+		}
+		// Restore the recorded published composition in this isolated database.
+		_, version, err = repo.GetSeatMap(ctx, source.SeatMap.SeatMapID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = repo.UpdateSeatMap(ctx, &source.SeatMap, version); err != nil {
+			t.Fatal(err)
+		}
+		booking := actual.Booking.Data
+		request = application.AllocateSeatRequest{SegmentBookingID: booking.SegmentBookingID, JourneyOrderID: booking.JourneyOrderID, TravelerRef: booking.TravelerRef, SegmentRef: booking.SegmentRef,
+			ScheduledServiceRef: source.SeatMap.ScheduledServiceRef, ServiceDate: source.SeatMap.ServiceDate, CapacityHoldID: booking.CapacityHoldID, CapacityUnitRef: confirmed.Hold.CapacityUnitRef,
+			Interval: confirmed.Hold.Interval, ClassRef: "BUSINESS_CLASS", IssuePurpose: "REPLACEMENT", ExpiresAt: target.Itinerary.Legs[0].Departure,
+			SeatPreferences: &domain.SeatPreferences{AcceptStanding: true, PreferenceVersion: "1"}}
+		accepted, err := svc.AllocateSeat(ctx, request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if accepted.SeatRef.AllocationType != domain.AllocationTypeStanding {
+			t.Fatal("full class must use accepted standing substitution")
+		}
+		stored, err := svc.GetSeatAllocation(ctx, accepted.SeatAllocationID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored.RequestedClassRef != "BUSINESS_CLASS" || stored.IssuePurpose != "REPLACEMENT" || stored.StandingPolicy == nil {
+			t.Fatal("original requested conditions were not persisted")
+		}
+		for attempt := 0; attempt < 2; attempt++ {
+			replay, err := svc.AllocateSeat(ctx, request)
+			if err != nil || replay.SeatAllocationID != accepted.SeatAllocationID || replay.SeatRef != accepted.SeatRef {
+				t.Fatalf("standing substitution replay=%+v error=%v", replay, err)
+			}
+		}
+		changed := request
+		changed.ClassRef = "FIRST_CLASS"
+		if _, err := svc.AllocateSeat(ctx, changed); err == nil {
+			t.Fatal("changed class accepted on substitution replay")
+		}
+		changed = request
+		changed.IssuePurpose = "INITIAL"
+		if _, err := svc.AllocateSeat(ctx, changed); err == nil {
+			t.Fatal("changed purpose accepted on substitution replay")
+		}
+		changed = request
+		changed.SeatPreferences = nil
+		if _, err := svc.AllocateSeat(ctx, changed); err == nil {
+			t.Fatal("standing acceptance was removed on replay")
+		}
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM seat_allocations").Scan(&count); err != nil || count != len(source.Allocations)+1 {
+			t.Fatalf("substitution replay count=%d error=%v", count, err)
+		}
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM outbox WHERE envelope->>'eventType'='StandingAssigned'").Scan(&count); err != nil || count != 1 {
+			t.Fatalf("standing event count=%d error=%v", count, err)
+		}
+	}
 }
