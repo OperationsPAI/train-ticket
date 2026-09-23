@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -67,6 +68,21 @@ func (r *memoryRepository) FindServiceSegment(_ context.Context, ref string) (Se
 	return segment, nil
 }
 
+func (r *memoryRepository) ListServiceSegments(_ context.Context, service string, limit, offset int) ([]ServiceSegment, int, error) {
+	items := []ServiceSegment{}
+	for _, segment := range r.segments {
+		if segment.ScheduledServiceRef == service {
+			items = append(items, segment)
+		}
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].SegmentRef < items[j].SegmentRef })
+	total := len(items)
+	if offset >= total {
+		return []ServiceSegment{}, total, nil
+	}
+	return items[offset:min(offset+limit, total)], total, nil
+}
+
 type failingRepository struct{ err error }
 
 func (r failingRepository) SaveScheduledService(context.Context, ScheduledService) error {
@@ -81,6 +97,10 @@ func (r failingRepository) ListScheduledServices(context.Context, ListScheduledS
 func (r failingRepository) SaveServiceSegment(context.Context, ServiceSegment) error { return r.err }
 func (r failingRepository) FindServiceSegment(context.Context, string) (ServiceSegment, error) {
 	return ServiceSegment{}, r.err
+}
+
+func (r failingRepository) ListServiceSegments(context.Context, string, int, int) ([]ServiceSegment, int, error) {
+	return nil, 0, r.err
 }
 
 func TestPublisherReceivesCorrectServicePlanEnvelope(t *testing.T) {

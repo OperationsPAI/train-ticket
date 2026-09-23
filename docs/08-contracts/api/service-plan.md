@@ -91,3 +91,13 @@ This operation does not generate inventory, change schedules or publish events.
 Consumers validate that the returned scheduled service and segment match their request.
 
 The HTTP and PostgreSQL verification is `internal/http/segment_live_test.go`.
+
+### List Service Segments for a Scheduled Service
+
+`GET /api/v1/service-segments?scheduledServiceRef={serviceRef}&limit=20&offset=0` returns `items`, `total`, `limit` and `offset`.
+The scheduled service reference is required.
+The limit is between 1 and 100 and the offset is nonnegative.
+Items are ordered by segment identifier.
+Each item has the same fields as the single segment response.
+An empty page retains the total count and pagination fields.
+Consumers must read every page when reconciling all inventory partitions of a service.
