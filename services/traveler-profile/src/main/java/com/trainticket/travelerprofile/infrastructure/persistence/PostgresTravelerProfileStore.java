@@ -14,9 +14,11 @@ import javax.sql.DataSource;
 public class PostgresTravelerProfileStore implements TravelerProfileStore {
     private final ObjectMapper objectMapper;
     private final SnapshotRepository<TravelerJson.TravelerSnapshot> snapshots;
+    private org.springframework.jdbc.core.JdbcTemplate jdbc;
 
     public PostgresTravelerProfileStore(DataSource dataSource, ObjectMapper objectMapper) {
         this(objectMapper, new SnapshotRepository<>(dataSource, objectMapper, "traveler_profile_snapshots", TravelerJson.TravelerSnapshot.class));
+        this.jdbc=new org.springframework.jdbc.core.JdbcTemplate(dataSource);
     }
 
     PostgresTravelerProfileStore(ObjectMapper objectMapper, SnapshotRepository<TravelerJson.TravelerSnapshot> snapshots) {
@@ -32,6 +34,13 @@ public class PostgresTravelerProfileStore implements TravelerProfileStore {
             state.aggregate().withVersion(snapshot.version());
             return state;
         });
+    }
+
+    @Override
+    public Optional<TravelerState> findByTravelerIdForUpdate(String travelerId) {
+        String id=travelerId.startsWith("tvl-")?travelerId.substring(4):travelerId;
+        jdbc.query("SELECT id FROM traveler_profile_snapshots WHERE id=? FOR UPDATE",rs->{},id);
+        return findByTravelerId(travelerId);
     }
 
     @Override

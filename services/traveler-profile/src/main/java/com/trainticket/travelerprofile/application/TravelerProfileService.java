@@ -133,7 +133,7 @@ public class TravelerProfileService {
         String key = scopedKey("PATCH:/api/v1/travelers/" + command.travelerId(), command.idempotencyKey());
         TravelerProfileView replay = replayIfPresent(key, requestFingerprint, TravelerProfileView.class);
         if (replay != null) { return replay; }
-        TravelerState current = find(command.travelerId());
+        TravelerState current = store.findByTravelerIdForUpdate(command.travelerId()).orElseThrow(()->new TravelerNotFoundException(command.travelerId()));
         TravelerProfile aggregate = current.aggregate();
         int eventOffset = aggregate.domainEvents().size();
         Instant now = now();
@@ -172,7 +172,7 @@ public class TravelerProfileService {
         String key = scopedKey("POST:/api/v1/travelers/" + travelerId + "/eligibility", idempotencyKey);
         EligibilityResult replay = replayIfPresent(key, requestFingerprint, EligibilityResult.class);
         if (replay != null) { return replay; }
-        TravelerState traveler = find(travelerId);
+        TravelerState traveler = store.findByTravelerIdForUpdate(travelerId).orElseThrow(()->new TravelerNotFoundException(travelerId));
         TravelerProfile aggregate = traveler.aggregate();
         int eventOffset = aggregate.domainEvents().size();
         Instant now = now();
@@ -206,7 +206,7 @@ public class TravelerProfileService {
 
     @Transactional
     public boolean recordIdentityVerificationFact(String travelerId, ExternalVerificationFact fact) {
-        TravelerState traveler = store.findByTravelerId(travelerId).orElse(null);
+        TravelerState traveler = store.findByTravelerIdForUpdate(travelerId).orElse(null);
         if (traveler == null) {
             return false;
         }
