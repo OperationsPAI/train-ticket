@@ -38,6 +38,9 @@ Revision 275 retains terminal compensation mismatch evidence without automatical
 Revision 276 requires complete invoice order and amount projections and uses four Journey Order stream consumers with order scoped projection locking.
 Revision 277 deploys date and origin indexed trip search and independent Post Sales capacity event processing.
 Its complete broad live regression passes in 225.475 seconds with eligibility, recovery selections, multi traveler post sales and protected transfer.
+Revision 278 deploys gross captured payment reporting with `PaymentCaptured` as its sole monetary source and one grouping sets scan for breakdown dimensions.
+The coordinated production migration builds three populated replacement materialized views and commits their names and migration record in 10.359 seconds without changing source events.
+Subsequent refreshes increase captured totals consistently across all five dimensions.
 Check `helm history` and the deployed image digests for the live release; repository HEAD and the running images can differ.
 
 ## Verified behavior
