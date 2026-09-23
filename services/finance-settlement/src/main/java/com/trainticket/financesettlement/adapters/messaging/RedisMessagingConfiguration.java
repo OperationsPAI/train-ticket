@@ -46,14 +46,19 @@ public class RedisMessagingConfiguration {
     EventSubscriber redisEventSubscriber(RedisEventSubscriber subscriber) {
         return (streams, group, consumerName, handler) -> {
             try {
-                subscriber.subscribe(streams, group, consumerName, envelope -> switch (handler.handle(envelope)) {
-                    case SUCCESS -> com.trainticket.platformkit.messaging.HandlerResult.SUCCESS;
-                    case TRANSIENT_FAILURE -> com.trainticket.platformkit.messaging.HandlerResult.TRANSIENT_FAILURE;
-                    case FATAL_FAILURE -> com.trainticket.platformkit.messaging.HandlerResult.FATAL_FAILURE;
-                });
+                subscriber.subscribe(streams, group, consumerName, envelope -> dispatch(handler,envelope));
             } catch (com.trainticket.platformkit.messaging.SubscribeFailedException exception) {
                 throw new SubscribeFailedException(exception.getMessage(), exception);
             }
+        };
+    }
+
+    public static com.trainticket.platformkit.messaging.HandlerResult dispatch(EventSubscriber.EventHandler handler,com.trainticket.platformkit.messaging.EventEnvelope envelope) {
+        if(!FinanceSettlementEventHandler.handlesEvent(envelope.eventType()))return com.trainticket.platformkit.messaging.HandlerResult.SUCCESS;
+        return switch(handler.handle(envelope)) {
+            case SUCCESS -> com.trainticket.platformkit.messaging.HandlerResult.SUCCESS;
+            case TRANSIENT_FAILURE -> com.trainticket.platformkit.messaging.HandlerResult.TRANSIENT_FAILURE;
+            case FATAL_FAILURE -> com.trainticket.platformkit.messaging.HandlerResult.FATAL_FAILURE;
         };
     }
 
