@@ -7,6 +7,7 @@ import java.util.Optional;
 
 public interface PaymentIntentRepository {
     Optional<PaymentIntent> findById(String paymentIntentId);
+    Optional<PaymentIntent> findByIdempotencyKey(String idempotencyKey);
 
     Optional<PaymentIntent> findLatestByBusinessRef(String businessRef);
 
