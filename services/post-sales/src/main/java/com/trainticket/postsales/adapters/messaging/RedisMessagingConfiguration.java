@@ -3,6 +3,7 @@ package com.trainticket.postsales.adapters.messaging;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.trainticket.platformkit.messaging.LazyRedisEventPublisher;
 import com.trainticket.platformkit.messaging.LazyRedisEventSubscriber;
+import com.trainticket.platformkit.messaging.RedisEventSubscriber;
 import com.trainticket.platformkit.messaging.RedisPingReadinessProbe;
 import com.trainticket.postsales.application.EventPublisher;
 import com.trainticket.postsales.application.EventSubscriber;
@@ -38,16 +39,30 @@ public class RedisMessagingConfiguration {
         return new LazyRedisEventSubscriber(properties.redisUrl(), objectMapper);
     }
 
+    @Bean(destroyMethod = "close")
+    RedisEventSubscriber capacityRedisEventSubscriber(ObjectMapper objectMapper, RedisMessagingProperties properties) {
+        return RedisEventSubscriber.fromUrl(properties.redisUrl(), objectMapper, 4);
+    }
+
     @Bean
     @Primary
-    EventSubscriber redisEventSubscriber(LazyRedisEventSubscriber subscriber) {
+    EventSubscriber redisEventSubscriber(LazyRedisEventSubscriber subscriber, RedisEventSubscriber capacityRedisEventSubscriber) {
         return (streams, group, consumerName, handler) -> {
             try {
-                subscriber.subscribe(streams, group, consumerName, envelope -> switch (handler.handle(envelope)) {
+                com.trainticket.platformkit.messaging.EventHandler dispatch = envelope -> switch (handler.handle(envelope)) {
                     case SUCCESS -> com.trainticket.platformkit.messaging.HandlerResult.SUCCESS;
                     case TRANSIENT_FAILURE -> com.trainticket.platformkit.messaging.HandlerResult.TRANSIENT_FAILURE;
                     case FATAL_FAILURE -> com.trainticket.platformkit.messaging.HandlerResult.FATAL_FAILURE;
-                });
+                };
+                var capacity = streams.stream()
+                    .filter(stream -> stream.equals(RedisStreamNames.forProducer("capacity-availability"))).toList();
+                var other = streams.stream().filter(stream -> !capacity.contains(stream)).toList();
+                if (!capacity.isEmpty()) {
+                    capacityRedisEventSubscriber.subscribe(capacity, group, consumerName, dispatch);
+                }
+                if (!other.isEmpty()) {
+                    subscriber.subscribe(other, group, consumerName, dispatch);
+                }
             } catch (com.trainticket.platformkit.messaging.SubscribeFailedException exception) {
                 throw new SubscribeFailedException(exception.getMessage(), exception);
             }

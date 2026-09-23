@@ -4,6 +4,33 @@ Java service for commercial post sales cases, PostgreSQL persistence, recorded d
 
 Last updated: 2026-09-23.
 
+## Capacity release subscription
+
+`events:capacity-availability` has its own Redis subscriber, connection, polling thread and four handler threads.
+Its handler queue holds sixteen entries and applies the platform CallerRuns backpressure policy independently.
+The other subscriber handles `journey-order`, `disruption-recovery`, `ancillary-service` and `dispatch` using `CONSUMER_THREADS`.
+With `CONSUMER_THREADS=4`, the two handler pools contain eight threads in total, with four reserved for capacity events.
+CallerRuns can also execute handlers on the polling threads when a queue fills.
+Both subscribers retain consumer group `post-sales` and consumer name `post-sales-${HOSTNAME}` on their respective streams, including existing pending message recovery.
+The service `EventSubscriber` adapter routes each stream to one subscriber and preserves the handler success, transient failure and fatal failure mapping.
+Spring closes both platform subscriber beans and drains their work during shutdown.
+The business database pool remains shared, so database saturation or a lock on the affected order can still delay capacity processing.
+
+`IndependentCapacitySubscriberLiveTest` loads recorded `JourneyOrderCreated` envelopes and a recorded refund snapshot, decision, approval, execution start and two capacity releases.
+It reconstructs the recorded case before capacity release by passing the recorded decision and approval through the real domain methods, then persists it through the PostgreSQL repository.
+Only replay transport identifiers are newly generated for the recorded capacity payloads.
+Forty distinct recorded order events run through `PostSalesEventHandler` while another PostgreSQL transaction holds their policy context rows with `FOR UPDATE`.
+The test requires four active background workers, sixteen queued events and five database lock waits, including a CallerRuns handler, before publishing capacity releases to the independent stream.
+It requires the case to reach `APPLIED` and both Redis messages to be acknowledged within two seconds while those background waits remain present.
+It checks the released booking references and one `PostSalesApplied` outbox record, releases the locks, verifies all forty order projections, closes both subscriber pools and replays the releases through a fresh Spring context.
+The replay must preserve the case version and outbox count, with empty pending lists and no DLQ entries.
+All handlers, Redis operations, transactions, repositories and outbox writes in this test are real.
+
+The recorded run on 2026-09-23 completed both capacity releases in 37 milliseconds with five background lock waits and sixteen queued events.
+This is an isolated regression result; deployment latency still depends on the shared database and workload.
+The test writes source and replay message IDs, completed case data, outbox records and observed timing to `target/recorded-tests/capacity-isolation.json`.
+Its PostgreSQL schema and Redis keys are removed after execution, and the JSON evidence remains available.
+
 ## Wallet complaint compensation
 
 An approved `COMPENSATION` case credits the original order account with the frozen decision amount through Wallet / Promotion.
@@ -89,7 +116,24 @@ Java keeps refund/change case workflows explicit and compatible with transaction
 ## Check
 
 ```bash
-mvn test
+mvn -Dpost-sales.messaging.redis.enabled=false test
+```
+
+The full module run on 2026-09-23 reported 89 tests, zero failures, zero errors and 18 tests skipped because their external conditions were not enabled.
+The focused recorded run executed `IndependentCapacitySubscriberLiveTest`, `CapacityReleaseDurableDedupTest` and `UnrelatedEventDatabaseIsolationTest`, with all three passing and none skipped.
+Run the recorded tests from this service directory with Java 25, a local PostgreSQL database and an empty dedicated Redis database.
+The isolation test requires Redis messaging to be enabled in its Spring context and uses production stream names only inside that dedicated Redis database.
+The input paths below refer to previously captured records in the ignored workspace evidence directory.
+
+```bash
+export CONSUMER_THREADS=4
+export TEST_DATABASE_URL='jdbc:postgresql://localhost:15432/postgres?user=postgres'
+export TEST_REDIS_URL='redis://localhost:16379/15'
+export TEST_CAPACITY_ISOLATION=true
+export TEST_CAPACITY_DEDUP_EVIDENCE="$PWD/../../.scratch/runtime-fixes/goal-capacity-dedup-evidence.json"
+export TEST_CAPACITY_CASE_EVENTS="$PWD/../../.scratch/runtime-fixes/goal-rev228-refund-events.json"
+export TEST_POSTSALES_UNRELATED_EVENTS="$PWD/../../.scratch/runtime-fixes/goal-postsales-unrelated-events.json"
+mvn -Dtest=IndependentCapacitySubscriberLiveTest,CapacityReleaseDurableDedupTest,UnrelatedEventDatabaseIsolationTest test
 ```
 
 `CompensationMappingTest` checks the wallet compensation approval amount, method and empty execution actions.
