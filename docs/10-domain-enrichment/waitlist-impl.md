@@ -1,164 +1,57 @@
-# Waitlist — Full Implementation
+# Waitlist implementation
 
-## Context
+Last updated: 2026-09-23.
 
-**Service**: waitlist (TypeScript, `services/waitlist/`)
-**Current state**: Empty shell — 0 lines of domain logic. Has basic runtime setup using ts-kit. Needs full implementation of priority-based waiting queue and auto-promotion.
+## Runtime and storage
 
-**Platform kit**: `platform/ts-kit/` provides storage, messaging, HTTP, and outbox primitives.
-**DDD spec**: `docs/02-domains/waitlist.md`
+The TypeScript service stores requests in PostgreSQL and publishes events through a transactional outbox.
+The public request interface is [Waitlist HTTP API](../08-contracts/api/waitlist.md).
+Requests have `wlr-` identifiers and the statuses `DRAFT`, `QUEUED`, `MATCHING`, `FULFILLED`, `EXPIRED`, `CANCELLED`, `SUSPENDED` and `CLOSED`.
+The queue sorts priority descending, creation time ascending and entry identifier ascending.
+The database enforces active request uniqueness for the leading traveler and intent fingerprint.
 
-## Requirements
+## Matching and confirmation
 
-### R1: Waitlist Entry Model
+The application selects a queued request, obtains a current fare quote and commercial Offer, and starts an actual Journey Order.
+Persisted UUID v7 keys identify each downstream operation.
+Creating the order records its reference and leaves the request `MATCHING`.
+`JourneyOrderConfirmed` changes it to `FULFILLED` and publishes `WaitlistFulfilled`.
+Notification consumes this success event.
 
-When a segment is sold out, passengers can join a waitlist:
+`JourneyOrderCancelled` clears the matching order and offer and renews the next attempt's quote, Offer and order keys.
+The request returns to `QUEUED` if its deadline permits another attempt, otherwise it becomes `EXPIRED`.
+Expiry scans do not expire requests with a linked order still being processed.
+Archival changes fulfilled, expired or cancelled requests to `CLOSED` and preserves their recorded references.
+Repeated confirmation after fulfillment or archival produces no new success event.
 
-```
-WaitlistEntry:
-  entryId: "wl-xxx"
-  accountId: "acc-xxx"
-  travelerRefs: ["tvl-xxx"]
-  segmentRef: "seg-xxx"
-  departureDate: "2026-07-20"
-  seatClass: "SECOND_CLASS"
-  priorityScore: 85          # computed from multiple factors
-  status: QUEUED | OFFERED | ACCEPTED | EXPIRED | CANCELLED
-  queuePosition: 3           # rank within the waitlist
-  createdAt: ISO datetime
-  offeredAt: ISO datetime | null
-  offerExpiresAt: ISO datetime | null
-```
+## Priority calculation
 
-**Domain model** (`src/domain.ts`):
-- `WaitlistEntry` class with status lifecycle
-- `WaitlistQueue` aggregate: ordered collection of entries for a segment+date+class
-- Queue is maintained sorted by `priorityScore` DESC, then `createdAt` ASC
+The total is clamped to the range 0 through 100.
 
-### R2: Priority Scoring
+| Factor | Current calculation |
+|---|---|
+| Loyalty | Platinum 30, gold 20, silver 10, none 0 |
+| Booking history | More than 20 trips 20; 10 through 20 trips 15; 5 through 9 trips 10; fewer than 5 trips 5 |
+| Advance booking | More than 14 days 15; 7 through 14 days 10; fewer than 7 days 5 |
+| Group size | One traveler 10; two travelers 8; three or four travelers 5; larger group 2 |
+| Fare class | Business 15, first 12, second 8, standing 3 |
+| Special status | Military or disabled 10; student 5; none 0 |
 
-Compute a 0-100 priority score based on:
+Canonical class propagation across the queue, fare quote and released inventory remains part of the inventory integration work.
+The current implementation does not enforce multi traveler mutual exclusion independently for every companion.
 
-```
-Factor weights:
-  loyalty_tier:     0-30 points
-    PLATINUM: 30, GOLD: 20, SILVER: 10, NONE: 0
-  
-  booking_history:  0-20 points
-    > 20 trips in past year: 20
-    10-20 trips: 15
-    5-9 trips: 10
-    < 5 trips: 5
-  
-  advance_booking:  0-15 points
-    > 14 days before departure: 15
-    7-14 days: 10
-    < 7 days: 5
-  
-  group_size:       0-10 points
-    single traveler: 10 (easier to seat)
-    2 travelers: 8
-    3-4: 5
-    5+: 2
-  
-  fare_class:       0-15 points
-    BUSINESS: 15, FIRST: 12, SECOND: 8, STANDING: 3
-  
-  special:          0-10 points
-    military/disabled: +10
-    student: +5
-```
+## Verified behavior
 
-**Domain model**:
-- `PriorityCalculator`: pure function taking `PriorityInput` → `score: number`
-- `PriorityInput`: `loyaltyTier`, `tripCount`, `daysBefore`, `groupSize`, `fareClass`, `specialStatus`
+`tests/confirmation-live.test.ts` uses actual recorded order facts with PostgreSQL to verify pending matching, confirmation, archived replay, cancellation and renewed keys.
+It also verifies that a row lock timeout is retryable and leaves no partial success event.
+`tests/order-index-live.test.ts` verifies indexed order lookup using recorded waitlist rows.
+`tests/current-clients-live.test.ts` exercises the current downstream response fields against deployed services.
+`deploy/loadgen-go/live_waitlist_confirmation_test.go` verifies payment and ticket issuance before candidate fulfillment.
 
-### R3: Auto-Promotion on Cancellation
+## Incomplete integration
 
-When capacity-availability emits `WaitlistCapacityFreed`:
-
-```
-Promotion flow:
-  1. Receive WaitlistCapacityFreed event with segmentRef, departureDate, freedSlots
-  2. For each freed slot:
-     a. Pick highest-priority QUEUED entry
-     b. Request a fare quote from fare-pricing
-     c. Request a capacity hold from capacity-availability
-     d. If both succeed: transition entry to OFFERED, send notification
-     e. Set offer expiry (15 minutes)
-  3. If passenger accepts within expiry:
-     a. Create journey order
-     b. Transition to ACCEPTED
-  4. If offer expires:
-     a. Release capacity hold
-     b. Transition to EXPIRED
-     c. Promote next in queue
-```
-
-**Domain model**:
-- `PromotionOrchestrator`: coordinates the promotion saga
-- `WaitlistOffer`: `offerId`, `entryId`, `fareQuoteId`, `capacityHoldId`, `expiresAt`
-- Events: `WaitlistEntryPromoted`, `WaitlistOfferExpired`, `WaitlistEntryAccepted`
-
-### R4: API Endpoints
-
-```
-POST /api/v1/waitlist/entries
-  Request: { accountId, travelerRefs, segmentRef, departureDate, seatClass }
-  Response: { entryId, queuePosition, priorityScore, estimatedWaitMinutes }
-
-GET /api/v1/waitlist/entries/{entryId}
-  Response: { entry details, current position, status }
-
-DELETE /api/v1/waitlist/entries/{entryId}
-  Response: { cancelled: true }
-
-POST /api/v1/waitlist/entries/{entryId}/accept
-  Request: { paymentMethodRef }
-  Response: { orderId, seatAssignment }
-
-GET /api/v1/waitlist/segments/{segmentRef}/{departureDate}/queue
-  Response: { totalQueued, myPosition (if authenticated), estimatedPromotionRate }
-```
-
-## Interface Contracts
-
-### Events consumed
-| Stream | Event Type | Purpose |
-|--------|-----------|---------|
-| `events:capacity-availability` | `WaitlistCapacityFreed` | Trigger auto-promotion |
-| `events:journey-order` | `JourneyOrderCancelled` | Detect cancellation (may trigger capacity freed) |
-| `events:loyalty-membership` | `MemberTierChanged` | Update priority score |
-
-### Events produced
-| Event Type | Consumers |
-|-----------|-----------|
-| `WaitlistEntryCreated` | notification, reporting |
-| `WaitlistEntryPromoted` | notification (send offer to passenger) |
-| `WaitlistOfferExpired` | capacity-availability (release hold) |
-| `WaitlistEntryAccepted` | journey-order, payment |
-
-### Downstream calls (HTTP)
-- `POST fare-pricing/api/v1/fare-quotes` — get current price for promoted entry
-- `POST capacity-availability/api/v1/capacity/holds` — request hold for promoted entry  
-- `POST journey-order/api/v1/journey-orders` — create order when accepted
-
-## Test Criteria
-
-1. Joining waitlist for sold-out segment → entry created with correct priority score
-2. Platinum member scores higher than non-member → correct queue ordering
-3. WaitlistCapacityFreed triggers promotion of highest-priority entry
-4. Promoted entry not accepted within 15 min → offer expires, next promoted
-5. Accept promotion → journey order created
-6. Cancel waitlist entry → removed from queue, positions updated
-
-## Files to Create
-
-- `services/waitlist/src/domain.ts` — WaitlistEntry, WaitlistQueue, PriorityCalculator
-- `services/waitlist/src/promotion.ts` — PromotionOrchestrator, WaitlistOffer
-- `services/waitlist/src/app.ts` — HTTP handlers
-- `services/waitlist/src/subscriber.ts` — event consumption
-- `services/waitlist/src/publisher.ts` — event publishing
-- `services/waitlist/migrations/001_waitlist.sql` — schema
-- `services/waitlist/tests/domain.test.ts` — priority scoring tests
-- `services/waitlist/tests/promotion.test.ts` — promotion flow tests
+The current `CapacityReleased` handler expects `departureDate`, while the deployed event supplies a segment reference without this field.
+Automatic promotion from those releases is not yet verified.
+Queue date enforcement, canonical class propagation and preservation of all requested travelers need coordinated changes.
+The required `paymentGuaranteeRef` is recorded, but it does not currently establish or settle a payment authorization.
+Do not treat successful request creation or the order confirmation regression as proof that automatic waitlist fulfillment is complete.

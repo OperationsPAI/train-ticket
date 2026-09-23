@@ -46,3 +46,15 @@ Work slice: REQ-011
 ```bash
 mvn test
 ```
+
+## Accepted supply references
+
+Initial reservation HTTP requests resolve the accepted Order, Offer, fare quote and itinerary.
+The service validates account, traveler set, segment and departure facts before persisting `classRef`, `offerItemRef`, `scheduledServiceRef` and `serviceDate`.
+Change reservations capture these fields from the approved replacement offer.
+The booking detail API and reservation events expose the recorded supply fields.
+Concurrent requests for the same business key return one stored booking identifier, which callers must use for subsequent operations.
+
+`ReservationFactsLiveTest` verifies real upstream references and concurrent PostgreSQL persistence.
+Its environment variables are `TEST_RESERVATION_FACTS_SOURCE`, `TEST_DATABASE_URL` and `TEST_LIVE_BASE_URL_TEMPLATE`.
+This integration must be deployed with inventory reconciliation so historical `standard` occupancy remains counted.
