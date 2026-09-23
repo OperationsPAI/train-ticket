@@ -44,7 +44,7 @@ export function createWaitlistEventHandler(service: WaitlistConsumedEventService
       return successfulHandling();
     } catch (error) {
       if (error instanceof OptimisticConcurrencyConflict) return transientHandling(error);
-      if (error instanceof Error && "code" in error && /^(08|40|53|57P)/u.test(String(error.code))) return transientHandling(error);
+      if (error instanceof Error && "code" in error && /^(08|40|53|55P03|57P)/u.test(String(error.code))) return transientHandling(error);
       if (error instanceof Error && /failed with status|fetch failed|ECONNREFUSED/u.test(error.message)) return transientHandling(error);
       return fatalHandling(error instanceof Error ? error : new Error("Waitlist event handling failed"));
     }
