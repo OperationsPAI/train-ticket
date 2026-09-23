@@ -108,7 +108,7 @@ class MessagingPortsTest {
 
         Map<?, ?> payload = assertPayload(envelope.payload());
 
-        assertEquals(List.of("caseId", "orderId", "resultSummary"), new ArrayList<>(payload.keySet()));
+        assertEquals(List.of("caseId", "orderId", "caseType", "resultSummary"), new ArrayList<>(payload.keySet()));
         assertEquals("ord-test-6", payload.get("orderId"));
         assertInstanceOf(Map.class, payload.get("resultSummary"));
     }
