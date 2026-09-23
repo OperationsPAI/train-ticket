@@ -26,6 +26,7 @@ public final class DeduplicatingEventHandler implements EventSubscriber.EventHan
 
     @Override
     public EventSubscriber.HandlerResult handle(EventEnvelope envelope) {
+        if(!delegate.handles(envelope))return EventSubscriber.HandlerResult.SUCCESS;
         if (transactionTemplate == null) {
             return handleInCurrentThread(envelope, false);
         }

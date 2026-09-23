@@ -26,6 +26,11 @@ public class IdentityVerificationEventHandler implements EventSubscriber.EventHa
     }
 
     @Override
+    public boolean handles(EventEnvelope envelope) {
+        return PRODUCER.equals(envelope.producer()) && java.util.Set.of("CredentialRegistered","VerificationPassed","VerificationFailed").contains(envelope.eventType());
+    }
+
+    @Override
     public EventSubscriber.HandlerResult handle(EventEnvelope envelope) {
         if (!PRODUCER.equals(envelope.producer())) {
             return EventSubscriber.HandlerResult.SUCCESS;
