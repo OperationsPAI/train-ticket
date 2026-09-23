@@ -110,7 +110,12 @@ Use operation evidence and the terminal case status to determine completion.
 
 An expired, cancelled or failed difference payment with no captured funds triggers replacement reservation cancellation.
 The service checks that original tickets remain issued and persists `unpaid-compensation-completed` before returning `FAILED` with `terminalReason=CHANGE_PAYMENT_TERMINATED`.
-Compensation for a replacement that becomes unavailable after Hold confirmation remains under integration.
+An accepted no capacity rejection from Booking or Ticketing is persisted as `capacity-rejected`.
+Execution then lists replacement tickets, voids any issued replacements, cancels replacement reservations and waits for their Hold release.
+Captured difference payments are refunded in full and checked for settlement; uncaptured payment intents are cancelled.
+The original tickets must remain issued and no original ticket void or order application may have started.
+`capacity-compensation-completed` records the checked result before the case ends as `FAILED` with `terminalReason=CHANGE_CAPACITY_UNAVAILABLE`.
+Concurrent execution calls for one case share a PostgreSQL advisory execution lock; a busy call returns the current case without another downstream operation.
 
 ### Read replacement issue authorization
 
@@ -141,5 +146,6 @@ The domain execution operations include:
 ## Integration status
 
 The recorded change operations support retry and restart recovery.
-Automatic compensation for sold out replacements, partial ticket issuance and captured difference payments requires coordinated inventory and ticket validation.
+Capacity compensation requires the corresponding Booking cancellation endpoint and validated loadgen handling before production activation.
+Partial ticket issuance and captured difference payment paths require live scenario verification.
 See [capacity integration requirements](../../10-domain-enrichment/capacity-overbooking.md) for the production activation requirements.
