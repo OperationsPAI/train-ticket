@@ -266,6 +266,11 @@ func (r *Repository) FindSeatAllocations(ctx context.Context, segmentBookingID, 
 	return out, total, rows.Err()
 }
 func (r *Repository) FindActiveSeatAllocations(ctx context.Context, scheduledServiceRef, serviceDate string) ([]domain.ContractSeatAllocation, error) {
+	if _, transactional := ctx.Value(txKey{}).(kitstorage.DBTX); transactional {
+		if _, err := r.tx.DBFor(ctx).Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "seat-allocation:"+scheduledServiceRef+":"+serviceDate); err != nil {
+			return nil, err
+		}
+	}
 	rows, err := r.tx.DBFor(ctx).Query(ctx, "SELECT data FROM seat_allocations WHERE data->>'scheduledServiceRef'=$1 AND data->>'serviceDate'=$2 AND data->>'status' IN ('ALLOCATED','STANDING','CONFIRMED') ORDER BY id", scheduledServiceRef, serviceDate)
 	if err != nil {
 		return nil, err
