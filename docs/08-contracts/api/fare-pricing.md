@@ -107,12 +107,17 @@ Publishes the `DRAFT` rule set. Any older `PUBLISHED` rule set with the same
 | `journeyOrderId` | string | yes | Parent order ID. |
 | `segmentRefs` | string[] | yes | Segment references of the entitlements being adjusted. |
 | `originalQuoteId` | string | yes | Original fare quote referenced by the purchased offer price snapshot. An unknown quote returns 412 PRECONDITION_FAILED. |
+| `targetQuoteId` | string | for CHANGE | Selected target fare quote, currently valid, for the same travelers, channel and currency. REFUND requests omit this field. |
 
 **Response (201):**
 
 | Field | Type | Description |
 |---|---|---|
 | `adjustmentQuoteId` | string | Adjustment quote ID. |
+| `originalQuoteId` | string | Exact original fare quote used in the calculation. |
+| `targetQuoteId` | string or null | Exact target fare quote for CHANGE. |
+| `fareDifference` | Money or null | Target total minus original total. |
+| `changeFee` | Money or null | Assessed fee. |
 | `purpose` | enum | As requested. |
 | `status` | enum | `QUOTED`, `FAILED` |
 | `refundableAmount` | object | Money amount refundable to customer. |

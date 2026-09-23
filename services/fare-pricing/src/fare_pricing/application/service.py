@@ -6,6 +6,7 @@ from datetime import UTC, date, datetime, timedelta, timezone
 from typing import Any
 
 from fare_pricing.domain import (
+    QuoteStatus,
     AdjustmentQuote,
     AssessmentPurpose,
     FareQuote,
@@ -248,6 +249,12 @@ class FarePricingService:
             if target_quote_id is None:
                 raise PricingError("target_quote_id is required for CHANGE assessments")
             target_quote = self._store.get_quote(target_quote_id)
+            if set(original_quote.traveler_refs) != set(target_quote.traveler_refs):
+                raise PricingError("target fare quote must cover the original travelers")
+            if original_quote.currency != target_quote.currency or original_quote.channel != target_quote.channel:
+                raise PricingError("target fare quote currency and channel must match the original")
+            if target_quote.status != QuoteStatus.QUOTED or target_quote.valid_from > now or target_quote.is_expired(now):
+                raise PricingError("target fare quote is not currently valid")
             aq = assess_change(
                 assessment_id=assessment_id,
                 adjustment_quote_id=adjustment_quote_id,
