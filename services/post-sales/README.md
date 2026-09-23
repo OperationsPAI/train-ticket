@@ -10,7 +10,11 @@ Last updated: 2026-09-23.
 Accepted operations are recorded in `changeOperations` and use stable downstream idempotency keys.
 The case API includes issue authorization and settlement reads for downstream validation.
 An unsuccessful uncaptured difference payment cancels replacement reservations, preserves original tickets and ends with `CHANGE_PAYMENT_TERMINATED` after compensation is verified.
-Sold out replacement compensation and paid partial issuance remain part of the coordinated supply integration.
+Sold out replacement compensation records the rejection, voids replacement tickets, cancels replacement bookings, checks Hold release and returns captured difference payments.
+It preserves original tickets and finishes with `CHANGE_CAPACITY_UNAVAILABLE` only after validation.
+Case execution uses a PostgreSQL advisory lock to serialize downstream actions across replicas.
+The real database `CapacityCompensationLiveTest` verifies rejection persistence and execution lock release.
+Live verification of partial issuance and captured difference payment remains required.
 See the [HTTP API](../../docs/08-contracts/api/post-sales.md) and [inventory integration requirements](../../docs/10-domain-enrichment/capacity-overbooking.md).
 
 ## Owns
