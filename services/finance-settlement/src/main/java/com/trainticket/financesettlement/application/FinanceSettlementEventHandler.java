@@ -819,6 +819,16 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
         service.recordChangeFee(orderId,jsonMoney(change.path("decision").path("changeAssessment").path("changeFee")),caseId,envelope.correlationId());
     }
 
+    @Transactional
+    public void reconcileChange(String caseId,String correlationId) {
+        if(changePayments==null)throw new IllegalStateException("change payment facts client is required");
+        var change=changePayments.read("post-sales","/api/v1/post-sales-cases/"+caseId,correlationId);
+        String orderId=change.path("journeyOrderId").asText();
+        var command=new EventEnvelope(PrefixedIds.newEventId(),"ChangeFinancialReconciliationRequested",clock.instant(),correlationId,
+            PrefixedIds.newCommandId(),"finance-settlement",1,Map.of("caseId",caseId,"orderId",orderId));
+        applyChangeFinance(command,orderId,caseId);
+    }
+
     private RevenueRecognition ensureChangeRevenue(String orderId,String caseId,String paymentId,Money amount,String sourceId,Instant capturedAt,EventEnvelope envelope) {
         var existing=serviceRevenue(orderId).stream().filter(item->paymentId.equals(item.orderItemId()) && "change-payment".equals(item.componentCode())).findFirst();
         if(existing.isPresent()) {

@@ -73,6 +73,7 @@ class ChangePaymentOwnershipLiveTest {
                 assertEquals(HandlerResult.SUCCESS,tx.execute(status->handler.handle(originalEvent)));
                 var lowerApplied=applied(lowerCase,event.correlationId());
                 for(int attempt=0;attempt<2;attempt++)assertEquals(HandlerResult.SUCCESS,tx.execute(status->handler.handle(lowerApplied)));
+                for(int attempt=0;attempt<2;attempt++)tx.executeWithoutResult(status->handler.reconcileChange(lowerCaseId,event.correlationId()));
                 var lowerRevenue=revenues.findByOrderId(lowerOrder).getFirst();
                 long expectedRefund=lowerCase.path("decision").path("refundableAmount").path("minorUnits").asLong();
                 assertEquals(expectedRefund,lowerRevenue.reversedAmount().amount().movePointRight(2).longValueExact());
