@@ -712,6 +712,15 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             applyChangeFinance(envelope,orderId,caseId);
             return;
         }
+        service.lockOrder(orderId);
+        if(changePayments!=null && java.util.Set.of("REFUND","CANCELLATION","REBOOK").contains(String.valueOf(payload.get("caseType")))
+            && serviceRevenue(orderId).stream().anyMatch(item->"change-payment".equals(item.componentCode()) || item.reversalAmounts().keySet().stream().anyMatch(ref->ref.startsWith("rf-")))) {
+            var current=changePayments.read("post-sales","/api/v1/post-sales-cases/"+caseId,envelope.correlationId());
+            if(!caseId.equals(current.path("caseId").asText()) || !orderId.equals(current.path("journeyOrderId").asText()) || !"APPLIED".equals(current.path("status").asText()))throw new DomainRuleViolation("refund financial reference mismatch");
+            settlePaymentRefunds(envelope,orderId,caseId,jsonMoney(current.path("decision").path("refundableAmount")));
+            service.recordPostSalesFee(orderId,jsonMoney(current.path("decision").path("refundAssessment").path("penaltyAmount")),caseId,envelope.correlationId());
+            return;
+        }
         Money refund = projections.findApprovedRefund(caseId)
             .orElseThrow(() -> new OutOfOrderEventException("PostSalesApplied received before PostSalesApproved refund amount"));
         if (refund.isZero()) {
@@ -790,6 +799,12 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             var recognition=ensureChangeRevenue(orderId,caseId,paymentId,due,capturedEvent.path("eventId").asText(),Instant.parse(capturedEvent.path("occurredAt").asText()),envelope);
             if(!recognition.amount().equals(due))throw new DomainRuleViolation("change difference recognition amount mismatch");
         }
+        settlePaymentRefunds(envelope,orderId,caseId,expected);
+        service.recordChangeFee(orderId,jsonMoney(change.path("decision").path("changeAssessment").path("changeFee")),caseId,envelope.correlationId());
+    }
+
+    private void settlePaymentRefunds(EventEnvelope envelope,String orderId,String caseId,Money expected) {
+        var revenues=serviceRevenue(orderId);
         var refunds=changePayments.read("payment","/api/v1/refunds?businessCaseRef="+caseId,envelope.correlationId());
         if(!refunds.path("items").isArray() || refunds.path("total").asInt(-1)!=refunds.path("items").size())throw new DomainRuleViolation("change refund list is incomplete");
         Money total=Money.zero(expected.currency());
@@ -813,10 +828,9 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
         for(String refundId:matched.keySet()) {
             var recognition=matched.get(refundId);
             int first=recognition.domainEvents().size();
-            recognition.reverse("change fare difference refunded",refundId,amounts.get(refundId),clock.instant(),causationIdOrEventId(envelope),causationIdOrEventId(envelope),envelope.correlationId());
+            recognition.reverse("settled payment refund",refundId,amounts.get(refundId),clock.instant(),causationIdOrEventId(envelope),causationIdOrEventId(envelope),envelope.correlationId());
             if(recognition.domainEvents().size()>first)service.saveAndPublish(recognition,first);
         }
-        service.recordChangeFee(orderId,jsonMoney(change.path("decision").path("changeAssessment").path("changeFee")),caseId,envelope.correlationId());
     }
 
     @Transactional
