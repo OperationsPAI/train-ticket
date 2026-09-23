@@ -55,14 +55,15 @@ public class AppConfig {
         return RedisEventSubscriber.fromUrl(redisUrl(), objectMapper);
     }
 
-    @Bean
+    @Bean(destroyMethod="shutdown")
     @ConditionalOnMissingBean(EventSubscriber.class)
-    public EventSubscriber journeyOrderEventSubscriber(RedisEventSubscriber subscriber) {
+    public EventSubscriber journeyOrderEventSubscriber(RedisEventSubscriber subscriber,ObjectMapper mapper) {
+        var identitySubscriber=RedisEventSubscriber.fromUrl(redisUrl(),mapper,4);
         return new EventSubscriber() {
             @Override
             public void subscribe(java.util.List<String> streams, String group, String consumerName,
                                   java.util.function.Function<com.trainticket.platformkit.messaging.EventEnvelope, HandlerResult> handler) {
-                subscriber.subscribe(streams, group, consumerName, envelope -> {
+                java.util.function.Function<com.trainticket.platformkit.messaging.EventEnvelope,com.trainticket.platformkit.messaging.HandlerResult> dispatch=envelope -> {
                     HandlerResult result = handler.apply(envelope);
                     for (int attempt = 0; result instanceof TransientError && attempt < 6; attempt++) {
                         try { Thread.sleep(25L << attempt); }
@@ -74,12 +75,17 @@ public class AppConfig {
                     case TransientError ignored -> com.trainticket.platformkit.messaging.HandlerResult.TRANSIENT_FAILURE;
                     case FatalError ignored -> com.trainticket.platformkit.messaging.HandlerResult.FATAL_FAILURE;
                     };
-                });
+                };
+                var identity=streams.stream().filter(stream->stream.equals("events:identity-verification") || stream.equals("events:traveler-profile")).toList();
+                var order=streams.stream().filter(stream->!identity.contains(stream)).toList();
+                if(!order.isEmpty())subscriber.subscribe(order,group,consumerName,dispatch::apply);
+                if(!identity.isEmpty())identitySubscriber.subscribe(identity,group,consumerName+"-identity",dispatch::apply);
             }
 
             @Override
             public void shutdown() {
                 subscriber.close();
+                identitySubscriber.close();
             }
         };
     }

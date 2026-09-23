@@ -125,6 +125,11 @@ public class RedisEventSubscriber implements EventSubscriber {
         return fromUrl(redisUrl, objectMapper, defaultEventConsumerTracer());
     }
 
+    public static RedisEventSubscriber fromUrl(String redisUrl, ObjectMapper objectMapper,int consumerThreads) {
+        LazyLettuceRedisStreamOperations streams=new LazyLettuceRedisStreamOperations(redisUrl);
+        return new RedisEventSubscriber(streams,objectMapper,streams,new InMemoryConsumedEventStore(),defaultEventConsumerTracer(),consumerThreads);
+    }
+
     public static RedisEventSubscriber fromUrl(String redisUrl, ObjectMapper objectMapper, EventConsumerTracer eventConsumerTracer) {
         LazyLettuceRedisStreamOperations streams = new LazyLettuceRedisStreamOperations(redisUrl);
         return new RedisEventSubscriber(streams, objectMapper, streams, new InMemoryConsumedEventStore(), eventConsumerTracer);
