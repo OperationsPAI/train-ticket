@@ -4,6 +4,7 @@ import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.payment.domain.DomainRuleViolation;
 import com.trainticket.payment.domain.Money;
 import java.util.Objects;
+import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -160,6 +161,25 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
         InboundEventPayload payload = InboundEventPayload.from(envelope);
         String caseId = payload.requiredText("caseId");
         String reason = payload.optionalText("reason");
+        if(envelope.payload() instanceof Map<?,?> data && data.get("approvedActions") instanceof Map<?,?> actions && actions.get("refunds") instanceof java.util.List<?> refunds){
+            Money total=Money.fromMinorUnits(0,payload.moneyFromApprovedActions().currency().getCurrencyCode());
+            var seen=new java.util.HashSet<String>();
+            for(Object raw:refunds){
+                if(!(raw instanceof Map<?,?> allocation) || !(allocation.get("amount") instanceof Map<?,?> value)
+                    || !(allocation.get("paymentIntentId") instanceof String paymentId) || !seen.add(paymentId))throw new IllegalArgumentException("refund payment allocation is invalid or duplicated");
+                Money amount=Money.fromMinorUnits(((Number)value.get("minorUnits")).longValue(),String.valueOf(value.get("currency")));
+                if(amount.isZero())throw new IllegalArgumentException("refund allocation must be positive");
+                total=total.add(amount);
+            }
+            if(!total.equals(payload.moneyFromApprovedActions()))throw new IllegalArgumentException("refund allocations differ from the approved amount");
+            for(Object raw:refunds){
+                if(!(raw instanceof Map<?,?> allocation) || !(allocation.get("amount") instanceof Map<?,?> value))throw new IllegalArgumentException("refund payment allocation is invalid");
+                String paymentId=String.valueOf(allocation.get("paymentIntentId"));
+                Money allocated=Money.fromMinorUnits(((Number)value.get("minorUnits")).longValue(),String.valueOf(value.get("currency")));
+                requestRefund(paymentId,allocated,reason==null?"post-sales-approved":reason,caseId,caseId+":"+paymentId,envelope.correlationId());
+            }
+            return;
+        }
         String intentId = payload.optionalPaymentIntentIdFromApprovedActions();
         if (intentId == null) {
             String orderRef = payload.orderRefFromApprovedActions();
