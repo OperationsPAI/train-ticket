@@ -123,8 +123,8 @@ export class NotificationApplicationService {
     private readonly aggregator: NotificationAggregationStore = new NotificationAggregator(),
   ) {}
 
-  async handleExternalTrigger(envelope: EventEnvelope): Promise<ExternalTriggerResult> {
-    const commands = await scheduleCommandsFromEnvelope(envelope, this.aggregator);
+  async handleExternalTrigger(envelope: EventEnvelope, recipientRef?: string): Promise<ExternalTriggerResult> {
+    const commands = await scheduleCommandsFromEnvelope(envelope, this.aggregator, recipientRef);
     if (commands === undefined) {
       if (mappingFor(envelope.eventType) === undefined) {
         console.info(`Ignoring unsupported notification trigger ${envelope.eventType} (${envelope.eventId})`);
@@ -260,7 +260,13 @@ export interface NotificationAggregationStore {
   shouldSuppress(candidate: AggregatableNotification): boolean | Promise<boolean>;
 }
 
-async function scheduleCommandsFromEnvelope(envelope: EventEnvelope, aggregator?: NotificationAggregationStore): Promise<readonly ScheduleNotification[] | undefined> {
+export function notificationRecipients(envelope: EventEnvelope): readonly string[] {
+  const mapping = mappingFor(envelope.eventType);
+  if (mapping) validateTriggerContract(envelope);
+  return mapping ? recipientRefsFromMapping(mapping.recipient(envelope.payload)) : [];
+}
+
+async function scheduleCommandsFromEnvelope(envelope: EventEnvelope, aggregator?: NotificationAggregationStore, selectedRecipient?: string): Promise<readonly ScheduleNotification[] | undefined> {
   const mapping = mappingFor(envelope.eventType);
   if (mapping === undefined) {
     return undefined;
@@ -269,7 +275,11 @@ async function scheduleCommandsFromEnvelope(envelope: EventEnvelope, aggregator?
   validateTriggerContract(envelope);
 
   const payload = envelope.payload;
-  const recipientRefs = recipientRefsFromMapping(mapping.recipient(payload));
+  const recipients = notificationRecipients(envelope);
+  if (selectedRecipient !== undefined && !recipients.includes(selectedRecipient)) {
+    throw new NonConformantNotificationTrigger("Selected recipient is outside the event recipients");
+  }
+  const recipientRefs = selectedRecipient === undefined ? recipients : [selectedRecipient];
   if (recipientRefs.length === 0) {
     console.debug(`Skipping notification trigger ${envelope.eventType} (${envelope.eventId}): no resolvable recipientRef`);
     return undefined;
