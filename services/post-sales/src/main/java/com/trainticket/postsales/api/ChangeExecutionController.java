@@ -14,4 +14,6 @@ public class ChangeExecutionController {
     public Map<String,Object> execute(@PathVariable String caseId,jakarta.servlet.http.HttpServletRequest request){return PostSalesMapper.caseDetails(execution.advance(caseId,com.trainticket.platformkit.http.CorrelationIds.from(request)));}
     @GetMapping("/{caseId}/issue-authorization/{bookingId}")
     public Map<String,Object> authorize(@PathVariable String caseId,@PathVariable String bookingId,@RequestHeader("X-Correlation-Id") String correlation){return execution.issueAuthorization(caseId,bookingId,correlation);}
+    @GetMapping("/{caseId}/settlement")
+    public Map<String,Object> settlement(@PathVariable String caseId,@RequestHeader("X-Correlation-Id") String correlation){return execution.settlement(caseId,correlation);}
 }
