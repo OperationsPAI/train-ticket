@@ -590,12 +590,20 @@ public class RedisEventSubscriber implements EventSubscriber {
     @Override
     public void close() {
         running.set(false);
-        pollExecutor.shutdownNow();
-        handlerExecutor.shutdown();
+        pollExecutor.shutdown();
         try {
-            pollExecutor.awaitTermination(5, TimeUnit.SECONDS);
-            handlerExecutor.awaitTermination(5, TimeUnit.SECONDS);
+            if (!pollExecutor.awaitTermination(20, TimeUnit.SECONDS)) {
+                LOGGER.warn("subscriber pollers did not finish their fetched batches within the shutdown deadline");
+                pollExecutor.shutdownNow();
+            }
+            handlerExecutor.shutdown();
+            if (!handlerExecutor.awaitTermination(10, TimeUnit.SECONDS)) {
+                LOGGER.warn("subscriber handlers did not finish within the shutdown deadline");
+                handlerExecutor.shutdownNow();
+            }
         } catch (InterruptedException exception) {
+            pollExecutor.shutdownNow();
+            handlerExecutor.shutdownNow();
             Thread.currentThread().interrupt();
         }
         // Tasks still queued when the pool shuts down never reach their finally block.
