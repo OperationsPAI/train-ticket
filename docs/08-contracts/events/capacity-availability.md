@@ -1,8 +1,8 @@
-# Capacity & Availability — Events & Commands
+# Capacity and Availability Events
 
-Last updated: 2026-07-09
+Last updated: 2026-09-23.
 
-## Published Events
+## Availability read model
 
 ### AvailabilitySnapshot
 
@@ -10,14 +10,14 @@ Last updated: 2026-07-09
 |---|---|
 | **Producer** | capacity-availability |
 | **Consumers** | trip-planning, offer-management, fare-pricing |
-| **Trigger** | Query snapshot computed on demand; not an authoritative hold. Published as a reference for offer quoting and availability hints. |
+| **Source** | HTTP availability query, persisted as a snapshot; the PostgreSQL query does not append an `AvailabilitySnapshot` event to the outbox. |
 
 **Payload:**
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `snapshotId` | string | yes | Stable snapshot identity. Format: `avs-<uuid>`. |
-| `snapshotVersion` | u64 | yes | Monotonically increasing version of the snapshot. |
+| `snapshotVersion` | u64 | yes | Version 1 for each newly created snapshot identity. |
 | `scheduledServiceRef` | string | yes | Reference to the scheduled service this snapshot covers (e.g. `ss-<uuid>`). |
 | `segmentRef` | `SegmentRef` | yes | Service segment the snapshot applies to. |
 | `capturedAt` | RFC3339 UTC | yes | When the snapshot was captured. |
@@ -32,7 +32,7 @@ Last updated: 2026-07-09
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `classRef` | string | yes | Seat class / cabin reference (e.g. `first`, `second`, `business`). |
+| `classRef` | string | yes | Purchased class, such as `FIRST_CLASS`, `SECOND_CLASS`, `BUSINESS_CLASS`, `SLEEPER_HARD`, `SLEEPER_SOFT` or `STANDING`. |
 | `total` | u32 | yes | Total units in this class. |
 | `available` | u32 | yes | Estimated available units in this class. |
 
@@ -46,9 +46,12 @@ Last updated: 2026-07-09
 | `UNAVAILABLE` | `unavailable` | N/A | No sellable units; cannot quote. |
 
 **Idempotency/Ordering Notes:**
-- `AvailabilitySnapshot` is a read-model projection, not an event-sourced fact.
-- Same `snapshotId` with higher `snapshotVersion` supersedes earlier versions.
-- Consumers MUST discard snapshots where `validUntil` has elapsed.
+
+`AvailabilitySnapshot` is an observation and does not reserve capacity.
+Each query creates its own snapshot identity.
+Consumers must discard snapshots where `validUntil` has elapsed.
+
+## Published events
 
 ### CapacityHeld
 
@@ -69,6 +72,11 @@ Last updated: 2026-07-09
 | `idempotencyKey` | string | yes | Idempotency key from the request. |
 | `expiresAt` | RFC3339 UTC | yes | Hold expiry time. |
 | `idempotentReplay` | bool | yes | True if this event is a replay of an identical previous request. |
+
+Booking Orchestration correlates the Hold through its reservation idempotency key.
+`capacityUnitRef` is an inventory reference and has no passenger seat number guarantee.
+In the standing supply integration it identifies `quota:<policyVersion>:<index>`.
+The [standing policy](../standing-capacity-policy.md) defines quota evidence and deployment status.
 
 ### CapacityHoldConfirmed
 
@@ -103,10 +111,15 @@ Last updated: 2026-07-09
 | `holdId` | `HoldId` | yes | Hold ID. |
 | `inventoryPoolId` | `InventoryPoolId` | yes | Pool ID. |
 | `capacityUnitRef` | `CapacityUnitRef` | yes | Unit released. |
-| `segmentRef` | string | yes | Service Plan segment the pool sells (added 2026-07-09 for waitlist matching; additive). |
+| `segmentRef` | string | yes | Service Plan segment sold by the inventory pool. |
 | `interval` | `StationInterval` | yes | Station interval. |
 | `releasedAt` | RFC3339 UTC | yes | Release timestamp. |
 | `releaseReason` | string | yes | Reason (e.g. `post-sales-void`, `payment-expired`). |
+| `references` | object | yes | `sourceContext`, `orderRef`, `segmentBookingRef` and `travelerRef` recorded on the Hold. |
+
+Seat Assignment uses `holdId` to recover the associated allocations.
+This event currently lacks authoritative date and class fields for automatic Waitlist matching.
+Publication alone does not establish successful Waitlist fulfillment.
 
 ### CapacityHoldExpired
 
@@ -146,25 +159,48 @@ Last updated: 2026-07-09
 | `reason` | enum | yes | `UNKNOWN_CAPACITY_UNIT`, `IDEMPOTENCY_CONFLICT`, `OVERLAPPING_HOLD`, or `NO_AVAILABLE_CAPACITY`. |
 | `conflictingHoldId` | `HoldId` | no | Conflicting hold ID if reason is `OVERLAPPING_HOLD`. |
 
-## Accepted Commands
+### CapacitySnapshotUpdated
 
-### HoldCapacity
-
-| Field | Description |
-|---|---|
-| **Sender** | booking-orchestration |
-| **Payload** | `holdId`, `inventoryPoolId`, `capacityUnitRef`, `interval`, `idempotencyKey`, `requestedAt`, `expiresAt`. |
-
-### ConfirmHold
+The domain produces this event after inventory lifecycle changes.
+The PostgreSQL adapter serializes the following fields:
 
 | Field | Description |
 |---|---|
-| **Sender** | booking-orchestration |
-| **Payload** | `holdId`, `confirmedAt`. |
+| `segmentRef`, `departureDate` | Inventory pool segment and service date. |
+| `totalCapacity`, `remainingCapacity` | Admissible capacity and the remaining count calculated by the pool. |
+| `physicalCapacity` | Concrete seat or berth count; zero for standing quota pools. |
+| `holdCount`, `confirmedCount` | Pool occupancy by lifecycle state. |
+| `utilizationPct`, `snapshotVersion` | Utilization and source snapshot version. |
+| `classes` | Per class `classRef`, `physicalCapacity`, `effectiveCapacity`, `holdCount`, `confirmedCount`, `remainingCapacity` and `overbookingPolicy`. |
 
-### ReleaseHold
+`overbookingPolicy` contains `maxOverbookingPct`, `noShowRate` and `safetyMarginPct`.
+Standing quota confirmation does not produce a physical seat overbooking event.
+The supply integration combines allocations across pools during admission.
+Snapshot events still use the individual pool's counts, so cross pool snapshot consistency remains a production activation requirement.
 
-| Field | Description |
+### Other domain events
+
+| Event | Payload |
 |---|---|
-| **Sender** | booking-orchestration, post-sales |
-| **Payload** | `holdId`, `reason`. |
+| `OverbookingThresholdReached` | `poolId`, `physicalCapacity`, `confirmedCount`, `overbookingPct`. |
+| `WaitlistActivated` | `segmentRef`, `departureDate`, `queuePosition`. |
+| `WaitlistCapacityFreed` | `segmentRef`, `departureDate`, `freedSlots`. |
+
+These event serializers exist in the PostgreSQL adapter.
+Their presence does not establish that downstream Waitlist automation has a complete class, date and payment guarantee.
+
+## Consumed events
+
+| Event | Capacity action |
+|---|---|
+| `SegmentReservationRequested` | Resolve accepted booking supply and request one Hold for the traveler. |
+| `SegmentReservationConfirmed` | Confirm the matching Hold or persist confirmation until its Hold arrives. |
+| `SegmentTicketed` | Confirm the matching Hold using the ticketed booking reference. |
+| `SegmentBookingCancelled` | Release the matching Hold or persist cancellation until its Hold arrives. |
+| `PostSalesApplied` | Process the applicable release for the recorded booking. |
+| `EntitlementVoided` | Release the Hold associated with the voided entitlement. |
+
+`SegmentReservationRequested` carries `segmentBookingId`, `journeyOrderId`, `segmentRef`, `travelerRef` and `idempotencyKey`.
+The coordinated Booking implementation also persists the accepted class, scheduled service and service date.
+The supply integration validates event references against those booking facts and persists them in `reservation_supply_facts`.
+See [integration requirements](../../10-domain-enrichment/capacity-overbooking.md) before activating the coordinated changes.
