@@ -241,7 +241,7 @@ impl InMemoryInvoicingService {
             .map_err(|error| InvoicingError::ValidationFailed(error.to_string()))?.with_timezone(&chrono::Utc);
         let mut s = self.state.lock().unwrap();
         if let Some(existing) = s.orders.get_mut(&order_id) {
-            if existing.updated_at.is_some_and(|at| at > occurred_at) {
+            if e.event_type == "JourneyOrderCreated" || existing.updated_at.is_some_and(|at| at > occurred_at) {
                 if existing.traveler_refs.is_empty() { existing.traveler_refs = travelers; }
                 if existing.segment_refs.is_empty() { existing.segment_refs = segments; }
                 s.processed_events.insert(e.event_id);
@@ -274,7 +274,7 @@ impl InMemoryInvoicingService {
                     traveler_refs: travelers,
                     segment_refs: segments,
                     expected_total,
-                    updated_at: Some(occurred_at),
+                    updated_at: if e.event_type == "JourneyOrderCreated" { None } else { Some(occurred_at) },
                 },
             );
         }
