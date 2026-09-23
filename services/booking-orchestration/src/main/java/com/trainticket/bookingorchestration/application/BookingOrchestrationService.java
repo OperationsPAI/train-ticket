@@ -88,7 +88,7 @@ public class BookingOrchestrationService {
             return new SegmentBookingDetail(booking.segmentBookingId(), record.sagaId(), booking.journeyOrderId(),
                 booking.segmentRef(), booking.travelerRef(), booking.status().name(),
                 booking.capacityHoldId().orElse(null), booking.entitlementId().orElse(null),
-                booking.failureReason().orElse(null));
+                booking.failureReason().orElse(null),booking.bookingPurpose());
         });
     }
 
@@ -1106,7 +1106,7 @@ public class BookingOrchestrationService {
     public record RequestReservationResult(String segmentBookingId, String status) {}
     public record SegmentBookingDetail(String segmentBookingId, String sagaId, String journeyOrderId,
                                        String segmentRef, String travelerRef, String status,
-                                       String capacityHoldId, String entitlementId, String failureReason) {}
+                                       String capacityHoldId, String entitlementId, String failureReason, String bookingPurpose) {}
     public record MarkTicketedCommand(String segmentBookingId, String entitlementId) {}
     public record MarkTicketedResult(String segmentBookingId, String status) {}
     public record SagaDetail(String sagaId, String journeyOrderId, String status, String idempotencyKey,
