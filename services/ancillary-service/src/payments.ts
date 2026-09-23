@@ -26,6 +26,23 @@ export class HttpAncillaryPayments {
     return payment;
   }
   details(id: string,correlation: string): Promise<PaymentDetails> { return this.request(this.base,`/api/v1/payment-intents/${encodeURIComponent(id)}`,correlation); }
+  async validateLatePayment(item:AncillaryOrderItemSnapshot,correlation:string):Promise<void>{
+    if(!item.paymentIntentId)throw new DomainError("PAYMENT_REQUIRED","Ancillary item requires its own payment intent");
+    const payment=await this.details(item.paymentIntentId,correlation);
+    const order=await this.request(this.orders,`/api/v1/journey-orders/${encodeURIComponent(item.journeyOrderId)}`,correlation);
+    this.matches(item,payment,order.accountId);
+    if(!["EXPIRED","CANCELLED"].includes(payment.status))throw new DomainError("PAYMENT_NOT_TERMINAL","Late payment resolution requires an expired or cancelled payment");
+    const late=await this.request(this.base,`/api/v1/payment-intents/${encodeURIComponent(item.paymentIntentId)}/late-payment`,correlation);
+    if(!sameMoney(late.capturedAmount,item.payableAmount))throw new DomainError("PAYMENT_MISMATCH","Late collection must match ancillary payable amount");
+  }
+  async resolveLatePayment(item:AncillaryOrderItemSnapshot,correlation:string):Promise<any>{
+    await this.validateLatePayment(item,correlation);
+    await this.request(this.base,`/api/v1/payment-intents/${encodeURIComponent(item.paymentIntentId!)}/late-payment/refund`,correlation,
+      {businessRef:item.ancillaryOrderItemId,businessCaseRef:`ancillary:${item.ancillaryOrderItemId}`,reason:"ANCILLARY_LATE_PAYMENT"},false,paymentKey("late-refund:"+item.ancillaryOrderItemId));
+    const refund=await this.refundFor(item,correlation);
+    if(!refund)throw new ReferenceUnavailable("Late payment refund has not settled");
+    return this.settledRefund(item,refund.refundId,correlation);
+  }
   async refundFor(item:AncillaryOrderItemSnapshot,correlation:string):Promise<any|undefined>{
     const response=await this.request(this.base,`/api/v1/refunds?businessCaseRef=${encodeURIComponent("ancillary:"+item.ancillaryOrderItemId)}`,correlation);
     return response.items?.find((refund:any)=>refund.paymentIntentId===item.paymentIntentId && refund.status==="SETTLED");
