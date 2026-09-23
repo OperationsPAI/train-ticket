@@ -922,6 +922,14 @@ services:
       limits: { cpu: '2', memory: 2Gi }
   finance-settlement:
     db: finance_settlement
+    strategy:
+      type: RollingUpdate
+      rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+    terminationGracePeriodSeconds: 45
+    lifecycle:
+      preStop:
+        exec:
+          command: ["sleep", "10"]
     env:
       CONSUMER_THREADS: "4"   # 7 streams
     # 4 consumer threads do not fit in the default 500m CPU limit. Raising
