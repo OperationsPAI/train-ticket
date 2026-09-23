@@ -88,11 +88,11 @@ export class WaitlistEntry {
     public readonly paymentGuaranteeRef: string = `pay-auth-${uuidV7()}`,
     public readonly intentFingerprint: string = defaultIntentFingerprint(travelerRefs[0] ?? "unknown", segmentRef, departureDate, seatClass),
     private _journeyOrderRef?: string,
-    private readonly _fareQuoteIdempotencyKey: string = uuidV7(),
-    private readonly _offerIdempotencyKey: string = uuidV7(),
+    private _fareQuoteIdempotencyKey: string = uuidV7(),
+    private _offerIdempotencyKey: string = uuidV7(),
     private readonly _capacityHoldIdempotencyKey: string = uuidV7(),
     private readonly _capacityReleaseIdempotencyKey: string = uuidV7(),
-    private readonly _journeyOrderIdempotencyKey: string = uuidV7(),
+    private _journeyOrderIdempotencyKey: string = uuidV7(),
     private readonly _capacitySegmentBookingId: string = `sb-${uuidV7()}`,
     private _loadedVersion = 0,
   ) {}
@@ -193,9 +193,14 @@ export class WaitlistEntry {
     this._offerVersion = offerVersion;
   }
 
-  accept(now: Date, journeyOrderRef: string): void {
+  linkJourneyOrder(now: Date, journeyOrderRef: string): void {
     this.ensureOfferAcceptable(now);
     this.recordJourneyOrderRef(journeyOrderRef);
+  }
+
+  confirmJourneyOrder(journeyOrderRef: string): void {
+    if (this._journeyOrderRef !== journeyOrderRef) throw new DomainError("PRECONDITION_FAILED", "Confirmed order differs from the matching order");
+    this.assertStatus("MATCHING", "Only matching waitlist entries can be fulfilled");
     this._status = "FULFILLED";
   }
 
@@ -220,6 +225,10 @@ export class WaitlistEntry {
     this._capacityHoldId = undefined;
     this._offerId = undefined;
     this._offerVersion = undefined;
+    this._journeyOrderRef = undefined;
+    this._fareQuoteIdempotencyKey = uuidV7();
+    this._offerIdempotencyKey = uuidV7();
+    this._journeyOrderIdempotencyKey = uuidV7();
   }
 
   cancel(): void {
@@ -274,6 +283,7 @@ export class WaitlistEntry {
 
   private recordJourneyOrderRef(journeyOrderRef: string): void {
     assertNonEmpty(journeyOrderRef, "journeyOrderRef");
+    if (this._journeyOrderRef && this._journeyOrderRef !== journeyOrderRef) throw new DomainError("CONFLICT", "Waitlist request already references a different order");
     this._journeyOrderRef = journeyOrderRef;
   }
 }
