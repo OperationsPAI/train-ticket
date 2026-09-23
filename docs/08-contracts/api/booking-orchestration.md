@@ -14,6 +14,16 @@ services (not end-user clients).
 
 ## Internal Endpoints
 
+### Reserve a Change Replacement
+
+`POST /api/v1/internal/change-reservations` accepts `caseId`, `segmentRef` and `travelerRef`, with `Idempotency-Key` and `X-Correlation-Id` headers.
+The approved change case supplies the selected offer and original order.
+The original order must have risk clearance and be confirmed.
+The selected offer supplies the permitted travelers, segments and exact fare quote, including the requested seat class.
+Each case, segment and traveler has one replacement booking under an independent change saga.
+Repeated requests return the existing booking and reject changes to its offer item or class.
+The response uses the segment booking details shape.
+
 ### Start Booking Saga
 
 **POST** `/api/v1/internal/booking-sagas`

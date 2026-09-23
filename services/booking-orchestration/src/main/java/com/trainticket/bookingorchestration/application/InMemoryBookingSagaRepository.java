@@ -21,6 +21,7 @@ public class InMemoryBookingSagaRepository implements BookingSagaRepository {
     public Optional<BookingSaga> findByJourneyOrderId(String journeyOrderId) {
         return sagas.values().stream()
             .filter(saga -> saga.journeyOrderId().equals(journeyOrderId))
+            .filter(saga -> !saga.idempotencyKey().contains(":change:"))
             .findFirst();
     }
 

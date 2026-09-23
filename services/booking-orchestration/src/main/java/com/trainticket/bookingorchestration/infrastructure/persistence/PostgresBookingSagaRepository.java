@@ -53,12 +53,18 @@ public class PostgresBookingSagaRepository implements BookingSagaRepository {
     }
 
     @Override
+    public void lockReference(String reference) {
+        jdbc.query("SELECT pg_advisory_xact_lock(hashtextextended(?,0))", rs -> { return rs.next(); }, "change-booking:" + reference);
+    }
+
+    @Override
     public Optional<BookingSaga> findByJourneyOrderId(String journeyOrderId) {
         return findOne(
             """
                 SELECT id
                 FROM booking_saga_snapshots
                 WHERE data->>'journeyOrderId' = ?
+                  AND data->>'idempotencyKey' NOT LIKE '%:change:%'
                 ORDER BY updated_at DESC
                 LIMIT 1
                 """,
