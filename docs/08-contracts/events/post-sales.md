@@ -159,6 +159,11 @@ capacity-availability releases the hold (`CapacityReleased` carries
 | `reason` | string | yes | Failure reason. |
 | `failedStepRef` | string | no | Reference to the step that failed. |
 
+An unavailable replacement emits `reason=CHANGE_CAPACITY_UNAVAILABLE` with `failedStepRef=replacement-reservation` after verified compensation.
+The case retains `capacity-rejected` and `capacity-compensation-completed` operation records.
+Original tickets remain issued, replacement Holds are terminal and any captured difference payment has a settled full refund before this event is published.
+An uncaptured terminated difference payment uses `CHANGE_PAYMENT_TERMINATED` after its own verified cancellation path.
+
 ### ChangeApplied
 
 | Field | Description |
