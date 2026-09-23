@@ -62,6 +62,17 @@ public class PostgresPaymentIntentRepository implements PaymentIntentRepository 
     }
 
     @Override
+    public Optional<PaymentIntent> findByIdempotencyKey(String idempotencyKey) {
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            jdbc.query("SELECT pg_advisory_xact_lock(hashtextextended(?,0))", rs -> { return rs.next(); }, "payment-create:" + idempotencyKey);
+        }
+        List<String> ids = jdbc.query("SELECT id FROM payment_intent_snapshots WHERE data->>'idempotencyKey'=? LIMIT 2",
+            (rs, row) -> rs.getString("id"), idempotencyKey);
+        if (ids.size() > 1) throw new IllegalStateException("multiple payment intents have the same creation key");
+        return ids.isEmpty() ? Optional.empty() : findById(ids.getFirst());
+    }
+
+    @Override
     public List<PaymentIntent> findExpiredOpenIntents(Instant now, int limit) {
         return jdbc.query(
             "SELECT data->>'paymentIntentId' AS id FROM payment_intent_snapshots "
