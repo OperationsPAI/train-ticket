@@ -319,7 +319,7 @@ def compute_adjustment_quote(
                 purpose=purpose,
                 original_quote_id=original_quote_id,
                 rule_set_id=rule_set_id,
-                target_quote_id=original_quote_id if purpose == AssessmentPurpose.CHANGE else None,
+                target_quote_id=req.targetQuoteId,
             )
             envelope = _event_envelope(request, "AdjustmentQuoteComputed", causation_id, _adjustment_quote_event_payload(aq, req))
             service.append_outbox((envelope,))
@@ -360,6 +360,10 @@ def _adjustment_quote_to_response(aq: AdjustmentQuote) -> dict[str, Any]:
     status = "FAILED" if aq.status == QuoteStatus.FAILED else "QUOTED"
     resp = {
         "adjustmentQuoteId": aq.adjustment_quote_id,
+        "originalQuoteId": aq.original_quote_id,
+        "targetQuoteId": aq.target_quote_id,
+        "fareDifference": _money_to_schema(aq.fare_difference) if aq.fare_difference is not None else None,
+        "changeFee": _money_to_schema(aq.fee_assessment.fee) if aq.fee_assessment.fee is not None else None,
         "purpose": aq.purpose.value.upper(),
         "status": status,
         "refundableAmount": _money_to_schema(aq.refundable_amount),
