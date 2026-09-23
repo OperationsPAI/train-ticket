@@ -30,6 +30,12 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
     private final FinanceSettlementProjectionRepository projections;
     private final Clock clock;
     private final FinanceSettlementApplicationService service;
+    private com.trainticket.financesettlement.adapters.http.ChangePaymentFactsClient changePayments;
+
+    public FinanceSettlementEventHandler withChangePayments(com.trainticket.financesettlement.adapters.http.ChangePaymentFactsClient client) {
+        this.changePayments=java.util.Objects.requireNonNull(client);
+        return this;
+    }
 
     public FinanceSettlementEventHandler(ConsumedEventLogRepository consumedEvents, Clock clock) {
         this(
@@ -155,7 +161,7 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
     private void dispatch(EventEnvelope envelope) {
         Map<String, Object> payload = (Map<String, Object>) envelope.payload();
         switch (envelope.eventType()) {
-            case "PaymentIntentCreated" -> rememberPaymentIntentOrderReference(payload);
+            case "PaymentIntentCreated" -> rememberPaymentIntentOrderReference(envelope,payload);
             case "JourneyOrderCreated" -> rememberOrderSupplierReference(payload);
             case "SegmentReservationRequested" -> rememberSegmentBookingOrderReference(payload);
             case "PaymentCaptured" -> {
@@ -573,8 +579,15 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
         return optionalText(payload, timestampField).map(Instant::parse).orElse(envelope.occurredAt());
     }
 
-    private void rememberPaymentIntentOrderReference(Map<String, Object> payload) {
-        paymentIntentOrderReferences.save(text(payload, "paymentIntentId"), text(payload, "businessRef"));
+    private void rememberPaymentIntentOrderReference(EventEnvelope envelope,Map<String, Object> payload) {
+        String orderId=text(payload,"businessRef");
+        if("change".equals(payload.get("purpose")))orderId=changeOrder(envelope,payload,money(payload.get("amount"),"amount"));
+        paymentIntentOrderReferences.save(text(payload, "paymentIntentId"), orderId);
+    }
+
+    private String changeOrder(EventEnvelope envelope,Map<String,Object> payload,Money amount) {
+        if(changePayments==null)throw new IllegalStateException("change payment facts client is required");
+        return changePayments.orderFor(text(payload,"businessRef"),text(payload,"paymentIntentId"),amount,envelope.correlationId());
     }
 
     private void rememberSegmentBookingOrderReference(Map<String, Object> payload) {
@@ -586,8 +599,21 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
         String orderId = optionalText(payload, "businessRef")
             .or(() -> paymentIntentOrderReferences.findOrderReference(paymentIntentId))
             .orElseThrow(() -> new OutOfOrderEventException("PaymentCaptured received before order reference"));
-        paymentIntentOrderReferences.save(paymentIntentId, orderId);
         Money captured = money(payload.get("capturedAmount"), "capturedAmount");
+        if("change".equals(payload.get("purpose"))) {
+            orderId=changeOrder(envelope,payload,captured);
+            paymentIntentOrderReferences.save(paymentIntentId,orderId);
+            var existing=serviceRevenue(orderId).stream().filter(item->paymentIntentId.equals(item.orderItemId()) && "change-payment".equals(item.componentCode())).findFirst();
+            if(existing.isPresent()) {
+                if(!existing.get().amount().equals(captured))throw new DomainRuleViolation("change recognition differs from actual payment amount");
+                return;
+            }
+            RevenueRecognition recognition=RevenueRecognition.recognize(orderId,paymentIntentId,"change-payment",captured,"change-payment-v1",
+                envelope.eventId(),envelope.occurredAt(),clock.instant(),causationIdOrEventId(envelope),envelope.correlationId());
+            service.saveAndPublish(recognition);
+            return;
+        }
+        paymentIntentOrderReferences.save(paymentIntentId,orderId);
         projections.saveCapture(orderId, new PaymentCaptureFact(orderId, paymentIntentId, captured, envelope.eventId(), envelope.occurredAt()));
         if (orderId.startsWith("aoi-")) return;
         String supplierId = supplierReferenceForOrder(orderId);
