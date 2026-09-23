@@ -51,6 +51,9 @@ pub struct PlanIndex {
 }
 
 impl PlanIndex {
+    pub fn handles_event(event: &rust_kit::messaging::EventEnvelope) -> bool {
+        matches!(event.event_type.as_str(), "ServicePlanChanged" | "ServiceSegmentCreated" | "TransportNodeRegistered" | "TransportNodeAdded" | "TransportNodeUpdated")
+    }
     pub fn new() -> Self {
         Self {
             segments_by_date: RwLock::new(HashMap::new()),
