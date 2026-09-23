@@ -6,7 +6,7 @@
 //! as well; the in-memory map alone does not survive a restart.
 
 use chrono::{DateTime, NaiveDate, Utc};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
 
 use crate::domain::{AvailabilityHint, Itinerary, LegCandidate, PriceHint};
@@ -44,32 +44,93 @@ pub enum IndexMutation {
 
 /// Thread-safe in-memory index for plan segments and node->place mappings.
 pub struct PlanIndex {
-    /// Segments indexed by departure_date for fast date-prefix lookups.
-    segments_by_date: RwLock<HashMap<NaiveDate, HashMap<String, SegmentEntry>>>,
-    /// node_id -> place_id mapping.
-    node_place: RwLock<HashMap<String, String>>,
+    segments: RwLock<SegmentIndex>,
+    nodes: RwLock<NodeIndex>,
+}
+
+#[derive(Default)]
+struct SegmentIndex {
+    by_ref: HashMap<String, SegmentEntry>,
+    by_date_origin: HashMap<NaiveDate, HashMap<String, HashSet<String>>>,
+}
+
+#[derive(Default)]
+struct NodeIndex {
+    place_by_node: HashMap<String, String>,
+    nodes_by_place: HashMap<String, HashSet<String>>,
 }
 
 impl PlanIndex {
     pub fn handles_event(event: &rust_kit::messaging::EventEnvelope) -> bool {
-        matches!(event.event_type.as_str(), "ServicePlanChanged" | "ServiceSegmentCreated" | "TransportNodeRegistered" | "TransportNodeAdded" | "TransportNodeUpdated")
+        matches!(
+            event.event_type.as_str(),
+            "ServicePlanChanged"
+                | "ServiceSegmentCreated"
+                | "TransportNodeRegistered"
+                | "TransportNodeAdded"
+                | "TransportNodeUpdated"
+        )
     }
     pub fn new() -> Self {
         Self {
-            segments_by_date: RwLock::new(HashMap::new()),
-            node_place: RwLock::new(HashMap::new()),
+            segments: RwLock::new(SegmentIndex::default()),
+            nodes: RwLock::new(NodeIndex::default()),
         }
     }
 
     pub fn upsert_segment(&self, entry: SegmentEntry) {
-        let mut map = self.segments_by_date.write().unwrap();
-        let entries = map.entry(entry.departure_date).or_default();
-        entries.insert(entry.segment_ref.clone(), entry);
+        let mut index = self.segments.write().unwrap();
+        if let Some(previous) = index
+            .by_ref
+            .insert(entry.segment_ref.clone(), entry.clone())
+        {
+            if previous.departure_date == entry.departure_date
+                && previous.origin_stop_ref == entry.origin_stop_ref
+            {
+                return;
+            }
+            let origins = index
+                .by_date_origin
+                .get_mut(&previous.departure_date)
+                .unwrap();
+            let refs = origins.get_mut(&previous.origin_stop_ref).unwrap();
+            refs.remove(&previous.segment_ref);
+            if refs.is_empty() {
+                origins.remove(&previous.origin_stop_ref);
+            }
+            if origins.is_empty() {
+                index.by_date_origin.remove(&previous.departure_date);
+            }
+        }
+        index
+            .by_date_origin
+            .entry(entry.departure_date)
+            .or_default()
+            .entry(entry.origin_stop_ref)
+            .or_default()
+            .insert(entry.segment_ref);
     }
 
     pub fn upsert_node(&self, node_id: String, place_id: String) {
-        let mut map = self.node_place.write().unwrap();
-        map.insert(node_id, place_id);
+        let mut index = self.nodes.write().unwrap();
+        if let Some(previous) = index
+            .place_by_node
+            .insert(node_id.clone(), place_id.clone())
+        {
+            if previous == place_id {
+                return;
+            }
+            let nodes = index.nodes_by_place.get_mut(&previous).unwrap();
+            nodes.remove(&node_id);
+            if nodes.is_empty() {
+                index.nodes_by_place.remove(&previous);
+            }
+        }
+        index
+            .nodes_by_place
+            .entry(place_id)
+            .or_default()
+            .insert(node_id);
     }
 
     /// Finds candidate segments matching origin/destination/date using place resolution.
@@ -79,19 +140,37 @@ impl PlanIndex {
         destination_ref: &str,
         departure_date: NaiveDate,
     ) -> Vec<Itinerary> {
-        let segments = self.segments_by_date.read().unwrap();
-        let node_place = self.node_place.read().unwrap();
+        let segments = self.segments.read().unwrap();
+        let nodes = self.nodes.read().unwrap();
 
-        let Some(entries) = segments.get(&departure_date) else {
+        let Some(origins) = segments.by_date_origin.get(&departure_date) else {
             return Vec::new();
         };
 
+        // Resolve aliases at lookup time so node events also affect existing segments.
+        let mut matching_origins = HashSet::from([origin_ref]);
+        if let Some(place) = nodes.place_by_node.get(origin_ref) {
+            matching_origins.insert(place.as_str());
+            if let Some(refs) = nodes.nodes_by_place.get(place) {
+                matching_origins.extend(refs.iter().map(String::as_str));
+            }
+        }
+        if let Some(refs) = nodes.nodes_by_place.get(origin_ref) {
+            matching_origins.extend(refs.iter().map(String::as_str));
+        }
         let mut results = Vec::new();
-        for entry in entries.values() {
-            if self.matches_ref(&entry.origin_stop_ref, origin_ref, &node_place)
-                && self.matches_ref(&entry.destination_stop_ref, destination_ref, &node_place)
-            {
-                results.push(self.entry_to_itinerary(entry));
+        for origin in matching_origins {
+            if let Some(refs) = origins.get(origin) {
+                for segment_ref in refs {
+                    let entry = &segments.by_ref[segment_ref];
+                    if self.matches_ref(
+                        &entry.destination_stop_ref,
+                        destination_ref,
+                        &nodes.place_by_node,
+                    ) {
+                        results.push(self.entry_to_itinerary(entry));
+                    }
+                }
             }
         }
         results
@@ -251,12 +330,7 @@ impl PlanIndex {
     }
 
     pub fn segment_count(&self) -> usize {
-        self.segments_by_date
-            .read()
-            .unwrap()
-            .values()
-            .map(|v| v.len())
-            .sum()
+        self.segments.read().unwrap().by_ref.len()
     }
 }
 
@@ -392,7 +466,10 @@ mod tests {
             IndexMutation::None
         ));
         assert!(matches!(
-            index.apply_event("ServicePlanChanged", &serde_json::json!({"segmentRef": "seg-4"})),
+            index.apply_event(
+                "ServicePlanChanged",
+                &serde_json::json!({"segmentRef": "seg-4"})
+            ),
             IndexMutation::None
         ));
         assert_eq!(index.segment_count(), 0);
