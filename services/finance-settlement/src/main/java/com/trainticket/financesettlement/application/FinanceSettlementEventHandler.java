@@ -130,6 +130,19 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
         }
     }
 
+    public static boolean handlesEvent(String eventType) {
+        return switch (eventType) {
+            case "PaymentIntentCreated", "JourneyOrderCreated", "SegmentReservationRequested", "PaymentCaptured",
+                 "ProviderReservationConfirmed", "SegmentBookingCancelled", "PostSalesApproved", "PostSalesApplied",
+                 "BenefitIssued", "BenefitRedeemed", "BenefitRedemptionReversed", "BenefitRevoked", "BenefitExpired",
+                 "AncillaryOrderItemFulfilled", "AncillaryOrderItemCancelled", "AncillaryOrderItemRefundPending",
+                 "AncillaryOrderItemRefunded", "AncillaryFulfillmentFactRecorded", "ChannelStatementGenerated",
+                 "ChannelStatementFrozen", "ChannelStatementLineMatched", "ReconciliationDiscrepancyOpened",
+                 "ReconciliationDiscrepancyResolved" -> true;
+            default -> false;
+        };
+    }
+
     private static void rollbackCurrentTransactionIfActive() {
         try {
             TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
