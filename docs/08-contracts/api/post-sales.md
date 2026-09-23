@@ -115,6 +115,8 @@ The public status `APPROVED` covers the internal approved and executing states.
 Use operation evidence and the terminal case status to determine completion.
 
 An expired, cancelled or failed difference payment with no captured funds triggers replacement reservation cancellation.
+An uncaptured intent whose `expiresAt` has elapsed is cancelled before another capture attempt.
+A capture rejection at the expiry boundary is recorded as `difference-rejected` and the next execution verifies the actual payment state before compensation.
 The service checks that original tickets remain issued and persists `unpaid-compensation-completed` before returning `FAILED` with `terminalReason=CHANGE_PAYMENT_TERMINATED`.
 An accepted no capacity rejection from Booking or Ticketing is persisted as `capacity-rejected`.
 Execution then lists replacement tickets, voids any issued replacements, cancels replacement reservations and waits for their Hold release.

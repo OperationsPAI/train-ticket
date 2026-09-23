@@ -79,6 +79,12 @@ public class ChangeExecutionService {
                 && currentPayment.path("capturedAmount").path("minorUnits").asLong()==0) {
                 return compensateUnpaidChange(change,currentPayment,correlation);
             }
+            if(currentPayment.path("capturedAmount").path("minorUnits").asLong()==0
+                && !Instant.now().isBefore(Instant.parse(text(currentPayment,"expiresAt")))) {
+                if(!id.equals(text(currentPayment,"businessRef")) || !"change".equals(text(currentPayment,"purpose")))throw new DomainRuleViolation("rejected difference payment identity mismatch");
+                return saveCommand(change,"cancel-expired-difference","payment","/api/v1/payment-intents/"+paymentId+"/cancel",
+                    Map.of("reason","CHANGE_PAYMENT_TERMINATED"),correlation);
+            }
             if(!ops.containsKey("difference-captured"))return saveCommand(change,"difference-captured","payment","/api/v1/payment-intents/"+paymentId+"/capture",
                 Map.of("channelRef",Map.of("channel","ALIPAY_SIM")),correlation);
             JsonNode paid=get("payment","/api/v1/payment-intents/"+paymentId,correlation);
@@ -322,6 +328,13 @@ public class ChangeExecutionService {
     private PostSalesCase saveCommand(PostSalesCase change,String name,String service,String path,Map<String,Object> body,String correlation) {
         JsonNode result=client.post().uri(baseTemplate.formatted(service)+path).header("Idempotency-Key",key(change.caseId()+":"+name))
             .header("X-Correlation-Id","corr-"+key(change.caseId()+":correlation")).body(body).exchange((request,response)->{
+                if(name.equals("difference-captured") && response.getStatusCode().value()==422) {
+                    JsonNode rejection=mapper.readTree(response.getBody());
+                    if("DOMAIN_RULE_VIOLATION".equals(rejection.path("code").asText()) && "payment intent is expired for new payment activity".equals(rejection.path("message").asText())) {
+                        return mapper.valueToTree(Map.of("paymentExpired",true,"source",service,"code",text(rejection,"code"),"message",text(rejection,"message")));
+                    }
+                    throw new DomainRuleViolation("difference capture rejected: "+rejection);
+                }
                 if(name.startsWith("ticket:") && response.getStatusCode().value()==422) {
                     JsonNode rejection=mapper.readTree(response.getBody());
                     if("DOMAIN_RULE_VIOLATION".equals(rejection.path("code").asText()) && Set.of("no compatible seat exists and standing is not accepted","standing quota is exhausted").contains(rejection.path("message").asText())) {
@@ -332,7 +345,8 @@ public class ChangeExecutionService {
                 if(!response.getStatusCode().is2xxSuccessful())throw new IllegalStateException("change "+name+" returned "+response.getStatusCode()+": "+new String(response.getBody().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8));
                 return mapper.readTree(response.getBody());
             });
-        return cases.recordChangeOperation(change.caseId(),result.path("capacityRejected").asBoolean()?"capacity-rejected":name,map(result));
+        String operation=result.path("capacityRejected").asBoolean()?"capacity-rejected":result.path("paymentExpired").asBoolean()?"difference-rejected":name;
+        return cases.recordChangeOperation(change.caseId(),operation,map(result));
     }
     private JsonNode get(String service,String path,String correlation) {
         return client.get().uri(baseTemplate.formatted(service)+path).header("X-Correlation-Id",correlation).exchange((request,response)->{
