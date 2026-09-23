@@ -1,15 +1,13 @@
-# Post Sales — HTTP API
+# Post Sales HTTP API
 
-Last updated: 2026-07-05
+Last updated: 2026-09-23.
 
 ## Overview
 
-Post Sales manages post-sales cases: cancellations, refunds, changes, and
-compensation. It evaluates eligibility, approves or rejects cases, and
-orchestrates downstream actions (entitlement voiding, refunds).
+Post Sales manages cancellation, refund, change and compensation cases.
+It evaluates eligibility, approves or rejects cases, and coordinates downstream ticket, reservation and payment operations.
 
-Field shapes reference docs/08-contracts/shared-primitives.md for IDs,
-timestamps, and Money.
+Field shapes reference docs/08-contracts/shared-primitives.md for IDs, timestamps, and Money.
 
 ## Endpoints
 
@@ -95,10 +93,44 @@ Replaying the original idempotency key returns the original case, and independen
 
 **Error codes:** `NOT_FOUND`
 
-## Bus-only commands
+### Execute an approved change
 
-The following commands are consumed from the event bus only and have no HTTP
-endpoint:
+**POST** `/api/v1/post-sales-cases/{caseId}/execute-change`
+
+Advances one recorded operation and returns full case details.
+Callers repeat this operation while execution is pending.
+The service derives stable downstream idempotency keys from the case and operation names, and persists accepted results in `changeOperations`.
+An `APPLIED` or `FAILED` case returns its current state without issuing another operation.
+
+The service records the target Offer, itinerary, fare and funding source, requests replacement bookings, and waits for their confirmed Holds.
+It then collects any required fare difference, issues replacement tickets, voids original tickets, waits for original reservations to release, settles any approved difference refund, and applies the order change.
+Original tickets remain available until the replacement ticket stage succeeds.
+The public status `APPROVED` covers the internal approved and executing states.
+Use operation evidence and the terminal case status to determine completion.
+
+An expired, cancelled or failed difference payment with no captured funds triggers replacement reservation cancellation.
+The service checks that original tickets remain issued and persists `unpaid-compensation-completed` before returning `FAILED` with `terminalReason=CHANGE_PAYMENT_TERMINATED`.
+Compensation for a replacement that becomes unavailable after Hold confirmation remains under integration.
+
+### Read replacement issue authorization
+
+**GET** `/api/v1/post-sales-cases/{caseId}/issue-authorization/{bookingId}`
+
+Requires `X-Correlation-Id`.
+Checks the executing case, confirmed replacement booking, order balance and required captured difference payment.
+Returns `authorized`, `caseId`, `journeyOrderId`, `segmentBookingId`, `segmentRef`, `travelerRef` and `paymentIntentId`.
+
+### Read change settlement
+
+**GET** `/api/v1/post-sales-cases/{caseId}/settlement`
+
+Requires `X-Correlation-Id`.
+Checks settled refund identities, funding ownership and the approved refund total.
+Returns `journeyOrderId`, `caseId`, `balance` and the contributing `payments`.
+
+## Internal execution operations
+
+The domain execution operations include:
 
 | Command | Trigger | Description |
 |---|---|---|
@@ -106,6 +138,8 @@ endpoint:
 | `StartPostSalesExecution` | post-sales (internal) | Start execution of an approved post-sales case. |
 | `ApplyPostSalesResult` | post-sales (internal) | Apply the result of post-sales execution to the case. |
 
-## Open Issues
+## Integration status
 
-- None.
+The recorded change operations support retry and restart recovery.
+Automatic compensation for sold out replacements, partial ticket issuance and captured difference payments requires coordinated inventory and ticket validation.
+See [capacity integration requirements](../../10-domain-enrichment/capacity-overbooking.md) for the production activation requirements.
