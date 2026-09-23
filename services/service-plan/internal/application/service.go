@@ -200,6 +200,7 @@ type Repository interface {
 	ListScheduledServices(context.Context, ListScheduledServicesQuery) (PaginatedScheduledServices, error)
 	SaveServiceSegment(context.Context, ServiceSegment) error
 	FindServiceSegment(context.Context, string) (ServiceSegment, error)
+	ListServiceSegments(context.Context, string, int, int) ([]ServiceSegment, int, error)
 }
 
 type UnitOfWork func(context.Context, func(context.Context) error) error
@@ -421,6 +422,39 @@ func (s *Service) GetServiceSegment(ctx context.Context, ref string) (ServiceSeg
 		return ServiceSegment{}, fmt.Errorf("%w: service segment", ErrNotFound)
 	}
 	return segment, nil
+}
+
+type ServiceSegmentsPage struct {
+	Items  []ServiceSegment `json:"items"`
+	Total  int              `json:"total"`
+	Limit  int              `json:"limit"`
+	Offset int              `json:"offset"`
+}
+
+func (s *Service) ListServiceSegments(ctx context.Context, service string, limit, offset int) (ServiceSegmentsPage, error) {
+	if strings.TrimSpace(service) == "" || limit < 1 || limit > 100 || offset < 0 {
+		return ServiceSegmentsPage{}, fmt.Errorf("%w: scheduledServiceRef and valid pagination are required", ErrValidation)
+	}
+	if s.repository != nil {
+		items, total, err := s.repository.ListServiceSegments(ctx, service, limit, offset)
+		return ServiceSegmentsPage{Items: items, Total: total, Limit: limit, Offset: offset}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	items := []ServiceSegment{}
+	for _, segment := range s.segments {
+		if segment.ScheduledServiceRef == service {
+			items = append(items, segment)
+		}
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].SegmentRef < items[j].SegmentRef })
+	total := len(items)
+	if offset >= total {
+		items = []ServiceSegment{}
+	} else {
+		items = items[offset:min(total, offset+limit)]
+	}
+	return ServiceSegmentsPage{Items: items, Total: total, Limit: limit, Offset: offset}, nil
 }
 
 func (s *Service) ListScheduledServices(ctx context.Context, query ListScheduledServicesQuery) (PaginatedScheduledServices, error) {

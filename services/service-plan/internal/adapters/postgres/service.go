@@ -99,6 +99,32 @@ func (r *Repository) FindServiceSegment(ctx context.Context, ref string) (applic
 	return segment, json.Unmarshal(snap.Data, &segment)
 }
 
+func (r *Repository) ListServiceSegments(ctx context.Context, service string, limit, offset int) ([]application.ServiceSegment, int, error) {
+	db := r.db.DBFor(ctx)
+	var count int
+	if err := db.QueryRow(ctx, "SELECT count(*) FROM service_segment_snapshots WHERE data->>'scheduledServiceRef'=$1", service).Scan(&count); err != nil {
+		return nil, 0, err
+	}
+	rows, err := db.Query(ctx, "SELECT data FROM service_segment_snapshots WHERE data->>'scheduledServiceRef'=$1 ORDER BY id LIMIT $2 OFFSET $3", service, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	items := []application.ServiceSegment{}
+	for rows.Next() {
+		var raw json.RawMessage
+		if err := rows.Scan(&raw); err != nil {
+			return nil, 0, err
+		}
+		var segment application.ServiceSegment
+		if err := json.Unmarshal(raw, &segment); err != nil {
+			return nil, 0, err
+		}
+		items = append(items, segment)
+	}
+	return items, count, rows.Err()
+}
+
 func insertOrUpdate(ctx context.Context, db storage.DBTX, table, id string, data []byte) error {
 	repo := storage.NewSnapshotRepository(db, table)
 	snap, ok, err := repo.Get(ctx, id)

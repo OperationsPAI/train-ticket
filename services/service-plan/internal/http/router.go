@@ -96,6 +96,7 @@ func RegisterRoutes(router gin.IRouter, service *application.Service, store idem
 	api.GET("/scheduled-services", handler.listScheduledServices)
 	api.POST("/service-segments", idempotent, handler.createServiceSegment)
 	api.GET("/service-segments/:segmentRef", handler.getServiceSegment)
+	api.GET("/service-segments", handler.listServiceSegments)
 	api.POST("/scheduled-services/:serviceRef/temporary-services", idempotent, handler.addTemporaryService)
 	api.POST("/scheduled-services/:serviceRef/delays", idempotent, handler.recordDelay)
 	api.POST("/scheduled-services/:serviceRef/cancellations", idempotent, handler.cancelServiceForDate)
@@ -184,6 +185,25 @@ func (h Handler) getServiceSegment(ctx *gin.Context) {
 		return
 	}
 	ctx.JSON(http.StatusOK, segment)
+}
+
+func (h Handler) listServiceSegments(ctx *gin.Context) {
+	limit, err := strconv.Atoi(ctx.DefaultQuery("limit", "20"))
+	if err != nil {
+		writeMappedError(ctx, application.ErrValidation)
+		return
+	}
+	offset, err := strconv.Atoi(ctx.DefaultQuery("offset", "0"))
+	if err != nil {
+		writeMappedError(ctx, application.ErrValidation)
+		return
+	}
+	page, err := h.service.ListServiceSegments(ctx.Request.Context(), ctx.Query("scheduledServiceRef"), limit, offset)
+	if err != nil {
+		writeMappedError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, page)
 }
 
 func (h Handler) addTemporaryService(ctx *gin.Context) {

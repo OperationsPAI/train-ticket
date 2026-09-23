@@ -59,6 +59,8 @@ go test ./...
 
 `GET /api/v1/service-segments/{segmentRef}` exposes the persisted scheduled service reference, endpoints and timestamps.
 The read path uses the same repository as segment creation and does not publish events.
+`GET /api/v1/service-segments?scheduledServiceRef={serviceRef}&limit=20&offset=0` lists the service's persisted segments in identifier order.
+Inventory reconciliation must consume all pages.
 `TEST_SERVICE_SEGMENT_SOURCE` and `TEST_DATABASE_URL` enable the recorded PostgreSQL and HTTP test in `internal/http/segment_live_test.go`.
 
 
