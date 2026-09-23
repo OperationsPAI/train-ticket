@@ -66,8 +66,9 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
   async findExpiredOffers(now: Date): Promise<readonly WaitlistEntry[]> {
     const result = await this.db.query(
       `SELECT * FROM waitlist_entries
-       WHERE (status = 'MATCHING' AND offer_expires_at <= $1)
-          OR (status IN ('QUEUED', 'MATCHING') AND (data->>'deadline')::timestamptz <= $1)
+       WHERE (status = 'MATCHING' AND data->>'journeyOrderRef' IS NULL AND offer_expires_at <= $1)
+          OR (status = 'QUEUED' AND (data->>'deadline')::timestamptz <= $1)
+          OR (status = 'MATCHING' AND data->>'journeyOrderRef' IS NULL AND (data->>'deadline')::timestamptz <= $1)
        ORDER BY COALESCE(offer_expires_at, (data->>'deadline')::timestamptz) ASC, entry_id ASC`,
       [now.toISOString()],
     ) as QueryResult<WaitlistRow>;

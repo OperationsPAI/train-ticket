@@ -1,6 +1,6 @@
 import { isPrefixedUuidV7, tracedFetch, type EventPublisher } from "@trainticket/ts-kit";
 import { DomainError, type WaitlistEntry, type WaitlistEntrySnapshot } from "./domain.js";
-import { publishAll, waitlistExpired, waitlistFulfilled, waitlistMatchStarted } from "./publisher.js";
+import { publishAll, waitlistExpired, waitlistMatchStarted } from "./publisher.js";
 
 export type WaitlistCapacityFreed = Readonly<{
   segmentRef: string;
@@ -158,6 +158,13 @@ export class PromotionOrchestrator {
     for (let index = 0; index < slots; index++) {
       const entry = await this.repository.findTopQueued(event.segmentRef, event.departureDate, event.seatClass);
       if (!entry) break;
+      if (new Date(entry.deadline) <= this.now()) {
+        entry.expire();
+        const expired = await this.repository.save(entry);
+        await publishAll(this.publisher, [waitlistExpired(expired, entry.loadedVersion, correlationId, this.now().toISOString())]);
+        index--;
+        continue;
+      }
       const quote = await this.farePricing.quote(entry);
       const commercialOffer = await this.offerManagement.createOffer(entry, quote.fareQuoteId);
       const now = this.now();
@@ -168,11 +175,10 @@ export class PromotionOrchestrator {
       await publishAll(this.publisher, [waitlistMatchStarted(snapshot, entry.loadedVersion, event.capacityReleaseRef, correlationId, now.toISOString())]);
 
       const order = await journeyOrder.createOrder(entry);
-      entry.accept(this.now(), order.orderId);
+      entry.linkJourneyOrder(this.now(), order.orderId);
       snapshot = await this.repository.save(entry);
       promoted.push({ ...snapshot, waitlistRequestId: snapshot.entryId });
       offers.push(offer);
-      await publishAll(this.publisher, [waitlistFulfilled(snapshot, entry.loadedVersion, order.orderId, correlationId, this.now().toISOString())]);
     }
     return { promoted, offers };
   }
