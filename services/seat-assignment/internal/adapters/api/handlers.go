@@ -34,6 +34,7 @@ func (h *Handler) RegisterRoutes(r gin.IRouter) {
 	v.POST("/seat-maps/:seatMapId/seat-units/:seatUnitRef/mark-unavailable", m, h.markSeatUnitUnavailable)
 	v.POST("/seat-maps/:seatMapId/seat-units/:seatUnitRef/reopen", m, h.reopenSeatUnit)
 	v.POST("/internal/seat-allocations", m, h.allocateSeat)
+	v.GET("/internal/capacity-facts", h.capacityFacts)
 	v.GET("/seat-allocations/:seatAllocationId", h.getSeatAllocation)
 	v.GET("/seat-allocations", h.listSeatAllocations)
 }
@@ -135,6 +136,11 @@ func (h *Handler) allocateSeat(c *gin.Context) {
 	req.CorrelationID = goruntime.CorrelationID(c.Request.Context())
 	resp, err := h.svc.AllocateSeat(c.Request.Context(), req)
 	h.write(c, http.StatusCreated, resp, err)
+}
+
+func (h *Handler) capacityFacts(c *gin.Context) {
+	resp, err := h.svc.CapacityFacts(c.Request.Context(), c.Query("scheduledServiceRef"), c.Query("serviceDate"), c.Query("classRef"))
+	h.write(c, http.StatusOK, resp, err)
 }
 func (h *Handler) getSeatAllocation(c *gin.Context) {
 	resp, err := h.svc.GetSeatAllocation(c.Request.Context(), c.Param("seatAllocationId"))
