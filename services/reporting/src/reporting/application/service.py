@@ -325,7 +325,7 @@ def default_repository() -> ReportingReadRepository:
     revenue_metric = MetricDefinition(
         metric_id="metric-revenue",
         name="Total Revenue",
-        description="Sum of captured payments by reporting period.",
+        description="Gross captured payment amount by reporting period, using PaymentCaptured only; refunds and revenue recognition do not change this metric.",
         owner="finance-team",
         category=MetricCategory.FINANCIAL,
         granularity=MetricGranularity.DAILY,
