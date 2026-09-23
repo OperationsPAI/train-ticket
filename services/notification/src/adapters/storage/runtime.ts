@@ -18,7 +18,7 @@ import {
   type MigrationSupervisor,
 } from "@trainticket/ts-kit";
 
-import { DirectSuccessGateway, type NotificationChannelGateway, NonConformantNotificationTrigger, NotificationApplicationService } from "../../application/notification-service.js";
+import { DirectSuccessGateway, type NotificationChannelGateway, NonConformantNotificationTrigger, NotificationApplicationService, notificationRecipients } from "../../application/notification-service.js";
 import { RateLimitExceeded, type NotificationTask } from "../../domain.js";
 import { redisUrl } from "../messaging/stream-config.js";
 import { PostgresNotificationAggregator, PostgresNotificationTaskRepository, PostgresRateLimitRepository, PostgresRecipientContactRepository, PostgresUserPreferenceRepository } from "./notification-repository.js";
@@ -113,38 +113,44 @@ export async function startNotificationStorage(channelGateway: NotificationChann
 }
 
 export async function deliverOrDefer(client: import("pg").PoolClient, envelope: EventEnvelope, stream: string | undefined, channelGateway: NotificationChannelGateway): Promise<"ack" | "dlq"> {
-  await client.query("SAVEPOINT notification_delivery");
-  try {
-    for (const recipient of [...recipientRefsFor(envelope.payload)].sort()) {
+  let retryAfter: Date | undefined;
+  let invalid = false;
+  for (const recipient of [...notificationRecipients(envelope)].sort()) {
+    await client.query("SAVEPOINT notification_delivery");
+    try {
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [recipient]);
+      if (!await sameBusinessTaskExists(client, envelope, [recipient])) {
+        const application = new NotificationApplicationService(
+          new TransactionalOutboxPublisher(new OutboxAppender(client)),
+          new PostgresUserPreferenceRepository(client), channelGateway,
+          new TransactionalNotificationTaskStore(new PostgresNotificationTaskRepository(client)),
+          new PostgresRecipientContactRepository(client), new PostgresRateLimitRepository(client),
+          new PostgresNotificationAggregator(client),
+        );
+        await application.handleExternalTrigger(envelope, recipient);
+      }
+      await client.query("RELEASE SAVEPOINT notification_delivery");
+    } catch (error) {
+      await client.query("ROLLBACK TO SAVEPOINT notification_delivery");
+      await client.query("RELEASE SAVEPOINT notification_delivery");
+      if (error instanceof RateLimitExceeded) {
+        if (!retryAfter || error.retryAfter < retryAfter) retryAfter = error.retryAfter;
+        continue;
+      }
+      if (error instanceof NonConformantNotificationTrigger) { invalid = true; continue; }
+      if (error instanceof OptimisticConcurrencyConflict && await sameBusinessTaskExists(client, envelope, [recipient])) continue;
+      throw error;
     }
-    if (!await sameBusinessTaskExists(client, envelope)) {
-      const application = new NotificationApplicationService(
-        new TransactionalOutboxPublisher(new OutboxAppender(client)),
-        new PostgresUserPreferenceRepository(client), channelGateway,
-        new TransactionalNotificationTaskStore(new PostgresNotificationTaskRepository(client)),
-        new PostgresRecipientContactRepository(client), new PostgresRateLimitRepository(client),
-        new PostgresNotificationAggregator(client),
-      );
-      await application.handleExternalTrigger(envelope);
-    }
-    await client.query("DELETE FROM notification_deferred WHERE event_id=$1", [envelope.eventId]);
-    await client.query("RELEASE SAVEPOINT notification_delivery");
-    return "ack";
-  } catch (error) {
-    await client.query("ROLLBACK TO SAVEPOINT notification_delivery");
-    await client.query("RELEASE SAVEPOINT notification_delivery");
-    if (error instanceof RateLimitExceeded) {
-      await client.query(
-        "INSERT INTO notification_deferred(event_id,stream,envelope,retry_at) VALUES($1,$2,$3,$4) ON CONFLICT(event_id) DO UPDATE SET retry_at=EXCLUDED.retry_at,updated_at=now()",
-        [envelope.eventId, stream, JSON.stringify(envelope), error.retryAfter],
-      );
-      return "ack";
-    }
-    if (error instanceof NonConformantNotificationTrigger) return "dlq";
-    if (error instanceof OptimisticConcurrencyConflict && await sameBusinessTaskExists(client, envelope)) return "ack";
-    throw error;
   }
+  if (retryAfter) {
+    await client.query(
+      "INSERT INTO notification_deferred(event_id,stream,envelope,retry_at) VALUES($1,$2,$3,$4) ON CONFLICT(event_id) DO UPDATE SET retry_at=EXCLUDED.retry_at,updated_at=now()",
+      [envelope.eventId, stream, JSON.stringify(envelope), retryAfter],
+    );
+  } else {
+    await client.query("DELETE FROM notification_deferred WHERE event_id=$1", [envelope.eventId]);
+  }
+  return invalid ? "dlq" : "ack";
 }
 
 export async function retryDeferredNotifications(pool: import("pg").Pool, channelGateway: NotificationChannelGateway): Promise<void> {
@@ -216,8 +222,8 @@ export async function isDuplicateBusinessNotification(client: Pick<import("pg").
   return sameBusinessTaskExists(client, envelope);
 }
 
-async function sameBusinessTaskExists(client: Pick<import("pg").PoolClient, "query">, envelope: EventEnvelope): Promise<boolean> {
-  const signatures = notificationBusinessSignatures(envelope);
+async function sameBusinessTaskExists(client: Pick<import("pg").PoolClient, "query">, envelope: EventEnvelope, recipients = notificationRecipients(envelope)): Promise<boolean> {
+  const signatures = notificationBusinessSignatures(envelope).filter(signature => recipients.includes(signature.recipientRef));
   if (signatures.length === 0) {
     return false;
   }
@@ -232,16 +238,14 @@ async function sameBusinessTaskExists(client: Pick<import("pg").PoolClient, "que
        LIMIT 1`,
       [signature.recipientRef, signature.templateCode, signature.triggerBusinessRef],
     );
-    if ((result.rowCount ?? 0) > 0) {
-      return true;
-    }
+    if ((result.rowCount ?? 0) === 0) return false;
   }
-  return false;
+  return true;
 }
 
 function notificationBusinessSignatures(envelope: EventEnvelope): readonly Readonly<{ recipientRef: string; templateCode: string; triggerBusinessRef: string }>[] {
   const templateCode = templateCodeFor(envelope);
-  const recipientRefs = recipientRefsFor(envelope.payload);
+  const recipientRefs = notificationRecipients(envelope);
   const triggerBusinessRef = triggerBusinessRefFor(envelope);
   return templateCode && triggerBusinessRef
     ? recipientRefs.map((recipientRef) => ({ recipientRef, templateCode, triggerBusinessRef }))
@@ -362,48 +366,6 @@ function templateCodeFor(envelope: EventEnvelope): string | undefined {
     default:
       return undefined;
   }
-}
-
-function recipientRefsFor(payload: Record<string, unknown>): readonly string[] {
-  const connection = recordFromUnknown(payload.connection);
-  const direct = stringValue(payload.recipientRef)
-    ?? stringValue(payload.travelerId)
-    ?? stringValue(payload.travelerRef)
-    ?? stringValue(payload.accountId)
-    ?? stringValue(payload.riderAccountId)
-    ?? stringValue(payload.actorRef)
-    ?? firstString(payload.affectedOrderIds)
-    ?? stringValue(payload.journeyOrderId)
-    ?? stringValue(payload.serviceAlertId);
-  if (direct !== undefined) {
-    return [direct];
-  }
-
-  return recipientRefsFromTravelerRefs(connection?.travelerRefs)
-    ?? recipientRefsFromTravelerRefs(payload.travelerRefs)
-    ?? [];
-}
-
-function recipientRefsFromTravelerRefs(value: unknown): readonly string[] | undefined {
-  if (!Array.isArray(value)) {
-    return undefined;
-  }
-
-  const recipientRefs: string[] = [];
-  for (const candidate of value) {
-    if (typeof candidate === "string" && candidate.trim().length > 0) {
-      recipientRefs.push(candidate);
-      continue;
-    }
-    if (candidate && typeof candidate === "object") {
-      const ref = candidate as Record<string, unknown>;
-      const recipientRef = stringValue(ref.recipientRef) ?? stringValue(ref.travelerId) ?? stringValue(ref.travelerRef) ?? stringValue(ref.id);
-      if (recipientRef) {
-        recipientRefs.push(recipientRef);
-      }
-    }
-  }
-  return recipientRefs.length > 0 ? [...new Set(recipientRefs)] : undefined;
 }
 
 function triggerBusinessRefFor(envelope: EventEnvelope): string | undefined {
