@@ -4,14 +4,16 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
-import com.trainticket.postsales.domain.PostSalesCase;
-import com.trainticket.postsales.domain.PostSalesCaseType;
-import com.trainticket.postsales.domain.PostSalesScope;
+import com.trainticket.postsales.domain.*;
+import com.trainticket.postsales.application.PostSalesApplicationService;
+import com.trainticket.postsales.adapters.http.FarePricingAdjustmentQuoteClient;
+import com.trainticket.platformkit.persistence.OutboxAppender;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.time.Clock;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -27,9 +29,48 @@ import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.web.client.RestClient;
 
 @EnabledIfEnvironmentVariable(named = "TEST_DATABASE_URL", matches = ".+")
 class CapacityChangeConcurrencyTest {
+    @Test
+    void changeCompletionRequiresEveryReleaseAndRetainsConcurrentOperationResults() throws Exception {
+        withDatabase((repository, jdbc, transaction) -> {
+            var mapper = new ObjectMapper().registerModule(new JavaTimeModule());
+            var source = change();
+            Instant now = Instant.now();
+            source.selectChangeOffer("offer-target");
+            source.beginEvaluation(now, "cmd-evaluate", "cmd", "corr");
+            var assessment = new ChangePolicyEngine().evaluateChange(Money.of("100", "CNY"), Money.of("120", "CNY"), now, now.plusSeconds(864000), 0);
+            source.recordDecision(PostSalesDecision.change(source.caseId(), true, "ELIGIBLE",
+                new RuleEvaluationSnapshot("quote", "rules", "1", now, Map.of("orderId", source.journeyOrderId())),
+                AmountDecisionSnapshot.extraCharge(assessment.changeFee(), assessment.netPayable(), assessment.explanation()),
+                new ChangeFlowSnapshot("offer-target", "hold-target", ChangeFinancialAction.COLLECT_DIFFERENCE_PAYMENT, "void", "issue", "release"),
+                assessment, now, now.plusSeconds(600)), false, false, now, "cmd-quote", "cmd-evaluate", "corr");
+            source.approve("approval", now, "cmd-approve", "cmd-quote", "corr");
+            source.startExecution(now, "cmd-execute", "cmd-approve", "corr");
+            transaction.executeWithoutResult(status -> repository.save(source));
+            var service = new PostSalesApplicationService(repository, new OutboxAppender(jdbc.getDataSource(), mapper)::append,
+                new FarePricingAdjustmentQuoteClient("http://localhost:18001", "http://localhost:18001", "http://localhost:18001", RestClient.builder()),
+                new PostgresPostSalesPolicyContextStore(jdbc.getDataSource(), mapper),
+                new PostgresPostSalesExternalEventProjectionStore(jdbc.getDataSource(), mapper), Clock.systemUTC());
+            transaction.executeWithoutResult(status -> service.recordChangeOperation(source.caseId(), "order-applied", Map.of("orderId", source.journeyOrderId())));
+            assertThrows(DomainRuleViolation.class, () -> transaction.execute(status -> service.completeChange(source.caseId(), "corr")));
+            transaction.executeWithoutResult(status -> service.recordChangeCapacityReleased(source.caseId(), "booking-1"));
+            assertThrows(DomainRuleViolation.class, () -> transaction.execute(status -> service.completeChange(source.caseId(), "corr")));
+            transaction.executeWithoutResult(status -> service.applyForSegmentBooking("booking-2", "evt-capacity", "corr"));
+            transaction.executeWithoutResult(status -> service.completeChange(source.caseId(), "corr"));
+            transaction.executeWithoutResult(status -> service.completeChange(source.caseId(), "corr"));
+            transaction.executeWithoutResult(status -> service.applyForSegmentBooking("booking-2", "evt-capacity", "corr"));
+            transaction.executeWithoutResult(status -> service.recordChangeCapacityReleased(source.caseId(), "booking-1"));
+            var saved = repository.findById(source.caseId()).orElseThrow();
+            assertEquals(PostSalesCaseStatus.APPLIED, saved.status());
+            assertEquals(Set.of("booking-1", "booking-2"), saved.releasedOrderItems());
+            assertEquals(Map.of("orderId", source.journeyOrderId()), saved.changeOperations().get("order-applied"));
+            assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM outbox WHERE envelope->>'eventType' = 'PostSalesApplied'", Integer.class));
+        });
+    }
+
     @Test
     void releaseWaitsForOrderLockAndReadsCommittedChangeOperations() throws Exception {
         withDatabase((repository, jdbc, transaction) -> {
