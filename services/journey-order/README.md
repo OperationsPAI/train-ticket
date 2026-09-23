@@ -1,14 +1,15 @@
-# journey-order
+# Journey Order
 
-Domain: Journey Order
+Java service for commercial orders, accepted Offer references, financial summaries, confirmation conditions, PostgreSQL persistence and Redis event processing.
 
-Language: Java
+Last updated: 2026-09-23.
 
-Phase: phase-1-domain-foundation
+## Accepted purchase source
 
-Status: REQ-010 domain foundation
-
-Work slice: REQ-010-Journey-Order-domain-foundation
+`GET /api/v1/internal/journey-orders/{orderId}/purchase-source` reads the original accepted Offer from the order's persisted creation timeline fact.
+It returns the order, account, Offer, timeline fact identifier and acceptance timestamp without changing business state.
+The current order Offer changes after an applied ticket change, while this initial purchase source remains stable.
+See the [HTTP API](../../docs/08-contracts/api/journey-order.md) for fields and failure conditions.
 
 ## Owns
 
@@ -39,3 +40,8 @@ The current Java model creates a `JourneyOrder` from a valid Offer snapshot and 
 ```bash
 mvn test
 ```
+
+`PurchaseSourceLiveTest` loads a recorded changed order into an isolated PostgreSQL schema and exercises the HTTP endpoint.
+It verifies the original Offer, repeated reads, unknown order response, unchanged snapshot version and no outbox effects.
+Set `TEST_PURCHASE_SOURCE_ORDER` to a recorded `{id, version, data}` snapshot, `TEST_DATABASE_URL` to a JDBC PostgreSQL URL, `TEST_DATABASE_URI` to its PostgreSQL URI and `TEST_REDIS_URL` to a disposable Redis instance.
+The test requires a source whose current Offer differs from its recorded purchase Offer.
