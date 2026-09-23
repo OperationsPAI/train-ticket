@@ -18,21 +18,27 @@ public class ChangeExecutionService {
     private final ObjectMapper mapper;
     private final String baseTemplate;
     private final RefundFundingService funding;
+    private final ChangeExecutionGuard guard;
 
-    public ChangeExecutionService(PostSalesApplicationService cases,RestClient.Builder builder,ObjectMapper mapper,RefundFundingService funding,
+    public ChangeExecutionService(PostSalesApplicationService cases,RestClient.Builder builder,ObjectMapper mapper,RefundFundingService funding,ChangeExecutionGuard guard,
         @Value("${CHANGE_SERVICE_URL_TEMPLATE:http://%s:8080}") String baseTemplate) {
-        this.cases=cases;this.mapper=mapper;this.baseTemplate=baseTemplate;this.funding=funding;
+        this.cases=cases;this.mapper=mapper;this.baseTemplate=baseTemplate;this.funding=funding;this.guard=guard;
         var factory=new SimpleClientHttpRequestFactory();factory.setConnectTimeout(Duration.ofSeconds(2));factory.setReadTimeout(Duration.ofSeconds(5));
         client=builder.requestFactory(factory).build();
     }
 
     public PostSalesCase advance(String caseId,String correlation) {
+        return guard.execute(caseId, () -> advanceLocked(caseId,correlation), () -> cases.get(caseId));
+    }
+
+    private PostSalesCase advanceLocked(String caseId,String correlation) {
         PostSalesCase change=cases.get(caseId);
         if(change.caseType()!=PostSalesCaseType.CHANGE || change.decision()==null)throw new DomainRuleViolation("evaluated CHANGE case is required");
         if(change.status()==PostSalesCaseStatus.APPLIED || change.status()==PostSalesCaseStatus.FAILED)return change;
         if(change.status()!=PostSalesCaseStatus.EXECUTING)throw new DomainRuleViolation("change must be approved before execution");
         String id=PostSalesMapper.prefixed(change.caseId(),"psc-");
         Map<String,Map<String,Object>> ops=change.changeOperations();
+        if(ops.containsKey("capacity-rejected"))return compensateCapacityFailure(change,correlation);
         if(!ops.containsKey("target")) {
             JsonNode order=get("journey-order","/api/v1/journey-orders/"+change.journeyOrderId(),correlation);
             JsonNode offer=get("offer-management","/api/v1/offers/"+change.targetOfferId(),correlation);
@@ -52,6 +58,9 @@ public class ChangeExecutionService {
             String bookingId=String.valueOf(ops.get(name).get("segmentBookingId"));
             if(!ops.containsKey("confirmed:"+bookingId)) {
                 JsonNode booking=get("booking-orchestration","/api/v1/internal/segment-bookings/"+bookingId,correlation);
+                if("FAILED".equals(text(booking,"status")) && "NO_AVAILABLE_CAPACITY".equals(booking.path("failureReason").asText())) {
+                    return cases.recordChangeOperation(caseId,"capacity-rejected",Map.of("segmentBookingId",bookingId,"source","booking-orchestration","code","NO_AVAILABLE_CAPACITY"));
+                }
                 if("FAILED".equals(text(booking,"status")) || "CANCELLED".equals(text(booking,"status")))throw new DomainRuleViolation("replacement reservation failed: "+bookingId);
                 if(!"CONFIRMED".equals(text(booking,"status")))return change;
                 JsonNode hold=getPending("capacity-availability","/api/v1/capacity-holds/"+text(booking,"capacityHoldId"),correlation);
@@ -140,6 +149,104 @@ public class ChangeExecutionService {
         return cases.completeChange(caseId,correlation);
     }
 
+    private PostSalesCase compensateCapacityFailure(PostSalesCase change,String correlation) {
+        var ops=change.changeOperations();
+        String caseId=PostSalesMapper.prefixed(change.caseId(),"psc-");
+        if(ops.keySet().stream().anyMatch(name->name.startsWith("void:") || name.equals("order-applied") || name.startsWith("difference-refund"))) {
+            throw new DomainRuleViolation("capacity compensation requires original commercial state to remain unchanged");
+        }
+        for(String ticket:change.scope().entitlementRefs()) {
+            JsonNode original=get("entitlement-ticketing","/api/v1/entitlements/"+ticket,correlation);
+            if(!change.journeyOrderId().equals(text(original,"journeyOrderId")) || !"ISSUED".equals(text(original,"status"))) {
+                throw new DomainRuleViolation("original ticket is unavailable for capacity compensation");
+            }
+        }
+        Set<String> replacements=new TreeSet<>();
+        for(var entry:ops.entrySet())if(entry.getKey().startsWith("booking:"))replacements.add(String.valueOf(entry.getValue().get("segmentBookingId")));
+        if(replacements.isEmpty() || !replacements.contains(String.valueOf(ops.get("capacity-rejected").get("segmentBookingId")))) {
+            throw new DomainRuleViolation("capacity rejection is outside the recorded replacement reservations");
+        }
+        if(!ops.containsKey("capacity-replacement-tickets")) {
+            var tickets=new LinkedHashMap<String,Object>();
+            int offset=0;
+            while(true) {
+                JsonNode page=get("entitlement-ticketing","/api/v1/entitlements?journeyOrderId="+change.journeyOrderId()+"&limit=100&offset="+offset,correlation);
+                if(!page.path("items").isArray() || !page.path("total").isIntegralNumber())throw new DomainRuleViolation("replacement ticket listing is incomplete");
+                for(JsonNode ticket:page.path("items"))if(replacements.contains(text(ticket,"segmentBookingId"))) {
+                    if(!change.journeyOrderId().equals(text(ticket,"journeyOrderId")))throw new DomainRuleViolation("replacement ticket order mismatch");
+                    tickets.put(text(ticket,"entitlementId"),map(ticket));
+                }
+                offset+=page.path("items").size();
+                if(offset>=page.path("total").asInt())break;
+                if(page.path("items").isEmpty())throw new DomainRuleViolation("replacement ticket listing ended before total");
+            }
+            return cases.recordChangeOperation(change.caseId(),"capacity-replacement-tickets",tickets);
+        }
+        for(var entry:ops.get("capacity-replacement-tickets").entrySet()) {
+            JsonNode ticket=get("entitlement-ticketing","/api/v1/entitlements/"+entry.getKey(),correlation);
+            if(!replacements.contains(text(ticket,"segmentBookingId")) || !change.journeyOrderId().equals(text(ticket,"journeyOrderId")))throw new DomainRuleViolation("replacement ticket compensation scope mismatch");
+            if(!"VOIDED".equals(text(ticket,"status")))return saveCommand(change,"void-replacement:"+entry.getKey(),"entitlement-ticketing",
+                "/api/v1/entitlements/"+entry.getKey()+"/void",Map.of("reason","CHANGE","policy","NORMAL","businessCaseRef",caseId),correlation);
+        }
+        for(String bookingId:replacements) {
+            JsonNode booking=get("booking-orchestration","/api/v1/internal/segment-bookings/"+bookingId,correlation);
+            if(!change.journeyOrderId().equals(text(booking,"journeyOrderId")) || !("change:"+caseId).equals(text(booking,"bookingPurpose"))) {
+                throw new DomainRuleViolation("capacity compensation booking identity mismatch");
+            }
+            if(!Set.of("CANCELLED","FAILED").contains(text(booking,"status")) && !ops.containsKey("cancel-replacement:"+bookingId))return saveCommand(change,"cancel-replacement:"+bookingId,"booking-orchestration",
+                "/api/v1/internal/change-compensations/"+bookingId,Map.of("caseId",caseId),correlation);
+            if(!Set.of("CANCELLED","FAILED").contains(text(booking,"status")))return change;
+            String entitlement=booking.path("entitlementId").asText("");
+            var issued=ops.get("ticket:"+bookingId);
+            if(issued!=null) {
+                String recorded=String.valueOf(issued.get("entitlementId"));
+                if(!entitlement.isBlank() && !recorded.equals(entitlement))throw new DomainRuleViolation("replacement entitlement identity mismatch");
+                entitlement=recorded;
+            }
+            if(!entitlement.isBlank()) {
+                JsonNode ticket=get("entitlement-ticketing","/api/v1/entitlements/"+entitlement,correlation);
+                if(!bookingId.equals(text(ticket,"segmentBookingId")) || !change.journeyOrderId().equals(text(ticket,"journeyOrderId")))throw new DomainRuleViolation("replacement ticket identity mismatch");
+                if(!"VOIDED".equals(text(ticket,"status")))return saveCommand(change,"void-replacement:"+entitlement,"entitlement-ticketing",
+                    "/api/v1/entitlements/"+entitlement+"/void",Map.of("reason","CHANGE","policy","NORMAL","businessCaseRef",caseId),correlation);
+            }
+            String holdId=booking.path("capacityHoldId").asText("");
+            if(!holdId.isBlank()) {
+                JsonNode hold=getPending("capacity-availability","/api/v1/capacity-holds/"+holdId,correlation);
+                if(hold==null)return change;
+                if(!bookingId.equals(text(hold,"segmentBookingRef")))throw new DomainRuleViolation("replacement Hold identity mismatch");
+                if(!Set.of("RELEASED","EXPIRED","FAILED").contains(text(hold,"status")))return change;
+            }
+        }
+        if(ops.containsKey("difference-payment")) {
+            String paymentId=String.valueOf(ops.get("difference-payment").get("paymentIntentId"));
+            JsonNode payment=get("payment","/api/v1/payment-intents/"+paymentId,correlation);
+            JsonNode target=mapper.valueToTree(ops.get("target"));
+            Money due=change.decision().amountSnapshot().extraChargeAmount();
+            if(!caseId.equals(text(payment,"businessRef")) || !text(target,"accountId").equals(text(payment,"payerRef"))
+                || !"change".equals(text(payment,"purpose")) || !due.equals(RefundFundingService.money(payment.path("amount"))))throw new DomainRuleViolation("compensation payment identity mismatch");
+            Money captured=RefundFundingService.money(payment.path("capturedAmount")),refunded=RefundFundingService.money(payment.path("refundedAmount"));
+            if(!captured.isZero()) {
+                if(!captured.equals(due))throw new DomainRuleViolation("captured difference differs from approved compensation amount");
+                if(!ops.containsKey("capacity-difference-refund")) {
+                    if(!refunded.isZero())throw new DomainRuleViolation("difference was refunded outside recorded compensation");
+                    return saveCommand(change,"capacity-difference-refund","payment","/api/v1/refunds",Map.of("paymentIntentId",paymentId,
+                        "amount",PostSalesMapper.money(captured),"reason","CHANGE_CAPACITY_UNAVAILABLE","businessCaseRef",caseId,"channelRef",map(payment.path("channelRef"))),correlation);
+                }
+                JsonNode returned=get("payment","/api/v1/refunds/"+ops.get("capacity-difference-refund").get("refundId"),correlation);
+                if(!caseId.equals(text(returned,"businessCaseRef")) || !paymentId.equals(text(returned,"paymentIntentId"))
+                    || !captured.equals(RefundFundingService.money(returned.path("amount"))))throw new DomainRuleViolation("capacity compensation refund mismatch");
+                if(!"SETTLED".equals(text(returned,"status")) || !refunded.equals(captured))return change;
+            } else {
+                if(!refunded.isZero())throw new DomainRuleViolation("uncaptured difference has refunded funds");
+                if(!Set.of("EXPIRED","CANCELLED","FAILED").contains(text(payment,"status")))return saveCommand(change,"cancel-difference-payment","payment",
+                    "/api/v1/payment-intents/"+paymentId+"/cancel",Map.of("reason","CHANGE_CAPACITY_UNAVAILABLE"),correlation);
+            }
+        }
+        if(!ops.containsKey("capacity-compensation-completed"))return cases.recordChangeOperation(change.caseId(),"capacity-compensation-completed",
+            Map.of("originalTicketsPreserved",true,"replacementBookings",replacements,"differencePaymentSettled",true));
+        return cases.failCapacityChange(change.caseId(),correlation);
+    }
+
     private PostSalesCase compensateUnpaidChange(PostSalesCase change,JsonNode payment,String correlation) {
         var ops=change.changeOperations();
         if(ops.keySet().stream().anyMatch(name->name.startsWith("ticket:") || name.startsWith("void:") || name.equals("order-applied"))) {
@@ -170,6 +277,7 @@ public class ChangeExecutionService {
         PostSalesCase change=cases.get(caseId);
         if(change.caseType()!=PostSalesCaseType.CHANGE || change.status()!=PostSalesCaseStatus.EXECUTING)throw new DomainRuleViolation("change is not executing");
         var operations=change.changeOperations();
+        if(operations.containsKey("capacity-rejected"))throw new DomainRuleViolation("change compensation prevents replacement issuance");
         var recorded=operations.get("confirmed:"+bookingId);
         if(recorded==null)throw new DomainRuleViolation("replacement booking is not authorized by this change");
         JsonNode booking=get("booking-orchestration","/api/v1/internal/segment-bookings/"+bookingId,correlation);
@@ -214,10 +322,17 @@ public class ChangeExecutionService {
     private PostSalesCase saveCommand(PostSalesCase change,String name,String service,String path,Map<String,Object> body,String correlation) {
         JsonNode result=client.post().uri(baseTemplate.formatted(service)+path).header("Idempotency-Key",key(change.caseId()+":"+name))
             .header("X-Correlation-Id","corr-"+key(change.caseId()+":correlation")).body(body).exchange((request,response)->{
+                if(name.startsWith("ticket:") && response.getStatusCode().value()==422) {
+                    JsonNode rejection=mapper.readTree(response.getBody());
+                    if("DOMAIN_RULE_VIOLATION".equals(rejection.path("code").asText()) && Set.of("no compatible seat exists and standing is not accepted","standing quota is exhausted").contains(rejection.path("message").asText())) {
+                        return mapper.valueToTree(Map.of("capacityRejected",true,"segmentBookingId",name.substring("ticket:".length()),"source",service,"code",text(rejection,"code"),"message",text(rejection,"message")));
+                    }
+                    throw new DomainRuleViolation("change ticket rejected: "+rejection);
+                }
                 if(!response.getStatusCode().is2xxSuccessful())throw new IllegalStateException("change "+name+" returned "+response.getStatusCode()+": "+new String(response.getBody().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8));
                 return mapper.readTree(response.getBody());
             });
-        return cases.recordChangeOperation(change.caseId(),name,map(result));
+        return cases.recordChangeOperation(change.caseId(),result.path("capacityRejected").asBoolean()?"capacity-rejected":name,map(result));
     }
     private JsonNode get(String service,String path,String correlation) {
         return client.get().uri(baseTemplate.formatted(service)+path).header("X-Correlation-Id",correlation).exchange((request,response)->{

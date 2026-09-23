@@ -163,6 +163,23 @@ public class PostSalesApplicationService {
         return current;
     }
 
+    public PostSalesCase failCapacityChange(String caseId,String correlation) {
+        PostSalesCase initial=get(caseId);
+        repository.lockOrder(initial.journeyOrderId());
+        PostSalesCase current=get(caseId);
+        if(current.status()==PostSalesCaseStatus.FAILED)return current;
+        var ops=current.changeOperations();
+        if(current.caseType()!=PostSalesCaseType.CHANGE || current.status()!=PostSalesCaseStatus.EXECUTING
+            || !ops.containsKey("capacity-rejected") || !ops.containsKey("capacity-compensation-completed")
+            || ops.keySet().stream().anyMatch(name->name.startsWith("void:") || name.equals("order-applied"))) {
+            throw new com.trainticket.postsales.domain.DomainRuleViolation("capacity compensation has not completed");
+        }
+        current.failCase("CHANGE_CAPACITY_UNAVAILABLE","replacement-reservation",clock.instant(),"cmd-change-failed","cmd-change-failed",correlation);
+        repository.save(current);
+        publishNewEvents(current);
+        return current;
+    }
+
     public PostSalesCase approve(String caseId, String sourceCommandId, String correlationId) {
         PostSalesCase postSalesCase = get(caseId);
         if (isTerminalNonRefundable(postSalesCase)) {
