@@ -274,9 +274,16 @@ func (s *Service) AllocateSeat(ctx context.Context, req AllocateSeatRequest) (*A
 	now := time.Now().UTC()
 	var resp *AllocateSeatResponse
 	err := s.tx(ctx, func(tx context.Context) error {
-		maps, _, err := s.repo.FindSeatMaps(tx, req.ScheduledServiceRef, req.ServiceDate, domain.SeatMapStatusPublished, 100, 0)
+		active, err := s.repo.FindActiveSeatAllocations(tx, req.ScheduledServiceRef, req.ServiceDate)
 		if err != nil {
 			return derr("UNAVAILABLE", err.Error())
+		}
+		maps, total, err := s.repo.FindSeatMaps(tx, req.ScheduledServiceRef, req.ServiceDate, domain.SeatMapStatusPublished, 100, 0)
+		if err != nil {
+			return derr("UNAVAILABLE", err.Error())
+		}
+		if total > 100 {
+			return derr("CONFLICT", "published seat map selection is incomplete")
 		}
 		var seatMap *domain.ContractSeatMap
 		for i := range maps {
@@ -288,10 +295,6 @@ func (s *Service) AllocateSeat(ctx context.Context, req AllocateSeatRequest) (*A
 		standingOnly := strings.EqualFold(req.ClassRef, "STANDING")
 		if seatMap == nil && !standingOnly {
 			return derr("PRECONDITION_FAILED", "no published SeatMap matches scheduled service, date and class")
-		}
-		active, err := s.repo.FindActiveSeatAllocations(tx, req.ScheduledServiceRef, req.ServiceDate)
-		if err != nil {
-			return derr("UNAVAILABLE", err.Error())
 		}
 		for _, existing := range active {
 			if existing.SegmentBookingID != req.SegmentBookingID {
@@ -322,6 +325,7 @@ func (s *Service) AllocateSeat(ctx context.Context, req AllocateSeatRequest) (*A
 		allocID := domain.NewID("salloc")
 		status := domain.AllocationStatusAllocated
 		seatRef := domain.SeatRef{SeatAllocationID: allocID, Degraded: degraded}
+		var standingPolicy *domain.StandingPolicy
 		if reason != domain.DegradationNone {
 			seatRef.DegradationReason = reason
 		}
@@ -329,6 +333,16 @@ func (s *Service) AllocateSeat(ctx context.Context, req AllocateSeatRequest) (*A
 			if !standingOnly && (req.SeatPreferences == nil || !req.SeatPreferences.AcceptStanding) {
 				return derr("DOMAIN_RULE_VIOLATION", "no compatible seat exists and standing is not accepted")
 			}
+			policyMap := domain.StandingPolicyMap(maps)
+			if policyMap == nil {
+				return derr("PRECONDITION_FAILED", "standing requires a published second class composition")
+			}
+			policy := policyMap.StandingPolicy()
+			if domain.StandingOccupancy(active, req.Interval) >= policy.Limit {
+				return derr("DOMAIN_RULE_VIOLATION", "standing quota is exhausted")
+			}
+			standingPolicy = &policy
+			seatRef.SeatMapID, seatRef.SeatMapVersion = policyMap.SeatMapID, policyMap.SeatMapVersion
 			status = domain.AllocationStatusStanding
 			seatRef.AllocationType = domain.AllocationTypeStanding
 			seatRef.DisplayLabel = "STANDING"
@@ -345,6 +359,7 @@ func (s *Service) AllocateSeat(ctx context.Context, req AllocateSeatRequest) (*A
 			seatRef.DisplayLabel = fmt.Sprintf("%s车 %s", unit.CoachNo, unit.SeatNo)
 		}
 		alloc := &domain.ContractSeatAllocation{SeatAllocationID: allocID, SegmentBookingID: req.SegmentBookingID, JourneyOrderID: req.JourneyOrderID, TravelerRef: req.TravelerRef, SegmentRef: req.SegmentRef, ScheduledServiceRef: req.ScheduledServiceRef, ServiceDate: req.ServiceDate, CapacityHoldID: req.CapacityHoldID, CapacityUnitRef: req.CapacityUnitRef, Interval: req.Interval, SeatRef: seatRef, Status: status, Preferences: req.SeatPreferences, CreatedAt: now, ExpiresAt: req.ExpiresAt}
+		alloc.StandingPolicy = standingPolicy
 		if err := s.repo.SaveSeatAllocation(tx, alloc); err != nil {
 			return derr("CONFLICT", err.Error())
 		}
@@ -570,6 +585,9 @@ func seatMapBuiltPayload(m domain.ContractSeatMap, now time.Time) map[string]any
 }
 func allocationPayload(a domain.ContractSeatAllocation, timeKey string, now time.Time) map[string]any {
 	p := map[string]any{"seatAllocationId": a.SeatAllocationID, "segmentBookingId": a.SegmentBookingID, "journeyOrderId": a.JourneyOrderID, "travelerRef": a.TravelerRef, "segmentRef": a.SegmentRef, "scheduledServiceRef": a.ScheduledServiceRef, "serviceDate": a.ServiceDate, "capacityHoldId": a.CapacityHoldID, "capacityUnitRef": a.CapacityUnitRef, "interval": a.Interval, "seatRef": a.SeatRef, "expiresAt": a.ExpiresAt, "status": a.Status, timeKey: now}
+	if a.StandingPolicy != nil {
+		p["standingPolicy"] = a.StandingPolicy
+	}
 	if a.Preferences != nil {
 		p["preferences"] = a.Preferences
 	}

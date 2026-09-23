@@ -1,6 +1,6 @@
 # Seat Assignment — Events & Commands
 
-Last updated: 2026-07-09
+Last updated: 2026-09-23
 
 ## Scope and activation-wave rulings
 
@@ -417,10 +417,15 @@ half-open `[fromSeq,toSeq)`. Overlap exists when
 | `capacityUnitRef` | string | yes | Capacity unit reference. |
 | `interval` | StationInterval | yes | Station interval. |
 | `seatRef` | SeatRef | yes | `allocationType=STANDING`, `displayLabel=STANDING`, no `seatUnitRef`. |
+| `standingPolicy` | object | yes | Version, second class basis count, percentage and limit from [Standing capacity policy](../standing-capacity-policy.md). |
 | `preferences` | SeatPreferences | no | Normalized preference snapshot. |
 | `assignedAt` | RFC3339 UTC | yes | Assignment timestamp. |
 | `expiresAt` | RFC3339 UTC | yes | Hold expiry known at assignment time. |
 | `status` | enum | yes | `STANDING`. |
+
+The event is published only after quota admission succeeds.
+The persisted allocation retains the policy and composition version used at admission.
+Historical standing allocations remain part of current occupancy even when their event predates these audit fields.
 
 ### SeatAllocationConfirmed
 
