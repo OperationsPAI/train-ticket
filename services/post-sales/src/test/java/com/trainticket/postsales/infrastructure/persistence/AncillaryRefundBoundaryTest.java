@@ -31,6 +31,7 @@ class AncillaryRefundBoundaryTest{
    var jdbc=new JdbcTemplate(pool);String schema="ancillary_refund_"+UUID.randomUUID().toString().replace("-","");jdbc.execute("CREATE SCHEMA "+schema);jdbc.execute("SET search_path TO "+schema);
    try{
     jdbc.execute(Files.readString(Path.of("migrations/001_post_sales_persistence.sql")));
+    jdbc.execute(Files.readString(Path.of("migrations/009_policy_contexts.sql")));
     var contexts=new PostgresPostSalesPolicyContextStore(pool,mapper);contexts.save(context);
     var projections=new PostgresPostSalesExternalEventProjectionStore(pool,mapper);
     var quote=new FarePricingAdjustmentQuoteClient("http://fare-pricing:8080","http://journey-order:8080","http://offer-management:8080",RestClient.builder());
