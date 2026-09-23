@@ -195,3 +195,8 @@ Post Sales 使用相同的 published time 索引，migration 为 `005_outbox_ret
 在本地 256 页表上，过期候选使用索引读取 82 条记录，而 DELETE 的外层目标查找仍选择 Hash Semi Join 与顺序扫描。
 测试分别检查候选查询与删除目标计划，不将候选索引等同于整条 DELETE 没有顺序扫描。
 该样本不改变生产清理预算，也不证明删除目标扫描已在所有数据规模下消除。
+
+Traveler Profile 的同名索引已在线创建，migration 为 `005_outbox_retention_index.sql`。
+真实记录测试使用 162 条事件，候选索引选择、边界保留、锁跳过及重复迁移验证通过，结果为 `2 passed, 5 deselected in 0.23s`。
+该样本没有未发布记录，也没有超过 1000 条的积压，不能据此声称验证了对应场景。
+原始 `now()` 两轮验证之间会有记录跨过时间边界，各轮均按本轮数据库时间检查精确删除集合。
