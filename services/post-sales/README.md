@@ -6,6 +6,10 @@ Last updated: 2026-09-23.
 
 ## Change execution
 
+Policy evaluation uses the accepted order snapshots returned during adjustment quote resolution, including actual departure times, traveler types and financial totals.
+`AcceptedPolicyContextLiveTest` exercises a real order and fare quote against isolated PostgreSQL with an empty asynchronous policy projection.
+The event projection remains available for event processing; its arrival is independent of synchronous evaluation.
+
 `POST /api/v1/post-sales-cases/{caseId}/execute-change` advances an approved change through replacement reservation, difference payment, ticket issuance, original ticket release, refund settlement and order application.
 Accepted operations are recorded in `changeOperations` and use stable downstream idempotency keys.
 The case API includes issue authorization and settlement reads for downstream validation.

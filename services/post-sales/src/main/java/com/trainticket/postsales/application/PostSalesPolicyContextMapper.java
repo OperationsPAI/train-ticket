@@ -14,10 +14,36 @@ import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-final class PostSalesPolicyContextMapper {
+public final class PostSalesPolicyContextMapper {
     private static final String DEFAULT_CURRENCY = "CNY";
 
     private PostSalesPolicyContextMapper() {
+    }
+
+    public static PostSalesPolicyContext fromOrderSnapshot(String orderId,Map<String,Object> order) {
+        if(!orderId.equals(order.get("orderId")) || !(order.get("segments") instanceof List<?> segments) || segments.isEmpty()
+            || !(order.get("travelers") instanceof List<?> travelers) || travelers.isEmpty()) {
+            throw new com.trainticket.postsales.domain.DomainRuleViolation("order requires accepted traveler and segment snapshots for post sales");
+        }
+        var travelerIds=new java.util.HashSet<String>();
+        for(Object raw:travelers) {
+            if(!(raw instanceof Map<?,?> traveler) || !(traveler.get("travelerId") instanceof String id)
+                || !(traveler.get("travelerType") instanceof String type) || id.isBlank() || type.isBlank() || !travelerIds.add(id)) {
+                throw new com.trainticket.postsales.domain.DomainRuleViolation("accepted traveler snapshot is invalid");
+            }
+        }
+        if(!(order.get("travelerRefs") instanceof List<?> refs) || !travelerIds.equals(new java.util.HashSet<>(refs))) {
+            throw new com.trainticket.postsales.domain.DomainRuleViolation("accepted traveler references differ from order");
+        }
+        for(Object raw:segments) {
+            if(!(raw instanceof Map<?,?> segment) || !(segment.get("departureTime") instanceof String departure)) {
+                throw new com.trainticket.postsales.domain.DomainRuleViolation("accepted segment departure is required");
+            }
+            Instant.parse(departure);
+        }
+        var payload=new LinkedHashMap<String,Object>(order);
+        payload.put("travelerRefs",travelers);
+        return fromEventPayload(payload).orElseThrow(()->new com.trainticket.postsales.domain.DomainRuleViolation("accepted order policy facts are incomplete"));
     }
 
     static Optional<PostSalesPolicyContext> fromEventPayload(Map<?, ?> payload) {

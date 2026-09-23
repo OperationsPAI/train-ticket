@@ -54,6 +54,12 @@ Replaying the original idempotency key returns the original case, and independen
 
 ### Evaluate Post-Sales Eligibility
 
+The production adjustment quote adapter reads the current accepted Journey Order, including traveler snapshots, segment departures and monetary summary.
+It validates those references and returns the policy inputs with the quote result.
+Evaluation uses those accepted inputs and the recorded count of applied changes.
+It does not require the asynchronous order projection to have arrived when the synchronous order facts are available.
+Malformed or unavailable order facts fail evaluation.
+
 **POST** `/api/v1/post-sales-cases/{caseId}/evaluate`
 
 **Idempotency:** REQUIRED
