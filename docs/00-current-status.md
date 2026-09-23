@@ -36,6 +36,9 @@ The following checks have completed against deployed services:
 The broad regression at revision 256 completed in 228.547 seconds.
 The six class purchase regression at revision 257 completed in 92.007 seconds.
 These tests establish their covered outcomes and do not certify every resident request or a complete peak traffic cycle.
+The revision 258 broad regression has failures waiting for booking and risk results and requesting an invoice before its order confirmation projection arrives.
+Its recorded window also contains delayed outbox publication and Post Sales reads that exceed their timeout.
+The new purchase source endpoint passed its direct verification; the revision 258 broad regression is not a passing release acceptance result.
 
 ## Supply integration
 
@@ -49,7 +52,7 @@ Capacity's new combined supply calculation and the coordinated Booking behavior 
 
 Local PostgreSQL tests using deployed facts verify full business class refusal, Hold replay and release, standing admission, and complete recorded inventory across four pools containing 195 Holds.
 Verified reservation source facts persist across query retries and service reconstruction.
-The recorded cold query took 5.29 seconds, with subsequent reads between 346 and 402 milliseconds.
+The recorded cold query using the original purchase source took 8.22 seconds, with subsequent reads between 453 and 778 milliseconds.
 These measurements are sample results and do not establish peak load latency.
 
 Journey Order's accepted purchase source endpoint reads the original Offer from the persisted creation timeline fact.
