@@ -25,7 +25,6 @@ public class PostgresPostSalesPolicyContextStore implements PostSalesPolicyConte
 
     @Override
     public Optional<PostSalesPolicyContext> findByOrderId(String journeyOrderId) {
-        ensureTable();
         return jdbc.query("SELECT data FROM post_sales_policy_contexts WHERE journey_order_id = ?", rs -> {
             if (!rs.next()) {
                 return Optional.empty();
@@ -36,22 +35,11 @@ public class PostgresPostSalesPolicyContextStore implements PostSalesPolicyConte
 
     @Override
     public void save(PostSalesPolicyContext context) {
-        ensureTable();
         jdbc.update("""
             INSERT INTO post_sales_policy_contexts (journey_order_id, data, updated_at)
             VALUES (?, ?::jsonb, now())
             ON CONFLICT (journey_order_id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()
             """, context.journeyOrderId(), write(context));
-    }
-
-    private void ensureTable() {
-        jdbc.execute("""
-            CREATE TABLE IF NOT EXISTS post_sales_policy_contexts (
-                journey_order_id text PRIMARY KEY,
-                data jsonb NOT NULL,
-                updated_at timestamptz NOT NULL DEFAULT now()
-            )
-            """);
     }
 
     private String write(PostSalesPolicyContext context) {
