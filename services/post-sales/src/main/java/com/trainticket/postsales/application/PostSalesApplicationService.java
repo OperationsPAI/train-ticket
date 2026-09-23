@@ -113,6 +113,13 @@ public class PostSalesApplicationService {
         PostSalesCase current=get(caseId);current.reviseChangeOffer(expected,replacement);repository.save(current);return current;
     }
 
+    public List<PostSalesCase> appliedChanges(String orderId){return repository.findAppliedCasesForOrder(orderId).stream().filter(c->c.caseType()==PostSalesCaseType.CHANGE && c.changeOperations().containsKey("target")).toList();}
+
+    public PostSalesCase assignRefundPayments(String caseId,List<Map<String,Object>> payments){
+        PostSalesCase initial=get(caseId);repository.lockOrder(initial.journeyOrderId());PostSalesCase current=get(caseId);
+        current.assignRefundPayments(payments);repository.save(current);return current;
+    }
+
     public PostSalesCase completeChange(String caseId,String correlation) {
         PostSalesCase initial=get(caseId);
         repository.lockOrder(initial.journeyOrderId());
@@ -321,6 +328,17 @@ public class PostSalesApplicationService {
 
     private PostSalesPolicyContext policyContextFor(
             PostSalesCase postSalesCase, Instant now, Money fallbackAmount, boolean requireContext) {
+        var changes=appliedChanges(postSalesCase.journeyOrderId());
+        var latest=changes.stream().max(java.util.Comparator.comparing(PostSalesCase::createdAt));
+        if(latest.isPresent()){
+            var target=latest.get().changeOperations().get("target");
+            var offer=(Map<?,?>)target.get("offer");var itinerary=(Map<?,?>)target.get("itinerary");
+            var legs=(List<?>)itinerary.get("legs");var first=(Map<?,?>)legs.getFirst();
+            var total=(Map<?,?>)offer.get("total");Money fare=Money.fromMinorUnits(((Number)total.get("minorUnits")).longValue(),String.valueOf(total.get("currency")));
+            Map<String,String> types=new java.util.LinkedHashMap<>();var mix=(Map<?,?>)offer.get("passengerMix");
+            for(Object raw:(List<?>)mix.get("travelers")){var traveler=(Map<?,?>)raw;types.put(String.valueOf(traveler.get("travelerId")),String.valueOf(traveler.get("travelerType")));}
+            return new PostSalesPolicyContext(postSalesCase.journeyOrderId(),Instant.parse(String.valueOf(first.get("departureTime"))),types,types.size(),changes.size(),fare,PostSalesPolicyContext.RefundWaterfallComponents.empty(fare.currency()));
+        }
         Optional<PostSalesPolicyContext> stored = policyContextStore.findByOrderId(postSalesCase.journeyOrderId());
         if (stored.isPresent()) {
             PostSalesPolicyContext context = stored.get();
