@@ -80,6 +80,17 @@ class ChangePaymentOwnershipLiveTest {
                 assertFalse(lowerRevenue.reversed());
                 assertEquals(2,jdbc.queryForObject("SELECT count(*) FROM outbox WHERE envelope->>'eventType'='RevenueRecognitionReversed'",Integer.class));
                 assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM fee_accrual_snapshots WHERE data->>'sourceEventId'=?",Integer.class,lowerCaseId));
+                var repeated=mapper.readTree(Files.readString(Path.of(System.getenv("TEST_REPEATED_CHANGE_CASES"))));
+                var originalCapture=mapper.treeToValue(repeated.path("capture"),EventEnvelope.class);
+                assertEquals(HandlerResult.SUCCESS,tx.execute(status->handler.handle(originalCapture)));
+                for(var recorded:repeated.path("cases")) {
+                    var completion=applied(recorded,event.correlationId());
+                    for(int attempt=0;attempt<2;attempt++)assertEquals(HandlerResult.SUCCESS,tx.execute(status->handler.handle(completion)));
+                }
+                String repeatedOrder=repeated.path("order").path("orderId").asText();
+                var net=revenues.findByOrderId(repeatedOrder).stream().map(RevenueRecognition::netAmount).reduce(Money.zero(amount.currency()),Money::plus);
+                assertEquals(repeated.path("order").path("monetarySummary").path("total").path("minorUnits").asLong(),net.amount().movePointRight(2).longValueExact());
+                assertEquals(4,jdbc.queryForObject("SELECT count(*) FROM fee_accrual_snapshots WHERE data->>'orderId'=? AND data->>'sourceEventId' LIKE 'psc-%' AND (data->'platformServiceFee'->>'amount')::numeric=15",Integer.class,repeatedOrder));
             } finally {jdbc.execute("DROP SCHEMA "+schema+" CASCADE");}
         }
     }
