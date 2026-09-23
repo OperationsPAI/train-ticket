@@ -68,7 +68,10 @@ export class HttpJourneyOrderClient implements JourneyOrderClient {
     });
     if (!response.ok) throw new Error(`Journey order request failed with status ${response.status}`);
     const body = await response.json() as Record<string, unknown>;
-    return { orderId: String(body.orderId ?? body.id ?? `ord-${entry.entryId}`), seatAssignment: null };
+    if (typeof body.orderId !== "string" || body.orderId.trim().length === 0) {
+      throw new Error("Journey order response did not include orderId");
+    }
+    return { orderId: body.orderId, seatAssignment: null };
   }
 }
 

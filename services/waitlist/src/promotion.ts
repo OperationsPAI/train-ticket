@@ -76,7 +76,7 @@ export class HttpFarePricingClient implements FarePricingClient {
     });
     if (!response.ok) throw new Error(`Fare quote request failed with status ${response.status}`);
     const body = await response.json() as Record<string, unknown>;
-    const fareQuoteId = stringField(body, "quoteId") ?? stringField(body, "fareQuoteId") ?? stringField(body, "id");
+    const fareQuoteId = stringField(body, "quoteId");
     if (!fareQuoteId) throw new Error("Fare quote response did not include quoteId");
     return { fareQuoteId };
   }
@@ -97,16 +97,15 @@ export class HttpOfferManagementClient implements OfferManagementClient {
         channelId: this.channelId,
         itineraryRef: entry.itineraryRef ?? entry.segmentRef,
         travelerRefs: entry.travelerRefs,
-        quoteRequestId: fareQuoteId,
         fareQuoteRef: fareQuoteId,
       }),
     });
     if (!response.ok) throw new Error(`Offer creation request failed with status ${response.status}`);
     const body = await response.json() as Record<string, unknown>;
-    const offerId = stringField(body, "offerId") ?? stringField(body, "id");
-    const offerVersion = numberField(body, "offerVersion") ?? numberField(recordField(body, "downstreamReference"), "offerVersion");
+    const offerId = stringField(body, "offerId");
+    const offerVersion = body.offerVersion;
     if (!offerId) throw new Error("Offer response did not include offerId");
-    if (!offerVersion || offerVersion < 1) throw new Error("Offer response did not include offerVersion");
+    if (typeof offerVersion !== "number" || !Number.isSafeInteger(offerVersion) || offerVersion < 1) throw new Error("Offer response did not include a positive integer offerVersion");
     return { offerId, offerVersion };
   }
 }
@@ -128,7 +127,7 @@ export class HttpCapacityAvailabilityClient implements CapacityAvailabilityClien
     });
     if (!response.ok) throw new Error(`Capacity hold request failed with status ${response.status}`);
     const body = await response.json() as Record<string, unknown>;
-    const capacityHoldId = stringField(body, "holdId") ?? stringField(body, "capacityHoldId") ?? stringField(body, "id");
+    const capacityHoldId = stringField(body, "holdId");
     if (!capacityHoldId) throw new Error("Capacity hold response did not include holdId");
     return { capacityHoldId };
   }
@@ -207,14 +206,7 @@ function assertCapacityReleaseRef(capacityReleaseRef: string): void {
 }
 
 function trimRight(value: string): string { return value.replace(/\/+$/u, ""); }
-function stringField(body: Record<string, unknown>, field: string): string | undefined { return typeof body[field] === "string" ? body[field] as string : undefined; }
-function numberField(body: Record<string, unknown>, field: string): number | undefined {
-  if (typeof body[field] === "number") return body[field] as number;
-  if (typeof body[field] === "string") {
-    const parsed = Number.parseInt(body[field] as string, 10);
-    return Number.isFinite(parsed) ? parsed : undefined;
-  }
-  return undefined;
+function stringField(body: Record<string, unknown>, field: string): string | undefined {
+  const value = body[field];
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
 }
-function recordField(body: Record<string, unknown>, field: string): Record<string, unknown> { return isRecord(body[field]) ? body[field] as Record<string, unknown> : {}; }
-function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
