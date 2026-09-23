@@ -1,0 +1,422 @@
+{
+  "case": {
+    "scope": {
+      "segmentRefs": [
+        "seg-01a0c701-d085-7000-8f10-605a7f23f7a0"
+      ],
+      "travelerRefs": [
+        "tvl-01a0ceba-675e-701f-9f77-5e3078c7bffb",
+        "tvl-01a0ceba-6775-7fcd-93bb-2ee0df575d81"
+      ],
+      "orderItemRefs": [
+        "sb-01a0ceba-7bf6-75bc-99d8-d16e32fe38d2",
+        "sb-01a0ceba-84f8-76c4-98ba-14d66238c87e"
+      ],
+      "entitlementRefs": [
+        "ent-01a0ceba-920d-7522-8a76-620ce91ca5b4",
+        "ent-01a0ceba-95be-7301-8f18-26f98e16757c"
+      ]
+    },
+    "caseId": "01a0ceba-9bb5-7fbe-ac91-2168e09ae5ad",
+    "status": "APPLIED",
+    "actorRef": "acc-01a0ceba-6744-7fae-8367-a9085f2af467",
+    "caseType": "COMPENSATION",
+    "decision": {
+      "kind": "COMPENSATION",
+      "caseId": "01a0ceba-9bb5-7fbe-ac91-2168e09ae5ad",
+      "version": 1,
+      "eligible": true,
+      "quotedAt": "2026-09-23T14:45:31.216403880Z",
+      "expiresAt": "2026-09-23T15:00:31.216403880Z",
+      "reasonCode": "ELIGIBLE",
+      "ruleSnapshot": {
+        "evaluatedAt": "2026-09-23T14:45:31.216403880Z",
+        "fareRuleVersion": "rule-v1",
+        "inputSnapshotRefs": {
+          "journeyOrderId": "ord-01a0ceba-74bf-7000-a01c-6e5c316e1b84",
+          "postSalesCaseId": "01a0ceba-9bb5-7fbe-ac91-2168e09ae5ad"
+        },
+        "farePricingEvaluationRef": "aq-01a0ceba-9bf7-76fe-84ef-29f80f2a8920",
+        "originalOfferRuleSnapshotRef": "offer-rule-snapshot-01a0ceba-9bb5-7fbe-ac91-2168e09ae5ad"
+      },
+      "amountSnapshot": {
+        "feeAmount": {
+          "currency": "CNY",
+          "minorUnits": 0
+        },
+        "explanation": "fare-pricing adjustment quote aq-01a0ceba-9bf7-76fe-84ef-29f80f2a8920",
+        "refundAmount": {
+          "currency": "CNY",
+          "minorUnits": 886
+        },
+        "extraChargeAmount": {
+          "currency": "CNY",
+          "minorUnits": 0
+        },
+        "componentDecisions": []
+      },
+      "changeAssessment": null,
+      "refundAssessment": null,
+      "changeFlowSnapshot": null
+    },
+    "createdAt": "2026-09-23T14:45:31.189623927Z",
+    "reasonCode": "SERVICE_QUALITY_COMPLAINT",
+    "executionPlan": [
+      {
+        "type": "ISSUE_COMPENSATION_CREDIT",
+        "status": "SUCCEEDED",
+        "maxRetries": 2,
+        "completedAt": "2026-09-23T14:45:31.647176398Z",
+        "externalRef": "ben-4f16b69f-130c-4f84-b4d2-d38604f2f3f6",
+        "failureReason": null,
+        "targetContext": "wallet-promotion",
+        "idempotencyKey": "post-sales:01a0ceba-9bb5-7fbe-ac91-2168e09ae5ad:compensation-credit"
+      },
+      {
+        "type": "APPLY_RESULT",
+        "status": "SUCCEEDED",
+        "maxRetries": 0,
+        "completedAt": "2026-09-23T14:45:31.647176398Z",
+        "externalRef": "ord-01a0ceba-74bf-7000-a01c-6e5c316e1b84",
+        "failureReason": null,
+        "targetContext": "ord-01a0ceba-74bf-7000-a01c-6e5c316e1b84",
+        "idempotencyKey": "post-sales:01a0ceba-9bb5-7fbe-ac91-2168e09ae5ad:apply-result"
+      }
+    ],
+    "targetOfferId": null,
+    "idempotencyKey": "01a0ceba-9b91-7e7b-b445-d84da54f5e2b",
+    "journeyOrderId": "ord-01a0ceba-74bf-7000-a01c-6e5c316e1b84",
+    "refundPayments": [],
+    "terminalReason": "all post-sales execution steps succeeded",
+    "changeOperations": {},
+    "releasedOrderItems": [],
+    "compensationOperations": {
+      "issued": {
+        "caseId": "psc-01a0ceba-9bb5-7fbe-ac91-2168e09ae5ad",
+        "status": "ISSUED",
+        "version": 1,
+        "accountId": "acc-01a0ceba-6744-7fae-8367-a9085f2af467",
+        "benefitId": "ben-4f16b69f-130c-4f84-b4d2-d38604f2f3f6",
+        "createdAt": "2026-09-23T14:45:31.453753457Z",
+        "updatedAt": "2026-09-23T14:45:31.453753457Z",
+        "validFrom": "2026-09-23T14:45:31.352755885Z",
+        "validUntil": "2026-10-23T14:45:31.352755885Z",
+        "balanceType": "PROMOTION_CREDIT",
+        "benefitType": "COMPENSATION_CREDIT",
+        "issuedAmount": {
+          "currency": "CNY",
+          "minorUnits": 886
+        },
+        "businessReason": {
+          "reasonCode": "SERVICE_QUALITY_COMPLAINT",
+          "reasonType": "POST_SALES_COMP",
+          "referenceId": "psc-01a0ceba-9bb5-7fbe-ac91-2168e09ae5ad",
+          "referenceType": "POST_SALES_CASE"
+        },
+        "issuanceSource": "POST_SALES_COMP",
+        "redeemedAmount": {
+          "currency": "CNY",
+          "minorUnits": 0
+        },
+        "redemptionRule": {
+          "singleUse": false,
+          "requiresReservation": false
+        },
+        "reservedAmount": {
+          "currency": "CNY",
+          "minorUnits": 0
+        },
+        "revocationRule": {
+          "conditions": {}
+        },
+        "applicableScope": {
+          "currency": "CNY",
+          "scopeType": "ANY_TRIP"
+        },
+        "availableAmount": {
+          "currency": "CNY",
+          "minorUnits": 886
+        },
+        "walletAccountId": "wac-81fd3a16-3ee1-40c9-b22e-d0f9e0f2eba4"
+      },
+      "request": {
+        "amount": {
+          "currency": "CNY",
+          "minorUnits": 886
+        },
+        "caseId": "psc-01a0ceba-9bb5-7fbe-ac91-2168e09ae5ad",
+        "accountId": "acc-01a0ceba-6744-7fae-8367-a9085f2af467",
+        "validFrom": "2026-09-23T14:45:31.352755885Z",
+        "validUntil": "2026-10-23T14:45:31.352755885Z",
+        "balanceType": "PROMOTION_CREDIT",
+        "benefitType": "COMPENSATION_CREDIT",
+        "businessReason": {
+          "reasonCode": "SERVICE_QUALITY_COMPLAINT",
+          "reasonType": "POST_SALES_COMP",
+          "referenceId": "psc-01a0ceba-9bb5-7fbe-ac91-2168e09ae5ad",
+          "referenceType": "POST_SALES_CASE"
+        },
+        "issuanceSource": "POST_SALES_COMP",
+        "redemptionRule": {
+          "singleUse": false,
+          "requiresReservation": false
+        },
+        "revocationRule": {},
+        "applicableScope": {
+          "currency": "CNY",
+          "scopeType": "ANY_TRIP"
+        }
+      },
+      "verified": {
+        "amount": {
+          "currency": "CNY",
+          "minorUnits": 886
+        },
+        "benefitId": "ben-4f16b69f-130c-4f84-b4d2-d38604f2f3f6",
+        "capturedAmount": {
+          "currency": "CNY",
+          "minorUnits": 2886
+        },
+        "paymentIntentId": "pi-d69fb0f8-f64e-48a5-84a0-1985e7298b57",
+        "originalPaymentPreserved": true,
+        "originalTicketsPreserved": true
+      }
+    },
+    "executionPlanAggregate": {
+      "steps": [
+        {
+          "type": "ISSUE_COMPENSATION_CREDIT",
+          "status": "SUCCEEDED",
+          "maxRetries": 2,
+          "completedAt": "2026-09-23T14:45:31.647176398Z",
+          "externalRef": "ben-4f16b69f-130c-4f84-b4d2-d38604f2f3f6",
+          "failureReason": null,
+          "targetContext": "wallet-promotion",
+          "idempotencyKey": "post-sales:01a0ceba-9bb5-7fbe-ac91-2168e09ae5ad:compensation-credit"
+        },
+        {
+          "type": "APPLY_RESULT",
+          "status": "SUCCEEDED",
+          "maxRetries": 0,
+          "completedAt": "2026-09-23T14:45:31.647176398Z",
+          "externalRef": "ord-01a0ceba-74bf-7000-a01c-6e5c316e1b84",
+          "failureReason": null,
+          "targetContext": "ord-01a0ceba-74bf-7000-a01c-6e5c316e1b84",
+          "idempotencyKey": "post-sales:01a0ceba-9bb5-7fbe-ac91-2168e09ae5ad:apply-result"
+        }
+      ],
+      "caseId": "01a0ceba-9bb5-7fbe-ac91-2168e09ae5ad",
+      "status": "SUCCEEDED",
+      "version": 1
+    }
+  },
+  "approved": {
+    "eventId": "evt-01a0ceba-9c2d-7fff-bc2b-a7dbb48b49d6",
+    "payload": {
+      "caseId": "psc-01a0ceba-9bb5-7fbe-ac91-2168e09ae5ad",
+      "orderId": "ord-01a0ceba-74bf-7000-a01c-6e5c316e1b84",
+      "approvedActions": {
+        "steps": [],
+        "approvalRef": "http-approval",
+        "compensation": {
+          "amount": {
+            "currency": "CNY",
+            "minorUnits": 886
+          },
+          "caseId": "psc-01a0ceba-9bb5-7fbe-ac91-2168e09ae5ad",
+          "method": "WALLET_CREDIT"
+        },
+        "decisionKind": "COMPENSATION"
+      }
+    },
+    "producer": "post-sales",
+    "eventType": "PostSalesApproved",
+    "occurredAt": "2026-09-23T14:45:31.305540816Z",
+    "causationId": "cmd-01a0ceba-9c28-7ff5-8393-1d5c05a30e59",
+    "traceparent": "00-d145b3f2bb366e05b6eebed42ee74a61-cf90066c37c0476a-01",
+    "correlationId": "corr-01a0ceba-9c27-7fb7-a854-77e96b3037a7",
+    "schemaVersion": 1
+  },
+  "applied": {
+    "eventId": "evt-01a0ceba-9d85-7fe6-9332-903fd55259c9",
+    "payload": {
+      "scope": {
+        "segmentRefs": [
+          "seg-01a0c701-d085-7000-8f10-605a7f23f7a0"
+        ],
+        "travelerRefs": [
+          "tvl-01a0ceba-675e-701f-9f77-5e3078c7bffb",
+          "tvl-01a0ceba-6775-7fcd-93bb-2ee0df575d81"
+        ],
+        "orderItemRefs": [
+          "sb-01a0ceba-7bf6-75bc-99d8-d16e32fe38d2",
+          "sb-01a0ceba-84f8-76c4-98ba-14d66238c87e"
+        ],
+        "entitlementRefs": [
+          "ent-01a0ceba-920d-7522-8a76-620ce91ca5b4",
+          "ent-01a0ceba-95be-7301-8f18-26f98e16757c"
+        ]
+      },
+      "caseId": "psc-01a0ceba-9bb5-7fbe-ac91-2168e09ae5ad",
+      "orderId": "ord-01a0ceba-74bf-7000-a01c-6e5c316e1b84",
+      "caseType": "COMPENSATION",
+      "retainedFee": {
+        "currency": "CNY",
+        "minorUnits": 0
+      },
+      "compensation": {
+        "caseId": "psc-01a0ceba-9bb5-7fbe-ac91-2168e09ae5ad",
+        "status": "ISSUED",
+        "version": 1,
+        "accountId": "acc-01a0ceba-6744-7fae-8367-a9085f2af467",
+        "benefitId": "ben-4f16b69f-130c-4f84-b4d2-d38604f2f3f6",
+        "createdAt": "2026-09-23T14:45:31.453753457Z",
+        "updatedAt": "2026-09-23T14:45:31.453753457Z",
+        "validFrom": "2026-09-23T14:45:31.352755885Z",
+        "validUntil": "2026-10-23T14:45:31.352755885Z",
+        "balanceType": "PROMOTION_CREDIT",
+        "benefitType": "COMPENSATION_CREDIT",
+        "issuedAmount": {
+          "currency": "CNY",
+          "minorUnits": 886
+        },
+        "businessReason": {
+          "reasonCode": "SERVICE_QUALITY_COMPLAINT",
+          "reasonType": "POST_SALES_COMP",
+          "referenceId": "psc-01a0ceba-9bb5-7fbe-ac91-2168e09ae5ad",
+          "referenceType": "POST_SALES_CASE"
+        },
+        "issuanceSource": "POST_SALES_COMP",
+        "redeemedAmount": {
+          "currency": "CNY",
+          "minorUnits": 0
+        },
+        "redemptionRule": {
+          "singleUse": false,
+          "requiresReservation": false
+        },
+        "reservedAmount": {
+          "currency": "CNY",
+          "minorUnits": 0
+        },
+        "revocationRule": {
+          "conditions": {}
+        },
+        "applicableScope": {
+          "currency": "CNY",
+          "scopeType": "ANY_TRIP"
+        },
+        "availableAmount": {
+          "currency": "CNY",
+          "minorUnits": 886
+        },
+        "walletAccountId": "wac-81fd3a16-3ee1-40c9-b22e-d0f9e0f2eba4"
+      },
+      "resultSummary": {
+        "description": "all post-sales execution steps succeeded"
+      }
+    },
+    "producer": "post-sales",
+    "eventType": "PostSalesApplied",
+    "occurredAt": "2026-09-23T14:45:31.647176398Z",
+    "causationId": "cmd-01a0ceba-9d85-7006-a95d-276c318dcf07",
+    "traceparent": "00-abd46416d37ba2a863f6426747f18e7c-f96b5dc977c5da25-01",
+    "correlationId": "corr-01a0ceba-9d2b-7ffd-bf0a-39969370b283",
+    "schemaVersion": 1
+  },
+  "payment": {
+    "id": "pi-d69fb0f8-f64e-48a5-84a0-1985e7298b57",
+    "data": {
+      "amount": {
+        "currency": "CNY",
+        "minorUnits": 2886
+      },
+      "status": "CAPTURED",
+      "purpose": "purchase",
+      "payerRef": "acc-01a0ceba-6744-7fae-8367-a9085f2af467",
+      "expiresAt": "2026-09-23T14:45:58.029248525Z",
+      "channelRef": {
+        "channel": "WECHAT_PAY",
+        "channelOrderId": "cho-01a0ceba-8f71-7000-a3fe-dde76d69216e",
+        "channelTransactionId": "ctx-3635b2e86f45a29ec16324d2"
+      },
+      "businessRef": "ord-01a0ceba-74bf-7000-a01c-6e5c316e1b84",
+      "domainEvents": [
+        {
+          "eventId": "evt-01a0ceba-8f5d-7010-aca6-80348c5eca2a",
+          "payload": {
+            "amount": {
+              "currency": "CNY",
+              "minorUnits": 2886
+            },
+            "purpose": "purchase",
+            "payerRef": "acc-01a0ceba-6744-7fae-8367-a9085f2af467",
+            "createdAt": "2026-09-23T14:45:28.029248525Z",
+            "businessRef": "ord-01a0ceba-74bf-7000-a01c-6e5c316e1b84",
+            "idempotencyKey": "01a0ceba-8f53-710e-a34a-a465e4ffd633",
+            "paymentIntentId": "pi-d69fb0f8-f64e-48a5-84a0-1985e7298b57"
+          },
+          "producer": "payment",
+          "eventType": "PaymentIntentCreated",
+          "occurredAt": "2026-09-23T14:45:28.029248525Z",
+          "causationId": "cmd-01a0ceba-8f53-710e-a34a-a465e4ffd633",
+          "traceparent": "00-d29ddd4d21e0115e705f23c7cff58173-01f511adfab64431-01",
+          "correlationId": "corr-01a0ceba-8f5b-700e-b1a5-598f650a69fe",
+          "schemaVersion": 1
+        },
+        {
+          "eventId": "evt-01a0ceba-8f86-7038-9060-7a72a3d179dd",
+          "payload": {
+            "channel": "WECHAT_PAY",
+            "orderId": "ord-01a0ceba-74bf-7000-a01c-6e5c316e1b84",
+            "purpose": "purchase",
+            "intentId": "pi-d69fb0f8-f64e-48a5-84a0-1985e7298b57",
+            "payerRef": "acc-01a0ceba-6744-7fae-8367-a9085f2af467",
+            "capturedAt": "2026-09-23T14:45:28.070399109Z",
+            "channelRef": {
+              "channel": "WECHAT_PAY",
+              "channelOrderId": "cho-01a0ceba-8f71-7000-a3fe-dde76d69216e",
+              "channelTransactionId": "ctx-3635b2e86f45a29ec16324d2"
+            },
+            "amountMinor": 2886,
+            "businessRef": "ord-01a0ceba-74bf-7000-a01c-6e5c316e1b84",
+            "capturedAmount": {
+              "currency": "CNY",
+              "minorUnits": 2886
+            },
+            "paymentIntentId": "pi-d69fb0f8-f64e-48a5-84a0-1985e7298b57",
+            "channelTransactionId": "ctx-3635b2e86f45a29ec16324d2"
+          },
+          "producer": "payment",
+          "eventType": "PaymentCaptured",
+          "occurredAt": "2026-09-23T14:45:28.070399109Z",
+          "causationId": "cmd-01a0ceba-8f67-7766-bf7a-9c99a800938a",
+          "traceparent": "00-d29ddd4d21e0115e705f23c7cff58173-01f511adfab64431-01",
+          "correlationId": "corr-01a0ceba-8f6c-7f80-985b-aae736cdf329",
+          "schemaVersion": 1
+        }
+      ],
+      "refundHistory": [],
+      "capturedAmount": {
+        "currency": "CNY",
+        "minorUnits": 2886
+      },
+      "idempotencyKey": "01a0ceba-8f53-710e-a34a-a465e4ffd633",
+      "refundedAmount": {
+        "currency": "CNY",
+        "minorUnits": 0
+      },
+      "paymentIntentId": "pi-d69fb0f8-f64e-48a5-84a0-1985e7298b57",
+      "authorizedAmount": {
+        "currency": "CNY",
+        "minorUnits": 0
+      },
+      "channelTransactionRefs": [
+        "WECHAT_PAY:ctx-3635b2e86f45a29ec16324d2"
+      ],
+      "channelOrderIdempotencyKey": "6a8a62af-78e8-7cf1-85d0-7a51f4ed4dca",
+      "channelOrderSubmitIdempotencyKey": "866d27e6-10a7-7b9d-beb4-f25b453095d7"
+    },
+    "version": 4
+  }
+}
