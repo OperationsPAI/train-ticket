@@ -14,6 +14,7 @@ The event projection remains available for event processing; its arrival is inde
 Accepted operations are recorded in `changeOperations` and use stable downstream idempotency keys.
 The case API includes issue authorization and settlement reads for downstream validation.
 An unsuccessful uncaptured difference payment cancels replacement reservations, preserves original tickets and ends with `CHANGE_PAYMENT_TERMINATED` after compensation is verified.
+Expiry is checked against the actual payment deadline, including capture requests rejected at the expiry boundary.
 Sold out replacement compensation records the rejection, voids replacement tickets, cancels replacement bookings, checks Hold release and returns captured difference payments.
 It preserves original tickets and finishes with `CHANGE_CAPACITY_UNAVAILABLE` only after validation.
 Case execution uses a PostgreSQL advisory lock to serialize downstream actions across replicas.
