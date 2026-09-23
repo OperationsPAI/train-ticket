@@ -17,4 +17,10 @@ public class PostSalesReconciliationController {
             @RequestHeader(value="X-Correlation-Id",required=false) String correlation) {
         return PostSalesMapper.caseDetails(reconciler.reconcile(caseId,correlation));
     }
+    @PostMapping("/{caseId}/cancel-unquoted-change")
+    public Map<String,Object> cancel(@PathVariable String caseId,@RequestBody CancelRequest request,
+        @RequestHeader(value="X-Correlation-Id",required=false)String correlation){
+        return PostSalesMapper.caseDetails(reconciler.cancelUnquoted(caseId,request.journeyOrderId(),correlation));
+    }
+    public record CancelRequest(String journeyOrderId){}
 }
