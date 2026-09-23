@@ -17,10 +17,11 @@ public class ChangeExecutionService {
     private final RestClient client;
     private final ObjectMapper mapper;
     private final String baseTemplate;
+    private final RefundFundingService funding;
 
-    public ChangeExecutionService(PostSalesApplicationService cases,RestClient.Builder builder,ObjectMapper mapper,
+    public ChangeExecutionService(PostSalesApplicationService cases,RestClient.Builder builder,ObjectMapper mapper,RefundFundingService funding,
         @Value("${CHANGE_SERVICE_URL_TEMPLATE:http://%s:8080}") String baseTemplate) {
-        this.cases=cases;this.mapper=mapper;this.baseTemplate=baseTemplate;
+        this.cases=cases;this.mapper=mapper;this.baseTemplate=baseTemplate;this.funding=funding;
         var factory=new SimpleClientHttpRequestFactory();factory.setConnectTimeout(Duration.ofSeconds(2));factory.setReadTimeout(Duration.ofSeconds(5));
         client=builder.requestFactory(factory).build();
     }
@@ -37,10 +38,10 @@ public class ChangeExecutionService {
             JsonNode offer=get("offer-management","/api/v1/offers/"+change.targetOfferId(),correlation);
             if(!order.path("accountId").asText().equals(offer.path("accountId").asText()) || !Instant.now().isBefore(Instant.parse(text(offer,"expiresAt"))))throw new DomainRuleViolation("target offer is unavailable for the original account");
             JsonNode itinerary=get("trip-planning","/api/v1/itineraries/"+text(offer,"itineraryRef"),correlation);
-            JsonNode originalPayment=get("payment","/api/v1/payment-intents/by-business/"+change.journeyOrderId(),correlation);
-            if(!"CAPTURED".equals(text(originalPayment,"status")) || originalPayment.path("refundedAmount").path("minorUnits").asLong()!=0)throw new DomainRuleViolation("original payment is not fully available for change");
+            List<JsonNode> payments=funding.changePayments(change,text(order,"accountId"),false,correlation);
+            if(!RefundFundingService.balance(payments).equals(RefundFundingService.money(order.path("monetarySummary").path("payableTotal"))))throw new DomainRuleViolation("recorded payments do not match the current order balance");
             JsonNode fare=get("fare-pricing","/api/v1/fare-quotes/"+text(offer,"fareQuoteRef"),correlation);
-            return cases.recordChangeOperation(caseId,"target",Map.of("offer",map(offer),"itinerary",map(itinerary),"fare",map(fare),"payment",map(originalPayment),"accountId",text(order,"accountId")));
+            return cases.recordChangeOperation(caseId,"target",Map.of("offer",map(offer),"itinerary",map(itinerary),"fare",map(fare),"payment",map(payments.getFirst()),"accountId",text(order,"accountId")));
         }
         JsonNode target=mapper.valueToTree(ops.get("target"));
         JsonNode offer=target.path("offer");
@@ -105,11 +106,34 @@ public class ChangeExecutionService {
         }
         Money refund=change.decision().amountSnapshot().refundAmount();
         if(!refund.isZero()) {
-            if(!ops.containsKey("difference-refund"))return saveCommand(change,"difference-refund","payment","/api/v1/refunds",
-                Map.of("paymentIntentId",text(target.path("payment"),"paymentIntentId"),"amount",PostSalesMapper.money(refund),"reason","CHANGE_FARE_DIFFERENCE",
-                    "businessCaseRef",id,"channelRef",map(target.path("payment").path("channelRef"))),correlation);
-            JsonNode returned=get("payment","/api/v1/refunds/"+ops.get("difference-refund").get("refundId"),correlation);
-            if(!"SETTLED".equals(text(returned,"status")))return change;
+            if(!ops.containsKey("refund-funding") && !ops.containsKey("difference-refund")) {
+                long remaining=refund.toMinorUnits();
+                List<Map<String,Object>> allocations=new ArrayList<>();
+                for(JsonNode payment:funding.changePayments(change,text(target,"accountId"),false,correlation)) {
+                    Money available=RefundFundingService.balance(List.of(payment));
+                    available.compareTo(refund);
+                    long assigned=Math.min(remaining,available.toMinorUnits());
+                    if(assigned>0)allocations.add(Map.of("paymentIntentId",text(payment,"paymentIntentId"),"amount",PostSalesMapper.money(Money.fromMinorUnits(assigned,refund.currency().getCurrencyCode())),"channelRef",map(payment.path("channelRef"))));
+                    remaining-=assigned;
+                    if(remaining==0)break;
+                }
+                if(remaining!=0)throw new DomainRuleViolation("change payments do not cover the approved difference refund");
+                return cases.recordChangeOperation(caseId,"refund-funding",Map.of("allocations",allocations));
+            }
+            JsonNode allocations=mapper.valueToTree(ops.get("refund-funding")).path("allocations");
+            for(int index=0;index<allocations.size();index++) {
+                JsonNode allocation=allocations.get(index);
+                String name=refundOperation(index);
+                if(!ops.containsKey(name))return saveCommand(change,name,"payment","/api/v1/refunds",
+                    Map.of("paymentIntentId",text(allocation,"paymentIntentId"),"amount",map(allocation.path("amount")),"reason","CHANGE_FARE_DIFFERENCE",
+                        "businessCaseRef",id,"channelRef",map(allocation.path("channelRef"))),correlation);
+                JsonNode returned=get("payment","/api/v1/refunds/"+ops.get(name).get("refundId"),correlation);
+                if(!"SETTLED".equals(text(returned,"status")))return change;
+            }
+            if(allocations.isEmpty()) {
+                JsonNode returned=get("payment","/api/v1/refunds/"+ops.get("difference-refund").get("refundId"),correlation);
+                if(!"SETTLED".equals(text(returned,"status")))return change;
+            }
         }
         if(!ops.containsKey("order-applied"))return saveCommand(change,"order-applied","journey-order","/api/v1/journey-orders/"+change.journeyOrderId()+"/apply-change",
             Map.of("caseId",id),correlation);
@@ -151,10 +175,10 @@ public class ChangeExecutionService {
         JsonNode booking=get("booking-orchestration","/api/v1/internal/segment-bookings/"+bookingId,correlation);
         if(!change.journeyOrderId().equals(text(booking,"journeyOrderId")))throw new DomainRuleViolation("replacement order mismatch");
         JsonNode target=mapper.valueToTree(operations.get("target"));
-        String originalId=text(target.path("payment"),"paymentIntentId");
-        JsonNode original=get("payment","/api/v1/payment-intents/"+originalId,correlation);
-        if(!"CAPTURED".equals(text(original,"status")) || original.path("refundedAmount").path("minorUnits").asLong()!=0)throw new DomainRuleViolation("original funds are unavailable");
-        String paymentId=originalId;
+        List<JsonNode> payments=funding.changePayments(change,text(target,"accountId"),false,correlation);
+        JsonNode order=get("journey-order","/api/v1/journey-orders/"+change.journeyOrderId(),correlation);
+        if(!RefundFundingService.balance(payments).equals(RefundFundingService.money(order.path("monetarySummary").path("payableTotal"))))throw new DomainRuleViolation("available funds differ from the current order");
+        String paymentId=payments.stream().filter(payment->!RefundFundingService.balance(List.of(payment)).isZero()).map(payment->text(payment,"paymentIntentId")).findFirst().orElseThrow(()->new DomainRuleViolation("change has no available payment"));
         Money due=change.decision().amountSnapshot().extraChargeAmount();
         if(!due.isZero()) {
             if(!operations.containsKey("difference-payment"))throw new DomainRuleViolation("difference payment is required");
@@ -166,6 +190,26 @@ public class ChangeExecutionService {
         return Map.of("authorized",true,"caseId",PostSalesMapper.prefixed(change.caseId(),"psc-"),"journeyOrderId",change.journeyOrderId(),
             "segmentBookingId",bookingId,"segmentRef",text(booking,"segmentRef"),"travelerRef",text(booking,"travelerRef"),"paymentIntentId",paymentId);
     }
+
+    public Map<String,Object> settlement(String caseId,String correlation) {
+        PostSalesCase change=cases.get(caseId);
+        if(change.caseType()!=PostSalesCaseType.CHANGE || (change.status()!=PostSalesCaseStatus.EXECUTING && change.status()!=PostSalesCaseStatus.APPLIED))throw new DomainRuleViolation("change settlement requires an approved case");
+        JsonNode target=mapper.valueToTree(change.changeOperations().get("target"));
+        List<JsonNode> payments=funding.changePayments(change,text(target,"accountId"),true,correlation);
+        Set<String> ids=new HashSet<>();payments.forEach(payment->ids.add(text(payment,"paymentIntentId")));
+        Money expected=change.decision().amountSnapshot().refundAmount(),returned=Money.zero(expected.currency());
+        Set<String> refundIds=new HashSet<>();
+        for(var op:change.changeOperations().entrySet())if(op.getKey().equals("difference-refund") || op.getKey().startsWith("difference-refund:")) {
+            String refundId=String.valueOf(op.getValue().get("refundId"));
+            if(!refundIds.add(refundId))throw new DomainRuleViolation("change refund is recorded more than once");
+            JsonNode refund=get("payment","/api/v1/refunds/"+refundId,correlation);
+            if(!"SETTLED".equals(text(refund,"status")) || !PostSalesMapper.prefixed(change.caseId(),"psc-").equals(text(refund,"businessCaseRef")) || !ids.contains(text(refund,"paymentIntentId")))throw new DomainRuleViolation("change refund settlement mismatch");
+            returned=returned.add(RefundFundingService.money(refund.path("amount")));
+        }
+        if(!expected.equals(returned))throw new DomainRuleViolation("settled change refunds differ from the approved total");
+        return Map.of("journeyOrderId",change.journeyOrderId(),"caseId",PostSalesMapper.prefixed(change.caseId(),"psc-"),"balance",PostSalesMapper.money(RefundFundingService.balance(payments)),"payments",payments);
+    }
+    private static String refundOperation(int index) {return index==0?"difference-refund":"difference-refund:"+index;}
 
     private PostSalesCase saveCommand(PostSalesCase change,String name,String service,String path,Map<String,Object> body,String correlation) {
         JsonNode result=client.post().uri(baseTemplate.formatted(service)+path).header("Idempotency-Key",key(change.caseId()+":"+name))
