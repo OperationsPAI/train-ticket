@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 # --- Error Response ---
@@ -114,9 +114,18 @@ class AdjustmentQuoteRequest(BaseModel):
 
     purpose: Literal["REFUND", "CHANGE"]
     originalQuoteId: str = Field(..., min_length=1)
+    targetQuoteId: str | None = Field(default=None, min_length=1)
     entitlementIds: list[str] = Field(..., min_length=1)
     journeyOrderId: str = Field(..., min_length=1)
     segmentRefs: list[str] = Field(..., min_length=1)
+
+    @model_validator(mode="after")
+    def validate_target_quote(self) -> AdjustmentQuoteRequest:
+        if self.purpose == "CHANGE" and not self.targetQuoteId:
+            raise ValueError("targetQuoteId is required for CHANGE")
+        if self.purpose == "REFUND" and self.targetQuoteId is not None:
+            raise ValueError("targetQuoteId is only valid for CHANGE")
+        return self
 
 
 class FeeAssessmentSchema(BaseModel):
@@ -132,6 +141,10 @@ class FeeAssessmentSchema(BaseModel):
 
 class AdjustmentQuoteResponse(BaseModel):
     adjustmentQuoteId: str
+    originalQuoteId: str
+    targetQuoteId: str | None = None
+    fareDifference: MoneySchema | None = None
+    changeFee: MoneySchema | None = None
     purpose: str
     status: Literal["QUOTED", "FAILED"]
     refundableAmount: MoneySchema
