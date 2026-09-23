@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { Redis } from "ioredis";
 import { Pool } from "pg";
-import { RedisEventSubscriber, type EventHandler } from "./messaging.js";
+import { RedisEventSubscriber, HandlerError, type EventHandler } from "./messaging.js";
 import { ProcessedEventsGuard, withTransaction } from "./storage.js";
 
 test("subscriber cache is bounded and evicted replays remain transactionally deduplicated", {
@@ -54,8 +54,33 @@ test("subscriber cache is bounded and evicted replays remain transactionally ded
     assert.equal(Number((await pool.query("SELECT count(*) FROM business_effects")).rows[0].count),envelopes.length);
     assert.equal(Number((await pool.query("SELECT count(*) FROM processed_events")).rows[0].count),envelopes.length);
     assert.equal((await redis.xpending(stream,group) as [number,...unknown[]])[0],0);
+    await redis.xadd(stream,"*","envelope",envelopes[0]!);
+    const delayed = await redis.xreadgroup("GROUP",group,"previous","COUNT",1,"STREAMS",stream,">") as [string,[string,string[]][]][];
+    const delayedId = delayed[0]![1][0]![0];
+    await redis.xclaim(stream,group,"previous",0,delayedId,"IDLE",61_000,"RETRYCOUNT",20);
+    access.consumedEventIds.delete(first.eventId);
+    const recover = subscriber as unknown as { claimAndProcess:(stream:string,group:string,consumer:string,handler:EventHandler)=>Promise<void> };
+    await recover.claimAndProcess(stream,group,"current",handler);
+    assert.equal((await redis.xpending(stream,group) as [number,...unknown[]])[0],0);
+    assert.equal(await redis.xlen(`${stream}:dlq`),0);
+    assert.equal(Number((await pool.query("SELECT count(*) FROM business_effects")).rows[0].count),envelopes.length);
+    assert.equal(handled,envelopes.length+2);
+    access.consumedEventIds.delete(first.eventId);
+    await redis.xadd(stream,"*","envelope",envelopes[0]!);
+    const failing = await redis.xreadgroup("GROUP",group,"current","COUNT",1,"STREAMS",stream,">") as [string,[string,string[]][]][];
+    const databaseFailure:EventHandler = async () => {
+      try { await pool.query("SELECT 1 / 0"); }
+      catch(error) { throw new HandlerError("transient", error instanceof Error ? error.message : String(error)); }
+      return "ack";
+    };
+    for(let attempt=1;attempt<=5;attempt++) {
+      await access.processEntry(stream,group,"current",failing[0]![1][0]!,databaseFailure);
+      assert.equal(await redis.xlen(`${stream}:dlq`),attempt===5?1:0);
+    }
+    assert.equal((await redis.xpending(stream,group) as [number,...unknown[]])[0],0);
   } finally {
     await redis.del(stream);
+    await redis.del(`${stream}:dlq`);
     await subscriber.close();
     await pool.end();
     await admin.query(`DROP SCHEMA ${schema} CASCADE`);

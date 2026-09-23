@@ -240,7 +240,7 @@ const READ_BLOCK_MS = parseInt(process.env.CONSUMER_BLOCK_MS ?? "100", 10);
 const READ_COUNT = parseInt(process.env.CONSUMER_BATCH_COUNT ?? "100", 10);
 const CLAIM_MIN_IDLE_MS = 60_000;
 const DEAD_CONSUMER_IDLE_MS = 5 * 60 * 1_000;
-const MAX_DELIVERIES = 5;
+const MAX_HANDLER_FAILURES = 5;
 
 export const STREAM_MAXLEN_ENV = "EVENT_STREAM_MAXLEN";
 export const DEFAULT_STREAM_MAXLEN = 10_000;
@@ -423,6 +423,7 @@ export class RedisEventSubscriber implements EventSubscriber {
   private stopped = false;
   private readonly consumedEventIds = new Set<string>();
   private readonly loops = new Set<Promise<void>>();
+  private readonly handlerFailures = new Map<string, number>();
   private startedPromise: Promise<void>;
   private resolveStarted!: () => void;
   private rejectStarted!: (error: unknown) => void;
@@ -791,7 +792,9 @@ export class RedisEventSubscriber implements EventSubscriber {
   }
 
   private async finishEntry(stream: string, group: string, consumerName: string, entry: StreamEntry, envelope: EventEnvelope, attempts: number, result: "ack" | "retry" | "dlq", failureReason: unknown): Promise<void> {
+    const failureKey = `${stream}:${group}:${entry[0]}`;
     if (result === "ack") {
+      this.handlerFailures.delete(failureKey);
       this.consumedEventIds.add(envelope.eventId);
       if (this.consumedEventIds.size > RedisEventSubscriber.CONSUMED_EVENT_CACHE_LIMIT) {
         const oldest = this.consumedEventIds.values().next().value;
@@ -801,8 +804,20 @@ export class RedisEventSubscriber implements EventSubscriber {
       return;
     }
     if (result === "dlq") {
+      this.handlerFailures.delete(failureKey);
       await this.deadLetterAndAck(stream, group, consumerName, entry, failureReason, attempts);
       return;
+    }
+    const failures = (this.handlerFailures.get(failureKey) ?? 0) + 1;
+    this.handlerFailures.set(failureKey, failures);
+    if (failures >= MAX_HANDLER_FAILURES) {
+      this.handlerFailures.delete(failureKey);
+      await this.deadLetterAndAck(stream, group, consumerName, entry, failureReason, failures);
+      return;
+    }
+    if (this.handlerFailures.size > RedisEventSubscriber.CONSUMED_EVENT_CACHE_LIMIT) {
+      const oldest = this.handlerFailures.keys().next().value;
+      if (oldest !== undefined) this.handlerFailures.delete(oldest);
     }
     console.warn({
       service: group,
@@ -822,11 +837,7 @@ export class RedisEventSubscriber implements EventSubscriber {
     const entries = (Array.isArray(claimed[1]) ? claimed[1] : []) as StreamEntry[];
     const deliveryCounts = await this.deliveryCounts(stream, group, entries.map(([entryId]) => entryId));
     for (const entry of entries) {
-      if ((deliveryCounts.get(entry[0]) ?? 1) >= MAX_DELIVERIES) {
-        await this.deadLetterAndAck(stream, group, consumerName, entry, "MaxDeliveries", deliveryCounts.get(entry[0]) ?? MAX_DELIVERIES);
-      } else {
-        await this.processEntry(stream, group, consumerName, entry, handler, deliveryCounts.get(entry[0]) ?? 1);
-      }
+      await this.processEntry(stream, group, consumerName, entry, handler, deliveryCounts.get(entry[0]) ?? 1);
     }
   }
 
