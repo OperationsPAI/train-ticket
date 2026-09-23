@@ -28,7 +28,7 @@ public class ChangeExecutionService {
     public PostSalesCase advance(String caseId,String correlation) {
         PostSalesCase change=cases.get(caseId);
         if(change.caseType()!=PostSalesCaseType.CHANGE || change.decision()==null)throw new DomainRuleViolation("evaluated CHANGE case is required");
-        if(change.status()==PostSalesCaseStatus.APPLIED)return change;
+        if(change.status()==PostSalesCaseStatus.APPLIED || change.status()==PostSalesCaseStatus.FAILED)return change;
         if(change.status()!=PostSalesCaseStatus.EXECUTING)throw new DomainRuleViolation("change must be approved before execution");
         String id=PostSalesMapper.prefixed(change.caseId(),"psc-");
         Map<String,Map<String,Object>> ops=change.changeOperations();
@@ -64,6 +64,11 @@ public class ChangeExecutionService {
             if(!ops.containsKey("difference-payment"))return saveCommand(change,"difference-payment","payment","/api/v1/payment-intents",
                 Map.of("businessRef",id,"purpose","change","payerRef",text(target,"accountId"),"amount",PostSalesMapper.money(due),"preferredChannel","ALIPAY_SIM"),correlation);
             String paymentId=String.valueOf(ops.get("difference-payment").get("paymentIntentId"));
+            JsonNode currentPayment=get("payment","/api/v1/payment-intents/"+paymentId,correlation);
+            if(Set.of("EXPIRED","CANCELLED","FAILED").contains(text(currentPayment,"status"))
+                && currentPayment.path("capturedAmount").path("minorUnits").asLong()==0) {
+                return compensateUnpaidChange(change,currentPayment,correlation);
+            }
             if(!ops.containsKey("difference-captured"))return saveCommand(change,"difference-captured","payment","/api/v1/payment-intents/"+paymentId+"/capture",
                 Map.of("channelRef",Map.of("channel","ALIPAY_SIM")),correlation);
             JsonNode paid=get("payment","/api/v1/payment-intents/"+paymentId,correlation);
@@ -109,6 +114,32 @@ public class ChangeExecutionService {
         if(!ops.containsKey("order-applied"))return saveCommand(change,"order-applied","journey-order","/api/v1/journey-orders/"+change.journeyOrderId()+"/apply-change",
             Map.of("caseId",id),correlation);
         return cases.completeChange(caseId,correlation);
+    }
+
+    private PostSalesCase compensateUnpaidChange(PostSalesCase change,JsonNode payment,String correlation) {
+        var ops=change.changeOperations();
+        if(ops.keySet().stream().anyMatch(name->name.startsWith("ticket:") || name.startsWith("void:") || name.equals("order-applied"))) {
+            throw new DomainRuleViolation("unpaid change compensation requires original tickets to remain unchanged");
+        }
+        String caseId=PostSalesMapper.prefixed(change.caseId(),"psc-");
+        if(!ops.containsKey("payment-terminated"))return cases.recordChangeOperation(change.caseId(),"payment-terminated",map(payment));
+        for(var operation:ops.entrySet())if(operation.getKey().startsWith("booking:")) {
+            String bookingId=String.valueOf(operation.getValue().get("segmentBookingId"));
+            String name="cancel-replacement:"+bookingId;
+            if(!ops.containsKey(name))return saveCommand(change,name,"booking-orchestration","/api/v1/internal/change-reservations/"+bookingId+"/cancel",
+                Map.of("caseId",caseId),correlation);
+            JsonNode booking=get("booking-orchestration","/api/v1/internal/segment-bookings/"+bookingId,correlation);
+            if(!"CANCELLED".equals(text(booking,"status")))return change;
+            JsonNode hold=get("capacity-availability","/api/v1/capacity-holds/"+text(booking,"capacityHoldId"),correlation);
+            if(!"RELEASED".equals(text(hold,"status")))return change;
+        }
+        for(String ticket:change.scope().entitlementRefs()) {
+            if(!"ISSUED".equals(text(get("entitlement-ticketing","/api/v1/entitlements/"+ticket,correlation),"status"))) {
+                throw new DomainRuleViolation("original ticket is unavailable after unpaid change");
+            }
+        }
+        if(!ops.containsKey("unpaid-compensation-completed"))return cases.recordChangeOperation(change.caseId(),"unpaid-compensation-completed",Map.of("originalTicketsPreserved",true));
+        return cases.failUnpaidChange(change.caseId(),correlation);
     }
 
     public Map<String,Object> issueAuthorization(String caseId,String bookingId,String correlation) {
