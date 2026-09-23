@@ -15,6 +15,7 @@ The PostgreSQL policy test observes real outbound requests to verify transaction
 
 `POST /api/v1/post-sales-cases/{caseId}/execute-change` advances an approved change through replacement reservation, difference payment, ticket issuance, original ticket release, refund settlement and order application.
 Accepted operations are recorded in `changeOperations` and use stable downstream idempotency keys.
+The executor submits every traveler replacement before waiting for reservation confirmations.
 The case API includes issue authorization and settlement reads for downstream validation.
 An unsuccessful uncaptured difference payment cancels replacement reservations, preserves original tickets and ends with `CHANGE_PAYMENT_TERMINATED` after compensation is verified.
 Expiry is checked against the actual payment deadline, including capture requests rejected at the expiry boundary.
