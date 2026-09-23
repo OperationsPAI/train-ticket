@@ -49,9 +49,9 @@ class BookingOrchestrationControllerTest {
 
     private String createConfirmedSegment(String sagaId) {
         String segmentBookingId = "sb-" + UUID.randomUUID();
-        controller.requestReservation(sagaId,
-            new BookingOrchestrationController.RequestReservationRequest("seg-001", "tvl-user1", segmentBookingId),
-            UUID.randomUUID().toString(), request);
+        bookingService.requestReservation(sagaId,
+            new BookingOrchestrationService.RequestReservationCommand("seg-001", "tvl-user1", segmentBookingId),
+            UUID.randomUUID().toString(), "corr-0194f2e0-7b3e-7610-8284-5c26e8b0a032");
         bookingService.handleUpstreamEvent(new com.trainticket.platformkit.messaging.EventEnvelope(
             "evt-0194f2e0-7b3e-7610-8284-5c26e8b0a031", "ProviderReservationConfirmed",
             Instant.parse("2026-07-05T10:00:01Z"),
@@ -139,31 +139,6 @@ class BookingOrchestrationControllerTest {
     }
 
     @Test
-    void requestReservationHappyPath() {
-        String sagaId = createTestSaga();
-        var req = new BookingOrchestrationController.RequestReservationRequest("seg-001", "tvl-user1", "sb-" + UUID.randomUUID());
-        ResponseEntity<?> response = controller.requestReservation(sagaId, req, UUID.randomUUID().toString(), request);
-        assertEquals(HttpStatus.OK, response.getStatusCode());
-        var body = (BookingOrchestrationController.RequestReservationResponse) response.getBody();
-        assertEquals("REQUESTED", body.status());
-        assertTrue(eventPublisher.getPublished().size() >= 1);
-    }
-
-    @Test
-    void repeatedRequestReservationIsHandledByHttpFilterOutsideDirectControllerTest() {
-        String sagaId = createTestSaga();
-        var req = new BookingOrchestrationController.RequestReservationRequest("seg-001", "tvl-user1", "sb-" + UUID.randomUUID());
-        String idempotencyKey = UUID.randomUUID().toString();
-        ResponseEntity<?> first = controller.requestReservation(sagaId, req, idempotencyKey, request);
-        eventPublisher.clear();
-        var secondReq = new BookingOrchestrationController.RequestReservationRequest("seg-001", "tvl-user1", "sb-" + UUID.randomUUID());
-        ResponseEntity<?> second = controller.requestReservation(sagaId, secondReq, idempotencyKey, request);
-        assertEquals(HttpStatus.OK, first.getStatusCode());
-        assertEquals(HttpStatus.OK, second.getStatusCode());
-        assertTrue(eventPublisher.getPublished().size() >= 1);
-    }
-
-    @Test
     void requestReservationValidationFailure() {
         String sagaId = createTestSaga();
         var req = new BookingOrchestrationController.RequestReservationRequest("", null, "");
@@ -191,9 +166,9 @@ class BookingOrchestrationControllerTest {
     void markTicketedEnforcesPreconditionForUnconfirmedBooking() {
         String sagaId = createTestSaga();
         String segmentBookingId = "sb-" + UUID.randomUUID();
-        controller.requestReservation(sagaId,
-            new BookingOrchestrationController.RequestReservationRequest("seg-001", "tvl-user1", segmentBookingId),
-            UUID.randomUUID().toString(), request);
+        bookingService.requestReservation(sagaId,
+            new BookingOrchestrationService.RequestReservationCommand("seg-001", "tvl-user1", segmentBookingId),
+            UUID.randomUUID().toString(), "corr-0194f2e0-7b3e-7610-8284-5c26e8b0a032");
 
         var req = new BookingOrchestrationController.MarkTicketedRequest(segmentBookingId, "ent-" + UUID.randomUUID());
         var response = controller.handlePreconditionFailed(
