@@ -19,7 +19,7 @@ public final class JourneyOrder {
     private final String accountId;
     private final String channelRef;
     private final String idempotencyKey;
-    private final OfferSnapshotRef offerSnapshot;
+    private OfferSnapshotRef offerSnapshot;
     private final List<TravelerRef> travelers;
     private final List<SegmentOrderSnapshot> segments;
     private final List<OrderItem> orderItems;
@@ -47,7 +47,7 @@ public final class JourneyOrder {
         this.idempotencyKey = requireText(idempotencyKey, "idempotencyKey");
         this.offerSnapshot = Objects.requireNonNull(offerSnapshot, "offerSnapshot is required");
         this.travelers = new ArrayList<>(Objects.requireNonNull(travelers, "travelers are required"));
-        this.segments = List.copyOf(Objects.requireNonNull(segments, "segments are required"));
+        this.segments = new ArrayList<>(Objects.requireNonNull(segments, "segments are required"));
         this.orderItems = new ArrayList<>(Objects.requireNonNull(orderItems, "orderItems are required"));
         this.timeline = new ArrayList<>();
         this.domainEvents = new ArrayList<>();
@@ -133,7 +133,7 @@ public final class JourneyOrder {
     public String idempotencyKey() { return idempotencyKey; }
     public OfferSnapshotRef offerSnapshot() { return offerSnapshot; }
     public List<TravelerRef> travelers() { return List.copyOf(travelers); }
-    public List<SegmentOrderSnapshot> segments() { return segments; }
+    public List<SegmentOrderSnapshot> segments() { return List.copyOf(segments); }
     public List<OrderItem> orderItems() { return List.copyOf(orderItems); }
     public List<TimelineFact> timeline() { return List.copyOf(timeline); }
     public OrderLifecycleState state() { return state; }
@@ -258,6 +258,22 @@ public final class JourneyOrder {
             createEnvelope("JourneyOrderPostSalesAdjusted", occurredAt, causationId, correlationId),
             orderId, accountId, postSalesCaseId, monetarySummary
         ));
+    }
+
+    public void applyChange(String caseId, OfferSnapshotRef targetOffer, List<SegmentOrderSnapshot> replacementSegments, List<OrderItem> replacementItems, Money changeFee, Instant now) {
+        if(timeline.stream().anyMatch(fact -> "ChangeApplied".equals(fact.factType()) && caseId.equals(fact.attributes().get("postSalesCaseId"))))return;
+        requireState(OrderLifecycleState.CONFIRMED,OrderLifecycleState.POST_SALES_ADJUSTED);
+        String originalOffer=offerSnapshot.offerId();
+        for(OrderItem item:orderItems)if(!item.cancelled())item.cancel("CHANGE:"+caseId);
+        segments.clear();
+        segments.addAll(replacementSegments);
+        orderItems.addAll(replacementItems);
+        if(!changeFee.isZero())orderItems.add(new OrderItem("change-fee:"+caseId,OrderItemType.SERVICE_FEE,"change fee",changeFee,caseId,List.of()));
+        offerSnapshot=targetOffer;
+        monetarySummary=MonetarySummary.fromItems(orderItems);
+        state=OrderLifecycleState.CONFIRMED;
+        requireCreateInvariants();
+        recordTimeline("ChangeApplied",now,"post-sales","replacement tickets issued",Map.of("postSalesCaseId",caseId,"originalOfferId",originalOffer,"targetOfferId",targetOffer.offerId()));
     }
 
     public void addOrUpdateAncillaryOrderItem(
@@ -460,7 +476,7 @@ public final class JourneyOrder {
                 if (!binding.orderItemId().equals(item.orderItemId())) {
                     throw new DomainRuleViolation("binding item id must match owner item id");
                 }
-                binding.requireKnownRefs(travelerIds, segmentRefs);
+                if(!item.cancelled())binding.requireKnownRefs(travelerIds, segmentRefs);
             }
         }
     }
