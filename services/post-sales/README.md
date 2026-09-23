@@ -14,7 +14,7 @@ Sold out replacement compensation records the rejection, voids replacement ticke
 It preserves original tickets and finishes with `CHANGE_CAPACITY_UNAVAILABLE` only after validation.
 Case execution uses a PostgreSQL advisory lock to serialize downstream actions across replicas.
 The real database `CapacityCompensationLiveTest` verifies rejection persistence and execution lock release.
-Live verification of partial issuance and captured difference payment remains required.
+Loadgen's `TestLivePaidPartialChangeCompensates` verifies partial issuance and a captured difference payment through actual service APIs, with one available business seat for two travelers in an isolated test service.
 See the [HTTP API](../../docs/08-contracts/api/post-sales.md) and [inventory integration requirements](../../docs/10-domain-enrichment/capacity-overbooking.md).
 
 ## Owns
