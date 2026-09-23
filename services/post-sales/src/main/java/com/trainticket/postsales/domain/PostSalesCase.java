@@ -53,6 +53,13 @@ public final class PostSalesCase {
         targetOfferId = selected;
     }
 
+    public void reviseChangeOffer(String expectedOfferId,String replacementOfferId) {
+        if(caseType!=PostSalesCaseType.CHANGE || decision!=null || !changeOperations.isEmpty() || status!=PostSalesCaseStatus.OPENED)throw new DomainRuleViolation("only an unquoted change target can be revised");
+        if(Objects.equals(targetOfferId,replacementOfferId))return;
+        if(!Objects.equals(targetOfferId,expectedOfferId))throw new DomainRuleViolation("change target changed concurrently");
+        targetOfferId=PostSalesScope.requireText(replacementOfferId,"targetOfferId");
+    }
+
     private PostSalesCase(
         String caseId,
         String journeyOrderId,
