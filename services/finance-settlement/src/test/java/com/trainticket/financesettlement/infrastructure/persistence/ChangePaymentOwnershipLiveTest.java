@@ -57,7 +57,30 @@ class ChangePaymentOwnershipLiveTest {
                 assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM revenue_recognition_snapshots",Integer.class));
                 assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM outbox WHERE envelope->>'eventType'='RevenueRecognized'",Integer.class));
                 assertTrue(projections.findCapture(order).isEmpty());
+                var paidCase=client.read("post-sales","/api/v1/post-sales-cases/"+caseId,event.correlationId());
+                var applied=applied(paidCase,event.correlationId());
+                for(int attempt=0;attempt<2;attempt++)assertEquals(HandlerResult.SUCCESS,tx.execute(status->handler.handle(applied)));
+                assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM fee_accrual_snapshots WHERE data->>'sourceEventId'=?",Integer.class,caseId));
+                String lowerCaseId=System.getenv("TEST_LOWER_CHANGE_CASE");
+                var lowerCase=client.read("post-sales","/api/v1/post-sales-cases/"+lowerCaseId,event.correlationId());
+                String lowerOrder=lowerCase.path("journeyOrderId").asText();
+                var original=client.read("payment","/api/v1/payment-intents/by-business/"+lowerOrder,event.correlationId());
+                var originalFacts=client.read("payment","/api/v1/internal/payment-intents/"+original.path("paymentIntentId").asText()+"/captured-facts",event.correlationId());
+                var originalEvent=mapper.treeToValue(originalFacts.path("events").get(0),EventEnvelope.class);
+                assertEquals(HandlerResult.SUCCESS,tx.execute(status->handler.handle(originalEvent)));
+                var lowerApplied=applied(lowerCase,event.correlationId());
+                for(int attempt=0;attempt<2;attempt++)assertEquals(HandlerResult.SUCCESS,tx.execute(status->handler.handle(lowerApplied)));
+                var lowerRevenue=revenues.findByOrderId(lowerOrder).getFirst();
+                long expectedRefund=lowerCase.path("decision").path("refundableAmount").path("minorUnits").asLong();
+                assertEquals(expectedRefund,lowerRevenue.reversedAmount().amount().movePointRight(2).longValueExact());
+                assertFalse(lowerRevenue.reversed());
+                assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM outbox WHERE envelope->>'eventType'='RevenueRecognitionReversed'",Integer.class));
+                assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM fee_accrual_snapshots WHERE data->>'sourceEventId'=?",Integer.class,lowerCaseId));
             } finally {jdbc.execute("DROP SCHEMA "+schema+" CASCADE");}
         }
+    }
+    private static EventEnvelope applied(com.fasterxml.jackson.databind.JsonNode recorded,String correlation) {
+        return new EventEnvelope(com.trainticket.platformkit.messaging.PrefixedIds.newEventId(),"PostSalesApplied",java.time.Instant.now(),correlation,null,"post-sales",1,
+            java.util.Map.of("caseId",recorded.path("caseId").asText(),"orderId",recorded.path("journeyOrderId").asText(),"caseType",recorded.path("caseType").asText()));
     }
 }
