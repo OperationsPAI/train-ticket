@@ -135,6 +135,23 @@ public class PostSalesApplicationService {
         return current;
     }
 
+    public PostSalesCase recordCompensationOperation(String id,String name,Map<String,Object> result){
+        var initial=get(id);repository.lockOrder(initial.journeyOrderId());var current=get(id);
+        current.recordCompensationOperation(name,result);repository.save(current);return current;
+    }
+
+    public PostSalesCase completeCompensation(String id,String correlation){
+        var initial=get(id);repository.lockOrder(initial.journeyOrderId());var current=get(id);
+        if(current.status()==PostSalesCaseStatus.APPLIED)return current;
+        if(current.caseType()!=PostSalesCaseType.COMPENSATION || !current.compensationOperations().containsKey("verified"))throw new com.trainticket.postsales.domain.DomainRuleViolation("wallet compensation is not verified");
+        var now=clock.instant();
+        var issued=current.compensationOperations().get("issued");
+        String benefitRef=issued==null?"zero-approved-compensation":String.valueOf(issued.get("benefitId"));
+        current.recordStepSucceeded(com.trainticket.postsales.domain.PostSalesStepType.ISSUE_COMPENSATION_CREDIT,benefitRef,now,"cmd-compensation-applied","cmd-compensation-applied",correlation);
+        current.recordStepSucceeded(com.trainticket.postsales.domain.PostSalesStepType.APPLY_RESULT,current.journeyOrderId(),now,"cmd-compensation-applied","cmd-compensation-applied",correlation);
+        repository.save(current);publishNewEvents(current);return current;
+    }
+
     public PostSalesCase reviseChangeOffer(String caseId,String expected,String replacement) {
         PostSalesCase initial=get(caseId);repository.lockOrder(initial.journeyOrderId());
         PostSalesCase current=get(caseId);current.reviseChangeOffer(expected,replacement);repository.save(current);return current;
@@ -555,6 +572,7 @@ public class PostSalesApplicationService {
     /** Persist every scoped reservation release before completing capacity execution. */
     public void applyForSegmentBooking(String segmentBookingRef, String causationId, String correlationId) {
         for (PostSalesCase postSalesCase : repository.findPendingCapacityRelease(segmentBookingRef)) {
+            if(postSalesCase.caseType()==PostSalesCaseType.COMPENSATION)continue;
             if (postSalesCase.releasedOrderItems().contains(segmentBookingRef)) continue;
             java.time.Instant now = java.time.Instant.now(clock);
             if (postSalesCase.status() == com.trainticket.postsales.domain.PostSalesCaseStatus.APPROVED) {

@@ -22,7 +22,7 @@ public class RefundFundingService {
     }
     public void prepare(String caseId,String correlation){
         var current=cases.get(caseId);
-        if(current.caseType()==PostSalesCaseType.CHANGE || !current.refundPayments().isEmpty() || current.status()==PostSalesCaseStatus.EXECUTING || current.status()==PostSalesCaseStatus.APPLIED)return;
+        if(current.caseType()==PostSalesCaseType.CHANGE || current.caseType()==PostSalesCaseType.COMPENSATION || !current.refundPayments().isEmpty() || current.status()==PostSalesCaseStatus.EXECUTING || current.status()==PostSalesCaseStatus.APPLIED)return;
         if(current.decision()==null)current=cases.evaluate(caseId,"cmd-refund-prepare",correlation);
         Money amount=current.decision().amountSnapshot().refundAmount();if(amount.isZero())return;
         var changes=cases.appliedChanges(current.journeyOrderId());if(changes.isEmpty())return;
