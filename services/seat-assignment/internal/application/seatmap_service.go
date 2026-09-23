@@ -293,6 +293,27 @@ func (s *Service) AllocateSeat(ctx context.Context, req AllocateSeatRequest) (*A
 		if err != nil {
 			return derr("UNAVAILABLE", err.Error())
 		}
+		for _, existing := range active {
+			if existing.SegmentBookingID != req.SegmentBookingID {
+				continue
+			}
+			if existing.JourneyOrderID != req.JourneyOrderID || existing.TravelerRef != req.TravelerRef || existing.SegmentRef != req.SegmentRef || existing.CapacityHoldID != req.CapacityHoldID || existing.CapacityUnitRef != req.CapacityUnitRef || existing.Interval != req.Interval {
+				return derr("CONFLICT", "reservation already has an allocation with different references")
+			}
+			classMatches := standingOnly && existing.SeatRef.AllocationType == domain.AllocationTypeStanding
+			if !standingOnly && seatMap != nil {
+				for _, unit := range seatMap.AssignableUnits(req.ClassRef) {
+					if unit.SeatUnitRef == existing.SeatRef.SeatUnitRef {
+						classMatches = true
+					}
+				}
+			}
+			if !classMatches || !existing.ExpiresAt.Equal(req.ExpiresAt) {
+				return derr("CONFLICT", "reservation allocation has another class or expiry")
+			}
+			resp = &AllocateSeatResponse{SeatAllocationID: existing.SeatAllocationID, Status: existing.Status, SeatRef: existing.SeatRef, ExpiresAt: existing.ExpiresAt}
+			return nil
+		}
 		var unit *domain.SeatUnit
 		degraded, reason := false, domain.DegradationNone
 		if !standingOnly {
