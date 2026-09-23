@@ -27,6 +27,15 @@ public final class PostSalesCase {
     private String terminalReason;
     private String targetOfferId;
     private final Map<String, Map<String, Object>> changeOperations = new java.util.LinkedHashMap<>();
+    private final Map<String,Map<String,Object>> compensationOperations=new java.util.LinkedHashMap<>();
+    public Map<String,Map<String,Object>> compensationOperations(){return Map.copyOf(compensationOperations);}
+    public PostSalesCase withCompensationOperations(Map<String,Map<String,Object>> operations){compensationOperations.putAll(operations);return this;}
+    public void recordCompensationOperation(String name,Map<String,Object> value){
+        if(caseType!=PostSalesCaseType.COMPENSATION || status!=PostSalesCaseStatus.EXECUTING)throw new DomainRuleViolation("compensation operation requires an executing compensation case");
+        var existing=compensationOperations.get(name);
+        if(existing!=null && !existing.equals(value))throw new DomainRuleViolation("compensation operation changed: "+name);
+        compensationOperations.put(name,java.util.Collections.unmodifiableMap(new java.util.LinkedHashMap<>(value)));
+    }
     private List<Map<String,Object>> refundPayments=List.of();
     public List<Map<String,Object>> refundPayments(){return refundPayments;}
     public PostSalesCase withRefundPayments(List<Map<String,Object>> payments){refundPayments=List.copyOf(payments);return this;}
@@ -366,6 +375,11 @@ public final class PostSalesCase {
 
     private void buildExecutionPlan() {
         if (!executionPlan.isEmpty()) {
+            return;
+        }
+        if(caseType==PostSalesCaseType.COMPENSATION){
+            executionPlan.add(new PostSalesStep(PostSalesStepType.ISSUE_COMPENSATION_CREDIT,"wallet-promotion",key("compensation-credit"),2));
+            executionPlan.add(new PostSalesStep(PostSalesStepType.APPLY_RESULT,journeyOrderId,key("apply-result"),0));
             return;
         }
         if (caseType == PostSalesCaseType.CHANGE) {
