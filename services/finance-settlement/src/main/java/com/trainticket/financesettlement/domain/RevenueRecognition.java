@@ -20,6 +20,7 @@ public final class RevenueRecognition {
     private boolean reversed;
     private Money reversedAmount;
     private String reversalReason;
+    private final Map<String, Money> reversalAmounts = new java.util.LinkedHashMap<>();
     private long version;
 
     private RevenueRecognition(
@@ -73,8 +74,9 @@ public final class RevenueRecognition {
     ) {
         RevenueRecognition recognition = new RevenueRecognition(revenueRecognitionId, orderId, orderItemId, componentCode,
             amount, recognitionPolicyVersion, sourceEventId, recognizedAt);
-        recognition.reversed = reversed;
         recognition.reversedAmount = Objects.requireNonNull(reversedAmount, "reversedAmount is required");
+        if (reversedAmount.isNegative() || (!amount.isNegative() && reversedAmount.compareTo(amount)>0)) throw new DomainRuleViolation("reversed amount exceeds recognized revenue");
+        recognition.reversed = amount.equals(reversedAmount);
         recognition.reversalReason = reversalReason;
         return recognition;
     }
@@ -88,16 +90,22 @@ public final class RevenueRecognition {
     }
 
     public void reverse(String reason, String sourceEventId, Money reversalAmount, Instant now, String sourceCommandId, String causationId, String correlationId) {
-        if (reversed) return;
+        String reversalId = requireText(sourceEventId, "sourceEventId");
+        Money recorded = reversalAmounts.get(reversalId);
+        if (recorded != null) {
+            if (!recorded.equals(reversalAmount)) throw new DomainRuleViolation("reversal reference was reused with a different amount");
+            return;
+        }
         if (reversalAmount.isZero() || reversalAmount.isNegative()) {
             throw new DomainRuleViolation("reversal amount must be positive");
         }
         if (reversedAmount.plus(reversalAmount).compareTo(amount) > 0) {
             throw new DomainRuleViolation("reversal amount must not exceed recognized amount");
         }
-        this.reversed = true;
         this.reversedAmount = reversedAmount.plus(reversalAmount);
+        this.reversed = this.reversedAmount.equals(amount);
         this.reversalReason = requireText(reason, "reason");
+        reversalAmounts.put(reversalId, reversalAmount);
         domainEvents.add(new RevenueRecognitionReversed(
             revenueRecognitionId, orderItemId, orderId, componentCode,
             reversalAmount, reason, requireText(sourceEventId, "sourceEventId"),
@@ -122,6 +130,19 @@ public final class RevenueRecognition {
     public boolean reversed() { return reversed; }
     public Money reversedAmount() { return reversedAmount; }
     public Money netAmount() { return amount.minus(reversedAmount); }
+    public Map<String, Money> reversalAmounts() { return Map.copyOf(reversalAmounts); }
+    public RevenueRecognition withReversalAmounts(Map<String, Money> amounts) {
+        Money total = Money.zero(amount.currency());
+        for (var entry : amounts.entrySet()) {
+            requireText(entry.getKey(), "reversal reference");
+            if (entry.getValue().isNegative() || entry.getValue().isZero()) throw new DomainRuleViolation("recorded reversal must be positive");
+            total = total.plus(entry.getValue());
+        }
+        if (total.compareTo(reversedAmount)>0) throw new DomainRuleViolation("reversal records exceed reversed amount");
+        reversalAmounts.clear();
+        reversalAmounts.putAll(amounts);
+        return this;
+    }
     public String reversalReason() { return reversalReason; }
     public List<FinanceSettlementEvent> domainEvents() { return Collections.unmodifiableList(domainEvents); }
     public long version() { return version; }
