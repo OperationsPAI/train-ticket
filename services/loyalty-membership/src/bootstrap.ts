@@ -357,12 +357,15 @@ export class PostgresMemberRepository implements MemberRepository {
          updated_at = now()`,
       [snapshot.memberId, snapshot.accountId, snapshot.tier, snapshot.status, snapshot.redeemablePoints, snapshot.tierPoints, snapshot.lifetimePoints, snapshot],
     );
-    for (const entry of snapshot.ledger) {
+    if (snapshot.ledger.length > 0) {
       await this.pool.query(
         `INSERT INTO points_ledger (entry_id, member_id, entry_type, points, source_event_id, source_event_type, business_reason, occurred_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         SELECT entry->>'entryId', entry->>'memberId', entry->>'type', (entry->>'points')::integer,
+                entry->'sourceFactRef'->>'eventId', entry->'sourceFactRef'->>'eventType',
+                entry->'businessReason', (entry->>'occurredAt')::timestamptz
+           FROM jsonb_array_elements($1::jsonb) AS entry
          ON CONFLICT (entry_id) DO NOTHING`,
-        [entry.entryId, entry.memberId, entry.type, entry.points, entry.sourceFactRef.eventId, entry.sourceFactRef.eventType, entry.businessReason, entry.occurredAt],
+        [JSON.stringify(snapshot.ledger)],
       );
     }
   }
