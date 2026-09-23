@@ -1,6 +1,6 @@
 # Seat Assignment — HTTP API
 
-Last updated: 2026-07-09
+Last updated: 2026-09-23
 
 ## Overview
 
@@ -175,8 +175,8 @@ stored on issued credentials.
 |---|---|---|---|
 | `seatAllocationId` | string | yes | Seat allocation ID (`salloc-<uuid>`). |
 | `allocationType` | enum | yes | `SEAT`, `BERTH`, or `STANDING`. |
-| `seatMapId` | string | no | SeatMap ID for concrete `SEAT`/`BERTH`; omitted for `STANDING`. |
-| `seatMapVersion` | integer | no | SeatMap version for concrete `SEAT`/`BERTH`; omitted for `STANDING`. |
+| `seatMapId` | string | no | SeatMap ID for concrete units or the composition supplying the standing policy. |
+| `seatMapVersion` | integer | no | SeatMap version used for allocation or standing quota calculation. |
 | `seatUnitRef` | string | no | Concrete SeatUnit for `SEAT`/`BERTH`; omitted for `STANDING`. |
 | `coachNo` | string | no | Passenger-facing coach number for concrete allocations. |
 | `seatNo` | string | no | Passenger-facing seat/berth number for concrete allocations. |
@@ -202,6 +202,7 @@ stored on issued credentials.
 | `seatRef` | SeatRef | yes | Concrete or standing display fact. |
 | `status` | enum | yes | SeatAllocation status. |
 | `preferences` | SeatPreferences | no | Normalized preference snapshot used for solving. |
+| `standingPolicy` | object | no | Standing policy version, second class basis, percentage and limit, captured on standing admission. |
 | `createdAt` | RFC3339 UTC | yes | Allocation creation timestamp. |
 | `confirmedAt` | RFC3339 UTC | no | Entitlement confirmation timestamp. |
 | `releasedAt` | RFC3339 UTC | no | Release timestamp. |
@@ -390,8 +391,33 @@ internal to bounded-context integration and is not a customer seat-selection API
   published SeatMap matches the requested scheduled service/date/class.
 - `DOMAIN_RULE_VIOLATION` is returned when no compatible seat exists and
   `seatPreferences.acceptStanding` is false.
-- If `acceptStanding=true`, lack of concrete SeatUnit is a successful `STANDING`
-  response, not an error.
+- If `acceptStanding=true`, a standing substitution requires available standing quota.
+  Direct `classRef=STANDING` requests use the same quota.
+  The versioned rule is defined in [Standing capacity policy](../standing-capacity-policy.md).
+  Missing published second class composition returns `PRECONDITION_FAILED`.
+  Exhausted standing quota returns `DOMAIN_RULE_VIOLATION`.
+
+### Read physical capacity and standing quota facts
+
+`GET /api/v1/internal/capacity-facts?scheduledServiceRef={service}&serviceDate={date}&classRef={class}`.
+
+All three query parameters are required.
+The date uses `YYYY-MM-DD`.
+The query uses the same published map selection and service allocation lock as allocation commands.
+It does not create, release or alter an allocation.
+
+| Field | Description |
+|---|---|
+| `scheduledServiceRef`, `serviceDate`, `classRef` | Requested supply partition |
+| `seatMapId`, `seatMapVersion`, `compositionVersion` | Selected published composition |
+| `capturedAt` | Observation timestamp |
+| `units` | Assignable concrete SeatUnits in the class; empty for standing |
+| `allocations` | Active allocations in this class, preserving original booking, order, traveler, hold and interval references |
+| `standingPolicy` | Versioned quota evidence, present for standing |
+
+Concrete allocations on historical maps still count against their class and retain their original map references.
+Missing allocation references or incomplete published map selection return an error.
+This response is an observation; Capacity must combine it with pending holds and serialize admission.
 
 ### Get SeatAllocation
 

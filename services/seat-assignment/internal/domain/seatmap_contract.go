@@ -285,6 +285,7 @@ type SeatRef struct {
 }
 
 type ContractSeatAllocation struct {
+	StandingPolicy      *StandingPolicy  `json:"standingPolicy,omitempty"`
 	SeatAllocationID    string           `json:"seatAllocationId"`
 	SegmentBookingID    string           `json:"segmentBookingId"`
 	JourneyOrderID      string           `json:"journeyOrderId"`
