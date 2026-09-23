@@ -8,6 +8,14 @@ The command does not acquire another pool connection while holding account and i
 Set `TEST_DATABASE_URL` and `TEST_INVOICE_CONNECTION_SOURCE` and run `cargo test recorded_invoice_request_uses_one_connection_and_replays_once -- --ignored --nocapture`.
 It verifies issuance, stable replay and unchanged event count on replay.
 
+Amount basis reads require both order and finance projections, a recorded expected total, and identical currency and minor units.
+Invoice creation applies the same check in its command transaction.
+Missing context returns HTTP 404 for the amount basis and HTTP 412 for invoice creation without writing a command result.
+`amount_basis_recorded` verifies missing order, absent total, partial financial totals, complete reads and idempotent invoice issuance using recorded production facts.
+
+The recorded test uses an isolated PostgreSQL schema and requires `TEST_DATABASE_URL` with the `--ignored` Cargo option.
+Its recorded run passes in 0.25 seconds.
+
 ## Recorded wallet compensation tests
 
 `src/adapters/compensation_recorded_tests.rs` verifies PostgreSQL state through the actual subscription handler using recorded case data and events.
