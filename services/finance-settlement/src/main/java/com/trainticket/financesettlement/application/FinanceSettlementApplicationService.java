@@ -165,6 +165,20 @@ public class FinanceSettlementApplicationService {
         publish(accrual.domainEvents());
     }
 
+    public void recordPostSalesFee(String orderId,Money fee,String caseId,String correlationId) {
+        var existing=feeAccruals.findByOrderId(orderId).stream().filter(item->caseId.equals(item.sourceEventId())).findFirst();
+        if(existing.isPresent()) {
+            if(!existing.get().retainedCancellationFee().equals(fee))throw new DomainRuleViolation("recorded refund fee differs from approved penalty");
+            return;
+        }
+        if(fee.isZero())return;
+        Money zero=Money.zero(fee.currency());
+        var tax=TaxCalculation.calculate(zero,zero,zero,BigDecimal.ZERO,zero);
+        var accrual=FeeAccrual.accrue(orderId,zero,zero,fee,tax,caseId,clock.instant(),PrefixedIds.newCommandId(),PrefixedIds.newCommandId(),canonicalCorrelationId(correlationId));
+        feeAccruals.save(accrual);
+        publish(accrual.domainEvents());
+    }
+
     public Page<ReconciliationCase> listReconciliationCases(String orderId, int limit, int offset) {
         if (limit < 1 || limit > 100) {
             throw new ValidationException("limit must be between 1 and 100");
