@@ -163,6 +163,7 @@ An unavailable replacement emits `reason=CHANGE_CAPACITY_UNAVAILABLE` with `fail
 The case retains `capacity-rejected` and `capacity-compensation-completed` operation records.
 Original tickets remain issued, replacement Holds are terminal and any captured difference payment has a settled full refund before this event is published.
 An uncaptured terminated difference payment uses `CHANGE_PAYMENT_TERMINATED` after its own verified cancellation path.
+An expired target Offer before replacement operations uses `CHANGE_OFFER_EXPIRED` with `failedStepRef=target-offer` after original ticket validation.
 
 ### ChangeApplied
 
