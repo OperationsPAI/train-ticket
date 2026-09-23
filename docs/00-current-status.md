@@ -44,6 +44,12 @@ Subsequent refreshes increase captured totals consistently across all five dimen
 Revision 278 passes the complete broad live regression in 232.690 seconds.
 The stable four minute resident sample ending at 15:42:07 UTC contains 196096 requests, no unexpected HTTP errors or failed journeys, and request P99 of 228.635 milliseconds.
 This interval does not establish the full peak period acceptance.
+The revision 278 six class test fails in 137.787 seconds: second class fails at traveler creation and first class at risk assessment, while business class, both sleeper classes and standing pass.
+The 600 second resident recording ending at 15:49:14 UTC contains 601683 requests and 9163 failed journeys, with request P99 of 9744.922 milliseconds.
+Traveler Profile reaches its 200 active HTTP worker limit while its ten connection JDBC pool is saturated; identity verification and subsequent order workflows also time out.
+The observed GC maximum pause is 55 milliseconds and no container OOM or restart occurs, so those observations do not support GC or restart as the cause of the long request waits.
+Traveler HTTP concurrency and notification delivery transactions remain active fixes.
+Recorded compensation notification samples reach SMTP acceptance in 0.5 to 2.8 seconds, while order and some post sales result events remain unconsumed after one minute.
 Check `helm history` and the deployed image digests for the live release; repository HEAD and the running images can differ.
 
 ## Verified behavior
