@@ -100,6 +100,17 @@ func (s *Service) CreateSeatMap(ctx context.Context, req CreateSeatMapRequest) (
 		if err := s.repo.SaveSeatMap(tx, seatMap); err != nil {
 			return derr("CONFLICT", err.Error())
 		}
+		stored, _, err := s.repo.GetSeatMap(tx, seatMap.SeatMapID)
+		if err != nil {
+			return err
+		}
+		if stored.ScheduledServiceRef != seatMap.ScheduledServiceRef || stored.ServiceDate != seatMap.ServiceDate || stored.CompositionSeed != seatMap.CompositionSeed || len(stored.Coaches) != len(seatMap.Coaches) {
+			return derr("CONFLICT", "seat map composition differs from existing map")
+		}
+		if !stored.CreatedAt.Equal(seatMap.CreatedAt) {
+			seatMap = stored
+			return nil
+		}
 		return s.publish(tx, []domain.Event{{EventType: "SeatMapBuilt", AggregateID: seatMap.SeatMapID, Version: int64(seatMap.SeatMapVersion), OccurredAt: now, CorrelationID: req.CorrelationID, CausationID: req.CausationID, Payload: seatMapBuiltPayload(*seatMap, now)}})
 	})
 	if err != nil {
@@ -118,6 +129,10 @@ func (s *Service) PublishSeatMap(ctx context.Context, id string, req PublishSeat
 		seatMap, exp, err := s.repo.GetSeatMap(tx, id)
 		if err != nil {
 			return derr("NOT_FOUND", "seat map not found")
+		}
+		if seatMap.Status == domain.SeatMapStatusPublished && (req.ExpectedSeatMapVersion == seatMap.SeatMapVersion || req.ExpectedSeatMapVersion == seatMap.SeatMapVersion-1) {
+			out = seatMap
+			return nil
 		}
 		if seatMap.SeatMapVersion != req.ExpectedSeatMapVersion {
 			return derr("PRECONDITION_FAILED", "seatMapVersion does not match")
