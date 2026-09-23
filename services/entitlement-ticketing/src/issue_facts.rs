@@ -11,6 +11,20 @@ struct BookingDetails {
     segment_ref: String,
     status: String,
     capacity_hold_id: Option<String>,
+    #[serde(default)]
+    booking_purpose: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChangeAuthorization {
+    authorized: bool,
+    case_id: String,
+    journey_order_id: String,
+    segment_booking_id: String,
+    traveler_ref: String,
+    segment_ref: String,
+    payment_intent_id: String,
 }
 
 #[derive(Deserialize)]
@@ -157,6 +171,10 @@ pub(crate) async fn resolve(
         correlation_id,
     )
     .await?;
+    let change_case = booking.booking_purpose.strip_prefix("change:");
+    if change_case.is_some() && command.issue_purpose != IssuePurposeDto::Replacement {
+        return Err(ApiErrorKind::PreconditionFailed("change booking requires replacement issuance".into()));
+    }
     if order.order_id != command.journey_order_id
         || !order.risk_clear
         || matches!(
@@ -164,12 +182,22 @@ pub(crate) async fn resolve(
             "CANCELLED" | "FAILED" | "CLOSED" | "REFUNDED"
         )
         || !order.traveler_refs.contains(&command.traveler_ref)
-        || !order.segment_refs.contains(&command.segment_ref)
+        || (change_case.is_none() && !order.segment_refs.contains(&command.segment_ref))
     {
         return Err(ApiErrorKind::PreconditionFailed(
             "order, traveler or risk state does not permit issuance".into(),
         ));
     }
+    let payment_fact_id = if let Some(case_id) = change_case {
+        let authorization: ChangeAuthorization = read(&client,"post-sales","POST_SALES_BASE_URL",
+            &format!("/api/v1/post-sales-cases/{case_id}/issue-authorization/{}",command.segment_booking_id),correlation_id).await?;
+        if !authorization.authorized || authorization.case_id != case_id
+            || authorization.journey_order_id != command.journey_order_id || authorization.segment_booking_id != command.segment_booking_id
+            || authorization.traveler_ref != command.traveler_ref || authorization.segment_ref != command.segment_ref {
+            return Err(ApiErrorKind::PreconditionFailed("change authorization does not match replacement issuance".into()));
+        }
+        authorization.payment_intent_id
+    } else {
     let payment: PaymentDetails = read(
         &client,
         "payment",
@@ -192,6 +220,8 @@ pub(crate) async fn resolve(
             "captured payment does not cover the order".into(),
         ));
     }
+    payment.payment_intent_id
+    };
     let now = UnixMillis::new(current_unix_millis());
     Ok(IssuePreconditions::accepted(
         AcceptedFact::new(
@@ -205,7 +235,7 @@ pub(crate) async fn resolve(
             now,
         ),
         AcceptedFact::new(
-            PaymentFactRef::new(payment.payment_intent_id).map_err(ApiErrorKind::from)?,
+            PaymentFactRef::new(payment_fact_id).map_err(ApiErrorKind::from)?,
             PaymentAcceptance::PaymentCaptured,
             now,
         ),
