@@ -11,6 +11,7 @@ DATABASES = (
     "journey_order",
     "offer_management",
     "post_sales",
+    "traveler_profile",
 )
 
 QUERY = """
