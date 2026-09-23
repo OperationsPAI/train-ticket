@@ -219,7 +219,7 @@ public class BookingOrchestrationService {
             case "CapacityHeld", "CapacityHoldConfirmed" -> handleCapacityHeld(envelope.eventType(), payload, envelope.correlationId(), envelope.eventId());
             case "CapacityReleased", "CapacityHoldExpired" -> handleCapacityReleased(envelope.eventType(), payload, envelope.correlationId(), envelope.eventId());
             case "CapacityHoldFailed" -> handleCapacityHoldFailed(payload, envelope.correlationId(), envelope.eventId());
-            case "SeatAllocated" -> handleSeatAllocated(payload, envelope.correlationId(), envelope.eventId());
+            case "SeatAllocated", "StandingAssigned" -> handleSeatAllocated(payload, envelope.correlationId(), envelope.eventId());
             case "PaymentIntentCreated" -> handlePaymentIntentCreated(payload);
             case "PaymentCaptured" -> handlePaymentCaptured(payload, envelope.correlationId(), envelope.eventId());
             case "PaymentIntentFailed", "PaymentFailed", "PaymentExpired", "PaymentIntentExpired" -> handlePaymentFailure(payload, envelope.correlationId(), envelope.eventId());
@@ -238,7 +238,7 @@ public class BookingOrchestrationService {
     public static boolean handlesEvent(String eventType) {
         return switch (eventType) {
             case "JourneyOrderCreated", "RiskAssessmentCompleted", "CapacityHeld", "CapacityHoldConfirmed",
-                 "CapacityReleased", "CapacityHoldExpired", "CapacityHoldFailed", "SeatAllocated",
+                 "CapacityReleased", "CapacityHoldExpired", "CapacityHoldFailed", "SeatAllocated", "StandingAssigned",
                  "PaymentIntentCreated", "PaymentCaptured", "PaymentIntentFailed", "PaymentFailed",
                  "PaymentExpired", "PaymentIntentExpired", "ProviderReservationConfirmed", "ProviderReservationFailed",
                  "ProviderReservationTimedOut", "EntitlementIssued", "EntitlementIssueFailed", "EntitlementVoided",
@@ -570,6 +570,27 @@ public class BookingOrchestrationService {
     }
 
     private void handleSeatAllocated(Map<String, Object> payload, String correlationId, String causationId) {
+        String allocationId = text(payload.get("seatAllocationId"));
+        if (allocationId != null) {
+            String bookingId = text(payload.get("segmentBookingId"));
+            if (bookingId == null) throw new IllegalArgumentException("seat allocation requires segmentBookingId");
+            var record = segmentBookings.findById(bookingId).orElseThrow(() -> new RetryLaterException("seat allocation booking is not available"));
+            SegmentBooking booking = record.booking();
+            if (!booking.journeyOrderId().equals(text(payload.get("journeyOrderId")))
+                || !booking.travelerRef().equals(text(payload.get("travelerRef")))
+                || !booking.segmentRef().equals(text(payload.get("segmentRef")))
+                || !booking.capacityHoldId().orElse("").equals(text(payload.get("capacityHoldId")))) {
+                throw new IllegalArgumentException("seat allocation references another reservation");
+            }
+            if (!(payload.get("seatRef") instanceof Map<?, ?> seat)
+                || !allocationId.equals(text(seat.get("seatAllocationId")))) {
+                throw new IllegalArgumentException("seat allocation reference is inconsistent");
+            }
+            if (booking.seatAllocationRef().filter(allocationId::equals).isPresent()) return;
+            booking.assignSeat(allocationId);
+            segmentBookings.save(booking, record.sagaId());
+            return;
+        }
         String sagaId = text(payload.get("sagaId"));
         String segmentBookingId = firstText(payload, "segmentBookingId", "segmentBookingRef");
         String seatAllocationRef = text(payload.get("seatAllocationRef"));
