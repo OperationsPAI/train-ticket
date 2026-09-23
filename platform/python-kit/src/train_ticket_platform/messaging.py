@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from enum import Enum
 from datetime import UTC, datetime
 import json
-from collections import deque
+from collections import OrderedDict, deque
 import logging
 import os
 import socket
@@ -186,6 +186,8 @@ class RedisEventSubscriber(EventSubscriber):
             self._response_error_type = redis.exceptions.ResponseError
         self._dedup: set[str] = set()
         self._dedup_order: deque[str] = deque()
+        self._handler_failures: OrderedDict[tuple[str, str, str], int] = OrderedDict()
+        self._failure_lock = threading.Lock()
         self._seen_event_ids = self._dedup
         self._dedup_lock = threading.Lock()
         self._seen_event_ids_lock = self._dedup_lock
@@ -378,13 +380,11 @@ class RedisEventSubscriber(EventSubscriber):
             )
             self._xack(stream, group, msg_id_str)
             return
-        if self._delivery_count(stream, group, msg_id_str) >= MAX_DELIVERY_ATTEMPTS:
-            self._move_to_dlq(stream, group, consumer_name, envelope_json, "MaxDeliveryAttempts", self._delivery_count(stream, group, msg_id_str))
-            self._xack(stream, group, msg_id_str)
-            return
         try:
             result = _call_handler_with_span(handler, envelope, stream, group)
         except TransientHandlerError as exc:
+            if self._failed_attempt(stream, group, consumer_name, msg_id_str, envelope_json, exc):
+                return
             LOGGER.warning(
                 "service=%s stream=%s eventId=%s deliveries=%s handler transient failure; message stays pending for retry: %s: %s",
                 group,
@@ -401,17 +401,13 @@ class RedisEventSubscriber(EventSubscriber):
             self._xack(stream, group, msg_id_str)
             return
         except Exception as exc:
-            deliveries = self._delivery_count(stream, group, msg_id_str) or 1
-            if deliveries >= MAX_DELIVERY_ATTEMPTS:
-                self._move_to_dlq(stream, group, consumer_name, envelope_json, exc, deliveries)
-                self._xack(stream, group, msg_id_str)
-            else:
+            if not self._failed_attempt(stream, group, consumer_name, msg_id_str, envelope_json, exc):
                 LOGGER.warning(
                     "service=%s stream=%s eventId=%s deliveries=%s handler unexpected failure; message stays pending for retry: %s: %s",
                     group,
                     stream,
                     envelope.eventId,
-                    deliveries,
+                    self._delivery_count(stream, group, msg_id_str) or 1,
                     exc.__class__.__name__,
                     exc,
                     exc_info=True,
@@ -419,6 +415,8 @@ class RedisEventSubscriber(EventSubscriber):
             return
         if isinstance(result, HandlerResult):
             if result.status is HandlerStatus.TRANSIENT_ERROR:
+                if self._failed_attempt(stream, group, consumer_name, msg_id_str, envelope_json, result.message or "HandlerResult.TRANSIENT_ERROR"):
+                    return
                 LOGGER.warning(
                     "service=%s stream=%s eventId=%s deliveries=%s handler transient result; message stays pending for retry: %s",
                     group,
@@ -433,7 +431,29 @@ class RedisEventSubscriber(EventSubscriber):
                 self._xack(stream, group, msg_id_str)
                 return
         self._record_seen(envelope.eventId)
+        failures = getattr(self, "_handler_failures", None)
+        if failures is not None:
+            with self._failure_lock:
+                failures.pop((stream, group, msg_id_str), None)
         self._xack(stream, group, msg_id_str)
+
+    def _failed_attempt(self, stream: str, group: str, consumer: str, entry_id: str, envelope_json: str, reason: object) -> bool:
+        if not hasattr(self, "_handler_failures"):
+            self._handler_failures = OrderedDict()
+            self._failure_lock = threading.Lock()
+        key = (stream, group, entry_id)
+        with self._failure_lock:
+            failures = self._handler_failures.get(key, 0) + 1
+            self._handler_failures[key] = failures
+            if failures >= MAX_DELIVERY_ATTEMPTS:
+                self._handler_failures.pop(key)
+            while len(self._handler_failures) > self.DEDUP_CACHE_LIMIT:
+                self._handler_failures.popitem(last=False)
+        if failures < MAX_DELIVERY_ATTEMPTS:
+            return False
+        self._move_to_dlq(stream, group, consumer, envelope_json, reason, failures)
+        self._xack(stream, group, entry_id)
+        return True
 
     def _extract_envelope_json(self, msg_data: Mapping[Any, Any]) -> str:
         envelope = msg_data.get(b"envelope") if hasattr(msg_data, "get") else None
@@ -542,11 +562,6 @@ class RedisEventSubscriber(EventSubscriber):
         consumer_name: str | None = None,
     ) -> None:
         actual_consumer_name = consumer_name or default_consumer_name(group)
-        if delivery_count >= MAX_DELIVERY_ATTEMPTS:
-            envelope_json = self._extract_envelope_json(fields)
-            self._move_to_dlq(stream, group, actual_consumer_name, envelope_json or "{}", "MaxDeliveryAttempts", delivery_count)
-            self._xack(stream, group, entry_id)
-            return
         self._process_message(stream, group, actual_consumer_name, entry_id, fields, handler)
 
 

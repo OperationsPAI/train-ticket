@@ -49,8 +49,28 @@ def test_subscriber_cache_is_bounded_and_evicted_replay_is_deduplicated_in_datab
             assert handled == len(envelopes) + 1
             assert database.execute("SELECT count(*) FROM effects").fetchone()[0] == len(envelopes)
             assert client.xpending(stream, group)["pending"] == 0
+            client.xadd(stream, {"envelope": envelopes[1]})
+            messages = client.xreadgroup(group, "reader", {stream: ">"}, count=1)
+            entry_id, fields = messages[0][1][0]
+            client.xclaim(stream, group, "reader", 0, [entry_id], retrycount=20)
+            subscriber._process_entry(stream, group, entry_id, fields, handler, 20, "reader")
+            assert client.xlen(stream + ":dlq") == 0
+            assert client.xpending(stream, group)["pending"] == 0
+            client.xadd(stream, {"envelope": envelopes[2]})
+            messages = client.xreadgroup(group, "reader", {stream: ">"}, count=1)
+            entry_id, fields = messages[0][1][0]
+
+            def failed_handler(envelope):
+                with database.transaction():
+                    database.execute("SELECT 1 / 0")
+
+            for attempt in range(1, 6):
+                subscriber._process_entry(stream, group, entry_id, fields, failed_handler, attempt, "reader")
+                assert client.xlen(stream + ":dlq") == (1 if attempt == 5 else 0)
+            assert client.xpending(stream, group)["pending"] == 0
         finally:
             client.delete(stream)
+            client.delete(stream + ":dlq")
             client.close()
             database.execute("SET search_path TO public")
             database.execute(f"DROP SCHEMA {schema} CASCADE")
