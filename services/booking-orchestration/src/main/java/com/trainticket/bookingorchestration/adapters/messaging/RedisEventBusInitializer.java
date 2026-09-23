@@ -14,6 +14,7 @@ import org.springframework.stereotype.Component;
  * Subscribes to all streams relevant to booking-orchestration per the messaging contract.
  */
 @Component
+@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name="booking-orchestration.messaging.enabled",havingValue="true",matchIfMissing=true)
 public class RedisEventBusInitializer {
 
     private static final Logger log = LoggerFactory.getLogger(RedisEventBusInitializer.class);
