@@ -6,6 +6,8 @@ import java.util.List;
 import java.util.Optional;
 
 public interface PromotionRepository {
+    Optional<PromotionInstrument> findCompensationIssue(IssueBenefitCommand command);
+    void recordCompensationIssue(IssueBenefitCommand command,String benefitId);
     Optional<PromotionInstrument> findBenefit(String benefitId);
     Optional<WalletAccount> findWalletByAccountId(String accountId);
     List<PromotionInstrument> listBenefits(String accountId, PromotionStatus status, BenefitType benefitType, int limit, int offset);
