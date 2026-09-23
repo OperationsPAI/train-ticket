@@ -142,7 +142,8 @@ func (r *Repository) SaveSeatMap(ctx context.Context, m *domain.ContractSeatMap)
 	if err != nil {
 		return err
 	}
-	return conflict(kitstorage.NewSnapshotRepository(r.tx.DBFor(ctx), "seat_maps").Insert(ctx, m.SeatMapID, b))
+	_, err = r.tx.DBFor(ctx).Exec(ctx, "INSERT INTO seat_maps(id,version,data) VALUES ($1,1,$2) ON CONFLICT(id) DO NOTHING", m.SeatMapID, b)
+	return err
 }
 func (r *Repository) UpdateSeatMap(ctx context.Context, m *domain.ContractSeatMap, expected int64) error {
 	b, err := json.Marshal(m)
@@ -153,6 +154,11 @@ func (r *Repository) UpdateSeatMap(ctx context.Context, m *domain.ContractSeatMa
 	return conflict(err)
 }
 func (r *Repository) GetSeatMap(ctx context.Context, id string) (*domain.ContractSeatMap, int64, error) {
+	if _, ok := ctx.Value(txKey{}).(kitstorage.DBTX); ok {
+		if _, err := r.tx.DBFor(ctx).Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "seat-map:"+id); err != nil {
+			return nil, 0, err
+		}
+	}
 	snap, ok, err := kitstorage.NewSnapshotRepository(r.tx.DBFor(ctx), "seat_maps").Get(ctx, id)
 	if err != nil {
 		return nil, 0, err
