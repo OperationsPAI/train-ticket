@@ -22,6 +22,13 @@ public class InMemoryPaymentIntentRepository implements PaymentIntentRepository 
     }
 
     @Override
+    public Optional<PaymentIntent> findByIdempotencyKey(String idempotencyKey) {
+        var matches = intents.values().stream().filter(intent -> intent.idempotencyKey().equals(idempotencyKey)).toList();
+        if (matches.size() > 1) throw new IllegalStateException("multiple payment intents have the same creation key");
+        return matches.stream().findFirst();
+    }
+
+    @Override
     public Optional<PaymentIntent> findLatestByBusinessRef(String businessRef) {
         return intents.values().stream()
             .filter(intent -> intent.businessRef().equals(businessRef))
