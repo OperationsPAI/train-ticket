@@ -222,6 +222,7 @@ export declare class OutboxRelay {
     runOnce(): Promise<number>;
     private run;
     private cleanup;
+    private sweep;
 }
 export type ProcessedEventInput = Readonly<{
     eventId: string;
