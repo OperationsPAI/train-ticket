@@ -419,6 +419,7 @@ export class RedisStreamEventPublisher extends RedisEventPublisher {
 }
 
 export class RedisEventSubscriber implements EventSubscriber {
+  static readonly CONSUMED_EVENT_CACHE_LIMIT = 4096;
   private stopped = false;
   private readonly consumedEventIds = new Set<string>();
   private readonly loops = new Set<Promise<void>>();
@@ -792,6 +793,10 @@ export class RedisEventSubscriber implements EventSubscriber {
   private async finishEntry(stream: string, group: string, consumerName: string, entry: StreamEntry, envelope: EventEnvelope, attempts: number, result: "ack" | "retry" | "dlq", failureReason: unknown): Promise<void> {
     if (result === "ack") {
       this.consumedEventIds.add(envelope.eventId);
+      if (this.consumedEventIds.size > RedisEventSubscriber.CONSUMED_EVENT_CACHE_LIMIT) {
+        const oldest = this.consumedEventIds.values().next().value;
+        if (oldest !== undefined) this.consumedEventIds.delete(oldest);
+      }
       await this.redis.xack(stream, group, entry[0]);
       return;
     }
