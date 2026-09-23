@@ -43,6 +43,7 @@ The broad regression at revision 256 completed in 228.547 seconds.
 The six class purchase regression at revision 257 completed in 92.007 seconds.
 These tests establish their covered outcomes and do not certify every resident request or a complete peak traffic cycle.
 The revision 262 broad regression passes eligibility, recovery, multiple traveler purchase and post sales, and protected transfer checks in 238.495 seconds.
+The same broad regression at revision 264 passes in 225.767 seconds, including the deployed expiry handling and current loadgen behavior.
 Complete peak period and durable replay acceptance remain open.
 The continuous 600 second recording ending at 12:58:47 UTC contains 711900 requests and 10348 failed journeys, with request P99 reaching the 10 second deadline.
 That window spans several deployment revisions and is diagnostic evidence for peak latency.
