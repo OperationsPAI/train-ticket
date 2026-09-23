@@ -133,6 +133,21 @@ public class BookingOrchestrationService {
         } catch (java.security.NoSuchAlgorithmException error) { throw new IllegalStateException(error); }
     }
 
+    @Transactional
+    public SegmentBookingDetail cancelUnpaidChangeReservation(String caseId,String orderId,String bookingId,String correlation) {
+        sagas.lockReference(caseId);
+        var record=segmentBookings.findById(bookingId).orElseThrow(()->new NotFoundException("change reservation not found"));
+        SegmentBooking booking=record.booking();
+        if(!booking.bookingPurpose().equals("change:"+caseId) || !booking.journeyOrderId().equals(orderId)
+            || booking.entitlementId().isPresent())throw new PreconditionFailedException("reservation is not an unpaid replacement for this case",null);
+        if(booking.status()==com.trainticket.bookingorchestration.domain.SegmentBookingStatus.CANCELLED)return getSegmentBooking(bookingId).orElseThrow();
+        booking.requestCancellation("CHANGE_PAYMENT_TERMINATED");
+        booking.markCancelled("CHANGE_PAYMENT_TERMINATED");
+        segmentBookings.save(booking,record.sagaId());
+        publishEvents(booking.pullEvents(),correlation,PrefixedIds.newCommandId());
+        return getSegmentBooking(bookingId).orElseThrow();
+    }
+
     public RequestReservationResult requestReservation(String sagaId, RequestReservationCommand command,
                                                        String idempotencyKey, String correlationId) {
         BookingSaga saga = sagas.findById(sagaId)
