@@ -666,7 +666,12 @@ export class OutboxRelay {
 
     const seqs = result.rows.map((row) => row.seq.toString());
     const placeholders = seqs.map((_, index) => `$${index + 1}`).join(", ");
-    await this.pool.query(`UPDATE outbox SET published_at = now() WHERE seq IN (${placeholders})`, seqs);
+    await this.pool.query(`UPDATE outbox SET published_at = now()
+      WHERE seq IN (
+        SELECT seq FROM outbox
+        WHERE seq IN (${placeholders}) AND published_at IS NULL
+        ORDER BY seq FOR UPDATE SKIP LOCKED
+      ) AND published_at IS NULL`, seqs);
     return result.rows.length;
   }
 
