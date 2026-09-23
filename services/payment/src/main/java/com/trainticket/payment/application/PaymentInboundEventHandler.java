@@ -159,7 +159,7 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
 
     private void handlePostSalesApproved(EventEnvelope envelope) {
         InboundEventPayload payload = InboundEventPayload.from(envelope);
-        if("CHANGE".equals(payload.optionalDecisionKindFromApprovedActions()))return;
+        if(java.util.Set.of("CHANGE","COMPENSATION").contains(String.valueOf(payload.optionalDecisionKindFromApprovedActions())))return;
         String caseId = payload.requiredText("caseId");
         String reason = payload.optionalText("reason");
         if(envelope.payload() instanceof Map<?,?> data && data.get("approvedActions") instanceof Map<?,?> actions && actions.get("refunds") instanceof java.util.List<?> refunds){
