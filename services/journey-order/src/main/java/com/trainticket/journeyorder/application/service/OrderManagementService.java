@@ -645,7 +645,7 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
 
     private EventSubscriber.HandlerResult handlePostSalesApplied(EventEnvelope envelope) {
         requirePayloadFields(envelope, "caseId", "orderId", "resultSummary");
-        if("CHANGE".equals(textPayload(envelope,"caseType","")))return new EventSubscriber.Success();
+        if(java.util.Set.of("CHANGE","COMPENSATION").contains(textPayload(envelope,"caseType","")))return new EventSubscriber.Success();
         StoredOrder stored = storedOrderFromPayload(envelope);
         JourneyOrder order = stored.order();
         int eventCount = order.domainEvents().size();

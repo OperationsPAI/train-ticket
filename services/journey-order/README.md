@@ -45,3 +45,24 @@ mvn test
 It verifies the original Offer, repeated reads, unknown order response, unchanged snapshot version and no outbox effects.
 Set `TEST_PURCHASE_SOURCE_ORDER` to a recorded `{id, version, data}` snapshot, `TEST_DATABASE_URL` to a JDBC PostgreSQL URL, `TEST_DATABASE_URI` to its PostgreSQL URI and `TEST_REDIS_URL` to a disposable Redis instance.
 The test requires a source whose current Offer differs from its recorded purchase Offer.
+
+## Recorded wallet compensation tests
+
+`CompensationRecordedEventLiveTest` replays actual approval and applied envelopes through `OrderManagementService` with PostgreSQL persistence and transactions in an isolated schema.
+`src/test/resources/wallet-compensation-recorded.json` contains revision 274 case `psc-01a0ceba-9bb5-7fbe-ac91-2168e09ae5ad` and order `ord-01a0ceba-74bf-7000-a01c-6e5c316e1b84` at version 7.
+The source order is confirmed, has two travelers and has no cancelled commercial items.
+The test compares the entire persisted row after each event, including items, amounts, timeline, state, version and update timestamp, and requires an empty outbox.
+Duplicate delivery and handler reconstruction preserve the same state.
+Both fixtures retain the original event identifiers and payloads, including the recorded `caseType=COMPENSATION`.
+The historical order is already adjusted; the revision 274 fixture covers a preserved confirmed order.
+
+Run from this module with Java 25 and a disposable PostgreSQL database.
+The test creates and removes its own schema and uses no Redis subscriber or outbox relay.
+Statement and lock timeouts are five and two seconds respectively.
+
+```bash
+TEST_DATABASE_URL='jdbc:postgresql://127.0.0.1:15432/postgres?user=postgres' mvn -Dtest=CompensationRecordedEventLiveTest test
+```
+
+Verified on 2026-09-23: two tests passed with no failures or skips.
+The recorded events came from Redis streams and the snapshots from primary key PostgreSQL reads.
