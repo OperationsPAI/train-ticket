@@ -12,6 +12,11 @@ Work slice: REQ-011
 
 ## Owns
 
+`POST /api/v1/internal/change-compensations/{bookingId}` cancels a recorded replacement after Post Sales persists capacity rejection evidence.
+It validates the case, order and booking scope, preserves original reservations and emits the replacement cancellation once.
+Issued replacements require ticket void confirmation.
+`CapacityCompensationLiveTest` verifies a recorded full class rejection and concurrent cancellation using PostgreSQL and actual Seat Assignment.
+
 - `SegmentBooking` aggregate root — segment-level booking execution lifecycle (REQUESTED → HOLDING → CONFIRMED → TICKETED, with cancellation and failure paths)
 - `BookingSaga` saga orchestrator — persisted step coordination with idempotency keys, timeouts, retry limits, and compensation actions for each step
 - `ReservationRequestLog` — idempotent audit log for external provider reservation requests (ReserveSegment, ConfirmReservation, CancelReservation)
