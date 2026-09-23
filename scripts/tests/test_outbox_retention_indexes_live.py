@@ -19,6 +19,7 @@ SERVICES = (
     ("journey-order", "005_outbox_retention_index.sql"),
     ("offer-management", "006_outbox_retention_index.sql"),
     ("post-sales", "005_outbox_retention_index.sql"),
+    ("traveler-profile", "005_outbox_retention_index.sql"),
 )
 PREDICATE = "published_at IS NOT NULL AND published_at < now() - interval '30 seconds'"
 DELETE = ("DELETE FROM outbox WHERE ctid IN (SELECT ctid FROM outbox WHERE "
