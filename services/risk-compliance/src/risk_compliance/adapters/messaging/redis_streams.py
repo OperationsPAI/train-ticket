@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 from train_ticket_platform.messaging import RedisEventPublisher, RedisEventSubscriber as PlatformRedisEventSubscriber, default_consumer_name
@@ -13,8 +14,12 @@ RISK_COMPLIANCE_CONSUMER_GROUP = "risk-compliance"
 
 class RedisEventSubscriber(PlatformRedisEventSubscriber):
     def start_independent_streams(self, streams: tuple[str, ...], group: str, handler: Any, *, consumer_name: str) -> None:
+        workers = int(os.environ.get("RISK_STREAM_WORKERS", "4"))
+        if workers < 1:
+            raise ValueError("RISK_STREAM_WORKERS must be positive")
         for index, stream in enumerate(streams):
-            super().start_in_background((stream,), group, handler, consumer_name=f"{consumer_name}-{index}")
+            for worker in range(workers):
+                super().start_in_background((stream,), group, handler, consumer_name=f"{consumer_name}-{index}-{worker}")
 
     def _ignored_entry(self, fields: Any) -> bool:
         try:
