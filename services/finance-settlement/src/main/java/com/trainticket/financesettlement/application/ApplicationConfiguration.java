@@ -10,6 +10,10 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class ApplicationConfiguration {
     @Bean
+    org.springframework.web.client.RestClient.Builder financeRestClientBuilder() {
+        return org.springframework.web.client.RestClient.builder();
+    }
+    @Bean
     ObjectMapper objectMapper() {
         return new ObjectMapper().registerModule(new JavaTimeModule()).disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
     }
@@ -47,8 +51,9 @@ public class ApplicationConfiguration {
         SegmentBookingOrderReferenceRepository segmentBookingOrderReferences,
         FinanceSettlementProjectionRepository projections,
         Clock clock,
-        FinanceSettlementApplicationService service
+        FinanceSettlementApplicationService service,
+        com.trainticket.financesettlement.adapters.http.ChangePaymentFactsClient changePayments
     ) {
-        return new FinanceSettlementEventHandler(consumedEvents, paymentIntentOrderReferences, segmentBookingOrderReferences, projections, clock, service);
+        return new FinanceSettlementEventHandler(consumedEvents, paymentIntentOrderReferences, segmentBookingOrderReferences, projections, clock, service).withChangePayments(changePayments);
     }
 }
