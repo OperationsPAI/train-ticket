@@ -67,6 +67,10 @@ public final class OrderItem {
         return cancelled;
     }
     public boolean independentlySettled() { return independentlySettled; }
+    public boolean retainedOnChange() {
+        return independentlySettled || (type == OrderItemType.SERVICE_FEE
+            && (orderItemId.startsWith("change-fee:") || orderItemId.startsWith("post-sales-fee:")));
+    }
     public OrderItem withIndependentSettlement() {
         if(type != OrderItemType.ANCILLARY_SERVICE) throw new DomainRuleViolation("Only ancillary items use independent settlement");
         independentlySettled=true;return this;

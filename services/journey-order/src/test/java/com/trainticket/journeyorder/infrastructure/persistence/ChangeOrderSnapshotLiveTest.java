@@ -46,13 +46,26 @@ class ChangeOrderSnapshotLiveTest {
                 restored.applyChange(caseId,offer,segments,items,Money.of("CNY","15.00"),Instant.now());
                 assertEquals(count,restored.orderItems().size());
                 assertEquals(1,restored.timeline().stream().filter(f->"ChangeApplied".equals(f.factType())).count());
+                String secondCaseId="psc-"+UUID.randomUUID();
+                var secondItems=items.stream().map(item -> {
+                    String itemId=secondCaseId+":"+item.orderItemId();
+                    return new OrderItem(itemId,item.type(),item.description(),item.amount(),item.commercialReasonRef(),
+                        item.bindings().stream().map(binding -> new OrderLineBinding(itemId,binding.travelerId(),binding.segmentRef(),binding.ancillaryRef())).toList());
+                }).toList();
+                restored.applyChange(secondCaseId,offer,segments,secondItems,Money.of("CNY","15.00"),Instant.now());
+                repo.saveOrder(restored,stored.idempotencyKey());
+                restored=repo.findOrder(id).orElseThrow().order();
+                assertEquals(before.plus(Money.of("CNY","30.00")),restored.monetarySummary().payableTotal());
+                assertEquals(2,restored.orderItems().stream().filter(item -> !item.cancelled() && item.orderItemId().startsWith("change-fee:")).count());
+                restored.applyChange(secondCaseId,offer,segments,secondItems,Money.of("CNY","15.00"),Instant.now());
+                assertEquals(2,restored.timeline().stream().filter(f -> "ChangeApplied".equals(f.factType())).count());
                 var refund=mapper.readTree(Files.readString(Path.of(System.getenv("TEST_REFUND_CASE"))));
                 Money penalty=Money.fromMinorUnits(refund.path("decision").path("refundAssessment").path("penaltyAmount").path("minorUnits").asLong(),"CNY");
                 String refundId=refund.path("caseId").asText();
                 restored.applyScopedPostSalesCancellation(segments.stream().map(SegmentOrderSnapshot::segmentRef).toList(),List.of(traveler),refundId,penalty,Instant.now(),"evt-refund","corr-refund");
                 repo.saveOrder(restored,stored.idempotencyKey());
                 var refunded=repo.findOrder(id).orElseThrow().order();
-                assertEquals(Money.of("CNY","15.00").plus(penalty),refunded.monetarySummary().payableTotal());
+                assertEquals(Money.of("CNY","30.00").plus(penalty),refunded.monetarySummary().payableTotal());
                 refunded.applyScopedPostSalesCancellation(segments.stream().map(SegmentOrderSnapshot::segmentRef).toList(),List.of(traveler),refundId,penalty,Instant.now(),"evt-refund-replay","corr-refund");
                 assertEquals(1,refunded.orderItems().stream().filter(item->item.orderItemId().equals("post-sales-fee:"+refundId)).count());
             }finally{jdbc.execute("SET search_path TO public");jdbc.execute("DROP SCHEMA "+schema+" CASCADE");}
