@@ -114,6 +114,17 @@ public class PaymentCommandService {
 
     @Transactional
     public PaymentIntent createIntent(String businessRef, String purpose, Money amount, String payerRef, String idempotencyKey, String correlationId, String preferredChannel) {
+        var existing = paymentIntentRepository.findByIdempotencyKey(requireText(idempotencyKey, "idempotencyKey"));
+        if (existing.isPresent()) {
+            PaymentIntent intent = existing.get();
+            if (!intent.businessRef().equals(businessRef) || !intent.purpose().equals(purpose)
+                || !intent.amount().equals(amount) || !intent.payerRef().equals(payerRef)
+                || (preferredChannel != null && !preferredChannel.isBlank()
+                    && !ChannelRouter.normalize(preferredChannel).equals(ChannelRouter.normalize(intent.channelRef().channel())))) {
+                throw new DomainRuleViolation("payment creation key was reused with different request details");
+            }
+            return intent;
+        }
         Instant now = Instant.now(clock);
         PaymentChannel channel = channelRouter.route(amount, preferredChannel);
         PaymentIntent intent = PaymentIntent.create(businessRef, purpose, amount, payerRef, now.plusSeconds(channel.timeoutSeconds()), idempotencyKey, now, commandId(idempotencyKey), correlationId);
