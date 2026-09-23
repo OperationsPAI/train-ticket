@@ -195,3 +195,42 @@ def test_blocked_order_stream_does_not_delay_unrelated_booking_result(database):
         subscriber.stop()
         client.delete(*streams)
         client.close()
+
+@pytest.mark.skipif(not os.getenv("TEST_REDIS_URL"), reason="requires Redis")
+def test_waiting_order_does_not_block_other_orders_on_the_same_stream(database, monkeypatch):
+    monkeypatch.setenv("RISK_STREAM_WORKERS", "2")
+    service = service_for(database)
+    first = EventEnvelope.from_json_dict(samples()["ALLOW"]["created"])
+    second = EventEnvelope.from_json_dict(samples()["DENY"]["created"])
+    assert first.payload["orderId"] != second.payload["orderId"]
+    client = redis.Redis.from_url(os.environ["TEST_REDIS_URL"], decode_responses=True)
+    stream, group = "test:risk-parallel:" + uuid4().hex, "risk-parallel"
+    subscriber = RedisEventSubscriber(redis_client=client)
+
+    def await_condition(condition):
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if condition():
+                return
+            time.sleep(.02)
+        raise AssertionError("independent order did not complete")
+
+    try:
+        client.xgroup_create(stream, group, "0", mkstream=True)
+        with database.connection() as blocker:
+            blocker.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", ("risk-order:" + first.payload["orderId"],))
+            try:
+                subscriber.start_independent_streams((stream,), group, service.handle_event, consumer_name="parallel")
+                client.xadd(stream, {"envelope": json.dumps(first.to_json_dict())})
+                await_condition(lambda: client.xpending(stream, group)["pending"] == 1)
+                client.xadd(stream, {"envelope": json.dumps(second.to_json_dict())})
+                await_condition(lambda: service.repository.order_assessment(second.payload["orderId"]) is not None)
+                assert service.repository.order_assessment(first.payload["orderId"]) is None
+            finally:
+                blocker.rollback()
+        await_condition(lambda: client.xpending(stream, group)["pending"] == 0)
+        assert service.repository.order_assessment(first.payload["orderId"]) is not None
+    finally:
+        subscriber.stop()
+        client.delete(stream)
+        client.close()
