@@ -1,6 +1,9 @@
 # Booking Orchestration — HTTP API
 
-Last updated: 2026-09-23
+Last updated: 2026-09-24.
+
+Runtime baseline: Helm revision 279.
+Remaining work is tracked in [TODO](../../TODO.md).
 
 ## Overview
 
@@ -40,8 +43,8 @@ The response uses the segment booking details shape.
 
 ### Accepted reservation facts
 
-The supply reference implementation requires a coordinated Booking and Capacity rollout.
-Source tests verify it, but deployment status must be checked separately.
+Accepted supply resolution and persistence are implemented in source.
+The coordinated Booking and Capacity integration is not active in production at Helm revision 279.
 Initial reservation commands resolve the parent order's accepted Offer, fare quote and itinerary.
 Account, traveler set, segment, departure time and endpoints must agree before a booking is persisted.
 The resulting `SegmentReservationRequested` includes `classRef`, `offerItemRef`, `scheduledServiceRef` and `serviceDate`.
@@ -76,7 +79,7 @@ Database snapshot, outbox and uniqueness verification is covered by `Reservation
 |---|---|---|
 | `sagaId` | string | Canonical saga ID (`saga-<uuid>`). |
 | `journeyOrderId` | string | Parent order ID. |
-| `status` | enum | `STARTED`, `RESERVING`, `HELD`, `WAITING_PAYMENT`, `TICKETING`, `COMPLETED`, `FAILED` |
+| `status` | enum | `STARTED`, `RISK_CHECKING`, `RESERVING`, `SEAT_ASSIGNING`, `HELD`, `WAITING_PAYMENT`, `TICKETING`, `INVOICING`, `COMPLETED`, `FAILED`. Internal `COMPENSATING`, `MANUAL_REVIEW` and `FAILED` map to `FAILED`; `CONFIRMING` and `PARTIALLY_CONFIRMED` map to `HELD`. |
 | `startedAt` | timestamp | Saga start time. |
 
 **Error codes:** `VALIDATION_FAILED`, `CONFLICT`, `PRECONDITION_FAILED`
@@ -147,7 +150,3 @@ An unknown segment booking returns `NOT_FOUND`.
 
 - `ConfirmSegmentReservation` (internal: triggered by capacity/provider events)
 - `CancelSegmentBooking` (internal: triggered by post-sales saga)
-
-## Open Issues
-
-- None.
