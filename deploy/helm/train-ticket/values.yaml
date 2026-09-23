@@ -763,6 +763,13 @@ services:
       SEAT_ASSIGNMENT_BASE_URL: http://seat-assignment:8080
   fulfillment:
     db: fulfillment
+    # The boarding register this release measures a boarding fact's source
+    # against: the gate readers, the station agent a boarding is handed through
+    # and the provider feed the operator's attendant writes. The conductor
+    # handsets and the back-office screen are in the image's own vocabulary, but
+    # this release operates neither, so a fact they stamp has no reader here.
+    env:
+      FULFILLMENT_BOARDING_SOURCES: "GATE,STATION,PROVIDER"
     strategy:
       type: RollingUpdate
       rollingUpdate:

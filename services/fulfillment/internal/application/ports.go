@@ -16,6 +16,7 @@ import (
 	kitmsg "github.com/trainticket/greenfield/platform/go-kit/messaging"
 	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
 
+	"github.com/trainticket/greenfield/services/fulfillment/internal/config"
 	"github.com/trainticket/greenfield/services/fulfillment/internal/domain"
 )
 
@@ -1000,13 +1001,20 @@ func validateReferences(entitlementID domain.EntitlementRef, segmentBookingID do
 	return segmentRef.Validate()
 }
 
+// validSource reports whether a boarding fact arriving from this source is
+// evidence the release operates.
+//
+// The register is the release's estate rather than the reader's own list: the
+// vocabulary this image was built with is only the fallback a deployment that
+// states none keeps, so a source the deployment does not operate is refused even
+// though the code that names it knows the name.
 func validSource(source domain.FulfillmentSource) bool {
-	switch source {
-	case domain.FulfillmentSourceGate, domain.FulfillmentSourceStation, domain.FulfillmentSourceProvider, domain.FulfillmentSourceConductor, domain.FulfillmentSourceAdmin:
-		return true
-	default:
-		return false
+	for _, stated := range config.BoardingSources() {
+		if string(source) == stated {
+			return true
+		}
 	}
+	return false
 }
 
 func validNoShowReason(reason domain.NoShowReason) bool {
