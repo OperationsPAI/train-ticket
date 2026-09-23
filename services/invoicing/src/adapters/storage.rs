@@ -195,9 +195,16 @@ impl PostgresInvoicingService {
     async fn load_order_context(
         &self, svc: &InMemoryInvoicingService, order_id: &str,
     ) -> Result<(), InvoicingError> {
+        let mut connection=self.pool().acquire().await.map_err(internal)?;
+        Self::load_order_context_on(&mut connection,svc,order_id).await
+    }
+
+    async fn load_order_context_on(
+        connection: &mut sqlx::PgConnection, svc: &InMemoryInvoicingService, order_id: &str,
+    ) -> Result<(), InvoicingError> {
         let rows: Vec<(String, Value)> = sqlx::query_as(
             "SELECT kind, data FROM invoicing_projection_rows WHERE id = $1 AND kind IN ('orders', 'amounts')",
-        ).bind(order_id).fetch_all(self.pool()).await.map_err(internal)?;
+        ).bind(order_id).fetch_all(connection).await.map_err(internal)?;
         let mut snapshot = svc.snapshot();
         for (kind, data) in rows {
             if kind == "orders" { snapshot.orders.insert(order_id.into(), serde_json::from_value(data).map_err(internal)?); }
@@ -480,13 +487,13 @@ impl InvoicingApi for PostgresInvoicingService {
         key: String,
         corr: String,
     ) -> Result<EInvoiceRequest, InvoicingError> {
-        self.mutate(cmd.account_id.clone(), key.clone(), |svc| async move {
-            let result = match self.load_order_context(&svc, &cmd.order_id).await {
-                Ok(()) => svc.request_invoice(cmd, key, corr).await,
-                Err(error) => Err(error),
-            };
-            (svc, result)
-        }).await
+        let mut tx=self.pool().begin().await.map_err(internal)?;
+        let account=cmd.account_id.clone();
+        let (svc,publisher)=Self::hydrate_locked(&mut tx,&account,&key).await?;
+        Self::load_order_context_on(&mut tx,&svc,&cmd.order_id).await?;
+        let result=svc.request_invoice(cmd,key,corr).await?;
+        Self::commit_state(tx,&svc,&publisher,&account).await?;
+        Ok(result)
     }
     async fn get_request(&self, id: String) -> Result<EInvoiceRequest, InvoicingError> {
         self.hydrate_read(None, None, Some("requests"), Some(&id)).await?.get_request(id).await
@@ -539,6 +546,47 @@ impl InvoicingApi for PostgresInvoicingService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires recorded invoice request, projections and PostgreSQL"]
+    async fn recorded_invoice_request_uses_one_connection_and_replays_once() {
+        let source:Value=serde_json::from_str(&std::fs::read_to_string(std::env::var("TEST_INVOICE_CONNECTION_SOURCE").unwrap()).unwrap()).unwrap();
+        let database=std::env::var("TEST_DATABASE_URL").unwrap();
+        let admin=sqlx::PgPool::connect(&database).await.unwrap();
+        let schema=format!("invoice_connection_{}",uuid::Uuid::now_v7().simple());
+        sqlx::query(&format!("CREATE SCHEMA {schema}")).execute(&admin).await.unwrap();
+        let search=schema.clone();
+        let pool=sqlx::postgres::PgPoolOptions::new().max_connections(1).acquire_timeout(std::time::Duration::from_secs(1))
+            .after_connect(move |connection,_| {
+                let statement=format!("SET search_path TO {search}");
+                Box::pin(async move { sqlx::query(&statement).execute(connection).await?; Ok(()) })
+            }).connect(&database).await.unwrap();
+        let storage=rust_kit::storage::Storage::new(pool.clone());
+        storage.migrate_dir(concat!(env!("CARGO_MANIFEST_DIR"),"/migrations")).await.unwrap();
+        let title:InvoiceTitle=serde_json::from_value(source["title"].clone()).unwrap();
+        sqlx::query("INSERT INTO invoicing_command_rows(kind,id,account_id,data) VALUES('titles',$1,$2,$3)")
+            .bind(&title.title_id).bind(&title.account_id).bind(&source["title"]).execute(&pool).await.unwrap();
+        for row in source["projections"].as_array().unwrap() {
+            sqlx::query("INSERT INTO invoicing_projection_rows(kind,id,data) VALUES($1,$2,$3)")
+                .bind(row["kind"].as_str().unwrap()).bind(row["id"].as_str().unwrap()).bind(&row["data"]).execute(&pool).await.unwrap();
+        }
+        let cmd:RequestEInvoiceCommand=serde_json::from_value(source["request"].clone()).unwrap();
+        let service=PostgresInvoicingService{storage};let key=source["request"]["clientRequestId"].as_str().unwrap().to_owned();
+        let before=std::time::Instant::now();
+        let result=service.request_invoice(cmd.clone(),key.clone(),rust_kit::messaging::correlation_id()).await;
+        assert!(before.elapsed()<std::time::Duration::from_secs(1));
+        if let Ok(ref request)=result {
+            assert_eq!(request.status,InvoiceRequestStatus::Issued);
+            let count:i64=sqlx::query_scalar("SELECT count(*) FROM outbox").fetch_one(&pool).await.unwrap();
+            let replay=service.request_invoice(cmd,key,rust_kit::messaging::correlation_id()).await.unwrap();
+            assert_eq!(request.invoice_request_id,replay.invoice_request_id);
+            assert_eq!(request.e_invoice_id,replay.e_invoice_id);
+            assert_eq!(count,sqlx::query_scalar::<_,i64>("SELECT count(*) FROM outbox").fetch_one(&pool).await.unwrap());
+            assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM invoicing_command_rows WHERE kind='requests'").fetch_one(&pool).await.unwrap(),1);
+        }
+        pool.close().await;sqlx::query(&format!("DROP SCHEMA {schema} CASCADE")).execute(&admin).await.unwrap();admin.close().await;
+        assert!(result.is_ok(),"invoice request failed: {result:?}");
+    }
 
     #[tokio::test]
     #[ignore = "requires actual invoice/refund records and PostgreSQL"]
