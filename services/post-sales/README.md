@@ -20,6 +20,8 @@ Sold out replacement compensation records the rejection, voids replacement ticke
 It preserves original tickets and finishes with `CHANGE_CAPACITY_UNAVAILABLE` only after validation.
 Case execution uses a PostgreSQL advisory lock to serialize downstream actions across replicas.
 Sixteen independent cases can hold execution locks in a dedicated pool while ordinary queries and transactions use the separate business pool.
+HTTP requests use Java virtual threads so waiting request bodies and downstream calls do not occupy a fixed servlet worker pool.
+`HttpRequestConcurrencyLiveTest` holds 220 actual HTTP request bodies incomplete while checking case reads and health probes, then completes every request and verifies unchanged case data.
 The lock pool is initialized before startup completes, and outbox publication starts after migrations complete.
 `ChangeExecutionGuardLiveTest` verifies sixteen recorded case identities in parallel, cross session exclusion for the same case, business connection availability and lock release after exceptions.
 The real database `CapacityCompensationLiveTest` verifies rejection persistence and execution lock release.
