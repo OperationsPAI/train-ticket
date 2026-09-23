@@ -68,6 +68,11 @@ public class PostSalesController {
     }
 
     public record TargetOfferRequest(@NotBlank String targetOfferId) {}
+    @PostMapping("/{caseId}/target-offer/revise")
+    public Map<String,Object> reviseTarget(@PathVariable String caseId,@Valid @RequestBody ReviseTargetRequest request) {
+        return PostSalesMapper.caseDetails(service.reviseChangeOffer(caseId,request.expectedOfferId(),request.targetOfferId()));
+    }
+    public record ReviseTargetRequest(@NotBlank String expectedOfferId,@NotBlank String targetOfferId){}
 
     @PostMapping("/{caseId}/approve")
     public Map<String, Object> approve(
