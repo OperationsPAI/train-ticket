@@ -18,6 +18,8 @@
 
 import { newEventId, uuidV7 } from "@trainticket/ts-kit";
 
+import { admitsCaseAction } from "./case-action-policy.js";
+
 // ─── Error ────────────────────────────────────────────────────────────────────
 
 export class DomainError extends Error {
@@ -1077,7 +1079,7 @@ export class SupportCase {
   }
 
   reopen(command: ReopenCase): { case: SupportCase; event: SupportCaseReopened } {
-    if (this.snapshot.status !== "Closed" && this.snapshot.status !== "Resolved") {
+    if (!admitsCaseAction("reopen", this.snapshot.status)) {
       throw new DomainError(
         "CASE_NOT_REOPENABLE",
         `SupportCase ${this.id} in ${this.status} cannot be reopened`,
@@ -1119,44 +1121,23 @@ export class SupportCase {
   // case. The lists below are the arrangement every deployment has run so far.
 
   private canClassify(): boolean {
-    return this.snapshot.status === "Opened";
+    return admitsCaseAction("classify", this.snapshot.status);
   }
 
   private canAssign(): boolean {
-    return this.snapshot.status === "Classifying" || this.snapshot.status === "Opened";
+    return admitsCaseAction("assign", this.snapshot.status);
   }
 
   private canEscalate(): boolean {
-    return (
-      this.snapshot.status === "Opened" ||
-      this.snapshot.status === "Classifying" ||
-      this.snapshot.status === "Assigned" ||
-      this.snapshot.status === "InProgress" ||
-      this.snapshot.status === "WaitingExternal" ||
-      this.snapshot.status === "Reopened" ||
-      this.snapshot.status === "Escalated"
-    );
+    return admitsCaseAction("escalate", this.snapshot.status);
   }
 
   private canResolve(): boolean {
-    return (
-      this.snapshot.status === "Assigned" ||
-      this.snapshot.status === "InProgress" ||
-      this.snapshot.status === "WaitingCustomer" ||
-      this.snapshot.status === "WaitingExternal" ||
-      this.snapshot.status === "Escalated" ||
-      this.snapshot.status === "Reopened"
-    );
+    return admitsCaseAction("resolve", this.snapshot.status);
   }
 
   private canClose(): boolean {
-    return (
-      this.snapshot.status === "Resolved" ||
-      this.snapshot.status === "Escalated" ||
-      this.snapshot.status === "Opened" ||
-      this.snapshot.status === "Classifying" ||
-      this.snapshot.status === "Reopened"
-    );
+    return admitsCaseAction("close", this.snapshot.status);
   }
 
   // ─── Getters ───────────────────────────────────────────────────────────────
