@@ -1,6 +1,6 @@
 # Waitlist — Events & Commands
 
-Last updated: 2026-07-08
+Last updated: 2026-09-23
 
 ## Scope and activation-wave rulings
 
@@ -186,6 +186,9 @@ Waitlist event payloads use the same 8-state enum as the HTTP API:
 | `status` | enum | yes | `FULFILLED`. |
 
 Notification consumes this event for the waitlist-success user touchpoint.
+Creating a Journey Order does not produce this event.
+The request remains `MATCHING` with its actual `journeyOrderRef` until confirmation arrives.
+Repeated confirmation after fulfillment or archival produces no additional event.
 
 ### WaitlistCancelled
 

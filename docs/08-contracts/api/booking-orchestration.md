@@ -1,6 +1,6 @@
 # Booking Orchestration — HTTP API
 
-Last updated: 2026-07-05
+Last updated: 2026-09-23
 
 ## Overview
 
@@ -20,9 +20,28 @@ services (not end-user clients).
 The approved change case supplies the selected offer and original order.
 The original order must have risk clearance and be confirmed.
 The selected offer supplies the permitted travelers, segments and exact fare quote, including the requested seat class.
+The itinerary supplies `scheduledServiceRef` and `serviceDate`.
+The accepted booking persists those fields together with `classRef` and `offerItemRef`.
+Subsequent order changes do not replace the booking's supply reference.
 Each case, segment and traveler has one replacement booking under an independent change saga.
 Repeated requests return the existing booking and reject changes to its offer item or class.
 The response uses the segment booking details shape.
+
+### Accepted reservation facts
+
+The supply reference implementation requires a coordinated Booking and Capacity rollout.
+Source tests verify it, but deployment status must be checked separately.
+Initial reservation commands resolve the parent order's accepted Offer, fare quote and itinerary.
+Account, traveler set, segment, departure time and endpoints must agree before a booking is persisted.
+The resulting `SegmentReservationRequested` includes `classRef`, `offerItemRef`, `scheduledServiceRef` and `serviceDate`.
+Capacity uses these references to select the physical supply and quota policy.
+
+`GET /api/v1/internal/segment-bookings/{segmentBookingId}` exposes the persisted supply fields.
+Historical records may lack fields added by this integration and require evidence based reconciliation before supply activation.
+The business key is the order, segment, traveler and booking purpose.
+Concurrent requests for the same business key reuse the existing booking when commercial facts agree.
+Callers must use the returned `segmentBookingId`; a proposed identifier need not become the stored identifier.
+Database snapshot, outbox and uniqueness verification is covered by `ReservationFactsLiveTest`.
 
 ### Start Booking Saga
 

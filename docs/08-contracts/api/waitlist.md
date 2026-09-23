@@ -1,6 +1,6 @@
 # Waitlist — HTTP API
 
-Last updated: 2026-07-08
+Last updated: 2026-09-23
 
 ## Overview
 
@@ -45,8 +45,8 @@ The wire status enum is the 8-state machine from the Waitlist domain document:
 |---|---|---|
 | `DRAFT` | User is selecting or confirming the waitlist plan. | `QUEUED`, `CANCELLED` |
 | `QUEUED` | Request is in the waitlist queue. | `MATCHING`, `EXPIRED`, `CANCELLED`, `SUSPENDED` |
-| `MATCHING` | Released capacity was observed and Waitlist is attempting fulfillment through the normal journey-order chain. | `FULFILLED`, `QUEUED` |
-| `FULFILLED` | Request was successfully fulfilled and entered booking through journey-order. | `CLOSED` |
+| `MATCHING` | Matching is in progress; a linked order still awaits confirmation. | `FULFILLED`, `QUEUED`, `EXPIRED` |
+| `FULFILLED` | The linked order has emitted `JourneyOrderConfirmed`. | `CLOSED` |
 | `EXPIRED` | Deadline elapsed before fulfillment. | `CLOSED` |
 | `CANCELLED` | User or business cancellation. | `CLOSED` |
 | `SUSPENDED` | Payment guarantee, risk, or data issue paused the request. | `QUEUED`, `CANCELLED` |
@@ -58,6 +58,10 @@ reached from them by the archival sweep, which is implemented (see
 
 No `FAILED` status is exposed in this contract; a failed matching attempt rolls
 back to `QUEUED` when the associated journey order is cancelled.
+Cancellation after the waitlist deadline transitions the request to `EXPIRED`.
+Requeue clears the cancelled order and offer, and assigns fresh persisted keys for the next quote, offer and order attempt.
+Expiry sweeps leave linked `MATCHING` requests pending until the order reaches a terminal outcome.
+Repeated confirmation of a fulfilled or archived request does not publish another success event.
 
 ## Resource representation
 
@@ -75,7 +79,7 @@ back to `QUEUED` when the associated journey order is cancelled.
 | `itineraryRef` | string | yes | Candidate Trip Planning itinerary reference captured at waitlist creation; used to create the fulfillment offer at current price. |
 | `intentFingerprint` | string | yes | Stable fingerprint of the mutually exclusive travel intent. Used with `travelerRef` to enforce the active-request invariant. |
 | `status` | enum | yes | One of `DRAFT`, `QUEUED`, `MATCHING`, `FULFILLED`, `EXPIRED`, `CANCELLED`, `SUSPENDED`, `CLOSED`. |
-| `journeyOrderRef` | string | no | Fulfilled journey order reference after Journey Order confirms the order. |
+| `journeyOrderRef` | string | no | Actual linked order reference during `MATCHING` and after fulfillment; cleared on requeue. |
 
 ## Endpoints
 
@@ -189,3 +193,15 @@ HTTP endpoint in this activation wave:
 - `FulfillWaitlist` — triggered by consuming `JourneyOrderConfirmed` from
   `events:journey-order` for the order started by Waitlist.
 - `ExpireWaitlist` — triggered by the request `deadline`.
+
+## Integration status
+
+Order creation, confirmation, cancellation, requeue and replay are covered by recorded PostgreSQL tests and the online loadgen waitlist confirmation test.
+Clients require the current downstream fields `quoteId`, `offerId`, numeric `offerVersion`, `holdId` and `orderId`.
+Missing order identity is an error.
+The order lookup uses an indexed `journeyOrderRef` expression.
+Database concurrency conflicts and retryable connection or lock failures remain pending for retry.
+
+The current `CapacityReleased` consumer still requires a departure date that the deployed release event does not provide.
+Automatic promotion from those events, canonical class propagation, queue date enforcement and payment guarantee closure remain incomplete.
+The confirmation test alone does not verify automatic capacity triggered promotion or payment authorization.
