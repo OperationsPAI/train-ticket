@@ -6,6 +6,9 @@ Last updated: 2026-09-23.
 
 ## Change execution
 
+Capacity release consumption excludes completed release records before acquiring order locks.
+The PostgreSQL history test holds the order lock in another transaction and verifies that an already completed release returns without waiting or changing history.
+
 Policy evaluation uses the accepted order snapshots returned during adjustment quote resolution, including actual departure times, traveler types and financial totals.
 `AcceptedPolicyContextLiveTest` exercises a real order and fare quote against isolated PostgreSQL with an empty asynchronous policy projection.
 The event projection remains available for event processing; its arrival is independent of synchronous evaluation.
