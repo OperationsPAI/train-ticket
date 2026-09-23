@@ -50,7 +50,7 @@ def test_unexpected_handler_exception_uses_dlq_policy_without_escaping(caplog) -
     assert "moving message to DLQ" in caplog.text
 
 
-def test_process_entry_uses_supplied_consumer_name_for_max_delivery_dlq() -> None:
+def test_process_entry_accepts_high_delivery_count_without_handler_failure() -> None:
     subscriber = object.__new__(RedisEventSubscriber)
     subscriber._client = FakeRedis()
     subscriber._dedup = set()
@@ -68,8 +68,8 @@ def test_process_entry_uses_supplied_consumer_name_for_max_delivery_dlq() -> Non
         consumer_name="tester-consumer",
     )
 
-    dlq_fields = subscriber._client.dlq_entries[0][1]
-    assert dlq_fields["consumerName"] == "tester-consumer"
+    assert subscriber._client.dlq_entries == []
+    assert subscriber._client.acks == [("events:tester", "tester", "1-0")]
 
 
 def test_transient_handler_exception_logs_retry_path(caplog) -> None:
