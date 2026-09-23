@@ -58,6 +58,10 @@ public class ChangeExecutionService {
             String name="booking:"+item.path("segmentRef").asText()+":"+traveler;
             if(!ops.containsKey(name))return saveCommand(change,name,"booking-orchestration","/api/v1/internal/change-reservations",
                 Map.of("caseId",id,"segmentRef",text(item,"segmentRef"),"travelerRef",traveler),correlation);
+        }
+        boolean waitingForReservation=false;
+        for(JsonNode item:offer.path("items")) for(String traveler:change.scope().travelerRefs()) {
+            String name="booking:"+item.path("segmentRef").asText()+":"+traveler;
             String bookingId=String.valueOf(ops.get(name).get("segmentBookingId"));
             if(!ops.containsKey("confirmed:"+bookingId)) {
                 JsonNode booking=get("booking-orchestration","/api/v1/internal/segment-bookings/"+bookingId,correlation);
@@ -65,13 +69,13 @@ public class ChangeExecutionService {
                     return cases.recordChangeOperation(caseId,"capacity-rejected",Map.of("segmentBookingId",bookingId,"source","booking-orchestration","code","NO_AVAILABLE_CAPACITY"));
                 }
                 if("FAILED".equals(text(booking,"status")) || "CANCELLED".equals(text(booking,"status")))throw new DomainRuleViolation("replacement reservation failed: "+bookingId);
-                if(!"CONFIRMED".equals(text(booking,"status")))return change;
+                if(!"CONFIRMED".equals(text(booking,"status"))) { waitingForReservation=true;continue; }
                 JsonNode hold=getPending("capacity-availability","/api/v1/capacity-holds/"+text(booking,"capacityHoldId"),correlation);
-                if(hold==null)return change;
-                if(!"CONFIRMED".equals(text(hold,"status")))return change;
+                if(hold==null || !"CONFIRMED".equals(text(hold,"status"))) { waitingForReservation=true;continue; }
                 return cases.recordChangeOperation(caseId,"confirmed:"+bookingId,Map.of("booking",map(booking),"hold",map(hold)));
             }
         }
+        if(waitingForReservation)return change;
         Money due=change.decision().amountSnapshot().extraChargeAmount();
         if(!due.isZero()) {
             if(!ops.containsKey("difference-payment"))return saveCommand(change,"difference-payment","payment","/api/v1/payment-intents",
