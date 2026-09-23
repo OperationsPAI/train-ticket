@@ -127,10 +127,24 @@ public class PostSalesApplicationService {
         if(current.caseType()!=PostSalesCaseType.CHANGE) throw new com.trainticket.postsales.domain.DomainRuleViolation("only CHANGE execution can complete here");
         if(current.status()==PostSalesCaseStatus.APPLIED)return current;
         if(!current.changeOperations().containsKey("order-applied"))throw new com.trainticket.postsales.domain.DomainRuleViolation("replacement order update has not completed");
+        if(!current.releasedOrderItems().containsAll(current.scope().orderItemRefs()))throw new com.trainticket.postsales.domain.DomainRuleViolation("original capacity release has not completed");
         current.applyResult("replacement tickets and financial adjustment completed",clock.instant(),"cmd-change-applied","cmd-change-applied",correlation);
         repository.save(current);
         policyContextStore.findByOrderId(current.journeyOrderId()).map(PostSalesPolicyContext::incrementAppliedChangeCount).ifPresent(policyContextStore::save);
         publishNewEvents(current);
+        return current;
+    }
+
+    public PostSalesCase recordChangeCapacityReleased(String caseId, String bookingId) {
+        PostSalesCase initial = get(caseId);
+        repository.lockOrder(initial.journeyOrderId());
+        PostSalesCase current = get(caseId);
+        if (current.caseType() == PostSalesCaseType.CHANGE && current.releasedOrderItems().contains(bookingId)) return current;
+        if (current.caseType() != PostSalesCaseType.CHANGE || current.status() != PostSalesCaseStatus.EXECUTING) {
+            throw new com.trainticket.postsales.domain.DomainRuleViolation("capacity confirmation requires an executing change");
+        }
+        current.recordCapacityReleased(bookingId);
+        repository.save(current);
         return current;
     }
 
@@ -513,6 +527,11 @@ public class PostSalesApplicationService {
                 }
                 repository.save(postSalesCase);
                 publishNewEvents(postSalesCase);
+            } else if (postSalesCase.caseType() == PostSalesCaseType.CHANGE
+                && postSalesCase.status() == PostSalesCaseStatus.APPLIED
+                && !postSalesCase.releasedOrderItems().contains(segmentBookingRef)) {
+                postSalesCase.recordCapacityReleased(segmentBookingRef);
+                repository.save(postSalesCase);
             }
         }
     }
