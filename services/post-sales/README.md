@@ -6,6 +6,9 @@ Last updated: 2026-09-23.
 
 ## Capacity release subscription
 
+Migration `005_outbox_retention_index.sql` indexes published event time for the existing retention query.
+The thirty second retention and one thousand row cleanup batch remain unchanged.
+
 `events:capacity-availability` has its own Redis subscriber, connection, polling thread and four handler threads.
 Its handler queue holds sixteen entries and applies the platform CallerRuns backpressure policy independently.
 The other subscriber handles `journey-order`, `disruption-recovery`, `ancillary-service` and `dispatch` using `CONSUMER_THREADS`.

@@ -10,6 +10,7 @@ DATABASES = (
     "finance_settlement",
     "journey_order",
     "offer_management",
+    "post_sales",
 )
 
 QUERY = """
@@ -34,9 +35,10 @@ SELECT jsonb_build_object(
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--database", choices=DATABASES, action="append")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
-    for database in DATABASES:
+    for database in args.database or DATABASES:
         result = subprocess.run(
             ["kubectl", "-n", "train-ticket", "exec", "deploy/postgres-core", "--",
              "env", "PGOPTIONS=-c statement_timeout=5000 -c default_transaction_read_only=on",

@@ -187,3 +187,11 @@ rev275 诊断的四张 outbox 表约 31 秒累计 `heap_blks_read` 为 5800696�
 该窗口四张 outbox 表新增 Seq Scan 均为零，清理继续删除记录。
 `heap_blks_read` 是表级缓存之外的页面读取次数，可能命中操作系统缓存，不能归为纯 retention I/O 或物理磁盘读取量。
 本次窗口与 rev275 的负载和时间不同，121443 与 5800696 不能用于计算相同负载下的性能改善比例。
+
+Post Sales 使用相同的 published time 索引，migration 为 `005_outbox_retention_index.sql`。
+该索引已在线创建并确认有效，生产候选选择计划使用 Bitmap Index Scan。
+真实记录测试使用 1984 条事件，保留 3 条未发布记录以及时间边界，过期记录分为 `[1000, 981]` 两批。
+验证结果为 `2 passed, 4 deselected in 0.38s`。
+在本地 256 页表上，过期候选使用索引读取 82 条记录，而 DELETE 的外层目标查找仍选择 Hash Semi Join 与顺序扫描。
+测试分别检查候选查询与删除目标计划，不将候选索引等同于整条 DELETE 没有顺序扫描。
+该样本不改变生产清理预算，也不证明删除目标扫描已在所有数据规模下消除。
