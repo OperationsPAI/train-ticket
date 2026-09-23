@@ -336,6 +336,8 @@ model instead of treating terminal state as an error.
 Clients obtain the consumed Finance Settlement amount snapshot from `GET /api/v1/invoice-amount-bases/{orderId}` before submitting a request.
 The response is the `AmountBasis` object defined above, including its original financial references and digest.
 The endpoint returns `404 NOT_FOUND` while the amount projection is unavailable and propagates storage failures as errors.
+Invoice creation loads order and amount projections using its existing PostgreSQL transaction connection.
+The same transaction commits the request, invoice, idempotency result and outbox events.
 
 **POST** `/api/v1/e-invoice-requests`
 
