@@ -1,6 +1,10 @@
 # Post Sales — Events & Commands
 
-Last updated: 2026-07-04
+Last updated: 2026-09-23.
+
+Capacity release handling selects only cases with an unrecorded release that are approved, executing, or applied changes needing release evidence.
+Already recorded releases and other terminal cases do not reacquire the order lock.
+An actionable release still reloads the case under the order lock before saving its result.
 
 ## Published Events
 
