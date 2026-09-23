@@ -25,6 +25,7 @@ Expired target handling is deployed with loadgen in revision 264 and verified ag
 Dedicated change execution lock connections and progress aware loadgen polling are deployed in revision 265.
 The multi traveler purchase and post sales regression passes at that revision in 125.568 seconds.
 Post Sales HTTP virtual thread handling is deployed in revision 266 and has passed a real HTTP test with 220 waiting request bodies.
+Policy evaluation performs external reads outside database transactions in revision 267; eight concurrent evaluations return one persisted decision in its PostgreSQL test.
 Check `helm history` and the deployed image digests for the live release; repository HEAD and the running images can differ.
 
 ## Verified behavior
@@ -47,6 +48,7 @@ The six class purchase regression at revision 257 completed in 92.007 seconds.
 These tests establish their covered outcomes and do not certify every resident request or a complete peak traffic cycle.
 The revision 262 broad regression passes eligibility, recovery, multiple traveler purchase and post sales, and protected transfer checks in 238.495 seconds.
 The same broad regression at revision 264 passes in 225.767 seconds, including the deployed expiry handling and current loadgen behavior.
+The broad regression passes at revision 266 in 239.548 seconds and at revision 267 in 230.630 seconds.
 Complete peak period and durable replay acceptance remain open.
 The continuous 600 second recording ending at 12:58:47 UTC contains 711900 requests and 10348 failed journeys, with request P99 reaching the 10 second deadline.
 That window spans several deployment revisions and is diagnostic evidence for peak latency.
