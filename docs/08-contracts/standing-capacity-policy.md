@@ -67,6 +67,10 @@ Unavailable dependencies do not produce a default quota.
 It checks rounding, concurrent admission, durable policy metadata, replay, release and read side effects.
 The quota boundary is exercised by marking recorded second class units unavailable through the domain operation before publishing the test composition.
 
-The Capacity integration also needs Hold admission, replay, release and availability tests for standing.
+`services/capacity-availability/tests/standing_supply_live.rs` verifies policy validation, quota references, Hold admission, replay, confirmation and release against PostgreSQL and actual upstream facts.
+It verifies that a standing snapshot reports zero physical seats and that quota confirmation does not emit a physical seat overbooking event.
+The six class online purchase test verifies standing policy metadata on issued allocations.
+Seat Assignment quota enforcement and pre-reservation SeatMap preparation are deployed and verified.
+Capacity's new supply calculation remains under integration and has not been activated in production.
 Its rollout requires coordinated reservation facts, SeatMap preparation and historical occupancy validation.
 Passing the Seat Assignment test alone does not establish that the complete booking flow is ready.
