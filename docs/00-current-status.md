@@ -28,6 +28,7 @@ Post Sales HTTP virtual thread handling is deployed in revision 266 and has pass
 Policy evaluation performs external reads outside database transactions in revision 267; eight concurrent evaluations return one persisted decision in its PostgreSQL test.
 Seat allocation replay uses its recorded composition in revision 268, including when that composition has been retired.
 The six class initial purchase regression at revision 268 passes in 97.152 seconds.
+Revision 269 submits all traveler replacements before confirmation waits; its live partial paid change scenario validates submission order and complete compensation in 25.510 seconds.
 Check `helm history` and the deployed image digests for the live release; repository HEAD and the running images can differ.
 
 ## Verified behavior
