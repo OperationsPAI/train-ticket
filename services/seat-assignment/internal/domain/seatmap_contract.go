@@ -85,6 +85,28 @@ func NewContractSeatMap(scheduledServiceRef, serviceDate, compositionVersion, co
 	topologySeed := deterministicTopologySeed(scheduledServiceRef, serviceDate, compositionVersion, compositionSeed, mappingVersion)
 	seatMapID := deterministicPrefixedID("smap", topologySeed, "seat-map")
 	coachRef := deterministicPrefixedID("coach", topologySeed, "coach", "01")
+	if strings.EqualFold(compositionSeed, "SLEEPER") {
+		coaches := []Coach{}
+		for index, class := range []string{"SLEEPER_HARD", "SLEEPER_SOFT"} {
+			coachNo := fmt.Sprintf("%02d", index+1)
+			coach := Coach{CoachRef: deterministicPrefixedID("coach", topologySeed, coachNo), CoachNo: coachNo, ClassRef: class, CoachType: AllocationTypeBerth, Assignable: true}
+			positions := []string{"LOWER", "MIDDLE", "UPPER"}
+			compartments := 9
+			if class == "SLEEPER_SOFT" {
+				positions = []string{"LOWER", "UPPER"}
+			}
+			for compartment := 1; compartment <= compartments; compartment++ {
+				for side := 0; side < 2; side++ {
+					for _, position := range positions {
+						no := fmt.Sprintf("%02d%s-%s", compartment, []string{"A", "B"}[side], position)
+						coach.SeatUnits = append(coach.SeatUnits, SeatUnit{SeatUnitRef: deterministicPrefixedID("su", topologySeed, coachNo, no), CoachRef: coach.CoachRef, CoachNo: coachNo, SeatNo: no, AllocationType: AllocationTypeBerth, BerthPosition: position, RowNo: fmt.Sprintf("%02d", compartment), AdjacencyGroupKey: coachNo + fmt.Sprintf("-%02d", compartment), Assignable: true})
+					}
+				}
+			}
+			coaches = append(coaches, coach)
+		}
+		return &ContractSeatMap{SeatMapID: seatMapID, ScheduledServiceRef: scheduledServiceRef, ServiceDate: serviceDate, CompositionVersion: compositionVersion, SeatMapVersion: 1, Source: "SIM_SEED", CompositionSeed: compositionSeed, MappingVersion: mappingVersion, Status: SeatMapStatusDraft, Coaches: coaches, CreatedAt: now.UTC()}, nil
+	}
 	if strings.EqualFold(compositionSeed, "CRH380A") {
 		coaches := []Coach{}
 		byNumber := map[int]int{}

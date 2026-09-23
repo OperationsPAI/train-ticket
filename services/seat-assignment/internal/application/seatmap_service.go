@@ -270,14 +270,19 @@ func (s *Service) AllocateSeat(ctx context.Context, req AllocateSeatRequest) (*A
 				break
 			}
 		}
-		if seatMap == nil {
+		standingOnly := strings.EqualFold(req.ClassRef, "STANDING")
+		if seatMap == nil && !standingOnly {
 			return derr("PRECONDITION_FAILED", "no published SeatMap matches scheduled service, date and class")
 		}
 		active, err := s.repo.FindActiveSeatAllocations(tx, req.ScheduledServiceRef, req.ServiceDate)
 		if err != nil {
 			return derr("UNAVAILABLE", err.Error())
 		}
-		unit, degraded, reason := chooseSeatUnit(*seatMap, req.ClassRef, req.Interval, req.SeatPreferences, active)
+		var unit *domain.SeatUnit
+		degraded, reason := false, domain.DegradationNone
+		if !standingOnly {
+			unit, degraded, reason = chooseSeatUnit(*seatMap, req.ClassRef, req.Interval, req.SeatPreferences, active)
+		}
 		allocID := domain.NewID("salloc")
 		status := domain.AllocationStatusAllocated
 		seatRef := domain.SeatRef{SeatAllocationID: allocID, Degraded: degraded}
@@ -285,7 +290,7 @@ func (s *Service) AllocateSeat(ctx context.Context, req AllocateSeatRequest) (*A
 			seatRef.DegradationReason = reason
 		}
 		if unit == nil {
-			if req.SeatPreferences == nil || !req.SeatPreferences.AcceptStanding {
+			if !standingOnly && (req.SeatPreferences == nil || !req.SeatPreferences.AcceptStanding) {
 				return derr("DOMAIN_RULE_VIOLATION", "no compatible seat exists and standing is not accepted")
 			}
 			status = domain.AllocationStatusStanding
