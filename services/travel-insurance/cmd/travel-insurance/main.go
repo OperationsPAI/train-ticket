@@ -62,14 +62,14 @@ func main() {
 	go storage.NewOutboxRelay(pool, redisClient).Run(ctx)
 	transactor := adapterpg.NewTransactor(pool)
 	verifier := application.PurchaseVerifier{Client: &http.Client{Timeout: 5 * time.Second}, BaseURLTemplate: "http://%s:8080"}
-	service := application.NewInsuranceService(application.ServiceConfig{Repository: adapterpg.NewRepositoryWithProvider(transactor), Publisher: adapterpg.NewOutboxPublisherWithProvider(transactor), UnitOfWork: transactor.Within, VerifyPurchase: verifier.Verify})
+	service := application.NewInsuranceService(application.ServiceConfig{Repository: adapterpg.NewRepositoryWithProvider(transactor), Publisher: adapterpg.NewOutboxPublisherWithProvider(transactor), UnitOfWork: transactor.Within, VerifyPurchase: verifier.Verify, VerifyRefund: verifier.VerifyRefund})
 	bus := kitmessaging.NewRedisEventBusWithClient(redisClient, kitmessaging.RedisConfig{})
 	consumer := os.Getenv("CONSUMER_NAME")
 	if consumer == "" {
 		consumer = domain.ServiceID + "-1"
 	}
-	if err := bus.Subscribe(ctx, kitmessaging.Subscription{Streams: []string{"journey-order", "payment"}, Group: domain.ServiceID, ConsumerName: consumer, EventFilter: func(event kitmessaging.EventEnvelope) bool {
-		return event.EventType == "PostSalesApplied" || event.EventType == "RefundApproved" || event.EventType == "TrainDelayed"
+	if err := bus.Subscribe(ctx, kitmessaging.Subscription{Streams: []string{"ancillary-service"}, Group: domain.ServiceID, ConsumerName: consumer, EventFilter: func(event kitmessaging.EventEnvelope) bool {
+		return event.EventType == "AncillaryOrderItemRefunded"
 	}}, appmsg.NewInboundHandler(service).Handle); err != nil {
 		log.Fatal(err)
 	}
