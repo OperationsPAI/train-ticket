@@ -496,6 +496,7 @@ public class PostSalesApplicationService {
     /** Persist every scoped reservation release before completing capacity execution. */
     public void applyForSegmentBooking(String segmentBookingRef, String causationId, String correlationId) {
         for (PostSalesCase postSalesCase : repository.findByOrderItemRef(segmentBookingRef)) {
+            if (postSalesCase.releasedOrderItems().contains(segmentBookingRef)) continue;
             java.time.Instant now = java.time.Instant.now(clock);
             if (postSalesCase.status() == com.trainticket.postsales.domain.PostSalesCaseStatus.APPROVED) {
                 postSalesCase.startExecution(now, "cmd-capacity-released", causationId, correlationId);

@@ -63,6 +63,12 @@ public class PostSalesEventHandler {
 
     private EventSubscriber.HandlerResult handleInCurrentThread(EventEnvelope envelope, boolean transactional) {
         try {
+            if ("CapacityReleased".equals(envelope.eventType())) {
+                String booking = segmentBookingRef(envelope.payload());
+                if (booking == null) throw new IllegalArgumentException("CapacityReleased requires segment booking reference");
+                applicationService.applyForSegmentBooking(booking, envelope.eventId(), envelope.correlationId());
+                return EventSubscriber.HandlerResult.SUCCESS;
+            }
             // Reject uninteresting event types BEFORE touching the database.
             //
             // recordIfFirstSeen writes to processed_events, so the original order
@@ -105,11 +111,6 @@ public class PostSalesEventHandler {
                 // after an adjustment changes what is refundable. So refresh the
                 // fare on the existing context and leave everything else alone.
                 refreshPolicyContextFare(envelope);
-            } else if ("CapacityReleased".equals(envelope.eventType())) {
-                String segmentBookingRef = segmentBookingRef(envelope.payload());
-                if (segmentBookingRef != null) {
-                    applicationService.applyForSegmentBooking(segmentBookingRef, envelope.eventId(), envelope.correlationId());
-                }
             } else if (externalEventPolicy.handles(envelope.eventType())) {
                 externalEventPolicy.handle(envelope);
             } else {
