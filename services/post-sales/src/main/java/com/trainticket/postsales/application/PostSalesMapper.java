@@ -60,6 +60,7 @@ public final class PostSalesMapper {
         body.put("scope", postSalesCase.scope());
         body.put("targetOfferId", postSalesCase.targetOfferId());
         body.put("changeOperations",postSalesCase.changeOperations());
+        body.put("refundPayments",postSalesCase.refundPayments());
         body.put("releasedOrderItemRefs", postSalesCase.releasedOrderItems());
         body.put("reasonCode", postSalesCase.reasonCode());
         body.put("actorRef", postSalesCase.actorRef());
@@ -166,6 +167,7 @@ public final class PostSalesMapper {
         } else if (event instanceof PostSalesApplied applied) {
             payload.put("orderId", applied.journeyOrderId());
             payload.put("caseType",applied.caseType().name());
+            if(sourceCase!=null)payload.put("scope",sourceCase.scope());
             payload.put("resultSummary", resultSummary(applied));
         } else if (event instanceof PostSalesExecutionStarted executionStarted) {
             payload.put("orderedSteps", executionStarted.orderedSteps().stream().map(Enum::name).toList());
@@ -205,6 +207,7 @@ public final class PostSalesMapper {
             actions.put("steps",java.util.List.of());
             return actions;
         }
+        if(!sourceCase.refundPayments().isEmpty())actions.put("refunds",sourceCase.refundPayments());
         // Normative execution steps (events/post-sales.md): downstream
         // contexts act on these without any shared store.
         if (sourceCase.decision() != null) {

@@ -27,6 +27,14 @@ public final class PostSalesCase {
     private String terminalReason;
     private String targetOfferId;
     private final Map<String, Map<String, Object>> changeOperations = new java.util.LinkedHashMap<>();
+    private List<Map<String,Object>> refundPayments=List.of();
+    public List<Map<String,Object>> refundPayments(){return refundPayments;}
+    public PostSalesCase withRefundPayments(List<Map<String,Object>> payments){refundPayments=List.copyOf(payments);return this;}
+    public void assignRefundPayments(List<Map<String,Object>> payments){
+        if(!refundPayments.isEmpty() && !refundPayments.equals(payments))throw new DomainRuleViolation("refund payment allocation is already assigned");
+        if(refundPayments.isEmpty() && (status==PostSalesCaseStatus.APPROVED || status==PostSalesCaseStatus.EXECUTING || status==PostSalesCaseStatus.APPLIED))throw new DomainRuleViolation("refund payments must be assigned before approval");
+        refundPayments=List.copyOf(payments);
+    }
     private long version;
 
     public String targetOfferId() { return targetOfferId; }
