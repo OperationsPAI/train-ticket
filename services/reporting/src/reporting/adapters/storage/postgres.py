@@ -49,7 +49,7 @@ from psycopg.types.json import Jsonb
 
 logger = logging.getLogger(__name__)
 
-_PAYMENT_CAPTURED_EVENT_TYPES = ("PaymentCaptured", "RevenueRecognized", "PaymentSucceeded")
+_PAYMENT_CAPTURED_EVENT_TYPES = ("PaymentCaptured",)
 _REVENUE_REFRESH_INTERVAL = 30.0
 
 # How far back the anomaly rules can see. REVENUE_DROP compares the last hour
