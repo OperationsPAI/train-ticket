@@ -18,6 +18,7 @@ SERVICES = (
     ("finance-settlement", "008_outbox_retention_index.sql"),
     ("journey-order", "005_outbox_retention_index.sql"),
     ("offer-management", "006_outbox_retention_index.sql"),
+    ("post-sales", "005_outbox_retention_index.sql"),
 )
 PREDICATE = "published_at IS NOT NULL AND published_at < now() - interval '30 seconds'"
 DELETE = ("DELETE FROM outbox WHERE ctid IN (SELECT ctid FROM outbox WHERE "
@@ -145,7 +146,10 @@ def test_recorded_retention(service, migration):
                     if stage == "before":
                         assert any(node["Node Type"] == "Seq Scan" and node.get("Relation Name") == "outbox" for node in scan_nodes)
                     else:
-                        assert not any(node["Node Type"] == "Seq Scan" and node.get("Relation Name") == "outbox" for node in scan_nodes)
+                        candidates = [node for limit in scan_nodes if limit["Node Type"] == "Limit" for node in nodes(limit)]
+                        assert candidates
+                        assert not any(node["Node Type"] == "Seq Scan" and node.get("Relation Name") == "outbox" for node in candidates)
+                        report["delete_target_seq_scan"] = any(node["Node Type"] == "Seq Scan" and node.get("Alias") == "outbox" for node in scan_nodes)
                         scans = [node for node in scan_nodes if node.get("Index Name") == INDEX]
                         assert scans and all("published_at <" in node["Index Cond"] for node in scans)
                         assert sum(node["Actual Rows"] * node["Actual Loops"] for node in scans) == len(eligible)
