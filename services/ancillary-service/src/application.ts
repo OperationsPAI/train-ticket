@@ -796,6 +796,7 @@ export class AncillaryApplicationService {
     const item=AncillaryOrderItem.fromSnapshot(snapshot);
     item.cancel({reasonCode:"ANCILLARY_LATE_PAYMENT",source:"SYSTEM"});
     const cancelled=item.toSnapshot();
+    if(cancelled.aggregateVersion!==snapshot.aggregateVersion)await this.repository.saveOrderItem(cancelled);
     item.suggestRefund({reasonCode:"ANCILLARY_LATE_PAYMENT"});
     await this.repository.saveOrderItem(item.toSnapshot());
     if(snapshot.status!=="CANCELLED")await this.publish(correlation,"AncillaryOrderItemCancelled",id,cancelled.aggregateVersion,
