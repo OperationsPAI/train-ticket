@@ -1,4 +1,5 @@
 package com.trainticket.walletpromotion.application;
+import com.trainticket.walletpromotion.domain.IssuanceSource;
 
 import com.trainticket.platformkit.http.ApiErrorCode;
 import com.trainticket.platformkit.http.ApiException;
@@ -42,6 +43,10 @@ public class WalletPromotionService {
 
     @Transactional
     public PromotionInstrument issue(IssueBenefitCommand command) {
+        if(command.issuanceSource()==IssuanceSource.POST_SALES_COMP) {
+            var existing=repository.findCompensationIssue(command);
+            if(existing.isPresent())return existing.get();
+        }
         Instant now = clock.instant();
         String walletAccountId = repository.findWalletByAccountId(command.accountId())
             .map(WalletAccount::walletAccountId)
@@ -82,6 +87,7 @@ public class WalletPromotionService {
             zero
         );
         repository.saveMutation(benefit, wallet, EventFactory.issued(benefit, delta, now), null, null);
+        if(command.issuanceSource()==IssuanceSource.POST_SALES_COMP)repository.recordCompensationIssue(command,benefit.benefitId());
         return benefit;
     }
 

@@ -1,40 +1,20 @@
-# Wallet / Promotion — Events & Commands
+# Wallet / Promotion Events & Commands
 
-Last updated: 2026-07-08
+Last updated: 2026-09-23.
 
-## Scope and activation-wave rulings
+## Scope
 
-This contract enumerates exactly the seven Wallet / Promotion events listed in
-`docs/02-domains/wallet-promotion.md` for the ADR-0002 second activation wave.
-It covers `PromotionInstrument` lifecycle events, the per-account
-`WalletAccount` balance ledger effects of those events, and idempotent
-`BenefitRedemption` records.
+This document covers `PromotionInstrument` lifecycle events, account wallet ledger effects and idempotent `BenefitRedemption` records.
+Complaint compensation is driven by an HTTP issuance request carrying `issuanceSource=POST_SALES_COMP` and the canonical Post Sales `caseId`.
+The compensation executor calls wallet issuance after approval and records the returned benefit as execution evidence.
+The issuance credits the order account with the approved amount while preserving the original tickets, seat reservations, order and captured payment.
+Finance Settlement records benefit cost attribution from wallet events and skips refund result processing for `PostSalesApplied` with `caseType=COMPENSATION`.
+Every event payload carries the `businessReason` that caused the state or balance change.
+Reason descriptions must not contain unmasked documents or other sensitive personal data.
 
-Activation-wave rulings:
-
-- Wallet / Promotion produces events in this wave and subscribes to no upstream
-  streams. Issuance from Post Sales compensation is represented by the issuing
-  command's `issuanceSource=POST_SALES_COMP` plus `caseId`; Disruption Recovery
-  compensation is represented by `issuanceSource=DISRUPTION_COMP` plus the
-  recovery `caseId`. Wallet / Promotion does not subscribe to either upstream
-  stream in this wave.
-- Supported issuance sources are `MANUAL_OPS`, `POST_SALES_COMP`, and
-  `DISRUPTION_COMP`.
-- Payment contracts are unchanged. Combination payment is not part of this wave;
-  future note: a later wave will define the "cash remaining payable" interface.
-- Finance Settlement and Notification are active event consumers in wave 19.
-  Finance records benefit cost attribution; Notification sends issued/expired/
-  revoked touchpoints and intentionally ack-skips redemption noise. Reporting may
-  consume all events for read models and metrics.
-- Every event payload carries the `businessReason` that caused the state or
-  balance change. Producers MUST NOT include unmasked documents or other
-  sensitive personal data in reason descriptions.
-
-All payload fields are camelCase, all enum values are SCREAMING_SNAKE_CASE, and
-all timestamps are RFC3339 UTC. Envelope fields, including optional trace context
-propagation, follow `docs/08-contracts/messaging.md` and
-`docs/08-contracts/shared-primitives.md`. Monetary values use `Money` as
-`{currency, minorUnits}`.
+All payload fields are camelCase, all enum values are SCREAMING_SNAKE_CASE and all timestamps are RFC3339 UTC.
+Envelope fields, including optional trace context propagation, follow `docs/08-contracts/messaging.md` and `docs/08-contracts/shared-primitives.md`.
+Monetary values use `Money` as `{currency, minorUnits}`.
 
 ## Event identity and idempotency
 
@@ -48,6 +28,14 @@ wallet-promotion:<eventType>:<benefitId>:<aggregateVersion>
 where `aggregateVersion` is the `PromotionInstrument` version after applying the
 transition. If a command replay does not apply a new transition, no new event is
 emitted. Consumers still deduplicate by envelope `eventId`.
+
+For `POST_SALES_COMP` issuance, the service compares the complete `IssueBenefitCommand` with the command stored for `caseId`.
+An identical command returns the existing benefit even if its HTTP idempotency key differs, with no additional wallet credit, ledger entry or `BenefitIssued` event.
+A different command for the same case returns HTTP 409 `CONFLICT` and creates no issuance event.
+Equality includes the recipient, monetary value, types, scope, rules, validity timestamps and complete business reason.
+The PostgreSQL implementation serializes issuance with transaction advisory locks for the case and account.
+It records the case, unique benefit ID and request in `compensation_issuances` in the same transaction as the benefit, wallet ledger and event outbox.
+HTTP response replay remains separate: a stored idempotency key reused with a different request returns `IDEMPOTENCY_KEY_REUSED`.
 
 `BenefitRedeemed` additionally represents the idempotent `BenefitRedemption`
 record. The same `(benefitId, businessReason.reasonType,
@@ -118,6 +106,20 @@ Event payloads use the same seven-state enum as the HTTP API: `ISSUED`,
 | `issuedAt` | RFC3339 UTC | yes | Issuance timestamp. |
 | `status` | enum | yes | `ISSUED`. |
 | `aggregateVersion` | integer | yes | Benefit version after issuance. |
+
+For an approved complaint compensation, `benefitType=COMPENSATION_CREDIT`, `balanceType=PROMOTION_CREDIT` and `issuanceSource=POST_SALES_COMP`.
+`issuedAmount` and `walletBalanceDelta.availableDelta` equal the approved Post Sales `compensationAmount` in currency and minor units.
+`accountId` identifies the original order account, and `caseId` carries the canonical `psc-` case reference.
+`businessReason` uses `reasonType=POST_SALES_COMP`, the case `reasonCode`, `referenceType=POST_SALES_CASE` and `referenceId=caseId`.
+The current Post Sales request supplies `ANY_TRIP` scope, `singleUse=false`, `requiresReservation=false` and an empty `revocationRule` request object.
+The event carries the accepted rules and original validity timestamps: `validFrom` is the recorded request creation time and `validUntil` is 30 days later.
+Retries retain this window.
+Zero approved amounts complete in Post Sales without a wallet issuance or `BenefitIssued` event.
+
+Post Sales stores the checked wallet response in `compensationOperations.issued` and rereads the benefit before completing the case.
+Its `verified` record includes preserved ticket and payment flags, original `paymentIntentId` and `capturedAmount`, approved `amount` and `benefitId`.
+`execute-compensation` exposes public status `APPROVED` during execution and `APPLIED` after verification and successful completion of both plan steps.
+See [Post Sales events](post-sales.md) for the approval actions, execution plan and completion payload.
 
 ### BenefitReserved
 
@@ -303,6 +305,5 @@ The command list is the domain command/event table from
 
 ## Consumed upstream events
 
-Wallet / Promotion subscribes to no upstream event stream in this activation
-wave. Post-sales compensation issuance is command/request driven with a carried
-`caseId`; this avoids any Post Sales contract change in this wave.
+Complaint compensation issuance is driven by `POST /api/v1/benefits` with `caseId`.
+The Post Sales executor uses its recorded request and stable downstream idempotency key to obtain and verify the issued benefit.

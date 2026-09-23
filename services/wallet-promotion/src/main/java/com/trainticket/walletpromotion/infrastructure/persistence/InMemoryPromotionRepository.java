@@ -13,6 +13,17 @@ import org.springframework.stereotype.Repository;
 @Repository
 @ConditionalOnMissingBean(PromotionRepository.class)
 public class InMemoryPromotionRepository implements PromotionRepository {
+    private final Map<String,com.trainticket.walletpromotion.application.IssueBenefitCommand> compensationRequests=new ConcurrentHashMap<>();
+    private final Map<String,String> compensationBenefits=new ConcurrentHashMap<>();
+    public Optional<PromotionInstrument> findCompensationIssue(com.trainticket.walletpromotion.application.IssueBenefitCommand command) {
+        var original=compensationRequests.get(command.caseId());
+        if(original==null)return Optional.empty();
+        if(!original.equals(command))throw new com.trainticket.platformkit.http.ApiException(com.trainticket.platformkit.http.ApiErrorCode.CONFLICT,"compensation case already has another issuance request");
+        return findBenefit(compensationBenefits.get(command.caseId()));
+    }
+    public void recordCompensationIssue(com.trainticket.walletpromotion.application.IssueBenefitCommand command,String benefitId) {
+        compensationRequests.put(command.caseId(),command);compensationBenefits.put(command.caseId(),benefitId);
+    }
     private final Map<String, PromotionInstrument> benefits = new ConcurrentHashMap<>();
     private final Map<String, WalletAccount> wallets = new ConcurrentHashMap<>();
     private final Map<String, BenefitRedemption> redemptions = new ConcurrentHashMap<>();
