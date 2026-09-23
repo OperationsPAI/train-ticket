@@ -5,7 +5,7 @@ Last updated: 2026-09-23.
 ## Overview
 
 Post Sales manages cancellation, refund, change and compensation cases.
-It evaluates eligibility, approves or rejects cases, and coordinates downstream ticket, reservation and payment operations.
+It evaluates eligibility, approves or rejects cases, and coordinates downstream ticket, reservation, payment and wallet operations.
 
 Field shapes reference docs/08-contracts/shared-primitives.md for IDs, timestamps, and Money.
 
@@ -43,7 +43,6 @@ Evaluation resolves the exact target fare quote from that offer and checks accou
 | `journeyOrderId` | string | Parent order. |
 | `caseType` | enum | Case type. |
 | `status` | enum | `OPENED`, `EVALUATING`, `APPROVED`, `REJECTED`, `APPLIED`, `FAILED` |
-| `releasedOrderItemRefs` | string[] | Persisted capacity release confirmations within the case scope. All scoped ticket reservations must be released before the capacity execution phase completes. |
 | `createdAt` | timestamp? | Persisted creation time; null when the original timestamp is unavailable. |
 
 **Error codes:** `VALIDATION_FAILED`, `NOT_FOUND`, `REFUND_ALREADY_IN_PROGRESS`, `ORDER_NOT_REFUNDABLE`, `DOMAIN_RULE_VIOLATION`
@@ -74,8 +73,12 @@ Concurrent evaluations return the same persisted decision and do not publish dup
 | `caseId` | string | Case ID. |
 | `eligible` | boolean | Whether the request is eligible. |
 | `adjustmentQuoteId` | string | Reference to fare-pricing adjustment quote. |
-| `refundableAmount` | object | Amount refundable (Money). |
+| `refundableAmount` | object | Amount refundable (Money); zero in the compensation currency for `COMPENSATION`. |
+| `compensationAmount` | object | Wallet credit amount (Money), present for `COMPENSATION`. |
 | `amountDue` | object | Amount due (Money). |
+
+For compensation, the amount comes from the frozen decision snapshot and is the amount used by wallet execution after approval.
+The same amount fields appear in the case details under `decision`.
 
 **Error codes:** `NOT_FOUND`, `ORDER_NOT_REFUNDABLE`, `PRECONDITION_FAILED`, `UNAVAILABLE`
 
@@ -94,13 +97,74 @@ Concurrent evaluations return the same persisted decision and do not publish dup
 
 **Error codes:** `NOT_FOUND`, `ORDER_NOT_REFUNDABLE`, `PRECONDITION_FAILED`
 
+Approval starts compensation execution internally as `EXECUTING` and returns public status `APPROVED`.
+The caller advances the approved case through `execute-compensation`.
+
 ### Get Post-Sales Case
 
 **GET** `/api/v1/post-sales-cases/{caseId}`
 
 **Response (200):** Full case details.
 
+Case details include `decision`, `compensationOperations` and `releasedOrderItemRefs`.
+For wallet compensation, `decision.kind=COMPENSATION`, `decision.compensationAmount` is the approved credit and `decision.refundableAmount` is zero.
+`compensationOperations` exposes the persisted execution evidence described below.
+`releasedOrderItemRefs` contains recorded capacity release confirmations and remains empty for wallet compensation.
+
 **Error codes:** `NOT_FOUND`
+
+### Execute approved wallet compensation
+
+**POST** `/api/v1/post-sales-cases/{caseId}/execute-compensation`
+
+**Idempotency:** REQUIRED (`Idempotency-Key` as UUID v7).
+Each advance uses a new key because the HTTP filter replays the stored response for a repeated key and request.
+Wallet issuance uses a stable downstream key derived from the canonical case ID and `wallet-compensation` operation name.
+The endpoint accepts an empty request body and returns full case details with HTTP 200.
+
+Execution requires an evaluated `COMPENSATION` case in internal status `EXECUTING`.
+The approved execution plan must contain `ISSUE_COMPENSATION_CREDIT` before active execution can proceed.
+The public status remains `APPROVED` while operations are pending and becomes `APPLIED` after verification and completion.
+An evaluated compensation case already in `APPLIED` or `FAILED` returns its recorded state.
+Concurrent calls share the case execution guard with change execution, including its sixteen execution permits and PostgreSQL advisory lock.
+When a permit or the case lock is busy, the call returns the current case without advancing it.
+
+Before each active advance, the executor checks the original order identity and requires its status to be outside `CANCELLED`, `REFUNDED` and `FAILED`.
+Each scoped entitlement must belong to that order and have a status other than `VOIDED`.
+The case must have no recorded capacity releases, and `GET /api/v1/refunds?businessCaseRef={caseId}` must return `total=0` for the canonical case ID.
+`GET /api/v1/payment-intents/by-business/{journeyOrderId}` must return that order's original payment with `businessRef=journeyOrderId`, status `CAPTURED` and zero `refundedAmount`.
+These checks preserve the original travel references while the executor performs wallet operations.
+The execution path contains no ticket void, seat release, order cancellation or payment refund operation.
+
+Each successful advance persists one evidence record or completes the case:
+
+| Stage | Persisted evidence | Public status after this advance |
+|---|---|---|
+| Prepare request | `compensationOperations.request` contains the full wallet issuance request, including recipient, approved amount, rules, case reference and fixed validity timestamps. | `APPROVED` |
+| Issue positive amount | `compensationOperations.issued` contains the wallet response after checking its `benefitId`, account, case, source, benefit type, balance type and issued Money against the request and decision. | `APPROVED` |
+| Verify result | `compensationOperations.verified` contains `originalTicketsPreserved=true`, `originalPaymentPreserved=true`, original `paymentIntentId` and `capturedAmount`, approved `amount` and `benefitId`. | `APPROVED` |
+| Complete case | `completeCompensation` records `ISSUE_COMPENSATION_CREDIT` and `APPLY_RESULT` as `SUCCEEDED` in order, then the domain applies the case and emits `PostSalesApplied`. | `APPLIED` |
+
+The request credits the order's `accountId` with `benefitType=COMPENSATION_CREDIT`, `balanceType=PROMOTION_CREDIT` and `issuanceSource=POST_SALES_COMP`.
+It carries canonical `caseId`, `applicableScope={scopeType: ANY_TRIP, currency: <approved currency>}`, `redemptionRule={singleUse: false, requiresReservation: false}` and an empty `revocationRule` request object.
+The business reason is `{reasonType: POST_SALES_COMP, reasonCode: <case reasonCode>, referenceType: POST_SALES_CASE, referenceId: <caseId>}`.
+The current executor sets `validFrom` to the time it creates the recorded request and `validUntil` to 30 days later.
+Retries reuse the persisted request, including both timestamps.
+After request creation, the executor checks that its account and amount still match the order and approved decision.
+Positive amounts are reread through `GET /api/v1/benefits/{benefitId}` on advances after issuance, including the completion advance.
+
+For a zero approved amount, execution records `request` and `verified`, with `verified.benefitId=""`, and completes without calling wallet issuance or creating an `issued` record.
+The credit step references the issued `benefitId`, or `zero-approved-compensation` for a zero amount, and `APPLY_RESULT` references the original order ID.
+The `verified` flags record the executor's ticket, original payment and case refund checks; loadgen separately checks confirmed original Holds, order status and the original captured total through their owning APIs.
+Operation records are saved in the PostgreSQL case snapshot and restored on reload.
+
+Wallet / Promotion deduplicates `POST_SALES_COMP` issuance by `caseId` and the complete issuance command.
+An identical command returns the existing benefit even with a different HTTP idempotency key, while a different command returns HTTP 409 `CONFLICT` from the wallet API.
+The executor treats an unsuccessful wallet response as an execution error and retains previously recorded evidence.
+It does not convert that error into a successful or terminal case result.
+
+**Execution errors:** Invalid case type, state or business evidence raises HTTP 422 `DOMAIN_RULE_VIOLATION`.
+An unsuccessful downstream read or issuance response raises HTTP 500 `INTERNAL_ERROR` through the Post Sales exception handler, including a wallet 409 conflict.
 
 ### Execute an approved change
 
@@ -160,9 +224,11 @@ The domain execution operations include:
 | `StartPostSalesExecution` | post-sales (internal) | Start execution of an approved post-sales case. |
 | `ApplyPostSalesResult` | post-sales (internal) | Apply the result of post-sales execution to the case. |
 
-## Integration status
+## Integration checks
 
-The recorded change operations support retry and restart recovery.
-Capacity compensation, the Booking cancellation endpoint and loadgen validation are deployed together.
-The live two traveler scenario verifies one issued replacement followed by capacity rejection, replacement ticket voiding, full captured difference refund settlement and unchanged original tickets.
+The recorded change and wallet compensation operations support retry and restart recovery.
+The live two traveler change scenario contains checks for one issued replacement followed by capacity rejection, replacement ticket voiding, full captured difference refund settlement and unchanged original tickets.
+The loadgen purchase scenarios contain wallet compensation checks for the approved benefit amount, original travel and payment references, and `compensation_credited` fulfillment eligibility.
+`TestLiveWalletCompensationPreservesPaidTravel` contains two traveler and ancillary purchase checks, the equal wallet balance increment, three case and wallet issuance replays with stable identities, original seat and payment snapshots, registry reload and completed fulfillment.
+That focused test has not yet been run against live services.
 See [capacity integration requirements](../../10-domain-enrichment/capacity-overbooking.md) for the production activation requirements.
