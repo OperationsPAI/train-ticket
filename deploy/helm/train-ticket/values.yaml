@@ -958,6 +958,14 @@ services:
       limits: { cpu: 500m, memory: 1Gi }
   disruption-recovery:
     db: disruption_recovery
+    strategy:
+      type: RollingUpdate
+      rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+    terminationGracePeriodSeconds: 45
+    lifecycle:
+      preStop:
+        exec:
+          command: ["sleep", "10"]
     env:
       POST_SALES_URL: http://post-sales:8080
       WALLET_PROMOTION_URL: http://wallet-promotion:8080
