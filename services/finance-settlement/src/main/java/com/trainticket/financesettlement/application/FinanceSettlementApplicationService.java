@@ -151,6 +151,24 @@ public class FinanceSettlementApplicationService {
 
     public void lockOrder(String orderId) { revenueRecognitions.lockOrder(orderId); }
 
+    @org.springframework.transaction.annotation.Transactional
+    public Map<String,Object> revenueBasis(String orderId) {
+        requireText(orderId,"orderId");
+        revenueRecognitions.lockOrder(orderId);
+        var records=revenueRecognitions.findByOrderId(orderId);
+        if(records.isEmpty())throw new ResourceNotFoundException("order revenue has not been recognized");
+        Money net=records.stream().map(RevenueRecognition::netAmount).reduce(Money::plus).orElseThrow();
+        var items=records.stream().map(record->{
+            Map<String,Object> row=new LinkedHashMap<>();
+            row.put("revenueRecognitionId",record.revenueRecognitionId());
+            row.put("amount",DomainEventEnvelopeMapper.moneyPayload(record.amount()));
+            row.put("reversedAmount",DomainEventEnvelopeMapper.moneyPayload(record.reversedAmount()));
+            row.put("reversals",record.reversalAmounts().entrySet().stream().collect(java.util.stream.Collectors.toMap(Map.Entry::getKey,entry->DomainEventEnvelopeMapper.moneyPayload(entry.getValue()))));
+            return row;
+        }).toList();
+        return Map.of("orderId",orderId,"totalAmount",DomainEventEnvelopeMapper.moneyPayload(net),"items",items);
+    }
+
     public void recordChangeFee(String orderId,Money fee,String caseId,String correlationId) {
         var existing=feeAccruals.findByOrderId(orderId).stream().filter(item->caseId.equals(item.sourceEventId())).findFirst();
         if(existing.isPresent()) {

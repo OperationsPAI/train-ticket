@@ -40,6 +40,11 @@ public class FinanceSettlementController {
         return RevenueRecognitionResponse.from(service.getRevenueRecognition(revenueRecognitionId));
     }
 
+    @GetMapping("/api/v1/order-revenue-bases/{orderId}")
+    public Map<String,Object> revenueBasis(@PathVariable String orderId) {
+        return service.revenueBasis(orderId);
+    }
+
     @GetMapping("/api/v1/reconciliation-cases/{reconciliationCaseId}")
     public ReconciliationCaseResponse getReconciliationCase(@PathVariable String reconciliationCaseId) {
         return ReconciliationCaseResponse.from(service.getReconciliationCase(reconciliationCaseId));
