@@ -42,6 +42,16 @@ public class PostSalesApplicationService {
     private final Clock clock;
     private final RefundPolicyEngine refundPolicyEngine = new RefundPolicyEngine();
     private final ChangePolicyEngine changePolicyEngine = new ChangePolicyEngine();
+    private org.springframework.transaction.support.TransactionTemplate evaluationWrite;
+    private org.springframework.transaction.support.TransactionTemplate evaluationRead;
+
+    @Autowired(required=false)
+    void configureEvaluationTransactions(org.springframework.transaction.PlatformTransactionManager manager) {
+        evaluationWrite=new org.springframework.transaction.support.TransactionTemplate(manager);
+        evaluationWrite.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        evaluationRead=new org.springframework.transaction.support.TransactionTemplate(manager);
+        evaluationRead.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_NOT_SUPPORTED);
+    }
 
     public PostSalesApplicationService(PostSalesRepository repository, EventPublisher eventPublisher,
             AdjustmentQuotePort adjustmentQuotePort, PostSalesPolicyContextStore policyContextStore, Clock clock) {
@@ -65,7 +75,13 @@ public class PostSalesApplicationService {
             .orElseGet(() -> openNewCase(command));
     }
 
+    @Transactional(propagation=org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
     public PostSalesCase evaluate(String caseId, String sourceCommandId, String correlationId) {
+        return evaluationRead==null ? prepareEvaluation(caseId,sourceCommandId,correlationId)
+            : evaluationRead.execute(status->prepareEvaluation(caseId,sourceCommandId,correlationId));
+    }
+
+    private PostSalesCase prepareEvaluation(String caseId,String sourceCommandId,String correlationId) {
         PostSalesCase postSalesCase = get(caseId);
         if (isTerminalNonRefundable(postSalesCase)) {
             throw new OrderNotRefundableException();
@@ -75,10 +91,21 @@ public class PostSalesApplicationService {
         }
         if (requiresExclusiveRefundSlot(postSalesCase.caseType())) rejectAlreadyAppliedScope(postSalesCase.journeyOrderId(), postSalesCase.scope(), postSalesCase.caseId());
         Instant now = clock.instant();
-        if (postSalesCase.status().name().equals("OPENED")) {
-            postSalesCase.beginEvaluation(now, sourceCommandId, sourceCommandId, correlationId);
-        }
         PostSalesDecision decision = decisionFor(postSalesCase, now);
+        return evaluationWrite==null ? commitEvaluation(postSalesCase,decision,now,sourceCommandId,correlationId)
+            : evaluationWrite.execute(status->commitEvaluation(postSalesCase,decision,now,sourceCommandId,correlationId));
+    }
+
+    private PostSalesCase commitEvaluation(PostSalesCase source,PostSalesDecision decision,Instant now,String sourceCommandId,String correlationId) {
+        repository.lockOrder(source.journeyOrderId());
+        PostSalesCase postSalesCase=get(source.caseId());
+        if(isTerminalNonRefundable(postSalesCase))throw new OrderNotRefundableException();
+        if(postSalesCase.decision()!=null)return postSalesCase;
+        if(!java.util.Objects.equals(source.targetOfferId(),postSalesCase.targetOfferId()) || !source.scope().equals(postSalesCase.scope())) {
+            throw new com.trainticket.postsales.domain.DomainRuleViolation("case changed during policy evaluation");
+        }
+        if(requiresExclusiveRefundSlot(postSalesCase.caseType()))rejectAlreadyAppliedScope(postSalesCase.journeyOrderId(),postSalesCase.scope(),postSalesCase.caseId());
+        if(postSalesCase.status()==PostSalesCaseStatus.OPENED)postSalesCase.beginEvaluation(now,sourceCommandId,sourceCommandId,correlationId);
         postSalesCase.evaluateEligibility(decision.eligible(), decision.reasonCode(),
             decision.ruleSnapshot().farePricingEvaluationRef(), decision.ruleSnapshot().fareRuleVersion(),
             now, sourceCommandId, sourceCommandId, correlationId);
