@@ -50,6 +50,19 @@ class UnrelatedEventDatabaseIsolationTest {
                 }
                 assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM processed_events",Integer.class));
                 assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM outbox",Integer.class));
+                EventEnvelope created=null;
+                for(var entry:entries){var candidate=mapper.readValue(entry.get(1).get(1).asText(),EventEnvelope.class);if(candidate.eventType().equals("JourneyOrderCreated")){created=candidate;break;}}
+                assertNotNull(created);
+                var context=PostSalesPolicyContextMapper.fromEventPayload(mapper.convertValue(created.payload(),java.util.Map.class)).orElseThrow();
+                for(var type:java.util.List.of(com.trainticket.postsales.domain.PostSalesCaseType.REFUND,com.trainticket.postsales.domain.PostSalesCaseType.CHANGE)){
+                    var pending=com.trainticket.postsales.domain.PostSalesCase.open(context.journeyOrderId(),type,
+                        com.trainticket.postsales.domain.PostSalesScope.ticket("booking","segment","traveler","ticket"),"CUSTOMER_REQUEST","account",UUID.randomUUID().toString(),java.time.Instant.now(),"cmd","corr");
+                    assertThrows(PolicyContextUnavailableException.class,()->service.policyContextFor(pending));
+                }
+                service.recordPolicyContext(context);
+                var change=com.trainticket.postsales.domain.PostSalesCase.open(context.journeyOrderId(),com.trainticket.postsales.domain.PostSalesCaseType.CHANGE,
+                    com.trainticket.postsales.domain.PostSalesScope.ticket("booking","segment","traveler","ticket"),"CUSTOMER_REQUEST","account",UUID.randomUUID().toString(),java.time.Instant.now(),"cmd","corr");
+                assertEquals(context,service.policyContextFor(change));
             }finally{admin.createStatement().execute("DROP SCHEMA "+schema+" CASCADE");}
         }
     }
