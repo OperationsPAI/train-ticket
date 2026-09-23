@@ -89,7 +89,10 @@ The production directory sample was approximately 15.01 million rows and 575767 
 Three passes represent approximately 13.18 GiB of base relation pages before caching and sorting effects.
 The observed 3963623 reads and 611164160 temporary bytes were statistics window increments, not a measured migration duration.
 Production planning retained sorting at `work_mem=8MB`; fewer scans do not guarantee proportional latency or temporary file reductions.
-No production rebuild timing has been measured for migration 005.
+The coordinated production migration completed on 2026-09-23 in 10.359 seconds and preserved the source event table.
+All three replacement views were populated at commit, and revision 278 deploys the matching service implementation.
+Subsequent refreshes return the same monetary total and payment count for each of the five dimensions.
+The measured migration duration is specific to that production snapshot and resource state.
 
 ## Verification
 
