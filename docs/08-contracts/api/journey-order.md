@@ -1,6 +1,6 @@
-# Journey Order — HTTP API
+# Journey Order HTTP API
 
-Last updated: 2026-07-05
+Last updated: 2026-09-23.
 
 ## Overview
 
@@ -72,6 +72,27 @@ An unavailable, expired or inconsistent offer cannot create a replacement-priced
 
 **Error codes:** `NOT_FOUND`
 
+### Get accepted purchase source
+
+**GET** `/api/v1/internal/journey-orders/{orderId}/purchase-source`
+
+Returns the original accepted Offer from the persisted `JourneyOrderCreated` timeline fact.
+The source remains unchanged when a successful change updates the order's current `offerId`.
+Inventory reconciliation uses this source for an initial purchase reservation whose own immutable supply references are absent.
+Replacement reservations use their recorded change's target Offer.
+
+| Field | Type | Description |
+|---|---|---|
+| `orderId` | string | Owning commercial order. |
+| `accountId` | string | Account that accepted the purchase. |
+| `offerId` | string | Original accepted Offer. |
+| `timelineFactId` | string | Persisted creation fact supplying the Offer reference. |
+| `acceptedAt` | timestamp | Timestamp recorded on the creation fact. |
+
+This endpoint performs a read and does not emit an event or update the order.
+An absent or ambiguous creation fact, or a creation fact without an Offer reference, returns `PRECONDITION_FAILED`.
+An unknown order returns `NOT_FOUND`.
+
 ### List Journey Orders
 
 **GET** `/api/v1/journey-orders?accountId={accountId}&limit=20&offset=0&status=CONFIRMED`
@@ -107,6 +128,7 @@ An unavailable, expired or inconsistent offer cannot create a replacement-priced
 - `MarkPendingPayment` (internal: triggered by booking saga)
 - `ConfirmJourneyOrder` (internal: triggered by booking saga)
 
-## Open Issues
+## Supply integration
 
-- None.
+The accepted purchase source endpoint supports the coordinated Capacity integration described in [capacity integration requirements](../../10-domain-enrichment/capacity-overbooking.md).
+A source read alone does not establish complete historical occupancy or correct replacement compensation.
