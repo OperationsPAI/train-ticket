@@ -47,6 +47,11 @@ final class PostgresFinanceRepositories {
         }
 
         @Override
+        public void lockOrder(String orderId) {
+            jdbc.query("SELECT pg_advisory_xact_lock(hashtextextended(?,0))",rs->{},"finance-order:"+orderId);
+        }
+
+        @Override
         public Optional<RevenueRecognition> findById(String id) {
             return snapshots.get(id)
                 .map(snapshot -> JacksonFinanceSettlementJson.toRevenue(snapshot.data(), mapper).withVersion(snapshot.version()));
