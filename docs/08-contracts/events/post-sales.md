@@ -138,6 +138,9 @@ capacity-availability releases the hold (`CapacityReleased` carries
 | `caseId` | `PostSalesCaseId` | yes | Case ID. |
 | `orderId` | `JourneyOrderId` | yes | Parent order. |
 | `resultSummary` | object | yes | Summary of executed actions. |
+| `caseType` | string | yes | Executed case type. CHANGE has already applied its verified replacement order. |
+| `scope` | object | yes | Current traveler and segment references affected by the result. |
+| `retainedFee` | Money | yes | Assessed fee retained after the refund. Journey Order records it once per case. |
 
 ### PostSalesFailed
 
