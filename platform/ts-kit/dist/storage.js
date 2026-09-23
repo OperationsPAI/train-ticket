@@ -426,6 +426,10 @@ export class OutboxAppender {
         }
     }
 }
+/** Rows per retention DELETE. */
+const CLEANUP_BATCH_SIZE = 1_000;
+/** Batches per table per sweep. Bounds one pass; the next pass resumes. */
+const CLEANUP_MAX_BATCHES = 1;
 export class OutboxRelay {
     pool;
     redis;
@@ -545,15 +549,58 @@ export class OutboxRelay {
             await sleepUntil(() => this.stopped, interval);
         }
     }
+    // Retention sweep for the three platform tables.
+    //
+    // Each statement is batched and each subquery takes FOR UPDATE SKIP LOCKED,
+    // so concurrent sweepers claim disjoint rows. offer-management runs three
+    // pods, each with its own relay, and an unqualified subquery picks an
+    // arbitrary row set, so two sweeps lock the same rows in opposite orders and
+    // deadlock. The deployed cluster logged 76 deadlocks in one window, every one
+    // of them two retention statements waiting on each other.
+    //
+    // Batching also bounds each statement: the unbounded form tried to delete a
+    // whole backlog in one transaction, which is how journey-order's
+    // processed_events reached 1,092,388 rows.
     async cleanup() {
-        try {
-            await this.pool.query(`DELETE FROM outbox WHERE published_at IS NOT NULL AND published_at < now() - interval '30 seconds'`);
-            await this.pool.query(`DELETE FROM processed_events WHERE processed_at < now() - interval '5 minutes'`);
-            await this.pool.query(`DELETE FROM idempotency_records WHERE created_at < now() - interval '10 minutes'`);
+        await this.sweep("outbox", `DELETE FROM outbox WHERE ctid IN (SELECT ctid FROM outbox
+       WHERE published_at IS NOT NULL AND published_at < now() - interval '30 seconds'
+       LIMIT $1 FOR UPDATE SKIP LOCKED)`);
+        await this.sweep("processed_events", `DELETE FROM processed_events WHERE ctid IN (SELECT ctid FROM processed_events
+       WHERE processed_at < now() - interval '5 minutes'
+       LIMIT $1 FOR UPDATE SKIP LOCKED)`);
+        await this.sweep("idempotency_records", `DELETE FROM idempotency_records WHERE ctid IN (SELECT ctid FROM idempotency_records
+       WHERE created_at < now() - interval '10 minutes'
+       LIMIT $1 FOR UPDATE SKIP LOCKED)`);
+    }
+    async sweep(table, batchedDelete) {
+        let removed = 0;
+        for (let batch = 0; batch < CLEANUP_MAX_BATCHES; batch++) {
+            let affected;
+            try {
+                const result = await this.pool.query(batchedDelete, [CLEANUP_BATCH_SIZE]);
+                affected = result.rowCount ?? 0;
+            }
+            catch (error) {
+                // Logged, not swallowed. The silent version of this catch is why nobody
+                // noticed the sweep had stopped.
+                console.warn({
+                    table,
+                    removed,
+                    error: sanitizedRelayError(error).message,
+                    message: "retention sweep failed",
+                });
+                return;
+            }
+            removed += affected;
+            if (affected < CLEANUP_BATCH_SIZE) {
+                return;
+            }
         }
-        catch {
-            // best-effort cleanup
-        }
+        console.warn({
+            table,
+            removed,
+            message: "retention sweep hit its batch budget; the table is still above retention",
+        });
     }
 }
 export class ProcessedEventsGuard {

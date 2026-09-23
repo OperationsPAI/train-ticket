@@ -171,9 +171,11 @@ export declare class RedisEventSubscriber implements EventSubscriber {
     private readonly redis;
     private readonly onLoopFailure;
     private readonly options;
+    static readonly CONSUMED_EVENT_CACHE_LIMIT = 4096;
     private stopped;
     private readonly consumedEventIds;
     private readonly loops;
+    private readonly handlerFailures;
     private startedPromise;
     private resolveStarted;
     private rejectStarted;
@@ -185,6 +187,7 @@ export declare class RedisEventSubscriber implements EventSubscriber {
      * next read instead of erroring on NOGROUP forever.
      */
     private groupsNeedRecreate;
+    private readonly recoveryCursors;
     constructor(redis?: Redis, onLoopFailure?: SubscriberLoopFailureHandler, options?: Readonly<{
         thrownHandlerErrors?: "retry" | "dlq";
     }>);

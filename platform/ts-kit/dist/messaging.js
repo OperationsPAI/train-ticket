@@ -158,7 +158,7 @@ const READ_BLOCK_MS = parseInt(process.env.CONSUMER_BLOCK_MS ?? "100", 10);
 const READ_COUNT = parseInt(process.env.CONSUMER_BATCH_COUNT ?? "100", 10);
 const CLAIM_MIN_IDLE_MS = 60_000;
 const DEAD_CONSUMER_IDLE_MS = 5 * 60 * 1_000;
-const MAX_DELIVERIES = 5;
+const MAX_HANDLER_FAILURES = 5;
 export const STREAM_MAXLEN_ENV = "EVENT_STREAM_MAXLEN";
 export const DEFAULT_STREAM_MAXLEN = 10_000;
 /**
@@ -319,9 +319,11 @@ export class RedisEventSubscriber {
     redis;
     onLoopFailure;
     options;
+    static CONSUMED_EVENT_CACHE_LIMIT = 4096;
     stopped = false;
     consumedEventIds = new Set();
     loops = new Set();
+    handlerFailures = new Map();
     startedPromise;
     resolveStarted;
     rejectStarted;
@@ -333,6 +335,7 @@ export class RedisEventSubscriber {
      * next read instead of erroring on NOGROUP forever.
      */
     groupsNeedRecreate = false;
+    recoveryCursors = new Map();
     constructor(redis = createRedisClient(redisUrl(), {}, "subscriber"), onLoopFailure = defaultLoopFailureHandler, options = {}) {
         this.redis = redis;
         this.onLoopFailure = onLoopFailure;
@@ -486,7 +489,7 @@ export class RedisEventSubscriber {
     }
     async recover(streams, group, consumerName, handler, signal) {
         while (!this.stopped && !signal?.aborted) {
-            await sleepUntil(() => this.stopped || signal?.aborted === true, CLAIM_MIN_IDLE_MS);
+            await sleepUntil(() => this.stopped || signal?.aborted === true, 1000);
             if (this.stopped || signal?.aborted) {
                 return;
             }
@@ -510,15 +513,25 @@ export class RedisEventSubscriber {
         }
     }
     async processMessages(messages, group, consumerName, handler) {
-        for (const [stream, entries] of messages ?? []) {
-            await this.processEntries(stream, group, consumerName, entries, handler);
+        if (Number(process.env.CONSUMER_BATCH_CONCURRENCY ?? "1") > 1) {
+            await Promise.all((messages ?? []).map(([stream, entries]) => this.processEntries(stream, group, consumerName, entries, handler)));
+        }
+        else {
+            for (const [stream, entries] of messages ?? []) {
+                await this.processEntries(stream, group, consumerName, entries, handler);
+            }
         }
     }
     async processEntries(stream, group, consumerName, entries, handler) {
         if (!handler.handleBatch || entries.length <= 1) {
-            for (const entry of entries) {
-                await this.processEntry(stream, group, consumerName, entry, handler);
-            }
+            const concurrency = Math.max(1, Number(process.env.CONSUMER_BATCH_CONCURRENCY ?? "1"));
+            let next = 0;
+            await Promise.all(Array.from({ length: Math.min(concurrency, entries.length) }, async () => {
+                while (next < entries.length) {
+                    const entry = entries[next++];
+                    await this.processEntry(stream, group, consumerName, entry, handler);
+                }
+            }));
             return;
         }
         const batch = [];
@@ -632,14 +645,34 @@ export class RedisEventSubscriber {
         await this.finishEntry(stream, group, consumerName, entry, envelope, attempts, result, failureReason);
     }
     async finishEntry(stream, group, consumerName, entry, envelope, attempts, result, failureReason) {
+        const failureKey = `${stream}:${group}:${entry[0]}`;
         if (result === "ack") {
+            this.handlerFailures.delete(failureKey);
             this.consumedEventIds.add(envelope.eventId);
+            if (this.consumedEventIds.size > RedisEventSubscriber.CONSUMED_EVENT_CACHE_LIMIT) {
+                const oldest = this.consumedEventIds.values().next().value;
+                if (oldest !== undefined)
+                    this.consumedEventIds.delete(oldest);
+            }
             await this.redis.xack(stream, group, entry[0]);
             return;
         }
         if (result === "dlq") {
+            this.handlerFailures.delete(failureKey);
             await this.deadLetterAndAck(stream, group, consumerName, entry, failureReason, attempts);
             return;
+        }
+        const failures = (this.handlerFailures.get(failureKey) ?? 0) + 1;
+        this.handlerFailures.set(failureKey, failures);
+        if (failures >= MAX_HANDLER_FAILURES) {
+            this.handlerFailures.delete(failureKey);
+            await this.deadLetterAndAck(stream, group, consumerName, entry, failureReason, failures);
+            return;
+        }
+        if (this.handlerFailures.size > RedisEventSubscriber.CONSUMED_EVENT_CACHE_LIMIT) {
+            const oldest = this.handlerFailures.keys().next().value;
+            if (oldest !== undefined)
+                this.handlerFailures.delete(oldest);
         }
         console.warn({
             service: group,
@@ -651,16 +684,13 @@ export class RedisEventSubscriber {
         });
     }
     async claimAndProcess(stream, group, consumerName, handler) {
-        const claimed = await this.redis.xautoclaim(stream, group, consumerName, CLAIM_MIN_IDLE_MS, "0", "COUNT", 100);
+        const cursorKey = `${stream}:${group}:${consumerName}`;
+        const claimed = await this.redis.xautoclaim(stream, group, consumerName, CLAIM_MIN_IDLE_MS, this.recoveryCursors.get(cursorKey) ?? "0-0", "COUNT", 100);
+        this.recoveryCursors.set(cursorKey, typeof claimed[0] === "string" ? claimed[0] : "0-0");
         const entries = (Array.isArray(claimed[1]) ? claimed[1] : []);
         const deliveryCounts = await this.deliveryCounts(stream, group, entries.map(([entryId]) => entryId));
         for (const entry of entries) {
-            if ((deliveryCounts.get(entry[0]) ?? 1) >= MAX_DELIVERIES) {
-                await this.deadLetterAndAck(stream, group, consumerName, entry, "MaxDeliveries", deliveryCounts.get(entry[0]) ?? MAX_DELIVERIES);
-            }
-            else {
-                await this.processEntry(stream, group, consumerName, entry, handler, deliveryCounts.get(entry[0]) ?? 1);
-            }
+            await this.processEntry(stream, group, consumerName, entry, handler, deliveryCounts.get(entry[0]) ?? 1);
         }
     }
     async deliveryCounts(stream, group, entryIds) {
@@ -724,6 +754,8 @@ export class RedisEventSubscriber {
                     const idle = parseInt(fieldValue(entry, "idle") ?? "0", 10);
                     if (idle > DEAD_CONSUMER_IDLE_MS) {
                         const pending = fieldValue(entry, "pending") ?? "0";
+                        if (parseInt(pending, 10) > 0)
+                            continue;
                         await this.redis.xgroup("DELCONSUMER", stream, group, name);
                         console.info({
                             service: group,
