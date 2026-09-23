@@ -17,6 +17,7 @@ Image updates must preserve this workload configuration and its persistent state
 See the [loadgen runtime guide](./README.md) for operation checkpoints and verification commands.
 
 The verified release for the ticketing error mapping is Helm revision 257, and the accepted purchase source endpoint is deployed in revision 258.
+Capacity change compensation is deployed in revision 259, with validated loadgen handling in revision 260.
 Check `helm history` and the deployed image digests for the live release; repository HEAD and the running images can differ.
 
 ## Verified behavior
@@ -32,6 +33,7 @@ The following checks have completed against deployed services:
 | Multiple travelers | Purchase, ancillary fulfillment, change, refund, compensation, cancellation and no show pass the combined live regression. |
 | Protected transfer | A missed protected connection reaches the recorded recovery result. |
 | Ticketing errors | A sold out Seat Assignment response reaches the ticketing caller as HTTP 422 with the original business error. |
+| Capacity change compensation | Recorded sold out changes and a paid two traveler change with one issued replacement preserve original tickets, release replacement capacity and settle the full difference refund. |
 
 The broad regression at revision 256 completed in 228.547 seconds.
 The six class purchase regression at revision 257 completed in 92.007 seconds.
@@ -61,17 +63,16 @@ Historical purchase reconstruction must use the original accepted source when im
 
 ## Active problems and remaining acceptance
 
-Sold out replacement changes still return an unexpected HTTP 500 from Post Sales.
-Two recorded cases are `psc-01a0cdac-da33-7fd4-a442-bdafdf12c14d` and `psc-01a0cdef-0d3c-7fa8-8b77-d13ed8e8766b`.
-The relevant business class has 36 physical seats already occupied while a replacement Hold was confirmed.
-Ticketing now preserves the business rejection; Post Sales still needs a terminal compensation result that preserves original tickets and refunds any captured difference payment.
+Recorded sold out cases `psc-01a0cdac-da33-7fd4-a442-bdafdf12c14d` and `psc-01a0cdef-0d3c-7fa8-8b77-d13ed8e8766b` completed capacity compensation.
+The paid partial issuance case `psc-01a0ce4b-329a-7f9c-8958-689fadc80160` verified replacement ticket voiding, full difference refund settlement, original ticket preservation and terminal replay.
+These cases now end with `CHANGE_CAPACITY_UNAVAILABLE`, and loadgen records the checked outcome as `change_unavailable`.
 
 The remaining acceptance work includes:
 
 1. Ordered route intervals, composition changes, standing substitutions and exact capacity ownership during coordinated Booking and Capacity activation.
 2. Cross pool snapshot counts that agree with the combined admission calculation.
 3. Automatic Waitlist release matching with correct date, class, payment guarantee and traveler intent.
-4. Partial paid failure compensation and eligibility behavior after changed travel dates.
+4. Other paid failure paths and eligibility behavior after changed travel dates.
 5. A complete peak traffic cycle, recorder completeness and durable consumer replay validation.
 6. Notification and loyalty dead letter attribution, insurance claim history, finance history and daily fee checks, group and corporate workflows, reporting and bootstrap coverage.
 
