@@ -168,6 +168,37 @@ public class BookingOrchestrationService {
         return result;
     }
 
+    @Transactional
+    public RequestReservationResult requestReservation(String sagaId, RequestReservationCommand command,
+        ReservationFactsResolver.Facts facts, String correlationId) {
+        var saga = sagas.findById(sagaId).orElseThrow(() -> new NotFoundException("Booking saga not found: " + sagaId));
+        if (!saga.journeyOrderId().equals(facts.orderId()) || !command.segmentRef().equals(facts.segmentRef())
+            || !command.travelerRef().equals(facts.travelerRef())) throw new PreconditionFailedException("reservation facts differ from request", null);
+        if (saga.status() == BookingSagaStatus.FAILED || saga.status() == BookingSagaStatus.COMPLETED
+            || saga.status() == BookingSagaStatus.MANUAL_REVIEW || saga.status() == BookingSagaStatus.COMPENSATING) {
+            throw new PreconditionFailedException("Booking saga cannot accept reservations in " + saga.status(), null);
+        }
+        String businessKey = facts.orderId() + ":" + facts.segmentRef() + ":" + facts.travelerRef() + ":purchase";
+        sagas.lockReference(businessKey);
+        var existing = segmentBookings.findByIdempotencyKey(businessKey);
+        if (existing.isPresent()) {
+            var booking = existing.get().booking();
+            if (!sagaId.equals(existing.get().sagaId()) || !facts.offerItemRef().equals(booking.offerItemRef())
+                || !facts.classRef().equals(booking.classRef())) throw new PreconditionFailedException("reservation already has different commercial facts", null);
+            return new RequestReservationResult(booking.segmentBookingId(), booking.status().name());
+        }
+        var booking = SegmentBooking.requestReservation(command.segmentBookingId(), facts.orderId(), facts.offerItemRef(),
+            facts.segmentRef(), facts.travelerRef(), "purchase", clock).withClassRef(facts.classRef());
+        segmentBookings.save(booking, sagaId);
+        eventPublisher.publish(new EventEnvelope(PrefixedIds.newEventId(), "SegmentReservationRequested", clock.instant(),
+            correlationId, PrefixedIds.newCommandId(), PRODUCER, 1,
+            Map.of("segmentBookingId", booking.segmentBookingId(), "journeyOrderId", facts.orderId(),
+                "segmentRef", facts.segmentRef(), "travelerRef", facts.travelerRef(), "idempotencyKey", booking.idempotencyKey(),
+                "classRef", facts.classRef(), "scheduledServiceRef", facts.scheduledServiceRef(), "serviceDate", facts.serviceDate(),
+                "offerItemRef", facts.offerItemRef())));
+        return new RequestReservationResult(booking.segmentBookingId(), "REQUESTED");
+    }
+
     public MarkTicketedResult markTicketed(String sagaId, MarkTicketedCommand command,
                                            String idempotencyKey, String correlationId) {
         sagas.findById(sagaId).orElseThrow(() -> new NotFoundException("Booking saga not found: " + sagaId));
