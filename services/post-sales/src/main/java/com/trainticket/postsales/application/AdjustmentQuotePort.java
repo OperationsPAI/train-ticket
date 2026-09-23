@@ -30,6 +30,11 @@ public interface AdjustmentQuotePort {
         long refundableMinorUnits,
         String refundableCurrency,
         long amountDueMinorUnits,
-        String amountDueCurrency
-    ) { }
+        String amountDueCurrency,
+        PostSalesPolicyContext policyContext
+    ) {
+        public AdjustmentQuoteResult(String id,String status,long refundable,String refundableCurrency,long due,String dueCurrency) {
+            this(id,status,refundable,refundableCurrency,due,dueCurrency,null);
+        }
+    }
 }

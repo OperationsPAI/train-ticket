@@ -311,7 +311,10 @@ public class PostSalesApplicationService {
             return new PostSalesDecision(postSalesCase.caseId(), 1, kind, true, "ELIGIBLE", ruleSnapshot, amount, null, null, null, now, now.plusSeconds(900));
         }
 
-        PostSalesPolicyContext policyContext = policyContextFor(postSalesCase);
+        PostSalesPolicyContext acceptedContext=quote.map(AdjustmentQuotePort.AdjustmentQuoteResult::policyContext).orElse(null);
+        PostSalesPolicyContext policyContext = acceptedContext==null ? policyContextFor(postSalesCase)
+            : new PostSalesPolicyContext(acceptedContext.journeyOrderId(),acceptedContext.departureTime(),acceptedContext.travelerTypesByRef(),
+                acceptedContext.groupSize(),appliedChanges(postSalesCase.journeyOrderId()).size(),acceptedContext.originalFare(),acceptedContext.refundComponents());
         if (kind == DecisionKind.CHANGE) {
             Money originalFare = policyContext.originalFareOr(amountDue.isZero() ? refundable : amountDue);
             ChangeAssessment assessment = changePolicyEngine.evaluateQuotedChange(
