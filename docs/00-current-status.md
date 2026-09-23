@@ -64,6 +64,11 @@ Its case `psc-01a0ceba-9bb5-7fbe-ac91-2168e09ae5ad` received CNY 8.86 through be
 Finance Settlement records the same CNY 8.86 as `BenefitIssued` compensation cost with the case reference.
 The revision 272 broad regression failed on an invoice request whose order projection was not available within the existing polling window.
 The order was already confirmed, and its invoice projection subsequently became available.
+The corrected revision 274 broad regression passes eligibility, recovery selections, multi traveler purchase and post sales, and protected transfer in 260.087 seconds.
+The resident five minute window ending at 14:49:15 UTC contains 139145 requests, no unexpected HTTP errors and request P99 of 250.716 milliseconds, with 530 repeated compensation evidence failures.
+The recorded failed case `psc-01a0ceb7-f59d-7f91-975b-ea1849af58b6` is already `APPLIED`, has released original capacity and has no wallet operation evidence.
+Loadgen retains this terminal failure with its complete case evidence and excludes it from automatic execution without treating it as a successful compensation.
+The recorded live test verifies unchanged case, payment and wallet records through this handling in 0.122 seconds.
 Complete peak period and durable replay acceptance remain open.
 The continuous 600 second recording ending at 12:58:47 UTC contains 711900 requests and 10348 failed journeys, with request P99 reaching the 10 second deadline.
 That window spans several deployment revisions and is diagnostic evidence for peak latency.
