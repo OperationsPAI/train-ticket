@@ -53,7 +53,8 @@ public class ChangeExecutionService {
                 JsonNode booking=get("booking-orchestration","/api/v1/internal/segment-bookings/"+bookingId,correlation);
                 if("FAILED".equals(text(booking,"status")) || "CANCELLED".equals(text(booking,"status")))throw new DomainRuleViolation("replacement reservation failed: "+bookingId);
                 if(!"CONFIRMED".equals(text(booking,"status")))return change;
-                JsonNode hold=get("capacity-availability","/api/v1/capacity-holds/"+text(booking,"capacityHoldId"),correlation);
+                JsonNode hold=getPending("capacity-availability","/api/v1/capacity-holds/"+text(booking,"capacityHoldId"),correlation);
+                if(hold==null)return change;
                 if(!"CONFIRMED".equals(text(hold,"status")))return change;
                 return cases.recordChangeOperation(caseId,"confirmed:"+bookingId,Map.of("booking",map(booking),"hold",map(hold)));
             }
@@ -145,6 +146,13 @@ public class ChangeExecutionService {
     private JsonNode get(String service,String path,String correlation) {
         return client.get().uri(baseTemplate.formatted(service)+path).header("X-Correlation-Id",correlation).exchange((request,response)->{
             if(!response.getStatusCode().is2xxSuccessful())throw new IllegalStateException("change reference lookup returned "+response.getStatusCode());
+            return mapper.readTree(response.getBody());
+        });
+    }
+    private JsonNode getPending(String service,String path,String correlation){
+        return client.get().uri(baseTemplate.formatted(service)+path).header("X-Correlation-Id",correlation).exchange((request,response)->{
+            if(response.getStatusCode().value()==404)return null;
+            if(!response.getStatusCode().is2xxSuccessful())throw new IllegalStateException("change pending reference lookup returned "+response.getStatusCode());
             return mapper.readTree(response.getBody());
         });
     }
