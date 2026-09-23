@@ -682,15 +682,13 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
         if (approvedActions instanceof Map<?, ?> actions && actions.get("refund") instanceof Map<?, ?> refund) {
             Money refundAmount = money(((Map<?, ?>) refund).get("amount"), "approvedActions.refund.amount");
             projections.saveApprovedRefund(caseId, refundAmount);
-            optionalText(payload, "orderId").ifPresent(orderId -> projections.saveApprovedRefund(orderId, refundAmount));
         }
     }
 
     private void applyPostSales(EventEnvelope envelope, Map<String, Object> payload) {
         String orderId = text(payload, "orderId");
-        String caseId = optionalText(payload, "caseId").orElse(optionalText(payload, "postSalesCaseId").orElse(""));
+        String caseId = text(payload, "caseId");
         Money refund = projections.findApprovedRefund(caseId)
-            .or(() -> projections.findApprovedRefund(orderId))
             .orElseThrow(() -> new OutOfOrderEventException("PostSalesApplied received before PostSalesApproved refund amount"));
         if (refund.isZero()) {
             if (shouldLogZeroRefundWarning()) {

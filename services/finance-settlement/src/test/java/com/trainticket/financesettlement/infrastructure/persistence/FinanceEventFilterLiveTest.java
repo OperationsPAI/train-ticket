@@ -53,11 +53,26 @@ class FinanceEventFilterLiveTest {
                     });
                 }
                 assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM processed_events",Integer.class));
-                var captured=events.stream().filter(event->event.eventType().equals("PaymentCaptured") && "purchase".equals(((Map<?,?>)event.payload()).get("purpose"))).findFirst().orElseThrow();
+                var refundSource=mapper.readTree(Files.readString(Path.of(System.getenv("TEST_FINANCE_REFUND_SOURCE"))));
+                var captured=mapper.treeToValue(refundSource.path("captured"),EventEnvelope.class);
                 for(int attempt=0;attempt<2;attempt++)assertEquals(com.trainticket.platformkit.messaging.HandlerResult.SUCCESS,RedisMessagingConfiguration.dispatch(handler,captured));
                 assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM revenue_recognition_snapshots",Integer.class));
                 assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM outbox WHERE envelope->>'eventType'='RevenueRecognized'",Integer.class));
                 assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM processed_events",Integer.class));
+                var approved=mapper.treeToValue(refundSource.path("approved"),EventEnvelope.class);
+                var applied=mapper.treeToValue(refundSource.path("applied"),EventEnvelope.class);
+                String orderId=refundSource.path("applied").path("payload").path("orderId").asText();
+                var refund=refundSource.path("approved").path("payload").path("approvedActions").path("refund").path("amount");
+                var currency=java.util.Currency.getInstance(refund.path("currency").asText());
+                var amount=new com.trainticket.financesettlement.domain.Money(currency,java.math.BigDecimal.valueOf(refund.path("minorUnits").asLong(),currency.getDefaultFractionDigits()));
+                projections.saveApprovedRefund(orderId,amount);
+                assertEquals(com.trainticket.platformkit.messaging.HandlerResult.TRANSIENT_FAILURE,RedisMessagingConfiguration.dispatch(handler,applied));
+                assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM outbox WHERE envelope->>'eventType'='RevenueRecognitionReversed'",Integer.class));
+                assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM processed_events",Integer.class));
+                assertEquals(com.trainticket.platformkit.messaging.HandlerResult.SUCCESS,RedisMessagingConfiguration.dispatch(handler,approved));
+                for(int attempt=0;attempt<2;attempt++)assertEquals(com.trainticket.platformkit.messaging.HandlerResult.SUCCESS,RedisMessagingConfiguration.dispatch(handler,applied));
+                assertEquals(amount,new PostgresFinanceRepositories.RevenueRecognitions(pool,mapper).findByOrderId(orderId).getFirst().reversedAmount());
+                assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM outbox WHERE envelope->>'eventType'='RevenueRecognitionReversed'",Integer.class));
             } finally {jdbc.execute("DROP SCHEMA "+schema+" CASCADE");}
         }
     }
