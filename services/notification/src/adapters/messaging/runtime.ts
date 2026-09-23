@@ -28,7 +28,7 @@ export async function startNotificationMessaging(
     ? NOTIFICATION_SUBSCRIBED_STREAMS.map((_, index) => index === 0 ? subscriber : new RedisStreamEventSubscriber())
     : [subscriber];
   const application = publisher ? new NotificationApplicationService(publisher, undefined, channelGateway, undefined, undefined, undefined, new NotificationAggregator()) : undefined;
-  const handler = new DeduplicatingEventHandler(async (envelope) => {
+  const dispatch: Parameters<RedisStreamEventSubscriber["subscribe"]>[3] = async (envelope) => {
     try {
       if (storage) {
         const result = await storage.handleExternalTrigger(envelope);
@@ -48,13 +48,15 @@ export async function startNotificationMessaging(
       }
       throw error;
     }
-  });
+  };
+  const deduplicator = storage ? undefined : new DeduplicatingEventHandler(dispatch);
+  const handler = deduplicator ? deduplicator.handle.bind(deduplicator) : dispatch;
 
   await Promise.all(subscribers.map((consumer, index) => consumer.subscribe(
     storage ? [NOTIFICATION_SUBSCRIBED_STREAMS[index]] : NOTIFICATION_SUBSCRIBED_STREAMS,
     NOTIFICATION_CONSUMER_GROUP,
     notificationConsumerName(),
-    (envelope) => handler.handle(envelope),
+    handler,
   )));
 
   return {
