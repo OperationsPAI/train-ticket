@@ -3,6 +3,7 @@ package messaging
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -19,6 +20,22 @@ func NewInboundHandler(service *application.InsuranceService) *InboundHandler {
 
 func (h *InboundHandler) Handle(ctx context.Context, envelope kitmsg.EventEnvelope) error {
 	switch envelope.EventType {
+	case "AncillaryOrderItemRefunded":
+		var payload struct {
+			ItemID      string `json:"ancillaryOrderItemId"`
+			ServiceType string `json:"serviceType"`
+			RefundID    string `json:"refundRef"`
+		}
+		if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+			return err
+		}
+		if payload.ServiceType != "INSURANCE" {
+			return nil
+		}
+		if payload.ItemID == "" || payload.RefundID == "" {
+			return fmt.Errorf("insurance refund references missing")
+		}
+		return h.service.CancelRefundedInsuranceItem(ctx, payload.ItemID, payload.RefundID, envelope.CorrelationID, envelope.EventID)
 	case "PostSalesApplied", "RefundApproved":
 		return h.handleRefundApplied(ctx, envelope)
 	case "TrainDelayed":
