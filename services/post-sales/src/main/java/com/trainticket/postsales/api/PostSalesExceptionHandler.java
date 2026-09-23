@@ -19,6 +19,11 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 public class PostSalesExceptionHandler {
     private static final Logger LOGGER = LoggerFactory.getLogger(PostSalesExceptionHandler.class);
 
+    @ExceptionHandler(com.trainticket.postsales.domain.DomainRuleViolation.class)
+    public ResponseEntity<ApiError> handleDomainRule(com.trainticket.postsales.domain.DomainRuleViolation exception, HttpServletRequest request) {
+        return error(HttpStatus.UNPROCESSABLE_ENTITY, "DOMAIN_RULE_VIOLATION", exception.getMessage(), request, Map.of());
+    }
+
     @ExceptionHandler(RefundAlreadyInProgressException.class)
     public ResponseEntity<ApiError> handleRefundAlreadyInProgress(RefundAlreadyInProgressException exception, HttpServletRequest request) {
         Map<String, ?> details = exception.existingCaseId() == null ? Map.of() : Map.of("existingCaseId", prefixed(exception.existingCaseId()));
