@@ -312,9 +312,11 @@ public class BookingOrchestrationService {
             warnCapacityAckSkip(eventType, "unknown segment booking reference");
             return;
         }
-        booking.markCapacityHolding(holdId);
-        segmentBookings.save(booking, sagaIdForSegmentBooking(booking.segmentBookingId()).orElseThrow());
-        publishEvents(booking.pullEvents(), correlationId, causationId);
+        if(!booking.capacityHoldId().filter(holdId::equals).isPresent() || booking.status()==com.trainticket.bookingorchestration.domain.SegmentBookingStatus.REQUESTED) {
+            booking.markCapacityHolding(holdId);
+            segmentBookings.save(booking, sagaIdForSegmentBooking(booking.segmentBookingId()).orElseThrow());
+            publishEvents(booking.pullEvents(), correlationId, causationId);
+        }
         markSagaStepSucceeded(eventType, booking.segmentBookingId(), correlationId, causationId);
     }
 
