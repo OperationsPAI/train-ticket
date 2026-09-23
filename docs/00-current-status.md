@@ -34,6 +34,8 @@ Revision 271 excludes completed capacity release records before acquiring order 
 Revision 272 exposes Service Plan segment supply with ordered stops, interval and stop sequence version.
 Revision 273 deploys wallet case issuance deduplication and compensation preservation in Payment, Journey Order, Finance Settlement and Invoicing.
 Revision 274 deploys the approved wallet compensation executor and loadgen validation.
+Revision 275 retains terminal compensation mismatch evidence without automatically repeating execution and ignores refund instructions on compensation approvals in Finance Settlement.
+Revision 276 requires complete invoice order and amount projections and uses four Journey Order stream consumers with order scoped projection locking.
 Check `helm history` and the deployed image digests for the live release; repository HEAD and the running images can differ.
 
 ## Verified behavior
@@ -69,6 +71,12 @@ The resident five minute window ending at 14:49:15 UTC contains 139145 requests,
 The recorded failed case `psc-01a0ceb7-f59d-7f91-975b-ea1849af58b6` is already `APPLIED`, has released original capacity and has no wallet operation evidence.
 Loadgen retains this terminal failure with its complete case evidence and excludes it from automatic execution without treating it as a successful compensation.
 The recorded live test verifies unchanged case, payment and wallet records through this handling in 0.122 seconds.
+The revision 275 wallet compensation test passes again in 17.184 seconds, and the three retained resident compensation mismatches each produce one audited failure after restart.
+The revision 275 broad regression fails in 155.728 seconds during the search outage, including itinerary search deadlines and a persisted itinerary read returning HTTP 503.
+The 600 second recording ending at 15:05:19 UTC contains 473704 requests and 15449 failed journeys, with request P99 of 9277.589 milliseconds.
+Search service connection acquisition waits and related reservation and pricing failures remain under investigation.
+After revision 276, the recorded invoice failure order `ord-01a0cea1-e9e8-7f84-90cd-95afced4b75e` successfully receives invoice `ein-01a0ced0-1811-7aa0-85d9-57d8029644c6` in a 0.088 second live check.
+That completion does not establish peak period projection latency.
 Complete peak period and durable replay acceptance remain open.
 The continuous 600 second recording ending at 12:58:47 UTC contains 711900 requests and 10348 failed journeys, with request P99 reaching the 10 second deadline.
 That window spans several deployment revisions and is diagnostic evidence for peak latency.
