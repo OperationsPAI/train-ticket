@@ -145,6 +145,7 @@ impl InMemoryInvoicingService {
         state.red_flushes = snapshot.red_flushes;
         state.orders = snapshot.orders;
         state.amounts = snapshot.amounts;
+        state.amount_history = snapshot.amount_history;
         state.idempotency = snapshot.idempotency;
         state.saga_invoices = snapshot.saga_invoices;
     }
@@ -158,6 +159,7 @@ impl InMemoryInvoicingService {
             red_flushes: state.red_flushes.clone(),
             orders: state.orders.clone(),
             amounts: state.amounts.clone(),
+            amount_history: state.amount_history.clone(),
             idempotency: state.idempotency.clone(),
             saga_invoices: state.saga_invoices.clone(),
         }
@@ -191,7 +193,7 @@ impl InMemoryInvoicingService {
             "JourneyOrderCreated" | "JourneyOrderConfirmed" | "JourneyOrderPostSalesAdjusted" => {
                 self.project_order(envelope).await
             }
-            "RevenueRecognized" | "InvoiceGenerated" => self.project_amount(envelope).await,
+            "RevenueRecognized" | "RevenueRecognitionReversed" | "InvoiceGenerated" => self.project_amount(envelope).await,
             "PostSalesApproved" | "PostSalesApplied" => self.observe_refund(envelope).await,
             "PostSalesFailed" => {
                 self.state
@@ -233,11 +235,24 @@ impl InMemoryInvoicingService {
         let expected_total = e.payload.get("monetarySummary").and_then(|summary| summary.get("total"))
             .map(|amount| serde_json::from_value::<Money>(amount.clone())).transpose()
             .map_err(|error| InvoicingError::ValidationFailed(error.to_string()))?;
+        let occurred_at = chrono::DateTime::parse_from_rfc3339(&e.occurred_at)
+            .map_err(|error| InvoicingError::ValidationFailed(error.to_string()))?.with_timezone(&chrono::Utc);
         let mut s = self.state.lock().unwrap();
         if let Some(existing) = s.orders.get_mut(&order_id) {
+            if existing.updated_at.is_some_and(|at| at > occurred_at) {
+                if existing.traveler_refs.is_empty() { existing.traveler_refs = travelers; }
+                if existing.segment_refs.is_empty() { existing.segment_refs = segments; }
+                s.processed_events.insert(e.event_id);
+                return Ok(());
+            }
             existing.account_id = account_id;
-            if e.event_type == "JourneyOrderConfirmed" || existing.expected_total.is_none() {
+            if expected_total.is_some() {
                 existing.expected_total = expected_total;
+            }
+            existing.updated_at = Some(occurred_at);
+            if e.event_type == "JourneyOrderPostSalesAdjusted" {
+                if !travelers.is_empty() { existing.traveler_refs = travelers.clone(); }
+                if !segments.is_empty() { existing.segment_refs = segments.clone(); }
             }
             for t in &travelers {
                 if !existing.traveler_refs.contains(t) {
@@ -257,6 +272,7 @@ impl InMemoryInvoicingService {
                     traveler_refs: travelers,
                     segment_refs: segments,
                     expected_total,
+                    updated_at: Some(occurred_at),
                 },
             );
         }
@@ -287,22 +303,74 @@ impl InMemoryInvoicingService {
             })
             .unwrap_or_default();
         let mut s = self.state.lock().unwrap();
+        let mut history = s.amount_history.get(&order_id).cloned().unwrap_or_default();
+        if e.event_type == "RevenueRecognitionReversed" {
+            let recognition = string_field(&e.payload, "revenueRecognitionId")
+                .ok_or_else(|| InvoicingError::ValidationFailed("revenueRecognitionId is required".into()))?;
+            let reference = string_field(&e.payload, "sourceEventId")
+                .ok_or_else(|| InvoicingError::ValidationFailed("reversal sourceEventId is required".into()))?;
+            let identity = format!("{recognition}:{reference}");
+            if let Some(previous) = history.reversals.get(&identity) {
+                if *previous != money { return Err(InvoicingError::DomainRuleViolation("reversal identity reused with another amount".into())); }
+                s.processed_events.insert(e.event_id);
+                return Ok(());
+            }
+            let existing = s.amounts.get(&order_id).ok_or_else(|| InvoicingError::Unavailable("reversal awaits original revenue".into()))?;
+            if !existing.revenue_recognition_ids.contains(&recognition) {
+                return Err(InvoicingError::Unavailable("reversal awaits its revenue recognition".into()));
+            }
+            if money.minor_units <= 0 || money.currency != existing.total_amount.currency {
+                return Err(InvoicingError::ValidationFailed("reversal requires a positive matching currency amount".into()));
+            }
+            if let Some(recognized) = history.recognitions.get(&recognition) {
+                let prefix = format!("{recognition}:");
+                let returned = history.reversals.iter().filter(|(key, _)| key.starts_with(&prefix))
+                    .try_fold(money.minor_units, |sum, (_, value)| sum.checked_add(value.minor_units))
+                    .ok_or_else(|| InvoicingError::DomainRuleViolation("reversal total overflow".into()))?;
+                if returned > recognized.minor_units { return Err(InvoicingError::DomainRuleViolation("reversal exceeds its recognized component".into())); }
+            }
+            let mut basis = existing.clone();
+            basis.total_amount.minor_units = basis.total_amount.minor_units.checked_sub(money.minor_units)
+                .filter(|amount| *amount >= 0).ok_or_else(|| InvoicingError::DomainRuleViolation("reversal exceeds available revenue".into()))?;
+            history.reversals.insert(identity, money);
+            basis.basis_type = "REVENUE_RECOGNITION".into();
+            basis.finance_invoice_id = None;
+            basis.tax_lines = vec![TaxLine { tax_code: "VAT_SIM".into(), tax_rate_basis_points: 0,
+                taxable_amount: basis.total_amount.clone(), tax_amount: Money { currency: basis.total_amount.currency.clone(), minor_units: 0 } }];
+            basis.amount_basis_hash = sha256_prefixed(&normalize_json(&json!({"revenueRecognitionIds":basis.revenue_recognition_ids,"totalAmount":basis.total_amount,"reversals":history.reversals})));
+            s.amounts.insert(order_id.clone(),basis);
+            s.amount_history.insert(order_id,history);
+            s.processed_events.insert(e.event_id);
+            return Ok(());
+        }
         if e.event_type == "RevenueRecognized" {
             if rr.len() != 1 {
                 return Err(InvoicingError::ValidationFailed("revenueRecognitionId is required".into()));
             }
             if let Some(existing) = s.amounts.get(&order_id) {
                 if existing.revenue_recognition_ids.contains(&rr[0]) {
+                    if history.recognitions.get(&rr[0]).is_some_and(|previous| *previous != money) {
+                        return Err(InvoicingError::DomainRuleViolation("recognition identity reused with another amount".into()));
+                    }
                     s.processed_events.insert(e.event_id);
                     return Ok(());
                 }
                 if existing.total_amount.currency != money.currency {
                     return Err(InvoicingError::ValidationFailed("revenue recognition currency mismatch".into()));
                 }
+                history.recognitions.insert(rr[0].clone(), money.clone());
                 money.minor_units = money.minor_units.checked_add(existing.total_amount.minor_units)
                     .ok_or_else(|| InvoicingError::ValidationFailed("revenue total overflow".into()))?;
                 rr.extend(existing.revenue_recognition_ids.iter().cloned());
+            } else {
+                history.recognitions.insert(rr[0].clone(),money.clone());
             }
+        } else if let Some(existing) = s.amounts.get(&order_id) {
+            if !history.reversals.is_empty() || rr.iter().all(|id| existing.revenue_recognition_ids.contains(id)) {
+                s.processed_events.insert(e.event_id);
+                return Ok(());
+            }
+            return Err(InvoicingError::Unavailable("finance invoice awaits its revenue components".into()));
         }
         rr.sort();
         let hash = sha256_prefixed(&normalize_json(&json!({"revenueRecognitionIds": rr, "totalAmount": money, "invoiceId": e.payload.get("invoiceId")})));
@@ -327,7 +395,8 @@ impl InMemoryInvoicingService {
             total_amount: money,
             amount_basis_hash: hash,
         };
-        s.amounts.insert(order_id, basis);
+        s.amounts.insert(order_id.clone(), basis);
+        s.amount_history.insert(order_id, history);
         s.processed_events.insert(e.event_id);
         Ok(())
     }
@@ -455,6 +524,8 @@ pub(crate) struct InvoicingStateSnapshot {
     pub red_flushes: HashMap<String, RedFlushView>,
     pub orders: HashMap<String, OrderProjection>,
     pub amounts: HashMap<String, AmountBasis>,
+    #[serde(default)]
+    pub amount_history: HashMap<String, AmountHistory>,
     pub idempotency: HashMap<String, IdemRecord>,
     #[serde(default)]
     pub saga_invoices: HashMap<String, SagaInvoice>,
@@ -468,6 +539,7 @@ struct InMemoryState {
     red_flushes: HashMap<String, RedFlushView>,
     orders: HashMap<String, OrderProjection>,
     amounts: HashMap<String, AmountBasis>,
+    amount_history: HashMap<String, AmountHistory>,
     idempotency: HashMap<String, IdemRecord>,
     processed_events: HashSet<String>,
     saga_invoices: HashMap<String, SagaInvoice>,
@@ -479,6 +551,13 @@ pub(crate) struct OrderProjection {
     pub segment_refs: Vec<String>,
     #[serde(default)]
     pub expected_total: Option<Money>,
+    #[serde(default)]
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) struct AmountHistory {
+    pub recognitions: std::collections::BTreeMap<String, Money>,
+    pub reversals: std::collections::BTreeMap<String, Money>,
 }
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct IdemRecord {
