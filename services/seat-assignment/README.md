@@ -8,6 +8,8 @@ Go implementation of CRH380A train layout modelling, preference-based seat assig
 The query is read only and includes historical allocations.
 Standing has no concrete SeatUnit; its versioned admission quota is ten percent of assignable second class seats, rounded down.
 The quota is checked under the service allocation lock and recorded on allocations and events.
+Allocation replay validates its class against the composition recorded on the original allocation.
+A later composition retirement or replacement does not change an existing allocation's identity or seat reference.
 
 See [Standing capacity policy](../../docs/08-contracts/standing-capacity-policy.md) and [HTTP API](../../docs/08-contracts/api/seat-assignment.md).
 

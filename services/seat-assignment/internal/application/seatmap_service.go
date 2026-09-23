@@ -293,9 +293,6 @@ func (s *Service) AllocateSeat(ctx context.Context, req AllocateSeatRequest) (*A
 			}
 		}
 		standingOnly := strings.EqualFold(req.ClassRef, "STANDING")
-		if seatMap == nil && !standingOnly {
-			return derr("PRECONDITION_FAILED", "no published SeatMap matches scheduled service, date and class")
-		}
 		for _, existing := range active {
 			if existing.SegmentBookingID != req.SegmentBookingID {
 				continue
@@ -304,10 +301,22 @@ func (s *Service) AllocateSeat(ctx context.Context, req AllocateSeatRequest) (*A
 				return derr("CONFLICT", "reservation already has an allocation with different references")
 			}
 			classMatches := standingOnly && existing.SeatRef.AllocationType == domain.AllocationTypeStanding
-			if !standingOnly && seatMap != nil {
-				for _, unit := range seatMap.AssignableUnits(req.ClassRef) {
-					if unit.SeatUnitRef == existing.SeatRef.SeatUnitRef {
-						classMatches = true
+			if !standingOnly && existing.SeatRef.AllocationType != domain.AllocationTypeStanding {
+				original, _, err := s.repo.GetSeatMap(tx, existing.SeatRef.SeatMapID)
+				if err != nil || original == nil {
+					return derr("UNAVAILABLE", "recorded allocation composition is unavailable")
+				}
+				if original.ScheduledServiceRef != req.ScheduledServiceRef || original.ServiceDate != req.ServiceDate {
+					return derr("CONFLICT", "recorded allocation composition belongs to another service or date")
+				}
+				for _, coach := range original.Coaches {
+					if coach.ClassRef != req.ClassRef {
+						continue
+					}
+					for _, unit := range coach.SeatUnits {
+						if unit.SeatUnitRef == existing.SeatRef.SeatUnitRef {
+							classMatches = true
+						}
 					}
 				}
 			}
@@ -316,6 +325,9 @@ func (s *Service) AllocateSeat(ctx context.Context, req AllocateSeatRequest) (*A
 			}
 			resp = &AllocateSeatResponse{SeatAllocationID: existing.SeatAllocationID, Status: existing.Status, SeatRef: existing.SeatRef, ExpiresAt: existing.ExpiresAt}
 			return nil
+		}
+		if seatMap == nil && !standingOnly {
+			return derr("PRECONDITION_FAILED", "no published SeatMap matches scheduled service, date and class")
 		}
 		var unit *domain.SeatUnit
 		degraded, reason := false, domain.DegradationNone

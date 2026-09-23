@@ -119,4 +119,54 @@ func TestRecordedCapacityFactsPreservePhysicalClassAndActiveOccupancy(t *testing
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM seat_allocations").Scan(&count); err != nil || count != len(source.Allocations) {
 		t.Fatalf("read changed occupancy: %d %v", count, err)
 	}
+	var recorded *domain.ContractSeatAllocation
+	for i := range source.Allocations {
+		if source.Allocations[i].SeatRef.SeatMapID == source.SeatMap.SeatMapID {
+			recorded = &source.Allocations[i]
+			break
+		}
+	}
+	if recorded == nil {
+		t.Fatal("recording requires an allocation from the published composition")
+	}
+	class := ""
+	for _, coach := range source.SeatMap.Coaches {
+		for _, unit := range coach.SeatUnits {
+			if unit.SeatUnitRef == recorded.SeatRef.SeatUnitRef {
+				class = coach.ClassRef
+			}
+		}
+	}
+	if class == "" {
+		t.Fatal("recorded allocation must resolve its original seat class")
+	}
+	original, version, err := repo.GetSeatMap(ctx, source.SeatMap.SeatMapID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = original.Retire(original.SeatMapVersion, "SUPERSEDED", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if err = repo.UpdateSeatMap(ctx, original, version); err != nil {
+		t.Fatal(err)
+	}
+	request := application.AllocateSeatRequest{SegmentBookingID: recorded.SegmentBookingID, JourneyOrderID: recorded.JourneyOrderID, TravelerRef: recorded.TravelerRef,
+		SegmentRef: recorded.SegmentRef, ScheduledServiceRef: recorded.ScheduledServiceRef, ServiceDate: recorded.ServiceDate, CapacityHoldID: recorded.CapacityHoldID,
+		CapacityUnitRef: recorded.CapacityUnitRef, Interval: recorded.Interval, ClassRef: class, IssuePurpose: "INITIAL", ExpiresAt: recorded.ExpiresAt, SeatPreferences: recorded.Preferences}
+	for attempt := 0; attempt < 2; attempt++ {
+		replay, err := svc.AllocateSeat(ctx, request)
+		if err != nil || replay.SeatAllocationID != recorded.SeatAllocationID || replay.SeatRef != recorded.SeatRef {
+			t.Fatalf("retired composition replay=%+v error=%v", replay, err)
+		}
+	}
+	request.ClassRef = "UNLISTED"
+	if _, err := svc.AllocateSeat(ctx, request); err == nil {
+		t.Fatal("replay accepted another class")
+	}
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM outbox").Scan(&count); err != nil || count != 0 {
+		t.Fatalf("replay emitted events: %d %v", count, err)
+	}
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM seat_allocations").Scan(&count); err != nil || count != len(source.Allocations) {
+		t.Fatalf("replay changed allocation count: %d %v", count, err)
+	}
 }
