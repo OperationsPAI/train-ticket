@@ -696,6 +696,16 @@ services:
       limits: { cpu: '3', memory: 2Gi }
   booking-orchestration:
     db: booking_orchestration
+    strategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxUnavailable: 0
+        maxSurge: 1
+    terminationGracePeriodSeconds: 45
+    lifecycle:
+      preStop:
+        exec:
+          command: ["sleep", "10"]
     env:
       CONSUMER_THREADS: "4"
     # 4 consumer threads do not fit in the default 500m CPU limit. Raising
@@ -762,6 +772,16 @@ services:
     db: provider_integration
   entitlement-ticketing:
     db: entitlement_ticketing
+    strategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxUnavailable: 0
+        maxSurge: 1
+    terminationGracePeriodSeconds: 45
+    lifecycle:
+      preStop:
+        exec:
+          command: ["sleep", "10"]
     env:
       SEAT_ASSIGNMENT_BASE_URL: http://seat-assignment:8080
   fulfillment:
@@ -785,6 +805,16 @@ services:
           command: ["sleep", "10"]
   post-sales:
     db: post_sales
+    strategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxUnavailable: 0
+        maxSurge: 1
+    terminationGracePeriodSeconds: 45
+    lifecycle:
+      preStop:
+        exec:
+          command: ["sleep", "10"]
     env:
       # 5 streams (journey-order, capacity-availability, dispatch,
       # ancillary-service, disruption-recovery) on one thread could not keep up:
