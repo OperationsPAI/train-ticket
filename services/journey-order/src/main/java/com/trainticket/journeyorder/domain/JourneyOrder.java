@@ -276,9 +276,11 @@ public final class JourneyOrder {
         recordTimeline("ChangeApplied",now,"post-sales","replacement tickets issued",Map.of("postSalesCaseId",caseId,"originalOfferId",originalOffer,"targetOfferId",targetOffer.offerId()));
     }
 
-    public void applyScopedPostSalesCancellation(List<String> segmentRefs,List<String> travelerRefs,String caseId,Instant at,String causation,String correlation){
+    public void applyScopedPostSalesCancellation(List<String> segmentRefs,List<String> travelerRefs,String caseId,Money retainedFee,Instant at,String causation,String correlation){
         requireState(OrderLifecycleState.CONFIRMED,OrderLifecycleState.POST_SALES_ADJUSTED,OrderLifecycleState.IN_TRAVEL);
         for(OrderItem item:orderItems)if(!item.cancelled() && item.bindings().stream().anyMatch(binding->segmentRefs.contains(binding.segmentRef()) && travelerRefs.contains(binding.travelerId())))item.cancel("POST_SALES:"+caseId);
+        String feeId="post-sales-fee:"+caseId;
+        if(!retainedFee.isZero() && orderItems.stream().noneMatch(item->item.orderItemId().equals(feeId)))orderItems.add(new OrderItem(feeId,OrderItemType.SERVICE_FEE,"retained post sales fee",retainedFee,caseId,List.of()));
         monetarySummary=MonetarySummary.fromItems(orderItems);state=OrderLifecycleState.POST_SALES_ADJUSTED;
         recordTimeline("PostSalesAdjustmentApplied",at,"post-sales","scoped items cancelled",Map.of("postSalesCaseId",caseId));
         domainEvents.add(new JourneyOrderPostSalesAdjusted(createEnvelope("JourneyOrderPostSalesAdjusted",at,causation,correlation),orderId,accountId,caseId,monetarySummary));
