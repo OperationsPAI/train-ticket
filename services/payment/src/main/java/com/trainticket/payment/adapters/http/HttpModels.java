@@ -67,3 +67,5 @@ record RefundDetailsResponse(
 
 record ErrorResponse(String code, String message, String correlationId, Map<String, Object> details) {
 }
+
+record LateRefundRequest(String businessRef, String businessCaseRef, String reason) {}
