@@ -85,6 +85,21 @@ func NewContractSeatMap(scheduledServiceRef, serviceDate, compositionVersion, co
 	topologySeed := deterministicTopologySeed(scheduledServiceRef, serviceDate, compositionVersion, compositionSeed, mappingVersion)
 	seatMapID := deterministicPrefixedID("smap", topologySeed, "seat-map")
 	coachRef := deterministicPrefixedID("coach", topologySeed, "coach", "01")
+	if strings.EqualFold(compositionSeed, "CRH380A") {
+		coaches := []Coach{}
+		byNumber := map[int]int{}
+		for _, seat := range DefaultSeatMap().Seats {
+			index, exists := byNumber[seat.CarNumber]
+			if !exists {
+				index = len(coaches)
+				byNumber[seat.CarNumber] = index
+				coaches = append(coaches, Coach{CoachRef: deterministicPrefixedID("coach", topologySeed, fmt.Sprint(seat.CarNumber)), CoachNo: fmt.Sprintf("%02d", seat.CarNumber), ClassRef: seat.SeatType, CoachType: AllocationTypeSeat, Assignable: true})
+			}
+			coach := &coaches[index]
+			coach.SeatUnits = append(coach.SeatUnits, SeatUnit{SeatUnitRef: deterministicPrefixedID("su", topologySeed, seat.SeatId), CoachRef: coach.CoachRef, CoachNo: coach.CoachNo, SeatNo: fmt.Sprintf("%02d%s", seat.Row, seat.Letter), AllocationType: AllocationTypeSeat, SeatPosition: seat.Position, RowNo: fmt.Sprintf("%02d", seat.Row), AdjacencyGroupKey: fmt.Sprintf("%02d-%02d", seat.CarNumber, seat.Row), Assignable: true})
+		}
+		return &ContractSeatMap{SeatMapID: seatMapID, ScheduledServiceRef: scheduledServiceRef, ServiceDate: serviceDate, CompositionVersion: compositionVersion, SeatMapVersion: 1, Source: "SIM_SEED", CompositionSeed: compositionSeed, MappingVersion: mappingVersion, Status: SeatMapStatusDraft, Coaches: coaches, CreatedAt: now.UTC()}, nil
+	}
 	units := make([]SeatUnit, 0, seatCount)
 	letters := []string{"A", "B", "C", "D"}
 	for i := 0; i < seatCount; i++ {
