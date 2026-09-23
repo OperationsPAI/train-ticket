@@ -48,21 +48,24 @@ export class SmtpChannelGateway implements NotificationChannelGateway {
   }
 }
 
-export function notificationChannelGatewayFromEnv(env: Readonly<{ SMTP_URL?: string }> = process.env): NotificationChannelGateway {
+export function notificationChannelGatewayFromEnv(env: Readonly<{ SMTP_URL?: string; SMTP_MAX_CONNECTIONS?: string }> = process.env): NotificationChannelGateway {
   const smtpUrl = env.SMTP_URL?.trim();
   if (!smtpUrl) {
     return new DirectSuccessGateway();
   }
-  return new SmtpChannelGateway(createSmtpTransport(smtpUrl), new DirectSuccessGateway());
+  return new SmtpChannelGateway(createSmtpTransport(smtpUrl, Number(env.SMTP_MAX_CONNECTIONS ?? "8")), new DirectSuccessGateway());
 }
 
-function createSmtpTransport(smtpUrl: string): Transporter {
+export function createSmtpTransport(smtpUrl: string, maxConnections = 8): Transporter {
+  if (!Number.isInteger(maxConnections) || maxConnections < 1 || maxConnections > 128) {
+    throw new Error("SMTP_MAX_CONNECTIONS must be an integer between 1 and 128");
+  }
   const url = new URL(smtpUrl);
   const username = decodeURIComponent(url.username);
   const password = decodeURIComponent(url.password);
   return nodemailer.createTransport({
     pool: true,
-    maxConnections: 8,
+    maxConnections,
     maxMessages: 1000,
     host: url.hostname,
     port: url.port ? Number.parseInt(url.port, 10) : defaultSmtpPort(url.protocol),
