@@ -18,6 +18,8 @@ See the [loadgen runtime guide](./README.md) for operation checkpoints and verif
 
 The verified release for the ticketing error mapping is Helm revision 257, and the accepted purchase source endpoint is deployed in revision 258.
 Capacity change compensation is deployed in revision 259, with validated loadgen handling in revision 260.
+Invoice creation reuses its transaction connection in revision 261.
+Synchronous accepted order policy inputs are deployed in revision 262.
 Check `helm history` and the deployed image digests for the live release; repository HEAD and the running images can differ.
 
 ## Verified behavior
@@ -38,9 +40,8 @@ The following checks have completed against deployed services:
 The broad regression at revision 256 completed in 228.547 seconds.
 The six class purchase regression at revision 257 completed in 92.007 seconds.
 These tests establish their covered outcomes and do not certify every resident request or a complete peak traffic cycle.
-The revision 258 broad regression has failures waiting for booking and risk results and requesting an invoice before its order confirmation projection arrives.
-Its recorded window also contains delayed outbox publication and Post Sales reads that exceed their timeout.
-The new purchase source endpoint passed its direct verification; the revision 258 broad regression is not a passing release acceptance result.
+The revision 262 broad regression passes eligibility, recovery, multiple traveler purchase and post sales, and protected transfer checks in 238.495 seconds.
+Complete peak period and durable replay acceptance remain open.
 
 ## Supply integration
 
