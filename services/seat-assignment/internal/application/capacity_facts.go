@@ -9,6 +9,7 @@ import (
 )
 
 type SeatCapacityFacts struct {
+	StandingPolicy      *domain.StandingPolicy          `json:"standingPolicy,omitempty"`
 	ScheduledServiceRef string                          `json:"scheduledServiceRef"`
 	ServiceDate         string                          `json:"serviceDate"`
 	ClassRef            string                          `json:"classRef"`
@@ -47,15 +48,25 @@ func (s *Service) CapacityFacts(ctx context.Context, service, date, class string
 				break
 			}
 		}
+		if class == "STANDING" {
+			selected = domain.StandingPolicyMap(maps)
+		}
 		if selected == nil {
 			return derr("PRECONDITION_FAILED", "no published SeatMap matches scheduled service, date and class")
 		}
 		result = &SeatCapacityFacts{ScheduledServiceRef: service, ServiceDate: date, ClassRef: class,
 			SeatMapID: selected.SeatMapID, SeatMapVersion: selected.SeatMapVersion, CompositionVersion: selected.CompositionVersion,
 			CapturedAt: time.Now().UTC(), Units: selected.AssignableUnits(class), Allocations: []domain.ContractSeatAllocation{}}
+		if class == "STANDING" {
+			policy := selected.StandingPolicy()
+			result.StandingPolicy = &policy
+		}
 		loaded := map[string]*domain.ContractSeatMap{selected.SeatMapID: selected}
 		for _, allocation := range active {
 			if allocation.SeatRef.AllocationType == domain.AllocationTypeStanding {
+				if class == "STANDING" {
+					result.Allocations = append(result.Allocations, allocation)
+				}
 				continue
 			}
 			seatMap := loaded[allocation.SeatRef.SeatMapID]

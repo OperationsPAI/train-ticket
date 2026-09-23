@@ -169,12 +169,8 @@ func TestSeatMapPublishImmutabilityAllocateAdjacencyAndStanding(t *testing.T) {
 		t.Fatalf("expected second traveler in group to satisfy adjacency, got %#v", r2.SeatRef)
 	}
 	standingPref := &domain.SeatPreferences{AcceptStanding: true, PreferenceVersion: "pv-standing"}
-	r3, err := svc.AllocateSeat(ctx, allocReq("sb-3", "tvl-3", "hold-3", standingPref))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if r3.Status != domain.AllocationStatusStanding || r3.SeatRef.AllocationType != domain.AllocationTypeStanding {
-		t.Fatalf("expected standing, got %#v", r3)
+	if _, err := svc.AllocateSeat(ctx, allocReq("sb-3", "tvl-3", "hold-3", standingPref)); err == nil {
+		t.Fatal("standing requires a published second class composition")
 	}
 	if len(pub.payloads["AdjacentAllocationSolved"]) < 2 {
 		t.Fatalf("expected adjacency solver events, got %#v", pub.types)
@@ -182,7 +178,7 @@ func TestSeatMapPublishImmutabilityAllocateAdjacencyAndStanding(t *testing.T) {
 	if got := pub.payloads["AdjacentAllocationSolved"][1]["degraded"]; got != false {
 		t.Fatalf("expected solved adjacent allocation without degradation, got %#v", pub.payloads["AdjacentAllocationSolved"][1])
 	}
-	expectEvents := map[string]bool{"SeatMapBuilt": false, "SeatMapVersionPublished": false, "AdjacencyGroupCreated": false, "AdjacentAllocationSolved": false, "SeatAllocated": false, "StandingAssigned": false}
+	expectEvents := map[string]bool{"SeatMapBuilt": false, "SeatMapVersionPublished": false, "AdjacencyGroupCreated": false, "AdjacentAllocationSolved": false, "SeatAllocated": false}
 	for _, typ := range pub.types {
 		if _, ok := expectEvents[typ]; ok {
 			expectEvents[typ] = true
