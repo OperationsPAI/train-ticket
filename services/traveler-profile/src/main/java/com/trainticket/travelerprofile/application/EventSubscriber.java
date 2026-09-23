@@ -8,6 +8,7 @@ public interface EventSubscriber {
 
     @FunctionalInterface
     interface EventHandler {
+        default boolean handles(EventEnvelope envelope) { return true; }
         HandlerResult handle(EventEnvelope envelope);
     }
 
