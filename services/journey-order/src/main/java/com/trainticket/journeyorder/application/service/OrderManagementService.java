@@ -230,7 +230,7 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         }
     }
 
-    private static EventEnvelope envelopeWithPayload(JourneyOrderEvent event) {
+    static EventEnvelope envelopeWithPayload(JourneyOrderEvent event) {
         EventEnvelope envelope = event.envelope();
         return new EventEnvelope(
             envelope.eventId(),
