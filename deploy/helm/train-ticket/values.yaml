@@ -573,15 +573,8 @@ services:
           command: ["sleep", "10"]
     env:
       IDENTITY_VERIFICATION_URL: http://identity-verification:8080
-      # The kit's default is 10 per pool and this service runs 4 uvicorn workers,
-      # each with a pool of its own and FastAPI's 40-thread executor in front of
-      # it, so 40 concurrent requests contend for 10 connections. Under a burst
-      # that queue put its p99 at 6961ms against post-sales' 10s read timeout on
-      # /adjustment-quotes, and post-sales catches that and prices the refund
-      # without fare-pricing's managed rules -- reported as success, with the
-      # penalty base silently the raw order fare. 25 per worker is 100
-      # connections against the 500 postgres-core allows, where 245 sat idle.
-      PG_MAX_POOL_SIZE: "25"
+      # Four worker pools share a 64 connection budget.
+      PG_MAX_POOL_SIZE: "16"
     # Same shape as identity-verification: p50 0.457 of a core, p95 1.915 and
     # peak 2.0 against the shared 2-core default, so the bursts are clipped.
     #
@@ -627,29 +620,11 @@ services:
     # of 60 used with 160 requests queued and a POST p99 of exactly 10008ms,
     # which is the client's own timeout rather than a latency.
     #
-    # A third pod rather than a larger pool per pod, for the same connection
-    # cost: 3 x 60 is 180, as 2 x 90 would be, and postgres-core had 451 of its
-    # 700 in use. The extra pod also adds a consumer on every stream and
-    # another HTTP process, and CPU is not the limit at 45% of a 4-core cap.
+    # Three instances share a 72 connection budget.
     replicas: 3
     env:
-      # 15 was the constraint that produced the baseline's error rate, and it is
-      # not a Postgres constraint: measured `waitingCount` on the pg.Pool reached
-      # 645 requests queued for 15 slots, which put the service's p99 at 9.6s and
-      # the loadgen recorded a 10s client timeout as a transport failure. At the
-      # same moment postgres-core held 293 of its 500 connections with 245 idle
-      # and 26 active, so the store had nothing to do with it -- the queue was
-      # entirely in front of this pool. It is the busiest node on the purchase
-      # funnel, so the pool is sized for the concurrency it actually sees.
-      #
-      # Per pod, so the pair holds 120. It was halved to 30 when the second
-      # replica went in, to keep the pair at the 60 one pod used, and that
-      # became the next bound: both pods sat at 30 of 30 used with 106 requests
-      # queued and the consumer fell behind events:fare-pricing again.
-      #
-      # Restored to 60 each now that postgres.maxConnections is 700 rather than
-      # 500. It is a cluster-wide budget, and the old one had 18 free.
-      PG_MAX_POOL_SIZE: "60"
+      # Reserve database capacity for all service pools and rolling updates.
+      PG_MAX_POOL_SIZE: "24"
       CONSUMER_THREADS: "4"   # 5 streams
     # 4 consumer threads do not fit in the default 500m CPU limit. Raising
     # CONSUMER_THREADS without raising this caused a CrashLoopBackOff: the
@@ -725,10 +700,8 @@ services:
         exec:
           command: ["sleep", "10"]
     env:
-      # Same constraint as fare-pricing, and the same measurement: 16480 server
-      # spans in the same two-minute burst with a p99 of 3068ms. Both are
-      # uvicorn services taking the kit's default of 10 connections per worker.
-      PG_MAX_POOL_SIZE: "25"
+      # Four worker pools share a 64 connection budget.
+      PG_MAX_POOL_SIZE: "16"
     # Spiky rather than persistently hot: measured p50 utilization 0.285 of a
     # core against the shared 2-core default, with p95 and peak both at 2.0. So
     # the ceiling clips its bursts, and a clipped burst is a latency tail every
