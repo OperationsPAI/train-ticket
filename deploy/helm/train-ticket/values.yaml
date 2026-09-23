@@ -614,6 +614,14 @@ services:
           command: ["sleep", "10"]
   offer-management:
     db: offer_management
+    strategy:
+      type: RollingUpdate
+      rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+    terminationGracePeriodSeconds: 45
+    lifecycle:
+      preStop:
+        exec:
+          command: ["sleep", "10"]
     # Three pods. Two was not enough once trip-planning stopped inventing
     # itineraries for routes it had no inventory for: real search volume rose,
     # so this service's share of it rose with it, and the pool went back to 60
