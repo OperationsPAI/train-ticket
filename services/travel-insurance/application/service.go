@@ -25,6 +25,7 @@ type ServiceConfig struct {
 	Clock          Clock
 	IDGenerator    func(prefix string) string
 	VerifyPurchase func(context.Context, IssuePolicyCommand, domain.Money) error
+	VerifyRefund   func(context.Context, domain.Policy, string) error
 }
 
 type InsuranceService struct {
@@ -35,6 +36,7 @@ type InsuranceService struct {
 	clock          Clock
 	idGenerator    func(prefix string) string
 	verifyPurchase func(context.Context, IssuePolicyCommand, domain.Money) error
+	verifyRefund   func(context.Context, domain.Policy, string) error
 	products       map[string]domain.InsuranceProduct
 	policies       map[string]domain.Policy
 	claims         map[string]domain.Claim
@@ -54,7 +56,7 @@ func NewInsuranceService(cfg ServiceConfig) *InsuranceService {
 	if idgen == nil {
 		idgen = ids.NewPrefixed
 	}
-	s := &InsuranceService{repository: cfg.Repository, publisher: publisher, uow: cfg.UnitOfWork, clock: clock, idGenerator: idgen, verifyPurchase: cfg.VerifyPurchase, products: map[string]domain.InsuranceProduct{}, policies: map[string]domain.Policy{}, claims: map[string]domain.Claim{}, advices: map[string]domain.PayoutAdvice{}}
+	s := &InsuranceService{repository: cfg.Repository, publisher: publisher, uow: cfg.UnitOfWork, clock: clock, idGenerator: idgen, verifyPurchase: cfg.VerifyPurchase, verifyRefund: cfg.VerifyRefund, products: map[string]domain.InsuranceProduct{}, policies: map[string]domain.Policy{}, claims: map[string]domain.Claim{}, advices: map[string]domain.PayoutAdvice{}}
 	s.seedProducts()
 	return s
 }
@@ -378,6 +380,17 @@ func (s *InsuranceService) CancelPolicyForRefund(ctx context.Context, cmd Refund
 	if err != nil {
 		return domain.Policy{}, err
 	}
+	if policy.Status == domain.PolicyCancelled {
+		return policy, nil
+	}
+	if s.repository != nil && s.verifyRefund == nil {
+		return domain.Policy{}, fmt.Errorf("%w: settled premium refund is required", ErrDomainRule)
+	}
+	if s.verifyRefund != nil {
+		if err := s.verifyRefund(ctx, policy, cmd.RefundID); err != nil {
+			return domain.Policy{}, err
+		}
+	}
 	refund, err := policy.CancelForRefund()
 	if err != nil {
 		return domain.Policy{}, fmt.Errorf("%w: %v", ErrDomainRule, err)
@@ -438,6 +451,24 @@ func (s *InsuranceService) savePolicyClaimAndPublish(ctx context.Context, policy
 		s.mu.Unlock()
 	}
 	return nil
+}
+
+func (s *InsuranceService) CancelRefundedInsuranceItem(ctx context.Context, itemID, refundID, correlation, eventID string) error {
+	if s.repository == nil {
+		return fmt.Errorf("%w: persistent insurance lookup is required", ErrDomainRule)
+	}
+	return s.within(ctx, func(ctx context.Context) error {
+		policies, err := s.repository.FindPoliciesByAncillaryItem(ctx, itemID)
+		if err != nil {
+			return err
+		}
+		for _, policy := range policies {
+			if _, err := s.CancelPolicyForRefund(ctx, RefundAppliedCommand{PolicyID: policy.ID, JourneyOrderID: policy.JourneyOrderID, RefundID: refundID, CorrelationID: correlation, CausationID: eventID}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (s *InsuranceService) claimAndPolicy(ctx context.Context, claimID string) (domain.Claim, domain.Policy, error) {

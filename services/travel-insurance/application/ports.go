@@ -25,6 +25,7 @@ type Repository interface {
 	FindPolicyByUniqueness(context.Context, domain.ProductCode, string, string, string, string) (domain.Policy, error)
 	FindIssuedPoliciesForSegment(context.Context, domain.ProductCode, string, time.Time) ([]domain.Policy, error)
 	FindIssuedPolicyByJourneyOrder(context.Context, string) (domain.Policy, error)
+	FindPoliciesByAncillaryItem(context.Context, string) ([]domain.Policy, error)
 	SaveClaim(context.Context, domain.Claim) error
 	FindClaim(context.Context, string) (domain.Claim, error)
 	FindActiveClaim(context.Context, string, domain.ClaimType, string) (domain.Claim, error)
