@@ -88,14 +88,13 @@ export async function startNotificationStorage(channelGateway: NotificationChann
     }),
     handleExternalTrigger: async (original, stream) => {
       if (!templateCodeFor(original)) return "ack";
-      const envelope = await resolveRecipient(pool, original);
       return withTransaction(pool, async (client) => {
-      const guard = new ProcessedEventsGuard(client);
-      if (!await guard.tryStart(envelope.eventId, stream)) {
-        return "ack";
-      }
-
-      return deliverOrDefer(client, envelope, stream, channelGateway);
+        const guard = new ProcessedEventsGuard(client);
+        if (!await guard.tryStart(original.eventId, stream)) {
+          return "ack";
+        }
+        const envelope = await resolveRecipient(client, original);
+        return deliverOrDefer(client, envelope, stream, channelGateway);
       });
     },
     stop: async () => {
@@ -167,7 +166,7 @@ export async function retryDeferredNotifications(pool: import("pg").Pool, channe
   }
 }
 
-export async function resolveRecipient(pool: import("pg").Pool, envelope: EventEnvelope): Promise<EventEnvelope> {
+export async function resolveRecipient(pool: Pick<import("pg").PoolClient, "query">, envelope: EventEnvelope): Promise<EventEnvelope> {
   const payload = envelope.payload;
   let recipient = stringValue(payload.accountId) ?? stringValue(payload.payerRef) ?? stringValue(payload.actorRef);
   const businessRef = stringValue(payload.businessRef);
