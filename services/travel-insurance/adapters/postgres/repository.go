@@ -112,6 +112,30 @@ func (r *Repository) FindIssuedPolicyByJourneyOrder(ctx context.Context, journey
 func (r *Repository) SaveClaim(ctx context.Context, claim domain.Claim) error {
 	return saveJSON(ctx, r.db.DBFor(ctx), "claim_snapshots", claim.ID, claim)
 }
+
+func (r *Repository) FindPoliciesByAncillaryItem(ctx context.Context, itemID string) ([]domain.Policy, error) {
+	if _, err := r.db.DBFor(ctx).Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "insurance-refund:"+itemID); err != nil {
+		return nil, err
+	}
+	rows, err := r.db.DBFor(ctx).Query(ctx, "SELECT data FROM policy_snapshots WHERE data->>'ancillaryOrderItemId'=$1 ORDER BY id", itemID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var policies []domain.Policy
+	for rows.Next() {
+		var data json.RawMessage
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		var policy domain.Policy
+		if err := json.Unmarshal(data, &policy); err != nil {
+			return nil, err
+		}
+		policies = append(policies, policy)
+	}
+	return policies, rows.Err()
+}
 func (r *Repository) FindClaim(ctx context.Context, id string) (domain.Claim, error) {
 	snap, ok, err := storage.NewSnapshotRepository(r.db.DBFor(ctx), "claim_snapshots").Get(ctx, strings.TrimSpace(id))
 	if err != nil {
