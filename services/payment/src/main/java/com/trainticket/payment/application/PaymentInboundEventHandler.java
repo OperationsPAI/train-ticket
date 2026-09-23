@@ -159,6 +159,7 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
 
     private void handlePostSalesApproved(EventEnvelope envelope) {
         InboundEventPayload payload = InboundEventPayload.from(envelope);
+        if("CHANGE".equals(payload.optionalDecisionKindFromApprovedActions()))return;
         String caseId = payload.requiredText("caseId");
         String reason = payload.optionalText("reason");
         if(envelope.payload() instanceof Map<?,?> data && data.get("approvedActions") instanceof Map<?,?> actions && actions.get("refunds") instanceof java.util.List<?> refunds){
@@ -185,8 +186,8 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
             String orderRef = payload.orderRefFromApprovedActions();
             intentId = orderRef == null ? null : paymentCommands.findIntentIdByBusinessRef(orderRef).orElse(null);
             if (intentId == null && orderRef != null) {
-                LOGGER.warn("payment ignoring PostSalesApproved case={} eventId={}: no payment intent "
-                        + "is registered for order {}", caseId, envelope.eventId(), orderRef);
+                Money approved=payload.moneyFromApprovedActions();
+                if(approved!=null && !approved.isZero())throw new IllegalStateException("approved refund awaits payment intent for order "+orderRef);
                 return;
             }
         }
