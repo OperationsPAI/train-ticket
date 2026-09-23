@@ -4,6 +4,36 @@ Java service for commercial post sales cases, PostgreSQL persistence, recorded d
 
 Last updated: 2026-09-23.
 
+## Wallet complaint compensation
+
+An approved `COMPENSATION` case credits the original order account with the frozen decision amount through Wallet / Promotion.
+The evaluation response and case decision expose that amount as `compensationAmount`, with `refundableAmount` set to zero in the same currency.
+`PostSalesApproved` carries `decisionKind=COMPENSATION`, `compensation.method=WALLET_CREDIT`, the approved amount and canonical `caseId`, with an empty `steps` array.
+The original tickets, seat reservations, order and captured payment are preserved.
+Payment skips refund processing for this approval, and Journey Order, Finance Settlement and Invoicing skip refund result processing for `PostSalesApplied` with `caseType=COMPENSATION`.
+
+`POST /api/v1/post-sales-cases/{caseId}/execute-compensation` advances an evaluated, internally `EXECUTING` compensation case under the shared case execution guard.
+The approved execution plan must contain `ISSUE_COMPENSATION_CREDIT` before an active case can issue wallet credit.
+Public case details report `APPROVED` during execution and `APPLIED` after completion.
+Each advancing call records one operation in `compensationOperations` or completes the case; callers use a new HTTP idempotency key for each advance.
+The recorded `request` fixes the recipient, amount, rules and validity window before issuance.
+It uses `benefitType=COMPENSATION_CREDIT`, `balanceType=PROMOTION_CREDIT`, `issuanceSource=POST_SALES_COMP`, `scopeType=ANY_TRIP` and the case business reason.
+The current request sets `validFrom` to request creation time and `validUntil` to 30 days later, and reuses those timestamps on retry.
+The `issued` record contains the checked wallet response, and `verified` contains `originalTicketsPreserved`, `originalPaymentPreserved`, `paymentIntentId`, `capturedAmount`, approved `amount` and `benefitId`.
+Positive amounts require the benefit account, case, source, types, currency and issued amount to match the approved request.
+Zero amounts retain `request` and `verified`, use an empty `verified.benefitId` and complete without a wallet issuance.
+
+Each active advance checks that the original order is outside `CANCELLED`, `REFUNDED` and `FAILED`, scoped tickets belong to it and are not `VOIDED`, no capacity releases are recorded, and Payment returns zero refunds for the canonical case reference.
+It also reads the original payment intent by order business reference and requires `CAPTURED` with zero `refundedAmount`.
+After issuance, subsequent advances read the benefit again before recording verification or completing the case.
+`completeCompensation` records `ISSUE_COMPENSATION_CREDIT` and `APPLY_RESULT` as `SUCCEEDED` in order, then the domain changes the case to `APPLIED` and emits `PostSalesApplied`.
+The credit step records the benefit ID, or `zero-approved-compensation` for a zero amount, and the result step records the original order ID.
+The executor preserves the original seat reservations through its wallet only actions; loadgen additionally compares original seat allocations, capacity Holds and paid purchase records.
+PostgreSQL case snapshots retain the operation evidence for retries and restart recovery.
+Wallet / Promotion also deduplicates `POST_SALES_COMP` issuance by `caseId`: an identical command returns the existing benefit, and a different command returns HTTP 409 `CONFLICT` at the wallet API.
+`APPLIED` and `FAILED` compensation cases return their recorded state without further execution.
+See the [HTTP API](../../docs/08-contracts/api/post-sales.md), [events](../../docs/08-contracts/events/post-sales.md) and [wallet issuance API](../../docs/08-contracts/api/wallet-promotion.md).
+
 ## Change execution
 
 Capacity release consumption excludes completed release records before acquiring order locks.
@@ -44,7 +74,7 @@ See the [HTTP API](../../docs/08-contracts/api/post-sales.md) and [inventory int
 
 ## Boundary
 
-Post Sales coordinates refund and change cases through the owning services' APIs and events.
+Post Sales coordinates refund, change and wallet compensation cases through the owning services' APIs and events.
 It does not execute payment channels or directly update another service's database.
 Execution records preserve the downstream results and their business references.
 
@@ -62,6 +92,10 @@ Java keeps refund/change case workflows explicit and compatible with transaction
 mvn test
 ```
 
-Loadgen's `TestLiveMultiTravelerPurchaseAndPostPurchase` checks issued replacements, refunds and other post purchase results through deployed APIs.
+`CompensationMappingTest` checks the wallet compensation approval amount, method and empty execution actions.
+Loadgen's `TestLiveMultiTravelerPurchaseAndPostPurchase` includes checks for issued replacements, refunds and wallet compensation through service APIs.
+Its compensation branch checks the benefit, absence of case refunds, original tickets, confirmed capacity Holds, original order and captured payment, and selection of `compensation_credited` purchases for fulfillment.
+`TestLiveWalletCompensationPreservesPaidTravel` contains a two traveler purchase with an ancillary item, equal wallet balance increment, preserved original seat and payment records, three case and wallet issuance replays with stable identities, registry reload and completed fulfillment.
+That focused test has not yet been run against live services.
 `TestLiveUnpaidChangePreservesOriginalTickets` exercises a recorded expired difference payment and verifies the completed compensation and loadgen retry state.
 Live tests require a controlled test namespace and retain their business records for audit.
