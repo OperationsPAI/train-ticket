@@ -125,7 +125,7 @@ public final class Refund {
         if (amount.isGreaterThan(capturedIntent.refundableBalance())) {
             throw new DomainRuleViolation("refund amount cannot exceed captured-and-not-refunded balance");
         }
-        Refund refund = new Refund("rf-" + UUID.randomUUID(), capturedIntent.paymentIntentId(), amount, sourceCaseRef, reasonCode, idempotencyKey);
+        Refund refund = new Refund(stableId(capturedIntent.paymentIntentId(),sourceCaseRef,idempotencyKey), capturedIntent.paymentIntentId(), amount, sourceCaseRef, reasonCode, idempotencyKey);
         refund.channelRef = capturedIntent.channelRef();
         refund.domainEvents.add(new RefundRequested(
             createEnvelope("RefundRequested", occurredAt, sourceCommandId, correlationId),
@@ -141,13 +141,22 @@ public final class Refund {
         if (lateCase.capturedAmount().isGreaterThan(intent.refundableBalance())) {
             throw new DomainRuleViolation("late collection has already been refunded");
         }
-        Refund refund = new Refund("rf-" + UUID.randomUUID(), intent.paymentIntentId(), lateCase.capturedAmount(), caseRef, reason, key);
+        Refund refund = new Refund(stableId(intent.paymentIntentId(),caseRef,key), intent.paymentIntentId(), lateCase.capturedAmount(), caseRef, reason, key);
         refund.channelRef = intent.channelRef();
         refund.domainEvents.add(new RefundRequested(createEnvelope("RefundRequested", now, commandId, correlation),
             refund.refundId, refund.paymentIntentId, refund.amount, caseRef, reason, key));
         return refund;
     }
     public String paymentIntentId() { return paymentIntentId; }
+    public static String stableId(String paymentId,String caseId,String key) {
+        try {
+            byte[] bytes=java.util.Arrays.copyOf(java.security.MessageDigest.getInstance("SHA-256").digest(
+                (paymentId+":"+caseId+":"+key).getBytes(java.nio.charset.StandardCharsets.UTF_8)),16);
+            bytes[6]=(byte)((bytes[6]&15)|112);bytes[8]=(byte)((bytes[8]&63)|128);
+            var buffer=java.nio.ByteBuffer.wrap(bytes);
+            return "rf-"+new UUID(buffer.getLong(),buffer.getLong());
+        } catch(java.security.NoSuchAlgorithmException error) { throw new IllegalStateException(error); }
+    }
     public Money amount() { return amount; }
     public String sourceCaseRef() { return sourceCaseRef; }
     public String reasonCode() { return reasonCode; }
