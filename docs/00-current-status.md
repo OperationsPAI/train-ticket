@@ -16,7 +16,7 @@ The resident profile uses the `loadgen-resident-state` persistent claim, a 600 s
 Image updates must preserve this workload configuration and its persistent state.
 See the [loadgen runtime guide](./README.md) for operation checkpoints and verification commands.
 
-The verified release for the ticketing error mapping is Helm revision 257.
+The verified release for the ticketing error mapping is Helm revision 257, and the accepted purchase source endpoint is deployed in revision 258.
 Check `helm history` and the deployed image digests for the live release; repository HEAD and the running images can differ.
 
 ## Verified behavior
@@ -53,7 +53,7 @@ The recorded cold query took 5.29 seconds, with subsequent reads between 346 and
 These measurements are sample results and do not establish peak load latency.
 
 Journey Order's accepted purchase source endpoint reads the original Offer from the persisted creation timeline fact.
-Its source and real PostgreSQL HTTP test are committed; the image rollout is pending at this verification point.
+Its real PostgreSQL HTTP test passes, and the deployed endpoint returns the recorded original Offer for an already changed order.
 Historical purchase reconstruction must use the original accepted source when immutable booking supply references are absent.
 
 ## Active problems and remaining acceptance
