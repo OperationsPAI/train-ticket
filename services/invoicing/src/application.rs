@@ -146,6 +146,7 @@ impl InMemoryInvoicingService {
         state.orders = snapshot.orders;
         state.amounts = snapshot.amounts;
         state.amount_history = snapshot.amount_history;
+        state.refund_observations = snapshot.refund_observations;
         state.idempotency = snapshot.idempotency;
         state.saga_invoices = snapshot.saga_invoices;
     }
@@ -160,6 +161,7 @@ impl InMemoryInvoicingService {
             orders: state.orders.clone(),
             amounts: state.amounts.clone(),
             amount_history: state.amount_history.clone(),
+            refund_observations: state.refund_observations.clone(),
             idempotency: state.idempotency.clone(),
             saga_invoices: state.saga_invoices.clone(),
         }
@@ -194,7 +196,7 @@ impl InMemoryInvoicingService {
                 self.project_order(envelope).await
             }
             "RevenueRecognized" | "RevenueRecognitionReversed" | "InvoiceGenerated" => self.project_amount(envelope).await,
-            "PostSalesApproved" | "PostSalesApplied" => self.observe_refund(envelope).await,
+            "SettledInvoiceRefund" => self.observe_refund(envelope).await,
             "PostSalesFailed" => {
                 self.state
                     .lock()
@@ -409,40 +411,55 @@ impl InMemoryInvoicingService {
         if case_id.is_empty() || order_id.is_empty() {
             return Ok(());
         }
-        let event_id = e.event_id.clone();
-        let (events, red_invoice) = {
+        let refund_id = string_field(&e.payload,"refundId").ok_or_else(|| InvoicingError::ValidationFailed("settled refund identity required".into()))?;
+        let amount: Money = serde_json::from_value(e.payload["refundAmount"].clone()).map_err(|error| InvoicingError::ValidationFailed(error.to_string()))?;
+        let requested_at = chrono::DateTime::parse_from_rfc3339(e.payload["requestedAt"].as_str().ok_or_else(|| InvoicingError::ValidationFailed("refund request time required".into()))?)
+            .map_err(|error| InvoicingError::ValidationFailed(error.to_string()))?;
+        if amount.minor_units <= 0 { return Err(InvoicingError::ValidationFailed("settled refund must be positive".into())); }
+        let observation = RefundObservation { order_id:order_id.clone(),case_id:case_id.clone(),amount:amount.clone() };
+        let events = {
             let mut s = self.state.lock().unwrap();
-            let original = s
+            if let Some(previous) = s.refund_observations.get(&refund_id) {
+                if *previous != observation { return Err(InvoicingError::DomainRuleViolation("settled refund identity changed".into())); }
+                s.processed_events.insert(e.event_id);
+                return Ok(());
+            }
+            let mut originals: Vec<_> = s
                 .invoices
                 .values()
-                .find(|i| {
+                .filter(|i| {
                     i.order_id == order_id
                         && i.invoice_type == InvoiceType::Blue
                         && i.status == InvoiceRequestStatus::Issued
                 })
-                .cloned();
-            let Some(original) = original else {
-                s.processed_events.insert(event_id);
-                return Ok(());
-            };
-            if s.red_flushes.values().any(|rf| {
-                rf.original_invoice_id == original.e_invoice_id
-                    && rf.status == RedFlushStatus::Completed
-            }) {
-                s.processed_events.insert(e.event_id);
-                return Ok(());
+                .cloned().collect();
+            originals.sort_by(|left,right| left.created_at.cmp(&right.created_at).then(left.e_invoice_id.cmp(&right.e_invoice_id)));
+            let mut remaining = amount.minor_units;
+            let mut events = Vec::new();
+            for original in originals {
+                let issued = chrono::DateTime::parse_from_rfc3339(original.issued_at.as_deref().ok_or_else(|| InvoicingError::DomainRuleViolation("issued invoice has no issue time".into()))?)
+                    .map_err(|error| InvoicingError::ValidationFailed(error.to_string()))?;
+                if issued > requested_at { continue; }
+                if original.total_amount.currency != amount.currency { return Err(InvoicingError::DomainRuleViolation("refund and invoice currencies differ".into())); }
+                let returned = s.red_flushes.values().filter(|rf| rf.original_invoice_id == original.e_invoice_id && rf.status == RedFlushStatus::Completed)
+                    .try_fold(0i64,|sum,rf| {
+                        let red = rf.red_invoice_id.as_ref().and_then(|id|s.invoices.get(id)).ok_or_else(|| InvoicingError::Internal("completed red flush has no invoice".into()))?;
+                        sum.checked_add(red.total_amount.minor_units).ok_or_else(||InvoicingError::DomainRuleViolation("red invoice total overflow".into()))
+                    })?;
+                let available = original.total_amount.minor_units.checked_sub(returned).filter(|value|*value>=0)
+                    .ok_or_else(||InvoicingError::DomainRuleViolation("red invoices exceed original invoice".into()))?;
+                let allocated = remaining.min(available);
+                if allocated == 0 { continue; }
+                let (rf,red,generated) = RedFlushView::create_and_complete(&original,case_id.clone(),refund_id.clone(),Money { currency:amount.currency.clone(),minor_units:allocated },e.occurred_at.clone());
+                s.red_flushes.insert(rf.red_flush_id.clone(),rf);
+                s.invoices.insert(red.e_invoice_id.clone(),red);
+                events.extend(generated);
+                remaining -= allocated;
+                if remaining == 0 { break; }
             }
-            let (rf, red, evs) = RedFlushView::create_and_complete(
-                &original,
-                case_id,
-                e.event_id.clone(),
-                e.occurred_at.clone(),
-            );
-            s.red_flushes.insert(rf.red_flush_id.clone(), rf);
-            s.invoices.insert(red.e_invoice_id.clone(), red.clone());
-            (evs, red)
+            s.refund_observations.insert(refund_id,observation);
+            events
         };
-        let _ = red_invoice;
         publish_events(
             self.publisher.as_ref(),
             events,
@@ -526,6 +543,8 @@ pub(crate) struct InvoicingStateSnapshot {
     pub amounts: HashMap<String, AmountBasis>,
     #[serde(default)]
     pub amount_history: HashMap<String, AmountHistory>,
+    #[serde(default)]
+    pub refund_observations: HashMap<String, RefundObservation>,
     pub idempotency: HashMap<String, IdemRecord>,
     #[serde(default)]
     pub saga_invoices: HashMap<String, SagaInvoice>,
@@ -540,6 +559,7 @@ struct InMemoryState {
     orders: HashMap<String, OrderProjection>,
     amounts: HashMap<String, AmountBasis>,
     amount_history: HashMap<String, AmountHistory>,
+    refund_observations: HashMap<String, RefundObservation>,
     idempotency: HashMap<String, IdemRecord>,
     processed_events: HashSet<String>,
     saga_invoices: HashMap<String, SagaInvoice>,
@@ -558,6 +578,12 @@ pub(crate) struct OrderProjection {
 pub(crate) struct AmountHistory {
     pub recognitions: std::collections::BTreeMap<String, Money>,
     pub reversals: std::collections::BTreeMap<String, Money>,
+}
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct RefundObservation {
+    pub order_id: String,
+    pub case_id: String,
+    pub amount: Money,
 }
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct IdemRecord {

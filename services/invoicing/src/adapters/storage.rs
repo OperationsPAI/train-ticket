@@ -152,10 +152,10 @@ impl PostgresInvoicingService {
         snapshot.amounts.clear();
         snapshot.saga_invoices.clear();
         let data = serde_json::to_value(snapshot).map_err(internal)?;
-        for kind in ["titles","requests","invoices","red_flushes","idempotency"] {
+        for kind in ["titles","requests","invoices","red_flushes","idempotency","refund_observations"] {
             for (id, entity) in data[kind].as_object().ok_or_else(|| InvoicingError::Internal("invalid command snapshot".into()))? {
                 sqlx::query("INSERT INTO invoicing_command_rows(kind,id,account_id,order_id,data) VALUES($1,$2,$3,$4,$5) ON CONFLICT(kind,id) DO UPDATE SET data=EXCLUDED.data,order_id=EXCLUDED.order_id WHERE invoicing_command_rows.data IS DISTINCT FROM EXCLUDED.data")
-                    .bind(kind).bind(id).bind(account).bind(entity.get("orderId").and_then(Value::as_str))
+                    .bind(kind).bind(id).bind(account).bind(entity.get("orderId").or_else(||entity.get("order_id")).and_then(Value::as_str))
                     .bind(entity).execute(&mut *tx).await.map_err(internal)?;
             }
         }
@@ -280,8 +280,8 @@ impl PostgresInvoicingService {
                 | "RevenueRecognized"
                 | "RevenueRecognitionReversed"
                 | "InvoiceGenerated"
-                | "PostSalesApproved"
                 | "PostSalesApplied"
+                | "RefundSettled"
                 | "PostSalesFailed"
                 | "RequestEInvoice"
                 | "IssueRedFlush"
@@ -294,6 +294,9 @@ impl PostgresInvoicingService {
         envelope: rust_kit::messaging::EventEnvelope,
         stream: &str,
     ) -> Result<(), InvoicingError> {
+        if matches!(envelope.event_type.as_str(),"PostSalesApplied"|"RefundSettled") {
+            return self.reconcile_settled_refunds(envelope).await;
+        }
         let projection = match envelope.event_type.as_str() {
             "JourneyOrderCreated" | "JourneyOrderConfirmed" | "JourneyOrderPostSalesAdjusted" => Some(("orders", "orderId")),
             "RevenueRecognized" | "RevenueRecognitionReversed" | "InvoiceGenerated" => Some(("amounts", "orderId")),
@@ -303,19 +306,6 @@ impl PostgresInvoicingService {
         if let Some((kind, field)) = projection {
             if let Some(id) = envelope.payload.get(field).and_then(Value::as_str).map(str::to_owned) {
                 return self.consume_projection(envelope, stream, kind, &id).await;
-            }
-        }
-        let mut account = None;
-        if matches!(envelope.event_type.as_str(), "PostSalesApproved" | "PostSalesApplied") {
-            let order_id = envelope.payload.get("orderId").and_then(Value::as_str).unwrap_or("");
-            let found: Option<(String,)> = sqlx::query_as(
-                "SELECT account_id FROM invoicing_command_rows WHERE kind='invoices' AND order_id=$1 AND data->>'invoiceType'='BLUE' AND data->>'status'='ISSUED' LIMIT 1",
-            ).bind(order_id).fetch_optional(self.pool()).await.map_err(internal)?;
-            account = found.map(|row| row.0);
-            if account.is_none() {
-                sqlx::query("INSERT INTO processed_events (event_id,stream) VALUES ($1,$2) ON CONFLICT DO NOTHING")
-                    .bind(&envelope.event_id).bind(stream).execute(self.pool()).await.map_err(internal)?;
-                return Ok(());
             }
         }
         let mut tx = self.pool().begin().await.map_err(internal)?;
@@ -330,10 +320,62 @@ impl PostgresInvoicingService {
         if claimed.rows_affected() == 0 {
             return Ok(());
         }
-        let account = account.or_else(|| envelope.payload.get("accountId").and_then(Value::as_str).map(str::to_owned)).unwrap_or_default();
+        let account = envelope.payload.get("accountId").and_then(Value::as_str).unwrap_or_default().to_string();
         let (svc, publisher) = Self::hydrate_locked(&mut tx, &account, &envelope.event_id).await?;
         svc.apply_subscribed_event(envelope).await?;
         Self::commit_state(tx, &svc, &publisher, &account).await
+    }
+
+    async fn reference(&self,service:&str,path:&str,correlation:&str) -> Result<Value,InvoicingError> {
+        let template=std::env::var("INVOICE_REFERENCE_URL_TEMPLATE").unwrap_or_else(|_|"http://%s:8080".into());
+        reqwest::Client::builder().timeout(std::time::Duration::from_secs(5)).build().map_err(internal)?
+            .get(format!("{}{path}",template.replace("%s",service))).header("X-Correlation-Id",correlation)
+            .send().await.map_err(internal)?.error_for_status().map_err(internal)?.json().await.map_err(internal)
+    }
+
+    async fn reconcile_settled_refunds(&self,envelope:rust_kit::messaging::EventEnvelope) -> Result<(),InvoicingError> {
+        let case_id=if envelope.event_type=="RefundSettled" {
+            let id=envelope.payload["refundId"].as_str().ok_or_else(||internal("refund identity missing"))?;
+            let refund=self.reference("payment",&format!("/api/v1/refunds/{id}"),&envelope.correlation_id).await?;
+            refund["businessCaseRef"].as_str().ok_or_else(||internal("refund case missing"))?.to_string()
+        } else { envelope.payload["caseId"].as_str().ok_or_else(||internal("case identity missing"))?.to_string() };
+        if !case_id.starts_with("psc-") { return Ok(()); }
+        let case=self.reference("post-sales",&format!("/api/v1/post-sales-cases/{case_id}"),&envelope.correlation_id).await?;
+        if case["caseId"]!=case_id { return Err(internal("refund case identity mismatch")); }
+        let order=case["journeyOrderId"].as_str().ok_or_else(||internal("refund order missing"))?;
+        let requested_at=case["createdAt"].as_str().ok_or_else(||internal("refund request time missing"))?;
+        let actual_order=self.reference("journey-order",&format!("/api/v1/journey-orders/{order}"),&envelope.correlation_id).await?;
+        if actual_order["orderId"]!=order { return Err(internal("refund order identity mismatch")); }
+        let account=actual_order["accountId"].as_str().ok_or_else(||internal("order account missing"))?;
+        let refunds=self.reference("payment",&format!("/api/v1/refunds?businessCaseRef={case_id}"),&envelope.correlation_id).await?;
+        let items=refunds["items"].as_array().ok_or_else(||internal("refund list missing"))?;
+        if refunds["total"].as_u64()!=Some(items.len() as u64) { return Err(internal("refund list incomplete")); }
+        let mut tx=self.pool().begin().await.map_err(internal)?;
+        let (svc,publisher)=Self::hydrate_locked(&mut tx,account,&envelope.event_id).await?;
+        for refund in items.iter().filter(|item|item["status"]=="SETTLED") {
+            if refund["businessCaseRef"]!=case_id { return Err(internal("settled refund case mismatch")); }
+            let id=refund["refundId"].as_str().ok_or_else(||internal("refund identity missing"))?;
+            if !svc.snapshot().refund_observations.contains_key(id) {
+                let payment_id=refund["paymentIntentId"].as_str().ok_or_else(||internal("refund payment identity missing"))?;
+                let payment=self.reference("payment",&format!("/api/v1/payment-intents/{payment_id}"),&envelope.correlation_id).await?;
+                if payment["paymentIntentId"]!=payment_id || payment["payerRef"]!=account || payment["status"]!="CAPTURED" { return Err(internal("refund payment owner mismatch")); }
+                let business=payment["businessRef"].as_str().ok_or_else(||internal("payment business reference missing"))?;
+                if business!=order {
+                    if payment["purpose"]!="change" { return Err(internal("refund payment is outside the order")); }
+                    let change=self.reference("post-sales",&format!("/api/v1/post-sales-cases/{business}"),&envelope.correlation_id).await?;
+                    if change["journeyOrderId"]!=order || change["caseType"]!="CHANGE" { return Err(internal("refund change payment is outside the order")); }
+                }
+                let amount:Money=serde_json::from_value(refund["amount"].clone()).map_err(internal)?;
+                let returned:Money=serde_json::from_value(payment["refundedAmount"].clone()).map_err(internal)?;
+                if amount.currency!=returned.currency || amount.minor_units<=0 || amount.minor_units>returned.minor_units { return Err(internal("settled refund exceeds payment return")); }
+            }
+            let mut fact=envelope.clone();
+            fact.event_id=crate::utils::deterministic_event_id("SettledInvoiceRefund",id,1);
+            fact.event_type="SettledInvoiceRefund".into();
+            fact.payload=json!({"caseId":case_id,"orderId":order,"refundId":id,"refundAmount":refund["amount"],"requestedAt":requested_at});
+            svc.apply_subscribed_event(fact).await?;
+        }
+        Self::commit_state(tx,&svc,&publisher,account).await
     }
 }
 
@@ -470,6 +512,54 @@ impl InvoicingApi for PostgresInvoicingService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires actual invoice/refund records and PostgreSQL"]
+    async fn settled_refund_red_flush_matches_actual_amount_and_survives_restart() {
+        let source: Value=serde_json::from_str(&std::fs::read_to_string(std::env::var("TEST_RED_FLUSH_SOURCE").unwrap()).unwrap()).unwrap();
+        let url=std::env::var("TEST_DATABASE_URL").unwrap();
+        let admin=sqlx::PgPool::connect(&url).await.unwrap();
+        let schema=format!("red_flush_{}",uuid::Uuid::now_v7().simple());
+        sqlx::query(&format!("CREATE SCHEMA {schema}")).execute(&admin).await.unwrap();
+        let search=schema.clone();
+        let pool=sqlx::postgres::PgPoolOptions::new().max_connections(4).after_connect(move|conn,_|{
+            let sql=format!("SET search_path TO {search}");
+            Box::pin(async move {sqlx::query(&sql).execute(conn).await?;Ok(())})
+        }).connect(&url).await.unwrap();
+        let storage=rust_kit::storage::Storage::new(pool.clone());
+        storage.migrate_dir(concat!(env!("CARGO_MANIFEST_DIR"),"/migrations")).await.unwrap();
+        let svc=PostgresInvoicingService{storage};
+        for row in source["rows"].as_array().unwrap() {
+            sqlx::query("INSERT INTO invoicing_command_rows(kind,id,account_id,order_id,data) VALUES($1,$2,$3,$4,$5)")
+                .bind(row["kind"].as_str().unwrap()).bind(row["id"].as_str().unwrap()).bind(row["account"].as_str().unwrap())
+                .bind(row["order"].as_str().unwrap()).bind(&row["data"]).execute(&pool).await.unwrap();
+        }
+        let mut approved=envelope("PostSalesApproved","post-sales");
+        approved.payload=json!({"caseId":source["case"]["caseId"],"orderId":source["order"]});
+        svc.handle_subscribed_event(approved).await.unwrap();
+        assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM invoicing_command_rows WHERE kind='red_flushes'").fetch_one(&pool).await.unwrap(),0);
+        let mut settled=envelope("RefundSettled","payment");
+        settled.payload=json!({"refundId":source["refunds"][0]["refundId"]});
+        svc.handle_subscribed_event(settled.clone()).await.unwrap();
+        let reds=svc.list_invoices(source["order"].as_str().unwrap().into(),Some(InvoiceType::Red),None,100,0).await.unwrap();
+        let expected:i64=source["refunds"].as_array().unwrap().iter().map(|refund|refund["amount"]["minorUnits"].as_i64().unwrap()).sum();
+        assert_eq!(reds.items.iter().map(|invoice|invoice.total_amount.minor_units).sum::<i64>(),expected);
+        let count=sqlx::query_scalar::<_,i64>("SELECT count(*) FROM outbox").fetch_one(&pool).await.unwrap();
+        let restarted=PostgresInvoicingService{storage:rust_kit::storage::Storage::new(pool.clone())};
+        for _ in 0..2 {
+            settled.event_id=format!("evt-{}",uuid::Uuid::now_v7());
+            restarted.handle_subscribed_event(settled.clone()).await.unwrap();
+            let mut applied=envelope("PostSalesApplied","post-sales");applied.payload=json!({"caseId":source["case"]["caseId"]});
+            restarted.handle_subscribed_event(applied).await.unwrap();
+        }
+        let a=PostgresInvoicingService{storage:rust_kit::storage::Storage::new(pool.clone())};
+        let b=PostgresInvoicingService{storage:rust_kit::storage::Storage::new(pool.clone())};
+        let (left,right)=tokio::join!(a.handle_subscribed_event(settled.clone()),b.handle_subscribed_event(settled));
+        left.unwrap();right.unwrap();
+        assert_eq!(reds.items,restarted.list_invoices(source["order"].as_str().unwrap().into(),Some(InvoiceType::Red),None,100,0).await.unwrap().items);
+        assert_eq!(count,sqlx::query_scalar::<_,i64>("SELECT count(*) FROM outbox").fetch_one(&pool).await.unwrap());
+        pool.close().await;sqlx::query(&format!("DROP SCHEMA {schema} CASCADE")).execute(&admin).await.unwrap();admin.close().await;
+    }
 
     #[tokio::test]
     #[ignore = "requires recorded invoice events and PostgreSQL"]
