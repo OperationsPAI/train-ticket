@@ -33,6 +33,8 @@ public final class SegmentBooking {
     private String cancellationReason;
     private String seatAllocationRef;
     private String classRef;
+    private String scheduledServiceRef;
+    private String serviceDate;
     private long version;
 
     private SegmentBooking(String segmentBookingId, String journeyOrderId, String offerItemRef, String segmentRef,
@@ -119,6 +121,19 @@ public final class SegmentBooking {
 
     public String classRef() { return classRef; }
     public SegmentBooking withClassRef(String classRef) { this.classRef=classRef; return this; }
+    public String scheduledServiceRef() { return scheduledServiceRef; }
+    public String serviceDate() { return serviceDate; }
+    public SegmentBooking withSupplyReference(String service, String date) {
+        if (service == null && date == null) return this;
+        String resolvedService = requireText(service, "scheduledServiceRef");
+        String resolvedDate = java.time.LocalDate.parse(requireText(date, "serviceDate")).toString();
+        if (scheduledServiceRef != null && (!scheduledServiceRef.equals(resolvedService) || !serviceDate.equals(resolvedDate))) {
+            throw new IllegalStateException("reservation already references another scheduled supply");
+        }
+        scheduledServiceRef = resolvedService;
+        serviceDate = resolvedDate;
+        return this;
+    }
 
     public String idempotencyKey() {
         return idempotencyKey;
