@@ -830,8 +830,9 @@ services:
           command: ["sleep", "10"]
     env:
       SMTP_URL: smtp://mailpit:1025
-      CONSUMER_BATCH_CONCURRENCY: "8"
-      PG_MAX_POOL_SIZE: "24"
+      SMTP_MAX_CONNECTIONS: "32"
+      CONSUMER_BATCH_CONCURRENCY: "16"
+      PG_MAX_POOL_SIZE: "48"
       # 11 streams. Also had ~1000 pending messages against one thread, which is
       # why e2e assertions on NotificationScheduled/NotificationDelivered timed
       # out intermittently.
