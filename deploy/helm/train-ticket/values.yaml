@@ -827,6 +827,14 @@ services:
       limits: { cpu: '4', memory: 3Gi }
   notification:
     db: notification
+    strategy:
+      type: RollingUpdate
+      rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+    terminationGracePeriodSeconds: 45
+    lifecycle:
+      preStop:
+        exec:
+          command: ["sleep", "10"]
     env:
       SMTP_URL: smtp://mailpit:1025
       CONSUMER_BATCH_CONCURRENCY: "8"
@@ -870,6 +878,14 @@ services:
     db: account
   loyalty-membership:
     db: loyalty_membership
+    strategy:
+      type: RollingUpdate
+      rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+    terminationGracePeriodSeconds: 45
+    lifecycle:
+      preStop:
+        exec:
+          command: ["sleep", "10"]
   admin-audit:
     db: admin_audit
     # JVM event consumer, low traffic -- see the note on defaults.resources.
@@ -878,6 +894,14 @@ services:
       limits: { cpu: 500m, memory: 1Gi }
   customer-service:
     db: customer_service
+    strategy:
+      type: RollingUpdate
+      rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+    terminationGracePeriodSeconds: 45
+    lifecycle:
+      preStop:
+        exec:
+          command: ["sleep", "10"]
     env:
       CONSUMER_THREADS: "4"   # 5 streams
       CONSUMER_BATCH_CONCURRENCY: "4"
