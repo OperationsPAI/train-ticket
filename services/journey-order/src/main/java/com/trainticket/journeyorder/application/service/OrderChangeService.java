@@ -18,9 +18,10 @@ public class OrderChangeService {
     private final ObjectMapper mapper;
     private final RestClient client;
     private final String template;
-    public OrderChangeService(JourneyOrderStateRepository repository,ObjectMapper mapper,RestClient.Builder builder,
+    private final com.trainticket.journeyorder.application.port.out.EventPublisher publisher;
+    public OrderChangeService(JourneyOrderStateRepository repository,ObjectMapper mapper,RestClient.Builder builder,com.trainticket.journeyorder.application.port.out.EventPublisher publisher,
         @Value("${CHANGE_SERVICE_URL_TEMPLATE:http://%s:8080}")String template){
-        this.repository=repository;this.mapper=mapper;this.template=template;
+        this.repository=repository;this.mapper=mapper;this.template=template;this.publisher=publisher;
         var factory=new SimpleClientHttpRequestFactory();factory.setConnectTimeout(Duration.ofSeconds(2));factory.setReadTimeout(Duration.ofSeconds(5));
         client=builder.requestFactory(factory).build();
     }
@@ -64,6 +65,13 @@ public class OrderChangeService {
         order.applyChange(caseId,new OfferSnapshotRef(text(offer,"offerId"),offer.path("offerVersion").asInt(),Instant.parse(text(offer,"createdAt")),Instant.parse(text(offer,"expiresAt")),text(downstream,"priceSnapshotRef"),text(downstream,"ruleSnapshotRef")),segments,items,fee,Instant.now());
         if(!expected.equals(order.monetarySummary().payableTotal()))throw new DomainRuleViolation("replacement order total differs from its settled funds");
         repository.saveOrder(order,stored.idempotencyKey());
+        var envelope=new com.trainticket.platformkit.messaging.EventEnvelope(com.trainticket.platformkit.messaging.PrefixedIds.newEventId(),"JourneyOrderPostSalesAdjusted",Instant.now(),correlation,com.trainticket.platformkit.messaging.PrefixedIds.newCommandId(),"journey-order",1,Map.of());
+        var event=new JourneyOrderPostSalesAdjusted(envelope,orderId,order.accountId(),caseId,order.monetarySummary());
+        var mapped=OrderManagementService.envelopeWithPayload(event);
+        var payload=new LinkedHashMap<String,Object>(mapper.convertValue(mapped.payload(),new com.fasterxml.jackson.core.type.TypeReference<Map<String,Object>>(){}));
+        payload.put("travelerRefs",travelers);
+        payload.put("segmentRefs",segments.stream().map(SegmentOrderSnapshot::segmentRef).toList());
+        publisher.publish(new com.trainticket.platformkit.messaging.EventEnvelope(mapped.eventId(),mapped.eventType(),mapped.occurredAt(),mapped.correlationId(),mapped.causationId(),mapped.producer(),mapped.schemaVersion(),payload));
         return Map.of("orderId",orderId,"caseId",caseId,"status",order.state().name(),"offerId",order.offerSnapshot().offerId());
     }
     private JsonNode get(String service,String path,String correlation){return client.get().uri(template.formatted(service)+path).header("X-Correlation-Id",correlation).exchange((request,response)->{
