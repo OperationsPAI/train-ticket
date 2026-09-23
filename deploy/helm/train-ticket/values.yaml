@@ -935,6 +935,14 @@ services:
     db: supplier_catalog
   waitlist:
     db: waitlist
+    strategy:
+      type: RollingUpdate
+      rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+    terminationGracePeriodSeconds: 45
+    lifecycle:
+      preStop:
+        exec:
+          command: ["sleep", "10"]
     env:
       MIGRATIONS_DIR: /app/migrations
       FARE_PRICING_BASE_URL: http://fare-pricing:8080
