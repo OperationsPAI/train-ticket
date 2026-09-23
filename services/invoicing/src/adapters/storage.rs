@@ -352,6 +352,27 @@ impl PostgresInvoicingService {
         if refunds["total"].as_u64()!=Some(items.len() as u64) { return Err(internal("refund list incomplete")); }
         let mut tx=self.pool().begin().await.map_err(internal)?;
         let (svc,publisher)=Self::hydrate_locked(&mut tx,account,&envelope.event_id).await?;
+        if envelope.event_type=="ReconcileInvoiceRefund" {
+            let mut state=svc.snapshot();
+            let ids:Vec<_>=state.red_flushes.values().filter(|rf|rf.post_sales_case_id==case_id && rf.status==RedFlushStatus::Completed
+                && rf.refund_fact_event_id.as_ref().is_some_and(|id|id.starts_with("evt-"))).map(|rf|rf.red_flush_id.clone()).collect();
+            for id in ids {
+                let original=state.red_flushes.get(&id).unwrap().clone();
+                if original.order_id!=order { return Err(internal("red flush correction order mismatch")); }
+                let red_id=original.red_invoice_id.as_ref().ok_or_else(||internal("red flush correction invoice missing"))?;
+                let invoice=state.invoices.get(red_id).ok_or_else(||internal("red flush correction invoice not found"))?.clone();
+                if invoice.order_id!=order || invoice.invoice_type!=InvoiceType::Red { return Err(internal("red invoice correction reference mismatch")); }
+                sqlx::query("INSERT INTO red_flush_correction_audit(original_red_flush_id,case_id,original_red_flush,original_red_invoice,refund_evidence) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING")
+                    .bind(&id).bind(&case_id).bind(serde_json::to_value(&original).map_err(internal)?).bind(serde_json::to_value(&invoice).map_err(internal)?).bind(&refunds).execute(&mut *tx).await.map_err(internal)?;
+                let rf=state.red_flushes.get_mut(&id).unwrap();rf.status=RedFlushStatus::Cancelled;rf.updated_at=crate::utils::current_rfc3339();rf.version+=1;
+                let red=state.invoices.get_mut(red_id).unwrap();red.status=InvoiceRequestStatus::Cancelled;red.updated_at=rf.updated_at.clone();
+                let correction=rust_kit::messaging::EventEnvelope::new("RedFlushCorrected",rf.updated_at.clone(),envelope.correlation_id.clone(),Some(envelope.event_id.clone()),"invoicing",
+                    json!({"redFlushId":id,"redInvoiceId":red_id,"orderId":order,"caseId":case_id,"status":"CANCELLED","reason":"RECONCILED_WITH_SETTLED_REFUNDS"}));
+                sqlx::query("INSERT INTO outbox(event_id,stream,envelope) VALUES($1,$2,$3) ON CONFLICT DO NOTHING")
+                    .bind(&correction.event_id).bind(STREAM).bind(serde_json::to_value(&correction).map_err(internal)?).execute(&mut *tx).await.map_err(internal)?;
+            }
+            svc.import_snapshot(state);
+        }
         for refund in items.iter().filter(|item|item["status"]=="SETTLED") {
             if refund["businessCaseRef"]!=case_id { return Err(internal("settled refund case mismatch")); }
             let id=refund["refundId"].as_str().ok_or_else(||internal("refund identity missing"))?;
@@ -376,6 +397,12 @@ impl PostgresInvoicingService {
             svc.apply_subscribed_event(fact).await?;
         }
         Self::commit_state(tx,&svc,&publisher,account).await
+    }
+
+    pub async fn reconcile_red_flush(&self,case_id:&str,correlation:&str)->Result<(),InvoicingError> {
+        if !case_id.starts_with("psc-") { return Err(InvoicingError::ValidationFailed("post sales case required".into())); }
+        let event=rust_kit::messaging::EventEnvelope::new("ReconcileInvoiceRefund",crate::utils::current_rfc3339(),correlation.to_string(),None::<String>,"invoicing",json!({"caseId":case_id}));
+        self.reconcile_settled_refunds(event).await
     }
 }
 
@@ -558,6 +585,21 @@ mod tests {
         left.unwrap();right.unwrap();
         assert_eq!(reds.items,restarted.list_invoices(source["order"].as_str().unwrap().into(),Some(InvoiceType::Red),None,100,0).await.unwrap().items);
         assert_eq!(count,sqlx::query_scalar::<_,i64>("SELECT count(*) FROM outbox").fetch_one(&pool).await.unwrap());
+        let historic:Vec<Value>=serde_json::from_slice(&std::fs::read(std::env::var("TEST_OLD_RED_FLUSH_ROWS").unwrap()).unwrap()).unwrap();
+        for row in historic.iter().filter(|row|row["kind"]=="red_flushes" || (row["kind"]=="invoices" && row["data"]["invoiceType"]=="RED")) {
+            sqlx::query("INSERT INTO invoicing_command_rows(kind,id,account_id,order_id,data) VALUES($1,$2,$3,$4,$5)")
+                .bind(row["kind"].as_str().unwrap()).bind(row["id"].as_str().unwrap()).bind(row["account"].as_str().unwrap()).bind(row["order"].as_str().unwrap())
+                .bind(&row["data"]).execute(&pool).await.unwrap();
+        }
+        let case=source["case"]["caseId"].as_str().unwrap();
+        restarted.reconcile_red_flush(case,&rust_kit::messaging::correlation_id()).await.unwrap();
+        let audit_count=sqlx::query_scalar::<_,i64>("SELECT count(*) FROM red_flush_correction_audit").fetch_one(&pool).await.unwrap();
+        assert_eq!(audit_count,1);
+        let corrected=svc.list_invoices(source["order"].as_str().unwrap().into(),Some(InvoiceType::Red),Some(InvoiceRequestStatus::RedFlushed),100,0).await.unwrap();
+        assert_eq!(corrected.items.iter().map(|invoice|invoice.total_amount.minor_units).sum::<i64>(),expected);
+        let after=sqlx::query_scalar::<_,i64>("SELECT count(*) FROM outbox").fetch_one(&pool).await.unwrap();
+        restarted.reconcile_red_flush(case,&rust_kit::messaging::correlation_id()).await.unwrap();
+        assert_eq!(after,sqlx::query_scalar::<_,i64>("SELECT count(*) FROM outbox").fetch_one(&pool).await.unwrap());
         pool.close().await;sqlx::query(&format!("DROP SCHEMA {schema} CASCADE")).execute(&admin).await.unwrap();admin.close().await;
     }
 
