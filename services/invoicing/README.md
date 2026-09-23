@@ -1,6 +1,7 @@
 # Invoicing
 
-Rust implementation of the Wave-A Invoicing bounded context. It owns invoice titles, deterministic SIM blue e-invoice requests, red-flush observations, and read-only itinerary receipt projections.
+Rust service for invoice titles, deterministic SIM invoice requests, red flush observations and itinerary receipt projections.
+Remaining work is tracked in [TODO](../../docs/TODO.md).
 
 Invoice creation reads order and financial projections through the same PostgreSQL connection as its command transaction.
 The command does not acquire another pool connection while holding account and idempotency locks.
@@ -23,7 +24,7 @@ Creation events supply references without replacing a later confirmation or adju
 Its recorded PostgreSQL run passes in 0.41 seconds; live throughput remains separately measured.
 Both changes are deployed in revision 276.
 Loadgen's `TestLiveRecordedInvoiceProjectionCompletes` completes the recorded failed order through the current APIs in 0.088 seconds and retains the issued invoice.
-Complete peak period acceptance remains open.
+Peak period acceptance is tracked in TODO.
 
 ## Recorded wallet compensation tests
 

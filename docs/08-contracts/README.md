@@ -1,59 +1,19 @@
-# Cross-Context Contracts
+# Service interfaces
 
-This directory defines the shared contracts that bounded contexts must follow
-when exchanging events, commands, or shared value objects. These contracts are
-the normative reference for field-by-field conformance.
+Last updated: 2026-09-24.
 
-## Contents
+The [HTTP API index](api/README.md) and `events/` describe service requests, responses, published events and consumer behavior.
+[Shared primitives](shared-primitives.md) define identifiers, timestamps, envelopes and common values.
+[Messaging](messaging.md) and [persistence](persistence.md) document delivery and storage boundaries.
 
-This document set is the **single source of truth** for every cross-context
-message exchanged between bounded contexts in the Train Ticket platform. Every
-service must conform to these contracts when communicating across bounded
-context boundaries. Integration testing (联调) validates against these contracts.
+## Accuracy and versioning
 
-## Organization
+Each interface document must identify whether its fields are deployed or belong to an unpublished workspace implementation.
+Current release and verified results are maintained in [current status](../00-current-status.md).
+All incomplete implementation and acceptance work is tracked in [TODO](../TODO.md).
+An example payload or an approved design is not proof that every consumer has implemented it.
 
-```
-docs/08-contracts/
-├── README.md               ← This file: organization, versioning, conformance
-├── shared-primitives.md    ← Language-neutral field-level definitions
-├── conformance-gaps.md     ← Known mismatches between spec and implementation
-└── events/
-    ├── admin-audit.md
-    ├── customer-service.md
-    ├── trip-planning.md
-    ├── offer-management.md
-    ├── journey-order.md
-    ├── booking-orchestration.md
-    ├── capacity-availability.md
-    ├── fare-pricing.md
-    ├── payment.md
-    ├── payment-channel.md
-    ├── provider-integration.md
-    ├── entitlement-ticketing.md
-    ├── post-sales.md
-    ├── notification.md
-    ├── traveler-profile.md
-    ├── place-network.md
-    ├── waitlist.md
-    ├── dispatch.md
-    ├── wallet-promotion.md
-    ├── seat-assignment.md
-    ├── invoicing.md
-    └── finance-settlement-events.md
-```
-
-## Versioning
-
-| Concept | Convention |
-|---|---|
-| `shared-primitives.md` | Cross-context IDs, Money, timestamps, event envelope. |
-| `events/` | Per-domain event payload contracts. |
-
-## Principles
-
-1. Every event payload must conform to the contract in `events/`.
-2. Cross-context IDs, Money, and timestamps must use the shapes defined in
-   `shared-primitives.md`.
-3. If a needed event is missing from the contracts, extend the contract in
-   this directory rather than inventing a private shape.
+Clients use each owning service's current API and preserve returned business identities on replay.
+Financial wire formats and enum values follow the concrete service definition, including reporting and notification representations.
+Unrelated event types may be acknowledged without business effects; recognized events still require valid payloads and idempotent handling.
+Consumer replay must preserve monetary, ticket and capacity effects across retries.
