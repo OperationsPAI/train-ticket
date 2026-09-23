@@ -4,14 +4,16 @@ import java.sql.SQLException;
 import java.util.function.Supplier;
 import javax.sql.DataSource;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 
 @Component
 public final class ChangeExecutionGuard {
     private final ObjectProvider<DataSource> dataSource;
-    private final java.util.concurrent.Semaphore permits = new java.util.concurrent.Semaphore(2);
+    public static final int MAX_CONCURRENT_EXECUTIONS = 16;
+    private final java.util.concurrent.Semaphore permits = new java.util.concurrent.Semaphore(MAX_CONCURRENT_EXECUTIONS);
 
-    public ChangeExecutionGuard(ObjectProvider<DataSource> dataSource) {
+    public ChangeExecutionGuard(@Qualifier("changeExecutionLockDataSource") ObjectProvider<DataSource> dataSource) {
         this.dataSource = dataSource;
     }
 

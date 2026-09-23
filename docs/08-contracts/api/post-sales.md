@@ -126,6 +126,9 @@ Captured difference payments are refunded in full and checked for settlement; un
 The original tickets must remain issued and no original ticket void or order application may have started.
 `capacity-compensation-completed` records the checked result before the case ends as `FAILED` with `terminalReason=CHANGE_CAPACITY_UNAVAILABLE`.
 Concurrent execution calls for one case share a PostgreSQL advisory execution lock; a busy call returns the current case without another downstream operation.
+Execution locks use a dedicated pool of sixteen PostgreSQL connections initialized during service startup.
+Different cases can execute concurrently without holding the ordinary business pool's connections across downstream calls.
+The business transactions and event consumers continue to use their own pool.
 
 ### Read replacement issue authorization
 

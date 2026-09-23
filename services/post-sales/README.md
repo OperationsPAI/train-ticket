@@ -19,6 +19,9 @@ An expired target Offer with no replacement operations ends with `CHANGE_OFFER_E
 Sold out replacement compensation records the rejection, voids replacement tickets, cancels replacement bookings, checks Hold release and returns captured difference payments.
 It preserves original tickets and finishes with `CHANGE_CAPACITY_UNAVAILABLE` only after validation.
 Case execution uses a PostgreSQL advisory lock to serialize downstream actions across replicas.
+Sixteen independent cases can hold execution locks in a dedicated pool while ordinary queries and transactions use the separate business pool.
+The lock pool is initialized before startup completes, and outbox publication starts after migrations complete.
+`ChangeExecutionGuardLiveTest` verifies sixteen recorded case identities in parallel, cross session exclusion for the same case, business connection availability and lock release after exceptions.
 The real database `CapacityCompensationLiveTest` verifies rejection persistence and execution lock release.
 Loadgen's `TestLivePaidPartialChangeCompensates` verifies partial issuance and a captured difference payment through actual service APIs, with one available business seat for two travelers in an isolated test service.
 See the [HTTP API](../../docs/08-contracts/api/post-sales.md) and [inventory integration requirements](../../docs/10-domain-enrichment/capacity-overbooking.md).

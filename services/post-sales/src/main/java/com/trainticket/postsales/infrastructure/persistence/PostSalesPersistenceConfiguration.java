@@ -63,6 +63,7 @@ public class PostSalesPersistenceConfiguration {
     }
 
     @Bean(destroyMethod = "close")
+    @org.springframework.context.annotation.DependsOn("migrationRunner")
     LazyRedisOutboxRelayLifecycle outboxRelayLifecycle(
         DataSource dataSource,
         @Value("${REDIS_URL:redis://localhost:6379}") String redisUrl
