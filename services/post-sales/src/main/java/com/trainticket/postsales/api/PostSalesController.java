@@ -61,6 +61,14 @@ public class PostSalesController {
         return PostSalesMapper.evaluateResponse(service.evaluate(caseId, commandId(), requestCorrelationId(httpRequest)));
     }
 
+    @PostMapping("/{caseId}/target-offer")
+    public Map<String, Object> selectTargetOffer(@PathVariable String caseId,
+        @RequestHeader("Idempotency-Key") String idempotencyKey, @Valid @RequestBody TargetOfferRequest request) {
+        return PostSalesMapper.caseDetails(service.selectChangeOffer(caseId, request.targetOfferId()));
+    }
+
+    public record TargetOfferRequest(@NotBlank String targetOfferId) {}
+
     @PostMapping("/{caseId}/approve")
     public Map<String, Object> approve(
         @PathVariable String caseId,
