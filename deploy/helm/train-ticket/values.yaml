@@ -1023,6 +1023,14 @@ services:
       limits: { cpu: 500m, memory: 2Gi }
   invoicing:
     db: invoicing
+    strategy:
+      type: RollingUpdate
+      rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+    terminationGracePeriodSeconds: 45
+    lifecycle:
+      preStop:
+        exec:
+          command: ["sleep", "10"]
     env:
       # Each event stream has its own subscriber and entity projections use row locks.
       CONSUMER_THREADS: "1"
