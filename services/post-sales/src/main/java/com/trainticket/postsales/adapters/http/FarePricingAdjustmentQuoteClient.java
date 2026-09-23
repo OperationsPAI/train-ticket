@@ -90,7 +90,8 @@ public class FarePricingAdjustmentQuoteClient implements AdjustmentQuotePort {
             minorUnits(refundable),
             currency(refundable),
             minorUnits(amountDue),
-            currency(amountDue)
+            currency(amountDue),
+            com.trainticket.postsales.application.PostSalesPolicyContextMapper.fromOrderSnapshot(request.journeyOrderId(),order)
         ));
     }
 
