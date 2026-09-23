@@ -90,6 +90,15 @@ public class PostSalesApplicationService {
         return postSalesCase;
     }
 
+    public PostSalesCase selectChangeOffer(String caseId, String offerId) {
+        PostSalesCase initial = get(caseId);
+        repository.lockOrder(initial.journeyOrderId());
+        PostSalesCase current = get(caseId);
+        current.selectChangeOffer(offerId);
+        repository.save(current);
+        return current;
+    }
+
     public PostSalesCase approve(String caseId, String sourceCommandId, String correlationId) {
         PostSalesCase postSalesCase = get(caseId);
         if (isTerminalNonRefundable(postSalesCase)) {
@@ -200,7 +209,8 @@ public class PostSalesApplicationService {
             postSalesCase.scope().entitlementRefs(),
             postSalesCase.journeyOrderId(),
             postSalesCase.scope().segmentRefs(),
-            PostSalesMapper.stripCasePrefix(postSalesCase.caseId())
+            PostSalesMapper.stripCasePrefix(postSalesCase.caseId()),
+            postSalesCase.targetOfferId()
         ));
         RuleEvaluationSnapshot ruleSnapshot = new RuleEvaluationSnapshot(
             quote.map(AdjustmentQuotePort.AdjustmentQuoteResult::adjustmentQuoteId)
