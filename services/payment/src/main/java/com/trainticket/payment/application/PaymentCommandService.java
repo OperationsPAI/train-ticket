@@ -158,6 +158,7 @@ public class PaymentCommandService {
         PaymentChannel selectedChannel = channelRouter.requireAvailable(channel, intent.amount());
         channel = selectedChannel.channelId();
         ChannelRef requestedRef = new ChannelRef(channel, null, null, null, null, null, null);
+        if (isCapturedReplay(intent, requestedRef)) return intent;
         String orderKey = keyOrFold(intent.channelOrderIdempotencyKey(), intent.paymentIntentId() + ":1", idempotencyKey);
         String submitKey = keyOrFold(intent.channelOrderSubmitIdempotencyKey(), intent.paymentIntentId() + ":1:submit", idempotencyKey);
         intent.rememberChannelOrderKeys(orderKey, submitKey);
@@ -183,6 +184,7 @@ public class PaymentCommandService {
         PaymentIntent intent = getIntent(paymentIntentId);
         PaymentChannel selectedChannel = channelRouter.requireAvailable(requestedRef.channel(), intent.amount());
         requestedRef = new ChannelRef(selectedChannel.channelId(), requestedRef.channelOrderId(), requestedRef.channelRefundId(), requestedRef.channelTransactionId(), requestedRef.channelRefundTransactionId(), requestedRef.channelStatementId(), requestedRef.faultSeedRef());
+        if (isCapturedReplay(intent, requestedRef)) return intent;
         String orderKey = keyOrFold(intent.channelOrderIdempotencyKey(), intent.paymentIntentId() + ":1", idempotencyKey);
         String submitKey = keyOrFold(intent.channelOrderSubmitIdempotencyKey(), intent.paymentIntentId() + ":1:submit", idempotencyKey);
         intent.rememberChannelOrderKeys(orderKey, submitKey);
@@ -207,6 +209,17 @@ public class PaymentCommandService {
         paymentIntentRepository.save(intent);
         publishNewEvents(intent.domainEvents(), before);
         return intent;
+    }
+
+    private boolean isCapturedReplay(PaymentIntent intent, ChannelRef requested) {
+        if (intent.status() != com.trainticket.payment.domain.PaymentIntentStatus.CAPTURED) return false;
+        ChannelRef original = intent.channelRef();
+        if (original == null || !ChannelRouter.normalize(original.channel()).equals(ChannelRouter.normalize(requested.channel()))
+            || (requested.channelOrderId() != null && !requested.channelOrderId().equals(original.channelOrderId()))
+            || (requested.channelTransactionId() != null && !requested.channelTransactionId().equals(original.channelTransactionId()))) {
+            throw new DomainRuleViolation("captured payment replay must use the original channel route");
+        }
+        return true;
     }
 
     /** Latest captured (or created) intent for a business reference, used
