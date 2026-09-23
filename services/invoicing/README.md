@@ -21,6 +21,9 @@ Projection writes retain order scoped PostgreSQL locks and source event timestam
 Creation events supply references without replacing a later confirmation or adjustment total.
 `order_concurrency_recorded` verifies all six event orders, 144 concurrent duplicate deliveries, independent order progress and service reconstruction.
 Its recorded PostgreSQL run passes in 0.41 seconds; live throughput remains separately measured.
+Both changes are deployed in revision 276.
+Loadgen's `TestLiveRecordedInvoiceProjectionCompletes` completes the recorded failed order through the current APIs in 0.088 seconds and retains the issued invoice.
+Complete peak period acceptance remains open.
 
 ## Recorded wallet compensation tests
 
