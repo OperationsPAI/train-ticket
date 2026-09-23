@@ -43,6 +43,7 @@ The coordinated production migration builds three populated replacement material
 Subsequent refreshes increase captured totals consistently across all five dimensions.
 Revision 279 enables Traveler Profile HTTP virtual threads while retaining the existing JDBC pool and readiness checks.
 Its complete local module suite passes 59 tests with no skips, including 220 concurrent incomplete request bodies, exact HTTP replay and preserved original traveler records.
+Revision 279 passes all six initial purchase classes in 86.305 seconds.
 Revision 278 passes the complete broad live regression in 232.690 seconds.
 The stable four minute resident sample ending at 15:42:07 UTC contains 196096 requests, no unexpected HTTP errors or failed journeys, and request P99 of 228.635 milliseconds.
 This interval does not establish the full peak period acceptance.
