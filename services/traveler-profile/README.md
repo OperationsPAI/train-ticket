@@ -23,6 +23,7 @@ The test observer only counts incoming requests; HTTP handling, PostgreSQL persi
 The complete local suite passes all 59 tests without skips, and the 220 request test completes in 2.930 seconds within that run.
 The HTTP configuration and published outbox cleanup index are deployed in revision 279.
 This configuration does not increase JDBC throughput or bypass dependency checks.
+After deployment, the live purchase regression passes all six seat classes in 86.305 seconds, including the traveler creation and risk checks that previously failed during the recorded peak.
 
 ## Owns
 
