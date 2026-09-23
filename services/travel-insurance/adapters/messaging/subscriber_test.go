@@ -2,7 +2,6 @@ package messaging
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 	"time"
 
@@ -48,7 +47,7 @@ func makeEnvelope(t *testing.T, eventType string, payload any, occurredAt time.T
 	return env
 }
 
-func TestHandleJourneyOrderCreated_IssuesPolicy(t *testing.T) {
+func TestHandleJourneyOrderCreatedRequiresInsurancePurchase(t *testing.T) {
 	now := time.Date(2026, 7, 10, 10, 0, 0, 0, time.UTC)
 	pub := &capturePublisher{}
 	svc := newTestService(t, now, pub)
@@ -65,8 +64,8 @@ func TestHandleJourneyOrderCreated_IssuesPolicy(t *testing.T) {
 	if err := handler.Handle(context.Background(), envelope); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
-	if len(pub.events) != 1 || pub.events[0].EventType != "InsurancePolicyIssued" {
-		t.Fatalf("expected policy issued from JourneyOrderCreated, got %#v", pub.events)
+	if len(pub.events) != 0 {
+		t.Fatalf("unexpected insurance events: %#v", pub.events)
 	}
 }
 
@@ -133,7 +132,7 @@ func TestHandlePostSalesApplied_CancelsRefundedPolicy(t *testing.T) {
 	}
 }
 
-func TestHandleJourneyOrderConfirmed_NewPayloadFormat(t *testing.T) {
+func TestHandleJourneyOrderConfirmedRequiresInsurancePurchase(t *testing.T) {
 	now := time.Date(2026, 7, 10, 10, 0, 0, 0, time.UTC)
 	pub := &capturePublisher{}
 	svc := newTestService(t, now, pub)
@@ -152,47 +151,8 @@ func TestHandleJourneyOrderConfirmed_NewPayloadFormat(t *testing.T) {
 	if err := handler.Handle(context.Background(), envelope); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
-	if len(pub.events) != 1 {
-		t.Fatalf("expected 1 published event, got %d", len(pub.events))
-	}
-	if pub.events[0].EventType != "InsurancePolicyIssued" {
-		t.Fatalf("expected InsurancePolicyIssued event, got %s", pub.events[0].EventType)
-	}
-
-	var payload map[string]any
-	if err := json.Unmarshal(pub.events[0].Payload, &payload); err != nil {
-		t.Fatal(err)
-	}
-	if payload["journeyOrderId"] != "ord-001" {
-		t.Fatalf("journeyOrderId = %v", payload["journeyOrderId"])
-	}
-	if payload["travelerRef"] != "tvl-001" {
-		t.Fatalf("travelerRef = %v", payload["travelerRef"])
-	}
-	if payload["productCode"] != string(domain.ProductDelayInsurance) {
-		t.Fatalf("productCode = %v", payload["productCode"])
-	}
-}
-
-func TestHandleJourneyOrderConfirmed_LegacyPayloadFormat(t *testing.T) {
-	now := time.Date(2026, 7, 10, 10, 0, 0, 0, time.UTC)
-	pub := &capturePublisher{}
-	svc := newTestService(t, now, pub)
-	handler := NewInboundHandler(svc)
-
-	envelope := makeEnvelope(t, "JourneyOrderConfirmed", map[string]any{
-		"orderId":         "ord-002",
-		"accountId":       "acc-002",
-		"travelerRef":     "trav-002",
-		"segmentRefs":     []string{"seg-002"},
-		"paymentIntentId": "pi-002",
-	}, now)
-
-	if err := handler.Handle(context.Background(), envelope); err != nil {
-		t.Fatalf("Handle: %v", err)
-	}
-	if len(pub.events) != 1 || pub.events[0].EventType != "InsurancePolicyIssued" {
-		t.Fatalf("expected 1 InsurancePolicyIssued event, got %v", pub.events)
+	if len(pub.events) != 0 {
+		t.Fatalf("unexpected insurance events: %v", pub.events)
 	}
 }
 
@@ -213,17 +173,16 @@ func TestHandleJourneyOrderConfirmed_Idempotent(t *testing.T) {
 	if err := handler.Handle(context.Background(), env1); err != nil {
 		t.Fatalf("first Handle: %v", err)
 	}
-	if len(pub.events) != 1 {
-		t.Fatalf("expected 1 event after first handle, got %d", len(pub.events))
+	if len(pub.events) != 0 {
+		t.Fatalf("unexpected insurance events: %v", pub.events)
 	}
 
 	env2 := makeEnvelope(t, "JourneyOrderConfirmed", payload, now)
 	if err := handler.Handle(context.Background(), env2); err != nil {
 		t.Fatalf("second Handle: %v", err)
 	}
-	// Should still be 1 event - the duplicate was detected and returned the existing policy
-	if len(pub.events) != 1 {
-		t.Fatalf("expected 1 event after duplicate handle, got %d", len(pub.events))
+	if len(pub.events) != 0 {
+		t.Fatalf("unexpected insurance events: %v", pub.events)
 	}
 }
 
@@ -267,7 +226,7 @@ func TestHandleJourneyOrderConfirmed_SkipsMissingTraveler(t *testing.T) {
 	}
 }
 
-func TestHandleJourneyOrderConfirmed_SynthesizesPaymentIntent(t *testing.T) {
+func TestHandleJourneyOrderConfirmedDoesNotCreateUnpaidPolicy(t *testing.T) {
 	now := time.Date(2026, 7, 10, 10, 0, 0, 0, time.UTC)
 	pub := &capturePublisher{}
 	svc := newTestService(t, now, pub)
@@ -284,12 +243,8 @@ func TestHandleJourneyOrderConfirmed_SynthesizesPaymentIntent(t *testing.T) {
 		t.Fatalf("Handle: %v", err)
 	}
 
-	policy, err := svc.GetPolicy(context.Background(), "pol-1")
-	if err != nil {
-		t.Fatalf("GetPolicy: %v", err)
-	}
-	if policy.PaymentIntentID != "auto-pi:ord-006" {
-		t.Fatalf("expected synthesized paymentIntentId, got %q", policy.PaymentIntentID)
+	if _, err := svc.GetPolicy(context.Background(), "pol-1"); err != application.ErrNotFound {
+		t.Fatalf("unexpected policy result: %v", err)
 	}
 }
 

@@ -48,6 +48,9 @@ func (r *Repository) FindPolicy(ctx context.Context, id string) (domain.Policy, 
 	return policy, json.Unmarshal(snap.Data, &policy)
 }
 func (r *Repository) FindPolicyByUniqueness(ctx context.Context, productCode domain.ProductCode, ancillaryID, travelerRef, segmentScopeHash, productVersion string) (domain.Policy, error) {
+	if _, err := r.db.DBFor(ctx).Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "insurance-purchase:"+ancillaryID+":"+travelerRef); err != nil {
+		return domain.Policy{}, err
+	}
 	rows, err := r.db.DBFor(ctx).Query(ctx, `SELECT data FROM policy_snapshots WHERE data->>'productCode' = $1 AND data->>'ancillaryOrderItemId' = $2 AND data->>'travelerRef' = $3 AND data->>'productVersion' = $4`, string(productCode), strings.TrimSpace(ancillaryID), strings.TrimSpace(travelerRef), strings.TrimSpace(productVersion))
 	if err != nil {
 		return domain.Policy{}, err
