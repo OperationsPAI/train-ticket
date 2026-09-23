@@ -43,6 +43,15 @@ class ChangeTargetLiveTest {
                 repository.save(loaded);
                 var restored = new PostgresPostSalesRepository(pool,mapper).findById(source.caseId()).orElseThrow();
                 assertEquals(offer.path("offerId").asText(),restored.targetOfferId());
+                java.util.Map<String,Object> operation=new java.util.LinkedHashMap<>();
+                operation.put("segmentBookingId",recorded.path("scope").path("orderItemRefs").get(0).asText());
+                operation.put("failureReason",null);
+                restored.recordChangeOperation("booking",operation);
+                repository.save(restored);
+                var replayed=repository.findById(source.caseId()).orElseThrow();
+                assertEquals(operation,replayed.changeOperations().get("booking"));
+                replayed.recordChangeOperation("booking",operation);
+                assertThrows(DomainRuleViolation.class,()->replayed.recordChangeOperation("booking",java.util.Map.of("segmentBookingId","sb-other")));
                 restored.selectChangeOffer(restored.targetOfferId());
                 assertThrows(DomainRuleViolation.class,()->restored.selectChangeOffer("off-"+UUID.randomUUID()));
                 assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM outbox",Integer.class));
