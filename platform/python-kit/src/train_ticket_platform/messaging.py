@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from enum import Enum
 from datetime import UTC, datetime
 import json
+from collections import deque
 import logging
 import os
 import socket
@@ -169,6 +170,7 @@ class RedisEventPublisher(EventPublisher):
 
 
 class RedisEventSubscriber(EventSubscriber):
+    DEDUP_CACHE_LIMIT = 4096
     def __init__(self, redis_client: Any | None = None, redis_url: str | None = None) -> None:
         if redis_client is not None:
             self._redis = redis_client
@@ -183,6 +185,7 @@ class RedisEventSubscriber(EventSubscriber):
             self._client = self._redis
             self._response_error_type = redis.exceptions.ResponseError
         self._dedup: set[str] = set()
+        self._dedup_order: deque[str] = deque()
         self._seen_event_ids = self._dedup
         self._dedup_lock = threading.Lock()
         self._seen_event_ids_lock = self._dedup_lock
@@ -474,10 +477,22 @@ class RedisEventSubscriber(EventSubscriber):
             setattr(self, "_dedup", seen)
             setattr(self, "_seen_event_ids", seen)
         if lock is None:
-            seen.add(event_id)
+            self._remember_seen(seen, event_id)
             return
         with lock:
-            seen.add(event_id)
+            self._remember_seen(seen, event_id)
+
+    def _remember_seen(self, seen: set[str], event_id: str) -> None:
+        if event_id in seen:
+            return
+        order = getattr(self, "_dedup_order", None)
+        if order is None:
+            order = deque(seen)
+            self._dedup_order = order
+        seen.add(event_id)
+        order.append(event_id)
+        while len(order) > self.DEDUP_CACHE_LIMIT:
+            seen.discard(order.popleft())
 
     def _move_to_dlq(self, stream: str, group: str, consumer_name: str, envelope_json: str, reason: object, attempts: int) -> None:
         failure_reason = _truncate_failure_reason(reason)
