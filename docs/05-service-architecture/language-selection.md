@@ -1,61 +1,103 @@
-# Polyglot Language Selection
+# Languages And Source Paths
 
-Last updated: 2026-06-28
+Updated: September 24, 2026.
 
-## Decision Rules
+The deployment baseline is Helm revision 279, with evidence in [current project status](../00-current-status.md).
+The tables below match the checked source tree and build manifests.
+The catalog contains 32 business services and two platform modules.
+The source tree contains 37 business service directories, including the five additional services listed below.
+Unfinished capabilities and deployment work are tracked in [TODO](../TODO.md).
 
-1. Transactional aggregates, money, approvals, and audit-heavy workflows default to Java.
-2. Protocol adapters, event ingestion, master-data lookup, and low-latency I/O default to Go.
-3. Rule engines, planning, scoring, recovery, and analytics default to Python.
-4. Strong invariant kernels such as inventory, entitlement, and fair queues default to Rust.
-5. User-facing collaboration and payload-composition services default to TypeScript.
+## Catalog Services
 
-## Runtime And Framework Baseline
+Language values use the spelling in [service-catalog.json](../../service-catalog.json) and are checked against each service's build manifest.
+Each path opens the corresponding service source directory.
+Registered HTTP entry points and business responsibilities are indexed in [domain ownership](../03-ddd-final/domain-reduce-status.md).
 
-| Language | Runtime / Build | Service Framework | Version Policy |
+| Service ID | Source path | Language | Responsibility |
 |---|---|---|---|
-| Java | Temurin JDK 25, Maven | Spring Boot 4.1.0 | Pin current latest stable parent in each service POM. |
-| Go | Go 1.26 module directive, official Go 1.26.x toolchain | Gin v1.12.0 | Pin current latest module version in `go.mod`; lock via `go.sum`. |
-| Python | Python >=3.11, uv | FastAPI 0.138.1 | Pin current latest packages in `pyproject.toml`; lock via `uv.lock`. |
-| Rust | rustup stable, Cargo edition 2024 | Axum 0.8.9 | Pin current latest crate version in `Cargo.toml`; lock via `Cargo.lock`. |
-| TypeScript | Node 26, npm | Fastify 5.9.0, TypeScript 6.0.3 | Pin current latest npm versions in `package.json`; lock via `package-lock.json`. |
+| `place-network` | [services/place-network](../../services/place-network/) | golang | Places and transport nodes. |
+| `service-plan` | [services/service-plan](../../services/service-plan/) | golang | Schedules, service segments and dated service changes. |
+| `capacity-availability` | [services/capacity-availability](../../services/capacity-availability/) | rust | Availability, interval Holds, confirmation and release. |
+| `fare-pricing` | [services/fare-pricing](../../services/fare-pricing/) | python | Fare rules, quotes and post sales fee calculations. |
+| `trip-planning` | [services/trip-planning-rs](../../services/trip-planning-rs/) | rust | Itinerary search and candidate retrieval. |
+| `offer-management` | [services/offer-management](../../services/offer-management/) | typescript | Offer creation and immutable quote references. |
+| `journey-order` | [services/journey-order](../../services/journey-order/) | java | Commercial order state and accepted purchase source. |
+| `booking-orchestration` | [services/booking-orchestration](../../services/booking-orchestration/) | java | Booking Saga, segment reservation and change compensation. |
+| `payment` | [services/payment](../../services/payment/) | java | Platform payment intents, refunds and monetary facts. |
+| `payment-channel` | [services/payment-channel](../../services/payment-channel/) | golang | Channel orders, channel refunds and channel statements. |
+| `provider-integration` | [services/provider-integration](../../services/provider-integration/) | golang | Provider reservation models and external fact normalization. |
+| `entitlement-ticketing` | [services/entitlement-ticketing](../../services/entitlement-ticketing/) | rust | Ticket issuance, issue preconditions and entitlement lifecycle. |
+| `fulfillment` | [services/fulfillment](../../services/fulfillment/) | golang | Boarding, completion, no show and segment status facts. |
+| `post-sales` | [services/post-sales](../../services/post-sales/) | java | Refund, change and compensation cases and execution. |
+| `notification` | [services/notification](../../services/notification/) | typescript | Event driven delivery, templates and notification trail. |
+| `traveler-profile` | [services/traveler-profile](../../services/traveler-profile/) | java | Traveler records, documents and profile eligibility. |
+| `risk-compliance` | [services/risk-compliance](../../services/risk-compliance/) | python | Risk assessments, evaluations, blocks and overrides. |
+| `account` | [services/account](../../services/account/) | typescript | Accounts, account status, preferences and closure entry. |
+| `admin-audit` | [services/admin-audit](../../services/admin-audit/) | java | Operators, approvals, manual actions and audit trail. |
+| `customer-service` | [services/customer-service](../../services/customer-service/) | typescript | Support cases, evidence and controlled action requests. |
+| `finance-settlement` | [services/finance-settlement](../../services/finance-settlement/) | java | Revenue recognition, settlement, reconciliation and benefit costs. |
+| `reporting` | [services/reporting](../../services/reporting/) | python | Event projections, operational metrics and gross captured payment reporting. |
+| `supplier-catalog` | [services/supplier-catalog](../../services/supplier-catalog/) | golang | Suppliers, carriers and supply contracts. |
+| `disruption-recovery` | [services/disruption-recovery](../../services/disruption-recovery/) | python | Disruptions, recovery cases and option selection. |
+| `transfer-management` | [services/transfer-management](../../services/transfer-management/) | python | Connections, MCT rules, protection contracts and risk policies. |
+| `ancillary-service` | [services/ancillary-service](../../services/ancillary-service/) | typescript | Ancillary offers, order items and fulfillment facts. |
+| `seat-assignment` | [services/seat-assignment](../../services/seat-assignment/) | golang | Seat maps, physical allocations and standing allocation evidence. |
+| `invoicing` | [services/invoicing](../../services/invoicing/) | rust | Invoice titles, electronic invoices, red flushes and itinerary receipts. |
+| `waitlist` | [services/waitlist](../../services/waitlist/) | typescript | Waitlist requests, queue entries and acceptance. |
+| `wallet-promotion` | [services/wallet-promotion](../../services/wallet-promotion/) | java | Benefits, wallet balances, reservations and redemptions. |
+| `dispatch` | [services/dispatch](../../services/dispatch/) | golang | Ride requests, assignment, ETA and ride lifecycle. |
+| `identity-verification` | [services/identity-verification](../../services/identity-verification/) | python | Credential verification, eligibility certificates and purchase limit facts. |
 
-## Assignments
+## Additional Services In Source
 
-| Service | Domain | Language | Phase | Rationale |
-|---|---|---|---|---|
-| `shared-kernel` | Shared Kernel / Platform | rust | phase-1-foundation | Rust keeps shared invariant examples strict while the normative contract remains language-neutral. |
-| `place-network` | Place & Network | golang | phase-1-core | Go fits read-heavy master-data APIs and simple operational lookup paths. |
-| `service-plan` | Service Plan | golang | phase-1-core | Go keeps schedule query services small, fast, and easy to operate. |
-| `capacity-availability` | Capacity & Availability | rust | phase-1-core | Rust is appropriate for interval overlap and seat-hold invariants that must fail closed. |
-| `fare-pricing` | Fare & Pricing | python | phase-1-core | Python keeps fare rules, explanation tooling, and later experimentation lightweight. |
-| `trip-planning` | Trip Planning | python | phase-1-core | Python is a better fit for search heuristics, ranking, and explanation logic. |
-| `offer-management` | Offer Management | typescript | phase-1-core | TypeScript fits user-facing offer API composition, TTL policy, and disclosure payloads. |
-| `journey-order` | Journey Order | java | phase-1-core | Java is conservative for central transactional aggregates and long-lived domain models. |
-| `booking-orchestration` | Booking Orchestration | java | phase-1-core | Java gives the saga layer explicit state transitions and stable integration testing options. |
-| `payment` | Payment | java | phase-1-core | Java is a strong default for money state machines, idempotency, and audit-heavy flows. |
-| `provider-integration` | Provider Integration | golang | phase-1-support | Go fits protocol adapters, webhooks, retry loops, and small deployable edge services. |
-| `entitlement-ticketing` | Entitlement & Ticketing | rust | phase-1-core | Rust is appropriate for ticket entitlement lifecycle invariants and credential safety. |
-| `fulfillment` | Fulfillment | golang | phase-1-limited | Go keeps event ingestion and station-side fact normalization operationally simple. |
-| `post-sales` | Post Sales | java | phase-1-core | Java keeps refund/change case workflows explicit and compatible with transaction review tooling. |
-| `notification` | Notification | typescript | phase-1-support | TypeScript fits template payloads, channel adapters, and product-facing notification policies. |
-| `traveler-profile` | Traveler Profile | java | phase-1-support | Java keeps PII-heavy profile aggregates and validation policies explicit. |
-| `risk-compliance` | Risk & Compliance | python | phase-1-support | Python supports rule experimentation, scoring, and evidence summarization without coupling source domains. |
-| `account` | Account | typescript | phase-1-limited | TypeScript is suitable for identity/session edge APIs while traveler facts remain in Traveler Profile. |
-| `admin-audit` | Admin & Audit | java | phase-1-support | Java is a conservative fit for approvals, audit retention, and authorization boundaries. |
-| `customer-service` | Customer Service | typescript | phase-1-support | TypeScript fits collaborative case APIs and UI-adjacent timelines without owning target state. |
-| `finance-settlement` | Finance Settlement | java | phase-1-limited | Java is appropriate for financial ledgers, reconciliation workflows, and audit consistency. |
-| `reporting` | Reporting | python | phase-1-limited | Python is a pragmatic fit for metric definitions, event-derived views, and analytics validation. |
-| `supplier-catalog` | Supplier Catalog | golang | phase-1-support | Go keeps supplier capability lookup compact and separate from provider runtime health. |
-| `disruption-recovery` | Disruption Recovery | python | future-scope | Python fits recovery optimization and policy experimentation when this future domain is enabled. |
-| `transfer-management` | Transfer Management | python | future-scope | Python fits connection-risk calculation and later protected-transfer recovery planning. |
-| `ancillary-service` | Ancillary Service | typescript | future-scope | TypeScript fits productized add-ons and bundle-facing API composition. |
-| `waitlist` | Waitlist | rust | future-scope | Rust fits fairness, mutual-exclusion, and queue-order invariants. |
-| `wallet-promotion` | Wallet / Promotion | java | future-scope | Java is a conservative default for stored-value and promotion ledgers. |
-| `dispatch` | Dispatch | golang | future-scope | Go fits real-time dispatch APIs, adapter calls, and low-latency state updates. |
+These services have source directories, build manifests and registered API handlers.
+Their service IDs are absent from the checked catalog.
+Catalog reconciliation is tracked in [TODO T10](../TODO.md#t10-reconcile-repository-metadata-and-static-checks).
+Remaining feature work and acceptance are tracked in [TODO](../TODO.md).
 
-## Boundaries
+| Service ID | Source path | Language | Responsibility |
+|---|---|---|---|
+| `corporate-travel` | [services/corporate-travel](../../services/corporate-travel/) | python | Corporate agreements, authorizations, policy checks and monthly billing. |
+| `group-booking` | [services/group-booking](../../services/group-booking/) | java | Group booking requests, members, confirmation and cancellation. |
+| `loyalty-membership` | [services/loyalty-membership](../../services/loyalty-membership/) | typescript | Membership, points, tier evaluation and redemption. |
+| `marketing-campaign` | [services/marketing-campaign](../../services/marketing-campaign/) | java | Campaigns, coupon templates and issuance batches. |
+| `travel-insurance` | [services/travel-insurance](../../services/travel-insurance/) | golang | Policies and claim decisions. |
 
-- Future-scope services are initialized only as placeholders. They must not be wired into Phase 1 acceptance gates until the DDD scope file changes.
-- Shared Kernel is represented as a Rust reference module plus language-neutral contracts. Domain event payloads remain owned by their producing bounded context.
-- A service may change language later only through a short architecture decision that updates this file and `service-catalog.json`.
+## Runtime And Build
+
+Versions below describe checked manifests and image definitions.
+Dependency files and lockfiles remain the source for exact resolved versions.
+
+| Language | Runtime and build | HTTP framework | Evidence |
+|---|---|---|---|
+| Java | JDK 25, Maven | Spring Boot 4.1.0 | Service `pom.xml` files. |
+| Go | Go 1.26 module directive | Gin 1.12.0 | Service `go.mod` and `go.sum` files. |
+| Python | Python >=3.11, uv | FastAPI 0.138.1 through python-kit | Service `pyproject.toml`, `uv.lock` and [python-kit manifest](../../platform/python-kit/pyproject.toml). |
+| Rust | Cargo edition 2024 | Axum 0.8.9 | Service `Cargo.toml`, `Cargo.lock` and image definitions. |
+| TypeScript | Node 26, npm, TypeScript 6.0.3 | Fastify 5.9.0 | Service `package.json`, `package-lock.json` and [Dockerfiles](../../deploy/docker/). |
+
+Java services express transactional workflows and money state machines.
+Go services cover master data, channel protocols and allocation APIs.
+Python services express pricing, identity, risk, recovery and reporting rules.
+Rust services cover search computation, inventory and entitlement invariants, and electronic invoice state.
+TypeScript services cover offer composition, account and support APIs, notifications, waitlist and membership.
+The selected implementation language does not transfer business ownership between services.
+
+## Shared Modules
+
+| Module | Path | Language | Catalog entry |
+|---|---|---|---|
+| `shared-kernel` | [platform/shared-kernel-rust](../../platform/shared-kernel-rust/) | rust | Present. |
+| `go-runtime` | [platform/go-runtime](../../platform/go-runtime/) | golang | Present. |
+| `go-kit` | [platform/go-kit](../../platform/go-kit/) | golang | Absent. |
+| `java-kit` | [platform/java-kit](../../platform/java-kit/) | java | Absent. |
+| `python-kit` | [platform/python-kit](../../platform/python-kit/) | python | Absent. |
+| `rust-kit` | [platform/rust-kit](../../platform/rust-kit/) | rust | Absent. |
+| `ts-kit` | [platform/ts-kit](../../platform/ts-kit/) | typescript | Absent. |
+
+Shared modules provide runtime, messaging, storage and common value support.
+Domain event payloads and business state remain owned by the producing service.
+Capacity's new combined supply implementation is uncommitted and undeployed.
+Notification's durable delivery queue is WIP and undeployed.
+Work required for these capabilities is tracked in [TODO](../TODO.md).

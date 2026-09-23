@@ -1,6 +1,9 @@
 # Post Sales HTTP API
 
-Last updated: 2026-09-23.
+Last updated: 2026-09-24.
+
+Runtime baseline: Helm revision 279.
+Remaining work is tracked in [TODO](../../TODO.md).
 
 ## Overview
 
@@ -110,6 +113,8 @@ Case details include `decision`, `compensationOperations` and `releasedOrderItem
 For wallet compensation, `decision.kind=COMPENSATION`, `decision.compensationAmount` is the approved credit and `decision.refundableAmount` is zero.
 `compensationOperations` exposes the persisted execution evidence described below.
 `releasedOrderItemRefs` contains recorded capacity release confirmations and remains empty for wallet compensation.
+For ordinary refunds and cancellations, all scoped capacity releases can complete the case as `APPLIED`.
+Payment refund settlement remains a separate fact and must be checked through the Payment API.
 
 **Error codes:** `NOT_FOUND`
 
@@ -224,11 +229,8 @@ The domain execution operations include:
 | `StartPostSalesExecution` | post-sales (internal) | Start execution of an approved post-sales case. |
 | `ApplyPostSalesResult` | post-sales (internal) | Apply the result of post-sales execution to the case. |
 
-## Integration checks
+## Current verification
 
-The recorded change and wallet compensation operations support retry and restart recovery.
-The live two traveler change scenario contains checks for one issued replacement followed by capacity rejection, replacement ticket voiding, full captured difference refund settlement and unchanged original tickets.
-The loadgen purchase scenarios contain wallet compensation checks for the approved benefit amount, original travel and payment references, and `compensation_credited` fulfillment eligibility.
-`TestLiveWalletCompensationPreservesPaidTravel` contains two traveler and ancillary purchase checks, the equal wallet balance increment, three case and wallet issuance replays with stable identities, original seat and payment snapshots, registry reload and completed fulfillment.
-That focused test has not yet been run against live services.
-See [capacity integration requirements](../../10-domain-enrichment/capacity-overbooking.md) for the production activation requirements.
+Verification results are recorded in [current status](../../00-current-status.md).
+Recorded change and compensation operations support retry and restart recovery.
+The accepted supply integration remains inactive in production at Helm revision 279.

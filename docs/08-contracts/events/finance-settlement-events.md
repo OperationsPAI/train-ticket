@@ -1,27 +1,29 @@
 # Finance Settlement Event Contracts
 
-Last updated: 2026-07-10
+Last updated: 2026-09-24.
 
-ADR-0003 Wave A same-wave increment（需同波实现）: Finance Settlement consumes Payment Channel
-statement and discrepancy facts for SIM channel reconciliation. Implementation
-MUST register the `events:payment-channel` consumer, validate statement payloads,
-deduplicate by envelope `eventId`, and map Payment Channel `differenceType`
-values (`MISSING_IN_CHANNEL`, `MISSING_IN_PLATFORM`, `AMOUNT_MISMATCH`,
-`CURRENCY_MISMATCH`, `DUPLICATE`, `LATE_PAYMENT`, `REFUND_LAG`, plus
-`STATUS_MISMATCH` as a reconciliation description) to the existing Finance
-case fields; this is not a docs-only increment.
+Runtime baseline: Helm revision 279.
+Remaining work is tracked in [TODO](../../TODO.md).
+
+Finance Settlement consumes `events:payment-channel`, validates statement and discrepancy payloads, and deduplicates by envelope `eventId`.
+Channel difference types are mapped to Finance difference strings, including `STATUS_MISMATCH` as `status-mismatch`.
+Wallet compensation approvals skip refund projection and compensation completion skips revenue reversal.
+Its issuance cost is recorded from `BenefitIssued.issuedAmount` only, with account, case and benefit attribution.
+The benefit cost query also contains subsequent lifecycle deltas; these are described in [financial calculations](../../10-domain-enrichment/finance-settlement-enrichment.md).
 
 ## RevenueRecognized
 
-Produced when revenue is recognized for a completed fulfillment or entitlement
-event.
+Ordinary ticket revenue is recognized from `PaymentCaptured` using `payment-capture-v1`.
+Change payments are assigned to their original order after checking the Post Sales case and captured payment facts.
+The current change capture component is `change-payment`.
+Ancillary revenue is recognized from its fulfillment fact.
 
 | Field | Type | Description |
 |---|---|---|
 | `revenueRecognitionId` | string | Unique ID for this recognition. |
-| `orderItemId` | string | The order item/business revenue reference being recognized. For order-level payment facts that do not carry a line item, this is the payment `businessRef` (order ID), not the payment intent ID. |
+| `orderItemId` | string | Business revenue reference: ordinary ticket capture uses the recorded supplier reference or order ID, change capture uses the payment intent ID, and ancillary recognition uses its item ID. |
 | `orderId` | string | The parent order. |
-| `componentCode` | string | Financial component (fare, tax, fee, ancillary, discount). |
+| `componentCode` | string | Financial component, including `fare`, `tax`, `fee`, `ancillary`, `discount` and `change-payment`. |
 | `amount` | Money | Recognized revenue amount. |
 | `recognitionPolicyVersion` | string | Version of the recognition policy applied. |
 | `sourceEventId` | string | The upstream event that triggered recognition. |
@@ -29,17 +31,16 @@ event.
 
 ## RevenueRecognitionReversed
 
-Produced when previously recognized revenue is reversed (e.g. an approved
-refund). RULING (2026-07-06): reversals are a dedicated event — `componentCode`
-keeps its original enum (fare, tax, fee, ancillary, discount) and always names
-the component being reversed; there is no `refund` component.
+Produced when a recorded revenue amount is reversed for an applied refund or checked financial adjustment.
+`componentCode` identifies the original revenue component.
+Compensation approval and completion do not produce a reversal.
 
 | Field | Type | Description |
 |---|---|---|
 | `revenueRecognitionId` | string | ID of the original recognition being reversed. |
 | `orderItemId` | string | The order item whose revenue is reversed. |
 | `orderId` | string | The parent order. |
-| `componentCode` | string | Original financial component (fare, tax, fee, ancillary, discount). |
+| `componentCode` | string | Original financial component, including `change-payment` for fare difference recognition. |
 | `amount` | Money | Positive amount being reversed. |
 | `reversalReason` | string | Why the revenue was reversed (e.g. post-sales refund applied). |
 | `sourceEventId` | string | The upstream event that triggered the reversal. |
@@ -54,7 +55,7 @@ Produced when a reconciliation mismatch is detected.
 | `reconciliationCaseId` | string | Unique ID for this reconciliation case. |
 | `orderId` | string | The order involved (if applicable). |
 | `paymentIntentId` | string | The payment intent involved (if applicable). |
-| `differenceType` | string | Type: missing-in-channel, missing-in-platform, amount-mismatch, currency-mismatch, duplicate, late-payment, refund-lag. |
+| `differenceType` | string | Type: missing-in-channel, missing-in-platform, amount-mismatch, currency-mismatch, status-mismatch, duplicate, late-payment, refund-lag. |
 | `expectedAmount` | Money | Amount expected by the platform. |
 | `actualAmount` | Money | Amount observed from channel/provider. |
 | `description` | string | Human-readable explanation. For Payment Channel input, include the statement/discrepancy references without raw PII or unmasked documents. |

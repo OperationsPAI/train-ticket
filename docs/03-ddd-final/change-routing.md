@@ -1,118 +1,80 @@
-# Feature Change Routing
+# 功能改动路由
 
-Last updated: 2026-06-28
+更新日期：2026 年 9 月 24 日。
 
-## 目的
+功能改动按照业务事实的所有者选择服务。
+负责服务校验命令并保存状态，协作服务通过接口、业务引用和事件取得结果。
+各服务实际接口与源码见[领域所有权索引](domain-reduce-status.md)，目录与语言见[语言及源码目录](../05-service-architecture/language-selection.md)。
+未完成事项统一维护在 [TODO](../TODO.md)。
 
-这份文档回答“后续新增功能时应该改哪里”。原则是先定位业务事实的 owner，再决定需要改哪些 domain 文档、命令、事件和读模型，避免把逻辑写回某个顺手的服务里。
+## 需求与负责服务
 
-## 改动路由规则
+| 修改内容 | 负责服务 | 相关协作 |
+|---|---|---|
+| 地点、车站和标准节点 | Place & Network | Service Plan 使用标准地点引用，Provider Integration 解释外部地点代码。 |
+| 车次、运行日、停站顺序、延误和取消 | Service Plan | Capacity、Trip Planning、Transfer 和 Disruption 消费对应运行事实。 |
+| 可用性数量、区间占用和 Hold 生命周期 | Capacity & Availability | 引用 Service Plan 运行区间、Seat Assignment 供给，向 Booking 提供占用结果。 |
+| 编组、座位、无座分配和分配重放 | Seat Assignment | Capacity 管理预留，Entitlement 引用实际分配。 |
+| 票价、退改费和资格适用规则 | Fare & Pricing | Identity Verification 提供资格，Offer 和 Post Sales 使用报价。 |
+| 行程搜索、候选排序和提示 | Trip Planning | 读取运行、容量和价格信息，向 Offer 提供候选引用。 |
+| Offer 有效期、报价引用和目标 Offer | Offer Management | Journey Order 保存接受结果，Post Sales 引用改签目标。 |
+| 商业订单、订单项、金额摘要和购买来源 | Journey Order | Booking、Payment、Entitlement 和 Post Sales 提供自身业务事实。 |
+| 分段预订、执行进度和替代预订清理 | Booking Orchestration | Capacity、Entitlement、Payment 和 Post Sales 协作。 |
+| PaymentIntent、Refund、资金幂等和晚到收款 | Payment | Payment Channel 提供渠道事实，Finance 执行财务处理。 |
+| 渠道提交、查询、退款、账单和渠道差异 | Payment Channel | Payment 维护平台资金状态，Finance 对账。 |
+| 供应商预留模型与外部证据归一 | Provider Integration | Booking 管理平台预订，Supplier Catalog 管理供应商资料。 |
+| 出票、凭证、作废和权益使用状态 | Entitlement & Ticketing | 核对 Booking、Capacity、Payment，调用 Seat Assignment，消费 Fulfillment。 |
+| 进站、完成和未乘车事实 | Fulfillment | Entitlement 推进使用状态，Transfer 与 Disruption 处理旅程影响。 |
+| 退票、改签和服务质量补偿的决策与执行 | Post Sales | Fare、Offer、Booking、Entitlement、Payment、Wallet、Journey Order。 |
+| 钱包补偿额度、benefit 余额与核销 | Wallet / Promotion | Post Sales 或 Customer Service 提供授权业务来源，Finance 记录权益成本。 |
+| 账号状态、通知设置和关闭请求 | Account | Traveler Profile 管理旅客，Notification 使用触达设置。 |
+| 旅客档案与证件资料 | Traveler Profile | Identity Verification 核验，Fare 与 Risk 使用授权事实。 |
+| 实名核验、资格证明和购买限制使用记录 | Identity Verification | 下单及售后流程确认或释放使用事实。 |
+| 风险评估、阻断与人工覆盖 | Risk & Compliance | 目标业务服务校验命令并维护自身状态。 |
+| 通知模板、渠道、发送和 trail | Notification | 消费源业务事件，保存独立发送结果。 |
+| 工单、投诉证据、升级与人工请求 | Customer Service | Admin & Audit 授权，目标服务执行命令。 |
+| 操作员、审批和审计 | Admin & Audit | Customer Service 和业务服务保留关联操作记录。 |
+| 供应商、承运商和供货合同 | Supplier Catalog | Provider Integration 使用接入资料，Service Plan 使用供给资料。 |
+| 收入确认、清结算、对账与补偿成本 | Finance Settlement | 消费 Payment、Payment Channel、Wallet、订单、售后和履约事实。 |
+| 电子发票抬头、申请、红冲与行程凭证 | Invoicing | 使用订单与金额投影，关联 Finance 和售后事实。 |
+| 经营指标、gross captured payment 和统计维度 | Reporting | PaymentCaptured 提供收款金额，业务引用提供统计维度。 |
+| 候补请求、队列、接受和取消 | Waitlist | Capacity、Booking、Payment 和 Notification 协作。 |
+| 接续、MCT、保障责任和接续风险 | Transfer Management | Trip Planning 提供候选，Disruption 管理受影响旅程。 |
+| 异常、恢复选项、选择与人工处理 | Disruption Recovery | Service Plan、Transfer、Post Sales 和 Notification 协作。 |
+| 附加商品、报价、附加订单项和附加履约 | Ancillary Service | Payment 提供资金事实，Journey Order 提供订单引用。 |
+| 保单与理赔 Case | Travel Insurance | 使用旅程和履约事实，关联支付及售后结果。 |
+| 会员、积分、等级与兑换 | Loyalty Membership | 引用 Account、Payment 和旅程事实，Wallet 管理发放的 benefit。 |
+| 活动、券模板、发放批次和预算 | Marketing Campaign | Wallet 管理已发放 benefit 的余额和核销。 |
+| 团体请求、成员、确认与取消 | Group Booking | 使用旅客引用并关联普通订单和预订。 |
+| 企业协议、授权、规则检查和月结账单 | Corporate Travel | Fare 提供价格规则，Payment 和 Finance 提供资金及财务事实。 |
+| 司机分配、ETA、网约车运行与取消 | Dispatch | Fulfillment 使用履约事实，Fare 和 Payment 处理费用与资金。 |
 
-1. 改业务状态，先找 owning aggregate。
-2. 改跨域协作，新增或修改领域事件和命令，不直接写别的 domain。
-3. 改展示查询，优先改 read model，不反向污染写模型。
-4. 改外部供应商或渠道，先改 Provider Integration ACL，再映射成内部事件。
-5. 改人工处理，必须经过 Customer Service 或 Admin & Audit，再进入目标 domain 命令。
-6. 改财务口径，先改 Finance Settlement；Reporting 只消费结果。
+## 支付渠道与平台资金
 
-## Feature 到 Domain 路由表
+渠道协议和渠道订单改动进入 Payment Channel。
+Payment 保有 PaymentIntent、Refund 和平台资金状态。
+渠道结果通过 `ChannelOrderSucceeded`、`ChannelRefundSucceeded` 等事件进入 Payment。
+Finance 接收平台资金和渠道账单事实，维护对账结果。
+电子发票的业务改动进入独立 Invoicing。
 
-| Feature / Change | Primary Domain | Also Touch | Do Not Put In |
-|---|---|---|---|
-| 新增车站、站点别名、供应商站点码 | Place & Network | Provider Integration, Service Plan | Trip Planning |
-| 新增车次、停靠、运行日历、计划停运 | Service Plan | Place & Network, Capacity | Journey Order |
-| 新增停售、限售、渠道配额 | Capacity & Availability | Offer Management, Admin & Audit | Service Plan |
-| 新增票价、退改费、儿童票规则 | Fare & Pricing | Traveler Profile, Offer Management, Post Sales | Payment |
-| 新增搜索排序、无票解释、邻近站推荐 | Trip Planning | Place & Network, Capacity, Fare | Offer Management |
-| 新增报价有效期、风险披露、改签报价 | Offer Management | Fare & Pricing, Transfer Management, Journey Order | Trip Planning |
-| 新增订单字段、订单项、订单汇总状态 | Journey Order | Booking, Payment, Entitlement, Post Sales | Payment |
-| 新增预订步骤、补偿步骤、部分成功策略 | Booking Orchestration | Capacity, Provider Integration, Payment, Entitlement | Journey Order |
-| 新增库存 Hold 规则、区间复用、配额释放 | Capacity & Availability | Service Plan, Booking, Post Sales | Offer Management |
-| 新增支付渠道、回调、退款渠道 | Payment | Provider Integration, Finance Settlement | Journey Order |
-| 新增供应商 API、供应商状态码映射 | Provider Integration | Booking, Capacity, Payment, Fulfillment | Core domains raw status |
-| 新增出票凭证、作废、冻结、票面展示 | Entitlement & Ticketing | Booking, Fulfillment, Post Sales | Payment |
-| 新增检票、进站、NoShow、离线核验 | Fulfillment | Entitlement, Risk, Customer Service | Journey Order |
-| 新增退票、改签、差价、手续费、售后流程 | Post Sales | Fare, Payment, Capacity, Entitlement, Journey Order | Payment |
-| 新增交易通知、模板、发送策略、回执 | Notification | Account, Journey Order, Payment, Post Sales | Source domain state machine |
-| 新增乘车人证件、资质、出行偏好 | Traveler Profile | Account, Risk, Fare | Journey Order |
-| 新增风控规则、重复行程限制、实名拦截 | Risk & Compliance | Account, Traveler, Payment, Journey Order | Source domain state |
-| 新增客服工单、代用户操作、投诉证据 | Customer Service | Admin & Audit, target domain | Direct database update |
-| 新增后台权限、审批、审计、人工修正 | Admin & Audit | Customer Service, target domain | Target domain invariants |
-| 新增供应商合同、承运商、产品能力基线 | Supplier Catalog | Provider Integration, Fare, Service Plan | Provider runtime health |
-| 新增收入确认、发票、对账、汇率 | Finance Settlement | Payment, Fare, Post Sales, Reporting | Reporting |
-| 新增经营报表、KPI、漏斗分析 | Reporting | Finance, source events | Transaction write model |
-| 新增候补 | Waitlist | Capacity, Payment, Booking, Notification | Capacity internals |
-| 新增钱包、积分、券、组合支付 | Wallet / Promotion | Payment, Account, Finance, Post Sales | Account or Payment |
-| 新增网约车派单、司机 ETA、司机取消 | Dispatch | Provider Integration, Fulfillment, Payment | Service Plan |
-| 新增保障联乘权益 | Transfer Management | Offer, Disruption Recovery, Finance, Customer Service | Trip Planning |
-| 新增异常恢复、保护性改乘、批量停运处理 | Disruption Recovery | Service Plan, Offer, Post Sales, Notification | Service Plan |
-| 新增保险、餐饮、行李、选座 | Ancillary Service | Offer, Journey Order, Fare, Post Sales | Main ticket entitlement |
+## 服务质量补偿
 
-## 常见改动示例
+Post Sales 修改补偿资格、金额决策和 `execute-compensation` 执行。
+Wallet 修改 `COMPENSATION_CREDIT` 发放、Case 幂等与余额记录。
+当前钱包补偿额度的发放保留原票、原 Hold、座位分配、原支付和附加服务。
+Finance 根据 `BenefitIssued` 记录补偿成本，Journey Order 和 Invoicing 保留原订单对应权益与金额依据。
+改签失败后的替代预订清理与差额退款分别进入 Booking、Entitlement、Capacity 和 Payment。
 
-### 增加一种新退票规则
+## 供给与通知
 
-改动路径：
+Service Plan 负责运行区间，Seat Assignment 负责编组供给和分配，Capacity 负责占用与可用性计算。
+Capacity 新联合供给仍未提交、未部署，工作状态见 [TODO](../TODO.md)。
+Notification 负责消息触达与发送记录。
+Notification durable 发送队列为 WIP、未部署，工作状态见 [TODO](../TODO.md)。
 
-1. `Fare & Pricing`：新增或修改 FareRuleSet / RefundFee 计算。
-2. `Post Sales`：消费新规则快照，调整 PostSalesCase 决策。
-3. `Payment`：只接收最终 Refund 请求，不判断规则。
-4. `Finance Settlement`：如果影响收入冲减口径，更新财务策略。
+## 文档维护
 
-不应改：Payment 里硬编码退票手续费。
-
-### 增加一个支付渠道
-
-改动路径：
-
-1. `Provider Integration`：新增渠道 adapter、签名验签、Webhook raw archive。
-2. `Payment`：新增 channel contract 映射、PaymentIntent / Refund 幂等处理。
-3. `Finance Settlement`：新增渠道账单输入和对账映射。
-
-不应改：Journey Order 状态机。
-
-### 增加候补
-
-改动路径：
-
-1. `Waitlist`：实现 WaitlistRequest、队列、公平性、兑现策略。
-2. `Capacity & Availability`：发布 CapacityReleased，接受 Waitlist 授权 Hold。
-3. `Payment`：处理候补预授权或扣款。
-4. `Booking Orchestration`：候补命中后复用正常 Booking。
-5. `Notification`：发送候补状态变化。
-
-不应改：Capacity 内部临时维护候补队列。
-
-### 增加网约车
-
-改动路径：
-
-1. `Dispatch`：新增 RideRequest、RideAssignment、司机生命周期。
-2. `Provider Integration`：接入网约车平台 API。
-3. `Fulfillment`：消费 DriverArrived、RideStarted、RideEnded。
-4. `Payment`：支持预授权和行程结束 Capture。
-5. `Fare & Pricing`：等待费、取消费、预估价和最终价规则。
-
-不应改：Service Plan 固定班次模型。
-
-### 增加保障联乘
-
-改动路径：
-
-1. `Transfer Management`：新增 ProtectedConnection 合同和责任边界。
-2. `Offer Management`：展示和冻结保障披露，保存 acceptedDisclosureIds。
-3. `Disruption Recovery`：错过接续后生成恢复方案和责任成本。
-4. `Finance Settlement`：归集平台承担的恢复成本。
-5. `Customer Service`：人工兜底和解释。
-
-不应改：Trip Planning 直接承诺费用责任。
-
-## 修改文档的最低要求
-
-新增功能时至少更新：
-
-1. 对应 `docs/02-domains/<domain>.md`。
-2. 如果跨域边界变化，更新 `docs/03-ddd-final/decision-record.md`。
-3. 如果进入或退出第一阶段范围，更新 `docs/03-ddd-final/domain-reduce-status.md`。
-4. 如果影响第一阶段链路验收，更新 `docs/03-ddd-final/phase-1-contract.md`。
-5. 如果会影响任务拆分，更新 `docs/03-ddd-final/implementation-roadmap.md`。
+所有权变化更新[跨域设计决策](decision-record.md)和对应[领域文档](../02-domains/README.md)。
+调用或事件变化更新[业务协作与接口](phase-1-contract.md)、[API 文档](../08-contracts/api/README.md)及对应事件说明。
+服务路径与语言变化同步[语言及源码目录](../05-service-architecture/language-selection.md)和 catalog。
+功能进度与剩余工作只在 [TODO](../TODO.md)维护。

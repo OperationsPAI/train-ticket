@@ -1,6 +1,9 @@
 # Journey Order — Events & Commands
 
-Last updated: 2026-07-04
+Last updated: 2026-09-24.
+
+Runtime baseline: Helm revision 279.
+Remaining work is tracked in [TODO](../../TODO.md).
 
 ## Published Events
 
@@ -10,7 +13,7 @@ Last updated: 2026-07-04
 |---|---|
 | **Producer** | journey-order |
 | **Consumers** | booking-orchestration, notification, post-sales, payment |
-| **Trigger** | `CreateJourneyOrder` command processed with valid `OfferAcceptanceToken`. |
+| **Trigger** | Order creation accepts a valid resolved Offer and a passed Identity Verification check. |
 
 **Payload:**
 
@@ -22,7 +25,7 @@ Last updated: 2026-07-04
 | `monetarySummary` | `MonetarySummary` | yes | Price breakdown at creation. |
 | `travelerRefs` | `TravelerRef[]` | yes | Traveler references (structured form, see shared-primitives.md section 2a). |
 | `segmentRefs` | string[] | yes | Segment references. |
-| `segments` | `SegmentOrderSnapshot[]` | yes | Per-segment detail, including `departureTime`. Post-Sales builds its refund policy context from this: without a resolvable departure it falls back to `departureTime = now`, which `RefundPolicyEngine` reads as `AFTER_DEPARTURE_NON_REFUNDABLE` and quotes a zero refund. `segmentRefs` alone is not sufficient for that reason. |
+| `segments` | `SegmentOrderSnapshot[]` | yes | Accepted segment detail, including the actual `departureTime`, used for the Post Sales policy context. |
 | `createdAt` | RFC3339 UTC | yes | Order creation time. |
 | `sourceIp` | string | no | First hop from `X-Forwarded-For`/real client IP when available, for downstream risk velocity analysis. |
 
@@ -35,8 +38,12 @@ Last updated: 2026-07-04
 | `currency` | string | yes | ISO-4217 currency code. |
 
 **Idempotency/Ordering Notes:**
-- Idempotent on `idempotencyKey` (composed from `accountId:offerId:clientRequestId`).
-- `JourneyOrderCreated` is emitted exactly once per unique idempotency key.
+
+HTTP creation uses the supplied `Idempotency-Key` and a request fingerprint.
+An equal replay returns the persisted order; conflicting reuse is rejected.
+The accepted creation saves the order and its event through the local transaction.
+Post Sales synchronous evaluation uses the accepted order returned with its adjustment quote and does not wait for this event projection when those facts are available.
+Unresolvable departure facts fail evaluation.
 
 ### JourneyOrderPendingPayment
 
@@ -106,6 +113,10 @@ Last updated: 2026-07-04
 
 ### JourneyOrderPostSalesAdjusted
 
+Applied refunds adjust the affected commercial items and fees.
+The checked change application endpoint updates the existing order using its replacement Offer, tickets and settled funds.
+`PostSalesApplied` with `caseType=COMPENSATION` preserves the original order and does not produce a commercial cancellation or adjustment.
+
 | Field | Description |
 |---|---|
 | **Producer** | journey-order |
@@ -154,7 +165,7 @@ Last updated: 2026-07-04
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `travelerId` | `TravelerId` | yes | Traveler ID (`tvl-<uuid>`). |
-| `travelerType` | enum | yes | Traveler category (see shared-primitives.md TravelerType enum). Canonical field name; current implementation uses `documentType` as a deviation. |
+| `travelerType` | enum | yes | Traveler category captured from the accepted Offer and emitted as `travelerType`. |
 | `maskedDocumentNo` | string | no | Partially masked document number. |
 | `eligibilityRef` | `EligibilityRef` | no | Eligibility determination (see shared-primitives.md section 2b). |
 

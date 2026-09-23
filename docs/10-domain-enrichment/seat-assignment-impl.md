@@ -1,158 +1,105 @@
-# Seat Assignment — Full Implementation
+# Seat Assignment implementation
 
-## Context
+Last updated: 2026-09-24.
 
-**Service**: seat-assignment (Go, `services/seat-assignment/`)
-**Current state**: Empty shell — 0 lines of implementation. Only Dockerfile and module config exist. This service needs to be built from scratch following the Go-kit patterns.
+## Runtime and model
 
-**Platform kit**: `platform/go-kit/` provides storage, messaging, HTTP, and outbox primitives.
-**DDD spec**: `docs/02-domains/seat-assignment.md`
+The Go service in `services/seat-assignment` uses PostgreSQL transactions and a Redis outbox relay.
+The domain boundary is documented in [Seat Assignment](../02-domains/seat-assignment.md).
+Remaining work is tracked in [docs/TODO.md](../TODO.md).
 
-## Requirements
+The service exposes published SeatMaps and internal allocations through `ContractSeatMap` and `ContractSeatAllocation`.
+It also exposes the segment and date based `SeatInventory` and `SeatAssignment` API.
+These models have different request shapes and allocation algorithms.
+The internal ticket allocation path requires a published composition and explicit booking, order, traveler, Hold, service, date, class and interval references.
 
-### R1: Train Car Layout Model
+## Published compositions
 
-Model the physical layout of train cars:
+`internal/domain/seatmap_contract.go` builds deterministic SIM compositions.
+The material includes the scheduled service, date, composition version, seed and mapping version.
+Repeated creation with the same material preserves map and unit identities.
+A published map rejects unit mutation, and recorded allocations retain their original map references.
 
-```
-TrainConfiguration:
-  trainType: "CRH380A"
-  cars:
-    - carNumber: 1
-      carType: BUSINESS_CLASS
-      layout: "2+1"          # seats per row
-      rows: 12
-      totalSeats: 36
-      features: [POWER_OUTLET, WIFI, RECLINER]
-    - carNumber: 2-5
-      carType: FIRST_CLASS
-      layout: "2+2"
-      rows: 20
-      totalSeats: 80 per car
-      features: [POWER_OUTLET]
-    - carNumber: 6-13
-      carType: SECOND_CLASS
-      layout: "3+2"
-      rows: 25
-      totalSeats: 125 per car
-      features: []
-    - carNumber: 14-16
-      carType: SECOND_CLASS
-      layout: "3+2"
-      rows: 25
-      totalSeats: 125 per car
-      features: [QUIET_CAR]  # car 16 only
+The `CRH380A` seed uses the configuration in `internal/domain/train_config.go`.
 
-Seat identifiers: "{carNumber}-{row}{letter}" e.g. "06-12A"
-Letters: A,B,C (aisle) D,E for 3+2; A,B (aisle) C,D for 2+2; A (aisle) B,C for 2+1
-```
+| Coaches | Class | Layout | Rows per coach | Seats per coach |
+|---|---|---|---|---|
+| 1 | `BUSINESS_CLASS` | 2+1 | 12 | 36 |
+| 2 through 5 | `FIRST_CLASS` | 2+2 | 20 | 80 |
+| 6 through 16 | `SECOND_CLASS` | 3+2 | 25 | 125 |
 
-**Domain model** (`internal/domain/`):
-- `TrainConfig` struct: `TrainType string`, `Cars []CarConfig`
-- `CarConfig` struct: `CarNumber int`, `CarType string`, `Layout string`, `Rows int`, `Features []string`
-- `Seat` struct: `SeatId string`, `CarNumber int`, `Row int`, `Letter string`, `SeatType string`, `Position string` (WINDOW, AISLE, MIDDLE)
-- `SeatMap` struct: ordered collection of all seats for a train config
+The `SLEEPER` seed creates `SLEEPER_HARD` and `SLEEPER_SOFT` coaches with explicit berth positions.
+Hard sleeper has 54 berths and soft sleeper has 36 berths in this simulated composition.
+These are generated platform inputs, not verified railway vehicle specifications.
 
-### R2: Seat Assignment Engine
+## Allocation and concurrency
 
-Assign seats based on preferences:
+`internal/application/seatmap_service.go` implements the internal allocation endpoint.
+It selects from published maps, filters occupied or avoided units, and evaluates adjacency against existing members of the requested group.
+A PostgreSQL transaction advisory lock serializes allocation for a scheduled service and date.
+The active allocation query includes `ALLOCATED`, `STANDING` and `CONFIRMED` records.
+Concrete unit conflicts use overlapping half open station intervals.
 
-```
-Preferences (priority order):
-  1. WINDOW — seat letters A or E (3+2), A or D (2+2)
-  2. AISLE — seat letters C or D (3+2), B or C (2+2)
-  3. TOGETHER — group of travelers should be adjacent
-  4. QUIET_CAR — assign to car 16 (quiet zone)
-  5. FORWARD_FACING — odd rows (platform-specific)
-  6. NO_PREFERENCE — any available seat
+The internal endpoint allocates one traveler per call.
+It records adjacency degradation and can assign standing when the request permits it and quota remains.
+Its selector does not score all recorded seat position or berth position preferences.
+The separate `AssignmentEngine` used by `/seat-assignments` supports window, aisle, quiet car, forward facing and group scoring.
+That algorithm does not establish equivalent behavior for internal ticket allocations.
 
-Assignment algorithm:
-  1. Filter available seats matching seat class
-  2. If TOGETHER requested: find consecutive seats in same row
-  3. Score remaining seats by preference match (0-100)
-  4. Assign highest-scoring available seat
-  5. If no preference match: fall back to any available
-```
+An active allocation replay checks booking, order, traveler, Hold, capacity reference, segment, interval, requested class, issue purpose, preferences and expiry.
+A matching replay returns the recorded allocation without consuming another seat or standing slot.
+The endpoint requires capacity references but does not synchronously verify the Hold with Capacity.
+It requires a nonzero expiry timestamp but does not check that timestamp against the current time before allocation.
+The allocated `seatRef.seatUnitRef` is selected locally and need not equal the submitted `capacityUnitRef`.
 
-**Domain model**:
-- `SeatPreference` struct: `PreferenceType string`, `Priority int`
-- `AssignmentRequest` struct: `SegmentRef string`, `TravelerRefs []string`, `SeatClass string`, `Preferences []SeatPreference`
-- `SeatAssignment` aggregate: `AssignmentId string`, `SegmentRef string`, `TravelerRef string`, `SeatId string`, `AssignedAt time.Time`, `Status string` (ASSIGNED, CONFIRMED, RELEASED)
-- `AssignmentEngine`: pure function `Assign(seatMap SeatMap, occupied []string, requests []AssignmentRequest) → []SeatAssignment`
+## Standing policy
 
-### R3: Seat Availability Tracking
+The [Standing capacity policy](../08-contracts/standing-capacity-policy.md), identified by `standing-second-class-10pct-v1`, is published and enforced by Seat Assignment.
+The limit is ten percent of assignable second class seats in the selected published map, rounded down.
+Occupied second class seats remain in the basis.
+Missing second class composition prevents standing allocation.
 
-Track which seats are occupied per segment+date:
+Direct standing purchases and accepted standing substitutions share the interval occupancy limit.
+Historical active standing allocations count even when they lack policy metadata.
+A standing allocation carries `standingPolicy` evidence and the composition reference.
+Its `seatRef` has `allocationType=STANDING` and `displayLabel=STANDING`, with no `seatUnitRef`, `coachNo` or `seatNo`.
+`requestedClassRef`, `issuePurpose` and accepted preferences preserve the original purchase intent when a substitution is replayed.
 
-```
-SeatInventory:
-  segmentRef: "seg-xxx"
-  departureDate: "2026-07-20"
-  trainConfig: "CRH380A"
-  assignments: map[seatId] → { travelerRef, holdId, status }
-  
-Status lifecycle:
-  AVAILABLE → HELD (temporary, during booking) → CONFIRMED (ticket issued) → RELEASED (cancellation)
-  HELD expires after 10 minutes if not confirmed
-```
+Seat Assignment currently counts its own active allocations.
+Capacity's combined calculation of allocations and pending Holds is an uncommitted, undeployed workspace change.
+Booking coordinated behavior is not enabled.
+Published standing enforcement does not establish completed combined supply admission.
 
-**Domain model**:
-- `SeatInventory` aggregate root: `SegmentRef`, `DepartureDate`, `TrainConfigRef`, `Assignments map[string]*SeatAssignment`
-- `HoldSeat(seatId, travelerRef, holdId) → error` — marks seat as HELD
-- `ConfirmSeat(seatId, holdId) → error` — transitions HELD → CONFIRMED
-- `ReleaseSeat(seatId) → error` — transitions HELD/CONFIRMED → AVAILABLE
-- `ExpireHolds(olderThan time.Time)` — bulk release expired holds
+## APIs and events
 
-### R4: API Endpoints
+The [HTTP API](../08-contracts/api/seat-assignment.md) defines the public fields.
+The runtime registers SeatMap creation, listing, reading, publication, retirement and unit availability operations.
+`POST /api/v1/internal/seat-allocations` creates ticket allocations.
+`GET /api/v1/seat-allocations` and the identifier endpoint read persisted results.
 
-```
-POST /api/v1/seat-assignments
-  Request: { segmentRef, departureDate, travelerRefs, seatClass, preferences }
-  Response: { assignments: [{ assignmentId, seatId, travelerRef, carNumber, row, letter, position }] }
+`GET /api/v1/internal/capacity-facts` returns the selected published map, assignable units and active allocations for a service, date and class.
+For `STANDING`, it returns an empty units array, standing policy evidence and active standing allocations.
+Concrete allocations are resolved through their recorded composition, including historical map references.
 
-GET /api/v1/seat-assignments/{segmentRef}/{departureDate}/availability
-  Response: { totalSeats, available, occupied, byClass: { SECOND_CLASS: { total, available }, ... } }
+The service publishes `SeatMapBuilt`, `SeatMapVersionPublished`, `SeatMapVersionRetired`, unit availability events, `SeatAllocated` and `StandingAssigned`.
+Entitlement issuance confirms allocations.
+Entitlement voiding, issuance failure and applicable post sales events release them.
+Capacity release and expiry match allocations by Hold identity.
+Seat release does not itself release the Capacity Hold.
 
-DELETE /api/v1/seat-assignments/{assignmentId}
-  Response: { released: true }
+Subscribed streams are Booking, Entitlement, Post Sales and Capacity.
+There is no Service Plan event handler that automatically publishes SeatMaps.
+Internal allocation states are `ALLOCATED`, `STANDING`, `CONFIRMED`, `RELEASED` and `EXPIRED`.
+Rejected HTTP requests do not imply a persisted allocation failure record.
 
-POST /api/v1/seat-assignments/{assignmentId}/confirm
-  Response: { confirmed: true, seatId, travelerRef }
-```
+## Existing verification
 
-## Interface Contracts
+Existing domain and application tests cover composition generation, interval conflicts, allocation replay, map publication and allocation messages.
+The PostgreSQL tests in `internal/adapters/storage` exercise allocation concurrency, supply facts, map replay and standing quota behavior.
+`standing_policy_live_test.go` covers rounding, concurrent admission, stored policy evidence, replay and release using recorded composition data.
+These tests require their recorded inputs and a disposable database.
 
-### Events consumed
-- `events:booking-orchestration` → `BookingSagaStepSucceeded` (capacity hold confirmed) — trigger seat assignment
-- `events:entitlement-ticketing` → `TicketIssued` — confirm seat assignment
-- `events:post-sales` → `PostSalesApplied` (refund) — release seat
-
-### Events produced
-- `SeatAssigned` — assignment created
-- `SeatConfirmed` — assignment confirmed
-- `SeatReleased` — seat freed
-- `SeatAssignmentFailed` — no matching seat available
-
-## Test Criteria
-
-1. Assign window seat preference → gets seat A or E in 3+2 layout
-2. Assign 3 travelers TOGETHER → all in same row, adjacent
-3. Assign to full car → correctly falls back to next car
-4. Hold expires after 10 minutes → seat becomes available
-5. Confirm after hold → status transitions correctly
-6. Release after confirm (refund) → seat available for rebooking
-
-## Files to Create
-
-- `services/seat-assignment/internal/domain/train_config.go`
-- `services/seat-assignment/internal/domain/seat.go`
-- `services/seat-assignment/internal/domain/assignment.go`
-- `services/seat-assignment/internal/domain/inventory.go`
-- `services/seat-assignment/internal/domain/engine.go`
-- `services/seat-assignment/internal/application/service.go`
-- `services/seat-assignment/internal/adapters/api/handlers.go`
-- `services/seat-assignment/internal/adapters/storage/postgres.go`
-- `services/seat-assignment/internal/adapters/messaging/subscriber.go`
-- `services/seat-assignment/migrations/001_seat_assignment.sql`
-- `services/seat-assignment/cmd/main.go` (update existing)
-- `services/seat-assignment/internal/domain/engine_test.go`
+The published standing policy records online purchase checks across seated, sleeper and standing classes.
+Those checks establish the documented Seat Assignment behavior within their executed scope.
+They do not establish arbitrary multi stop sales, atomic group allocation or deployment of Capacity's combined supply path.
+No tests were added or rerun for this documentation update.
