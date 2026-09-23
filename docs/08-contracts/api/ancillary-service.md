@@ -428,6 +428,14 @@ not expired, and still eligible.
 Requires `Idempotency-Key` and an empty JSON body.
 Returns the order item with `paymentIntentId`.
 Repeated preparation returns the same dedicated payment intent.
+
+**POST** `/api/v1/ancillary-order-items/{ancillaryOrderItemId}/payment/resolve-late`
+
+Requires `Idempotency-Key` and an empty JSON body.
+For an unconfirmed ancillary item with a recorded late collection, this operation saves the cancellation and refund request before asking Payment to return the collected amount through the original channel.
+The response is the `REFUNDED` item with its settled `refundId`.
+Repeated requests preserve the same refund.
+The original ticket and journey order are unchanged.
 The customer captures that intent through Payment before confirmation.
 
 ### Confirm Ancillary Order Item
