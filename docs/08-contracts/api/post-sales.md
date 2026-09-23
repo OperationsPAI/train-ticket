@@ -107,6 +107,8 @@ Advances one recorded operation and returns full case details.
 Callers repeat this operation while execution is pending.
 The service derives stable downstream idempotency keys from the case and operation names, and persists accepted results in `changeOperations`.
 An `APPLIED` or `FAILED` case returns its current state without issuing another operation.
+If the target Offer expires before any replacement operation starts, execution verifies the original issued tickets and ends with `CHANGE_OFFER_EXPIRED`.
+The case stores `target-expired` and `expired-target-completed`; it creates no replacement reservation or difference payment.
 
 The service records the target Offer, itinerary, fare and funding source, requests replacement bookings, and waits for their confirmed Holds.
 It then collects any required fare difference, issues replacement tickets, voids original tickets, waits for original reservations to release, settles any approved difference refund, and applies the order change.

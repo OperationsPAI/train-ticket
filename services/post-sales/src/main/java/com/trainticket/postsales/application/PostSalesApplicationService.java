@@ -180,6 +180,18 @@ public class PostSalesApplicationService {
         return current;
     }
 
+    public PostSalesCase failExpiredTarget(String caseId,String correlation) {
+        PostSalesCase initial=get(caseId);repository.lockOrder(initial.journeyOrderId());PostSalesCase current=get(caseId);
+        if(current.status()==PostSalesCaseStatus.FAILED)return current;
+        var ops=current.changeOperations();
+        if(current.caseType()!=PostSalesCaseType.CHANGE || current.status()!=PostSalesCaseStatus.EXECUTING
+            || !ops.containsKey("target-expired") || !ops.containsKey("expired-target-completed") || ops.size()!=2) {
+            throw new com.trainticket.postsales.domain.DomainRuleViolation("expired target original ticket validation has not completed");
+        }
+        current.failCase("CHANGE_OFFER_EXPIRED","target-offer",clock.instant(),"cmd-change-failed","cmd-change-failed",correlation);
+        repository.save(current);publishNewEvents(current);return current;
+    }
+
     public PostSalesCase approve(String caseId, String sourceCommandId, String correlationId) {
         PostSalesCase postSalesCase = get(caseId);
         if (isTerminalNonRefundable(postSalesCase)) {
