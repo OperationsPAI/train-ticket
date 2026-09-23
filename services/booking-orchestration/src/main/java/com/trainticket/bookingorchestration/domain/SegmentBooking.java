@@ -32,6 +32,7 @@ public final class SegmentBooking {
     private String failureReason;
     private String cancellationReason;
     private String seatAllocationRef;
+    private String classRef;
     private long version;
 
     private SegmentBooking(String segmentBookingId, String journeyOrderId, String offerItemRef, String segmentRef,
@@ -115,6 +116,9 @@ public final class SegmentBooking {
     public String bookingPurpose() {
         return bookingPurpose;
     }
+
+    public String classRef() { return classRef; }
+    public SegmentBooking withClassRef(String classRef) { this.classRef=classRef; return this; }
 
     public String idempotencyKey() {
         return idempotencyKey;
