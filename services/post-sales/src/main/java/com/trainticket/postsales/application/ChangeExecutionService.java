@@ -39,10 +39,13 @@ public class ChangeExecutionService {
         String id=PostSalesMapper.prefixed(change.caseId(),"psc-");
         Map<String,Map<String,Object>> ops=change.changeOperations();
         if(ops.containsKey("capacity-rejected"))return compensateCapacityFailure(change,correlation);
+        if(ops.containsKey("target-expired"))return completeExpiredTarget(change,correlation);
         if(!ops.containsKey("target")) {
             JsonNode order=get("journey-order","/api/v1/journey-orders/"+change.journeyOrderId(),correlation);
             JsonNode offer=get("offer-management","/api/v1/offers/"+change.targetOfferId(),correlation);
-            if(!order.path("accountId").asText().equals(offer.path("accountId").asText()) || !Instant.now().isBefore(Instant.parse(text(offer,"expiresAt"))))throw new DomainRuleViolation("target offer is unavailable for the original account");
+            if(!order.path("accountId").asText().equals(offer.path("accountId").asText()))throw new DomainRuleViolation("target offer is unavailable for the original account");
+            if(!Instant.now().isBefore(Instant.parse(text(offer,"expiresAt"))))return cases.recordChangeOperation(caseId,"target-expired",
+                Map.of("offerId",text(offer,"offerId"),"expiresAt",text(offer,"expiresAt")));
             JsonNode itinerary=get("trip-planning","/api/v1/itineraries/"+text(offer,"itineraryRef"),correlation);
             List<JsonNode> payments=funding.changePayments(change,text(order,"accountId"),false,correlation);
             if(!RefundFundingService.balance(payments).equals(RefundFundingService.money(order.path("monetarySummary").path("payableTotal"))))throw new DomainRuleViolation("recorded payments do not match the current order balance");
@@ -153,6 +156,18 @@ public class ChangeExecutionService {
         if(!ops.containsKey("order-applied"))return saveCommand(change,"order-applied","journey-order","/api/v1/journey-orders/"+change.journeyOrderId()+"/apply-change",
             Map.of("caseId",id),correlation);
         return cases.completeChange(caseId,correlation);
+    }
+
+    private PostSalesCase completeExpiredTarget(PostSalesCase change,String correlation) {
+        if(change.changeOperations().keySet().stream().anyMatch(name->!name.equals("target-expired") && !name.equals("expired-target-completed"))) {
+            throw new DomainRuleViolation("expired target completion requires no replacement operations");
+        }
+        for(String ticket:change.scope().entitlementRefs()) {
+            JsonNode original=get("entitlement-ticketing","/api/v1/entitlements/"+ticket,correlation);
+            if(!change.journeyOrderId().equals(text(original,"journeyOrderId")) || !"ISSUED".equals(text(original,"status")))throw new DomainRuleViolation("expired target original ticket is unavailable");
+        }
+        if(!change.changeOperations().containsKey("expired-target-completed"))return cases.recordChangeOperation(change.caseId(),"expired-target-completed",Map.of("originalTicketsPreserved",true));
+        return cases.failExpiredTarget(change.caseId(),correlation);
     }
 
     private PostSalesCase compensateCapacityFailure(PostSalesCase change,String correlation) {
