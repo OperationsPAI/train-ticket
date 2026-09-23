@@ -253,12 +253,12 @@ async fn post_sales_refund_observes_and_completes_red_flush() {
         .unwrap();
     assert_eq!(req.status, InvoiceRequestStatus::Issued);
     svc.apply_subscribed_event(rust_kit::messaging::EventEnvelope::new(
-        "PostSalesApplied",
+        "SettledInvoiceRefund",
         rust_kit::messaging::now_rfc3339_utc(),
         corr(),
         Some(format!("evt-{}", uuid::Uuid::now_v7())),
         "post-sales",
-        serde_json::json!({"caseId":"psc-1","orderId":"ord-ref","resultSummary":{"refund":true}}),
+        serde_json::json!({"caseId":"psc-1","orderId":"ord-ref","refundId":"rf-1","refundAmount":{"currency":"CNY","minorUnits":1000},"requestedAt":rust_kit::messaging::now_rfc3339_utc()}),
     ))
     .await
     .unwrap();
