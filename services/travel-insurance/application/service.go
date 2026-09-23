@@ -19,24 +19,26 @@ type realClock struct{}
 func (realClock) Now() time.Time { return time.Now().UTC() }
 
 type ServiceConfig struct {
-	Repository  Repository
-	Publisher   EventPublisher
-	UnitOfWork  UnitOfWork
-	Clock       Clock
-	IDGenerator func(prefix string) string
+	Repository     Repository
+	Publisher      EventPublisher
+	UnitOfWork     UnitOfWork
+	Clock          Clock
+	IDGenerator    func(prefix string) string
+	VerifyPurchase func(context.Context, IssuePolicyCommand, domain.Money) error
 }
 
 type InsuranceService struct {
-	mu          sync.Mutex
-	repository  Repository
-	publisher   EventPublisher
-	uow         UnitOfWork
-	clock       Clock
-	idGenerator func(prefix string) string
-	products    map[string]domain.InsuranceProduct
-	policies    map[string]domain.Policy
-	claims      map[string]domain.Claim
-	advices     map[string]domain.PayoutAdvice
+	mu             sync.Mutex
+	repository     Repository
+	publisher      EventPublisher
+	uow            UnitOfWork
+	clock          Clock
+	idGenerator    func(prefix string) string
+	verifyPurchase func(context.Context, IssuePolicyCommand, domain.Money) error
+	products       map[string]domain.InsuranceProduct
+	policies       map[string]domain.Policy
+	claims         map[string]domain.Claim
+	advices        map[string]domain.PayoutAdvice
 }
 
 func NewInsuranceService(cfg ServiceConfig) *InsuranceService {
@@ -52,7 +54,7 @@ func NewInsuranceService(cfg ServiceConfig) *InsuranceService {
 	if idgen == nil {
 		idgen = ids.NewPrefixed
 	}
-	s := &InsuranceService{repository: cfg.Repository, publisher: publisher, uow: cfg.UnitOfWork, clock: clock, idGenerator: idgen, products: map[string]domain.InsuranceProduct{}, policies: map[string]domain.Policy{}, claims: map[string]domain.Claim{}, advices: map[string]domain.PayoutAdvice{}}
+	s := &InsuranceService{repository: cfg.Repository, publisher: publisher, uow: cfg.UnitOfWork, clock: clock, idGenerator: idgen, verifyPurchase: cfg.VerifyPurchase, products: map[string]domain.InsuranceProduct{}, policies: map[string]domain.Policy{}, claims: map[string]domain.Claim{}, advices: map[string]domain.PayoutAdvice{}}
 	s.seedProducts()
 	return s
 }
@@ -170,6 +172,14 @@ func (s *InsuranceService) IssuePolicy(ctx context.Context, cmd IssuePolicyComma
 		}
 	}
 	product.Premium = premium
+	if s.repository != nil && s.verifyPurchase == nil {
+		return domain.Policy{}, fmt.Errorf("%w: purchase verification is required", ErrDomainRule)
+	}
+	if s.verifyPurchase != nil {
+		if err := s.verifyPurchase(ctx, cmd, premium); err != nil {
+			return domain.Policy{}, err
+		}
+	}
 	if product.ProductCode == domain.ProductCancellationInsurance {
 		limitMinor := cmd.TicketPrice.MinorUnits * 80 / 100
 		if limitMinor <= 0 {
@@ -182,16 +192,20 @@ func (s *InsuranceService) IssuePolicy(ctx context.Context, cmd IssuePolicyComma
 	if err != nil {
 		return domain.Policy{}, fmt.Errorf("%w: %v", ErrDomainRule, err)
 	}
-	if existing, ok, err := s.findExistingPolicy(ctx, policy); err != nil {
-		return domain.Policy{}, err
-	} else if ok {
-		return existing, nil
-	}
 	envelope, err := s.newEnvelope(ctx, "InsurancePolicyIssued", cmd.CorrelationID, cmd.CausationID, policyIssuedPayload(policy))
 	if err != nil {
 		return domain.Policy{}, err
 	}
 	if err := s.within(ctx, func(tx context.Context) error {
+		if existing, ok, err := s.findExistingPolicy(tx, policy); err != nil {
+			return err
+		} else if ok {
+			if existing.JourneyOrderID != policy.JourneyOrderID || existing.AccountID != policy.AccountID || existing.PaymentIntentID != policy.PaymentIntentID || existing.Premium != policy.Premium || !existing.CoverageStartAt.Equal(policy.CoverageStartAt) || !existing.CoverageEndAt.Equal(policy.CoverageEndAt) {
+				return fmt.Errorf("%w: insurance purchase already has a different policy", ErrConflict)
+			}
+			policy = existing
+			return nil
+		}
 		if s.repository != nil {
 			if err := s.repository.SavePolicy(tx, policy); err != nil {
 				return mapRepoErr(err)
@@ -204,9 +218,11 @@ func (s *InsuranceService) IssuePolicy(ctx context.Context, cmd IssuePolicyComma
 	}); err != nil {
 		return domain.Policy{}, err
 	}
-	s.mu.Lock()
-	s.policies[policy.ID] = policy
-	s.mu.Unlock()
+	if s.repository == nil {
+		s.mu.Lock()
+		s.policies[policy.ID] = policy
+		s.mu.Unlock()
+	}
 	return policy, nil
 }
 
@@ -380,9 +396,11 @@ func (s *InsuranceService) CancelPolicyForRefund(ctx context.Context, cmd Refund
 	}); err != nil {
 		return domain.Policy{}, err
 	}
-	s.mu.Lock()
-	s.policies[policy.ID] = policy
-	s.mu.Unlock()
+	if s.repository == nil {
+		s.mu.Lock()
+		s.policies[policy.ID] = policy
+		s.mu.Unlock()
+	}
 	return policy, nil
 }
 
@@ -410,13 +428,15 @@ func (s *InsuranceService) savePolicyClaimAndPublish(ctx context.Context, policy
 	}); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	s.policies[policy.ID] = policy
-	s.claims[claim.ID] = claim
-	if advice.ID != "" {
-		s.advices[advice.ID] = advice
+	if s.repository == nil {
+		s.mu.Lock()
+		s.policies[policy.ID] = policy
+		s.claims[claim.ID] = claim
+		if advice.ID != "" {
+			s.advices[advice.ID] = advice
+		}
+		s.mu.Unlock()
 	}
-	s.mu.Unlock()
 	return nil
 }
 
@@ -460,6 +480,7 @@ func (s *InsuranceService) findExistingPolicy(ctx context.Context, policy domain
 		if err != ErrNotFound {
 			return domain.Policy{}, false, err
 		}
+		return domain.Policy{}, false, nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	kitmessaging "github.com/trainticket/greenfield/platform/go-kit/messaging"
 	"github.com/trainticket/greenfield/platform/go-kit/storage"
@@ -59,13 +61,16 @@ func main() {
 	defer func() { _ = redisClient.Close() }()
 	go storage.NewOutboxRelay(pool, redisClient).Run(ctx)
 	transactor := adapterpg.NewTransactor(pool)
-	service := application.NewInsuranceService(application.ServiceConfig{Repository: adapterpg.NewRepositoryWithProvider(transactor), Publisher: adapterpg.NewOutboxPublisherWithProvider(transactor), UnitOfWork: transactor.Within})
+	verifier := application.PurchaseVerifier{Client: &http.Client{Timeout: 5 * time.Second}, BaseURLTemplate: "http://%s:8080"}
+	service := application.NewInsuranceService(application.ServiceConfig{Repository: adapterpg.NewRepositoryWithProvider(transactor), Publisher: adapterpg.NewOutboxPublisherWithProvider(transactor), UnitOfWork: transactor.Within, VerifyPurchase: verifier.Verify})
 	bus := kitmessaging.NewRedisEventBusWithClient(redisClient, kitmessaging.RedisConfig{})
 	consumer := os.Getenv("CONSUMER_NAME")
 	if consumer == "" {
 		consumer = domain.ServiceID + "-1"
 	}
-	if err := bus.Subscribe(ctx, kitmessaging.Subscription{Streams: []string{"journey-order", "payment"}, Group: domain.ServiceID, ConsumerName: consumer}, appmsg.NewInboundHandler(service).Handle); err != nil {
+	if err := bus.Subscribe(ctx, kitmessaging.Subscription{Streams: []string{"journey-order", "payment"}, Group: domain.ServiceID, ConsumerName: consumer, EventFilter: func(event kitmessaging.EventEnvelope) bool {
+		return event.EventType == "PostSalesApplied" || event.EventType == "RefundApproved" || event.EventType == "TrainDelayed"
+	}}, appmsg.NewInboundHandler(service).Handle); err != nil {
 		log.Fatal(err)
 	}
 	profile := domain.Profile()
