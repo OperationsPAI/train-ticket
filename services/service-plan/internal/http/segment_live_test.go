@@ -92,6 +92,32 @@ func TestRecordedServiceSegmentIsReadableWithoutChangingSupply(t *testing.T) {
 	if actual.SegmentRef != source.Segment.SegmentRef || actual.ScheduledServiceRef != source.Service.ScheduledServiceRef || !actual.DepartureTime.Equal(source.Segment.DepartureTime) || actual.OriginStopRef != source.Segment.OriginStopRef || actual.DestinationStopRef != source.Segment.DestinationStopRef {
 		t.Fatalf("segment differs: %+v", actual)
 	}
+	for _, offset := range []int{0, 1} {
+		listed, err := http.Get(fmt.Sprintf("%s/api/v1/service-segments?scheduledServiceRef=%s&limit=1&offset=%d", server.URL, source.Service.ScheduledServiceRef, offset))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var page application.ServiceSegmentsPage
+		err = json.NewDecoder(listed.Body).Decode(&page)
+		listed.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if listed.StatusCode != http.StatusOK || page.Total != 1 || page.Limit != 1 || page.Offset != offset || len(page.Items) != 1-offset {
+			t.Fatalf("page=%+v status=%d", page, listed.StatusCode)
+		}
+		if offset == 0 && page.Items[0].SegmentRef != source.Segment.SegmentRef {
+			t.Fatal("listed segment differs")
+		}
+	}
+	invalid, err := http.Get(server.URL + "/api/v1/service-segments?limit=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid.Body.Close()
+	if invalid.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unscoped listing status=%d", invalid.StatusCode)
+	}
 	missing, err := http.Get(server.URL + "/api/v1/service-segments/" + source.Service.ScheduledServiceRef)
 	if err != nil {
 		t.Fatal(err)
