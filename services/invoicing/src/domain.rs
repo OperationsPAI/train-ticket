@@ -671,6 +671,7 @@ impl RedFlushView {
         original: &EInvoice,
         post_sales_case_id: String,
         refund_fact_event_id: String,
+        amount: Money,
         now: String,
     ) -> (Self, EInvoice, Vec<InvoicingEvent>) {
         let refund_scope_hash = sha256_prefixed(&format!(
@@ -749,10 +750,7 @@ impl RedFlushView {
             gateway_profile: original.gateway_profile.clone(),
             gateway_status: Some("ACCEPTED".into()),
             download_ref: Some(format!("artifact://invoicing/{red_id}")),
-            total_amount: Money {
-                currency: original.total_amount.currency.clone(),
-                minor_units: original.total_amount.minor_units.abs(),
-            },
+            total_amount: amount,
             issued_at: Some(now.clone()),
             status: InvoiceRequestStatus::RedFlushed,
             created_at: now.clone(),
