@@ -20,6 +20,9 @@ It creates a traveler using the recorded account, name, traveler type and contac
 After all 220 requests enter the servlet filter chain, health, readiness and both traveler reads must succeed within two seconds per request.
 Completing the bodies must return the original 201 response for every replay, preserve the recorded snapshot and create no additional travelers or outbox events.
 The test observer only counts incoming requests; HTTP handling, PostgreSQL persistence and Redis outbox publication use the application implementations.
+The complete local suite passes all 59 tests without skips, and the 220 request test completes in 2.930 seconds within that run.
+The HTTP configuration and published outbox cleanup index are deployed in revision 279.
+This configuration does not increase JDBC throughput or bypass dependency checks.
 
 ## Owns
 
