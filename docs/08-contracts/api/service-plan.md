@@ -94,6 +94,13 @@ The HTTP and PostgreSQL verification is `internal/http/segment_live_test.go`.
 
 ### List Service Segments for a Scheduled Service
 
+`GET /api/v1/internal/service-segments/{segmentRef}/supply` returns the segment's scheduled service, service date, ordered stops, `interval`, `stopSequenceVersion` and scheduled timestamps.
+The current scheduled service API supports an origin and destination, represented as zero based stop positions 0 and 1 with interval `[0,1)`.
+The source validates that persisted segment endpoints and timestamps match its scheduled service.
+Inconsistent sources return a domain error and cannot establish capacity.
+`stopSequenceVersion` is a SHA256 digest of the service identifier and ordered stop references.
+This read performs no business mutation or event publication.
+
 `GET /api/v1/service-segments?scheduledServiceRef={serviceRef}&limit=20&offset=0` returns `items`, `total`, `limit` and `offset`.
 The scheduled service reference is required.
 The limit is between 1 and 100 and the offset is nonnegative.
