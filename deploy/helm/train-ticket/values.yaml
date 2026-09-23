@@ -847,6 +847,14 @@ services:
       limits: { cpu: '1', memory: 2Gi }
   traveler-profile:
     db: traveler_profile
+    strategy:
+      type: RollingUpdate
+      rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+    terminationGracePeriodSeconds: 45
+    lifecycle:
+      preStop:
+        exec:
+          command: ["sleep", "10"]
     # JVM event consumer -- see the note on defaults.resources.
     #
     # 4 cores: measured at 96.3% of a 500m limit over a full envelope, so the
