@@ -37,6 +37,7 @@ class AppliedRefundScopeTest {
                 jdbc.execute("SET search_path TO " + schema);
                 jdbc.execute(Files.readString(Path.of("migrations/001_post_sales_persistence.sql")));
                 jdbc.execute(Files.readString(Path.of("migrations/004_applied_order_scope_lookup.sql")));
+                jdbc.execute(Files.readString(Path.of("migrations/009_policy_contexts.sql")));
                 jdbc.update("INSERT INTO post_sales_case_snapshots(id,version,data) VALUES (?,?,?::jsonb)",sample.path("id").asText(),sample.path("version").asLong(),sample.path("data").toString());
                 var repository = new PostgresPostSalesRepository(dataSource,mapper);
                 var original = repository.findById(sample.path("id").asText()).orElseThrow();
