@@ -114,6 +114,7 @@ If the target Offer expires before any replacement operation starts, execution v
 The case stores `target-expired` and `expired-target-completed`; it creates no replacement reservation or difference payment.
 
 The service records the target Offer, itinerary, fare and funding source, requests replacement bookings, and waits for their confirmed Holds.
+All traveler replacement reservations are submitted before waiting for confirmations, and each confirmed booking is recorded independently.
 It then collects any required fare difference, issues replacement tickets, voids original tickets, waits for original reservations to release, settles any approved difference refund, and applies the order change.
 Original tickets remain available until the replacement ticket stage succeeds.
 The public status `APPROVED` covers the internal approved and executing states.
