@@ -49,7 +49,7 @@ public class DbIdempotencyStore implements IdempotencyStore {
             int updated = jdbc.update(
                 "INSERT INTO idempotency_records(key, request_hash, status_code, response_body) VALUES (?, ?, ?, ?::jsonb) "
                     + "ON CONFLICT (key) DO UPDATE SET status_code=EXCLUDED.status_code, response_body=EXCLUDED.response_body "
-                    + "WHERE idempotency_records.status_code >= 500 AND idempotency_records.request_hash=EXCLUDED.request_hash",
+                    + "WHERE (idempotency_records.status_code >= 500 OR idempotency_records.status_code IN (409,412)) AND idempotency_records.request_hash=EXCLUDED.request_hash",
                 requireText(key, "key"),
                 response.fingerprint(),
                 response.status(),
