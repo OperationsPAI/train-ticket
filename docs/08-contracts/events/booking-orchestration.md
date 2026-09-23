@@ -1,6 +1,6 @@
 # Booking Orchestration — Events & Commands
 
-Last updated: 2026-06-28
+Last updated: 2026-09-23
 
 ## Published Events
 
@@ -37,6 +37,16 @@ Last updated: 2026-06-28
 | `segmentRef` | `SegmentRef` | yes | Service segment reference. |
 | `travelerRef` | `TravelerId` | yes | Traveler reference. |
 | `idempotencyKey` | string | yes | Idempotency key for safe retry. |
+| `classRef` | string | yes | Class from the accepted fare quote. |
+| `scheduledServiceRef` | string | yes | Scheduled service from the accepted itinerary. |
+| `serviceDate` | string | yes | UTC departure date of the accepted segment, in `YYYY-MM-DD` form. |
+| `offerItemRef` | string | initial purchase | Accepted commercial offer item reference. |
+| `postSalesCaseId` | string | replacement | Approved change case reference. |
+
+Initial purchase and change HTTP commands persist the accepted supply reference before publishing this event.
+These additions belong to the coordinated supply integration and are not proof that a running producer has been upgraded.
+Consumers must not replace that reference with a later order's selected offer.
+Historical events require validated source records during inventory reconciliation.
 
 ### SegmentCapacityHolding
 
