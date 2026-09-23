@@ -14,6 +14,7 @@ This code path is still being integrated and must not be described as deployed s
 `DATABASE_URL`, `REDIS_URL` and `MIGRATIONS_DIR` configure persistence and messaging.
 `reservation_supply_facts` stores accepted source references and `capacity_supply_observations` stores supply evidence.
 Historical Hold identities are preserved.
+Multiple HTTP keys and event delivery for the same booking share one Hold identity; released bookings do not obtain another Hold through replay.
 Initial purchase history uses Journey Order's `purchase-source` endpoint; replacement history uses its change case's target Offer.
 Historical source resolution uses at most eight concurrent upstream reservation lookups per service instance and commits verified facts before inventory admission.
 Subsequent queries reuse the persisted facts, including after a process restart or a refused Hold.
