@@ -139,6 +139,7 @@ public class PostgresPostSalesRepository implements PostSalesRepository {
         ObjectNode root = objectMapper.createObjectNode();
         root.put("caseId", c.caseId()); root.put("journeyOrderId", c.journeyOrderId()); root.put("caseType", c.caseType().name());
         root.put("targetOfferId", c.targetOfferId());
+        root.set("changeOperations",objectMapper.valueToTree(c.changeOperations()));
         if (c.createdAt() == null) root.putNull("createdAt"); else root.put("createdAt", c.createdAt().toString());
         root.set("scope", objectMapper.valueToTree(c.scope())); root.put("reasonCode", c.reasonCode()); root.put("actorRef", c.actorRef()); root.put("idempotencyKey", c.idempotencyKey());
         root.set("releasedOrderItems", objectMapper.valueToTree(c.releasedOrderItems()));
@@ -153,7 +154,9 @@ public class PostgresPostSalesRepository implements PostSalesRepository {
         ObjectNode r = snap.data();
         java.util.Set<String> released = new java.util.LinkedHashSet<>();
         r.path("releasedOrderItems").forEach(value -> released.add(value.asText()));
-        return PostSalesCase.rehydrate(text(r,"caseId"), text(r,"journeyOrderId"), PostSalesCaseType.valueOf(text(r,"caseType")), objectMapper.convertValue(r.path("scope"), PostSalesScope.class), text(r,"reasonCode"), text(r,"actorRef"), text(r,"idempotencyKey"), PostSalesCaseStatus.valueOf(text(r,"status")), r.path("decision").isNull()?null:decision(r.path("decision")), steps(r.path("executionPlan")), r.path("executionPlanAggregate").isNull()?null:plan(r.path("executionPlanAggregate")), r.path("terminalReason").asText(null), List.of(), r.path("createdAt").isTextual() ? Instant.parse(r.path("createdAt").asText()) : null).withReleasedOrderItems(released).withTargetOfferId(r.path("targetOfferId").asText(null));
+        var result=PostSalesCase.rehydrate(text(r,"caseId"), text(r,"journeyOrderId"), PostSalesCaseType.valueOf(text(r,"caseType")), objectMapper.convertValue(r.path("scope"), PostSalesScope.class), text(r,"reasonCode"), text(r,"actorRef"), text(r,"idempotencyKey"), PostSalesCaseStatus.valueOf(text(r,"status")), r.path("decision").isNull()?null:decision(r.path("decision")), steps(r.path("executionPlan")), r.path("executionPlanAggregate").isNull()?null:plan(r.path("executionPlanAggregate")), r.path("terminalReason").asText(null), List.of(), r.path("createdAt").isTextual() ? Instant.parse(r.path("createdAt").asText()) : null).withReleasedOrderItems(released).withTargetOfferId(r.path("targetOfferId").asText(null));
+        if(r.path("changeOperations").isObject()) result.withChangeOperations(objectMapper.convertValue(r.get("changeOperations"),new com.fasterxml.jackson.core.type.TypeReference<Map<String,Map<String,Object>>>(){}));
+        return result;
     }
 
     private ObjectNode decision(PostSalesDecision decision) {

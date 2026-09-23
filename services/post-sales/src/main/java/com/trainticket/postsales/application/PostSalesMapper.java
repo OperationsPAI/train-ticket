@@ -59,6 +59,7 @@ public final class PostSalesMapper {
         body.put("status", contractStatus(postSalesCase.status()));
         body.put("scope", postSalesCase.scope());
         body.put("targetOfferId", postSalesCase.targetOfferId());
+        body.put("changeOperations",postSalesCase.changeOperations());
         body.put("releasedOrderItemRefs", postSalesCase.releasedOrderItems());
         body.put("reasonCode", postSalesCase.reasonCode());
         body.put("actorRef", postSalesCase.actorRef());
@@ -164,6 +165,7 @@ public final class PostSalesMapper {
             payload.put("reason", rejected.reasonCode());
         } else if (event instanceof PostSalesApplied applied) {
             payload.put("orderId", applied.journeyOrderId());
+            payload.put("caseType",applied.caseType().name());
             payload.put("resultSummary", resultSummary(applied));
         } else if (event instanceof PostSalesExecutionStarted executionStarted) {
             payload.put("orderedSteps", executionStarted.orderedSteps().stream().map(Enum::name).toList());
@@ -196,6 +198,11 @@ public final class PostSalesMapper {
         actions.put("decisionKind", approved.decisionKind().name());
         actions.put("approvalRef", approved.approvalRef());
         if (sourceCase == null) {
+            return actions;
+        }
+        if (approved.decisionKind()==DecisionKind.CHANGE) {
+            actions.put("targetOfferId",sourceCase.targetOfferId());
+            actions.put("steps",java.util.List.of());
             return actions;
         }
         // Normative execution steps (events/post-sales.md): downstream
