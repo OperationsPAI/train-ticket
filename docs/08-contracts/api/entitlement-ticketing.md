@@ -1,6 +1,6 @@
-# Entitlement & Ticketing — HTTP API
+# Entitlement and Ticketing HTTP API
 
-Last updated: 2026-07-09
+Last updated: 2026-09-23.
 
 ## Overview
 
@@ -27,7 +27,12 @@ timestamps, and Money.
 | `travelerRef` | string | yes | Traveler reference (`tvl-<uuid>`). |
 | `segmentRef` | string | yes | Segment reference (`seg-<uuid>`). |
 | `issuePurpose` | string | yes | Purpose: `INITIAL`, `REPLACEMENT`, `MANUAL_RECOVERY`, `PROVIDER_REBUILD`, `DISRUPTION_REPLACEMENT` |
-| `seatPreferences` | object | no | Seat Assignment preferences. Needs same-wave implementation with `docs/08-contracts/api/seat-assignment.md` `SeatPreferences`; validate `acceptStanding`, `adjacencyPreference`, `preferredSeatPositions`, `preferredBerthPositions`, `sameCompartment`, `avoidSeatUnitRefs`, and `preferenceVersion`. |
+| `seatPreferences` | object | no | Seat Assignment preferences, including `acceptStanding`, adjacency, seat and berth positions, compartment, exclusions and preference version. |
+| `scheduledServiceRef`, `serviceDate` | string | for train issuance | Accepted scheduled service and calendar date. |
+| `capacityHoldId`, `capacityUnitRef` | string | for train issuance | Confirmed capacity Hold and its inventory reference. |
+| `interval` | object | for train issuance | Accepted station interval with `fromSeq` and `toSeq`. |
+| `classRef` | string | for train issuance | Accepted seat, berth or standing class. |
+| `expiresAt` | timestamp | for train issuance | Allocation validity boundary. |
 
 **Response (201):**
 
@@ -38,11 +43,16 @@ timestamps, and Money.
 | `journeyOrderId` | string | Order ID. |
 | `credentialNo` | string | Unique credential/ticket number. |
 | `credentialType` | string | Type: `E_TICKET`, `PAPER_TICKET`, `PICKUP_CODE`, `BOARDING_PASS`, `FERRY_TICKET`, `COACH_E_TICKET`, `RIDE_CODE` |
-| `status` | enum | `ISSUED`, `VOIDED`, `BOARDED`, `NO_SHOW`, `SUSPENDED`. RULING (2026-07-06): there is no `USED` status — `FulfillmentCompleted` leaves the ticket `BOARDED`; `BOARDED`, `NO_SHOW`, and `VOIDED` are terminal. |
+| `status` | enum | `ISSUED`, `VOIDED`, `BOARDED`, `NO_SHOW`, `SUSPENDED`; completed fulfillment retains `BOARDED`. |
 | `issuedAt` | timestamp | Issue timestamp. |
-| `seatRef` | object | no | Seat Assignment credential display fact. Needs same-wave implementation with `docs/08-contracts/api/seat-assignment.md` `SeatRef`; required for train/seat-assigned issuance paths, including `allocationType=STANDING` success. |
+| `seatRef` | object | Seat Assignment display fact, required for train issuance and including successful `STANDING` allocation. |
 
-**Error codes:** `VALIDATION_FAILED`, `NOT_FOUND`, `PRECONDITION_FAILED`, `CONFLICT`, `DOMAIN_RULE_VIOLATION`
+**Error codes:** `VALIDATION_FAILED`, `NOT_FOUND`, `PRECONDITION_FAILED`, `CONFLICT`, `IDEMPOTENCY_KEY_REUSED`, `DOMAIN_RULE_VIOLATION`, `UNAVAILABLE`
+
+A valid Seat Assignment business error preserves its HTTP status, code and message through ticket issuance.
+For example, exhausted concrete capacity without accepted standing returns HTTP 422 with `DOMAIN_RULE_VIOLATION`.
+Transport failures, malformed error responses and unrecognized downstream status and code combinations return `UNAVAILABLE`.
+Seat allocation rejection does not issue a ticket or commit its issuance result.
 
 ### Void Entitlement
 
@@ -85,20 +95,13 @@ timestamps, and Money.
 **Response (200):** Paginated response.
 
 
-### Seat Assignment increment — needs same-wave implementation
+### Seat Assignment integration
 
-ADR-0003 wave A adds Seat Assignment to the issuance path. This API contract
-increment is **not docs-only**: the Entitlement & Ticketing implementation must be
-updated in the same wave.
-
-| Touchpoint | Required implementation change |
-|---|---|
-| Issue request DTO / deserializer | Accept optional `seatPreferences` using the shape from `docs/08-contracts/api/seat-assignment.md`. |
-| Issue command validator | Validate `acceptStanding`, adjacency, seat position, berth position, and degradation enums as SCREAMING_SNAKE_CASE. |
-| Ticket issuance application service | Before committing a credential, call Seat Assignment `POST /api/v1/internal/seat-allocations` with a persisted UUID-v7 `Idempotency-Key` folded from `segmentBookingId`, `travelerRef`, `capacityHoldId`, normalized `seatPreferences`, and `issuePurpose`. |
-| Credential value object / persistence | Persist and expose `seatRef` exactly as Seat Assignment `SeatRef`; `STANDING` is a valid issued credential display fact. |
-| Event/outbox schema | Add `seatRef` and `seatAllocationId` to `EntitlementIssued` as documented in `docs/08-contracts/events/entitlement-ticketing.md`. |
-| Tests | Add enum/validation coverage for `allocationType`, `berthPosition`, `seatPosition`, `adjacencyPreference`, and `degradationReason`. |
+Before committing a train credential, issuance calls Seat Assignment's `POST /api/v1/internal/seat-allocations`.
+The outbound UUID version 7 idempotency key is derived from `segmentBookingId`, `travelerRef`, `capacityHoldId`, normalized `seatPreferences` and `issuePurpose`.
+The ticket persists and exposes the returned `seatRef`.
+Standing is a valid allocation with no physical SeatUnit or seat number, governed by the [standing capacity policy](../standing-capacity-policy.md).
+The six class live purchase test checks the issued allocation against the purchased class.
 
 ## Bus-only commands
 
@@ -111,6 +114,8 @@ endpoint:
 | `ResumeEntitlement` | risk-compliance, post-sales, customer-service | Resume a suspended entitlement. |
 | `BindProviderCredential` | provider-integration | Bind a provider-issued credential to an entitlement. |
 
-## Open Issues
+## Integration status
 
-- None.
+Preserving Seat Assignment business errors allows callers to distinguish sold out inventory from a dependency failure.
+Post Sales must still complete replacement cancellation and any required payment compensation before returning a terminal change result.
+See [capacity integration requirements](../../10-domain-enrichment/capacity-overbooking.md) for the coordinated activation requirements.
