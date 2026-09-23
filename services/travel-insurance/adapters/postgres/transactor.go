@@ -24,5 +24,8 @@ func (t *Transactor) DBFor(ctx context.Context) storage.DBTX {
 	return t.pool
 }
 func (t *Transactor) Within(ctx context.Context, fn func(context.Context) error) error {
+	if _, ok := ctx.Value(txKey{}).(pgx.Tx); ok {
+		return fn(ctx)
+	}
 	return storage.WithTx(ctx, t.pool, func(tx pgx.Tx) error { return fn(context.WithValue(ctx, txKey{}, tx)) })
 }
