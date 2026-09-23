@@ -89,6 +89,10 @@ class ChangePaymentOwnershipLiveTest {
                 }
                 String repeatedOrder=repeated.path("order").path("orderId").asText();
                 var net=revenues.findByOrderId(repeatedOrder).stream().map(RevenueRecognition::netAmount).reduce(Money.zero(amount.currency()),Money::plus);
+                var revenueBasis=mapper.valueToTree(tx.execute(status->service.revenueBasis(repeatedOrder)));
+                assertEquals(repeatedOrder,revenueBasis.path("orderId").asText());
+                assertEquals(net.amount().movePointRight(2).longValueExact(),revenueBasis.path("totalAmount").path("minorUnits").asLong());
+                assertEquals(revenues.findByOrderId(repeatedOrder).size(),revenueBasis.path("items").size());
                 assertEquals(repeated.path("order").path("monetarySummary").path("total").path("minorUnits").asLong(),net.amount().movePointRight(2).longValueExact());
                 assertEquals(4,jdbc.queryForObject("SELECT count(*) FROM fee_accrual_snapshots WHERE data->>'orderId'=? AND data->>'sourceEventId' LIKE 'psc-%' AND (data->'platformServiceFee'->>'amount')::numeric=15",Integer.class,repeatedOrder));
             } finally {jdbc.execute("DROP SCHEMA "+schema+" CASCADE");}
