@@ -108,6 +108,20 @@ public class PostSalesConflictReconciler {
         return target;
     }
 
+    @Transactional
+    public PostSalesCase cancelUnquoted(String caseId,String orderId,String correlationId){
+        var initial=requiredCase(caseId);repository.lockOrder(initial.journeyOrderId());var target=requiredCase(caseId);
+        if(!target.journeyOrderId().equals(orderId) || target.caseType()!=PostSalesCaseType.CHANGE)throw new DomainRuleViolation("unquoted change does not belong to this order");
+        if(target.status()==PostSalesCaseStatus.CANCELLED && "SUPERSEDED_BY_RECOVERY_REFUND".equals(target.terminalReason()))return target;
+        if(target.status()!=PostSalesCaseStatus.OPENED || target.decision()!=null || !target.changeOperations().isEmpty())throw new DomainRuleViolation("only an unquoted change without execution can be cancelled");
+        if(refunds(target.caseId()).path("total").asInt(-1)!=0)throw new DomainRuleViolation("change has refund effects");
+        try {
+            payment.get().uri("/api/v1/payment-intents/by-business/{id}",PostSalesMapper.prefixed(target.caseId(),"psc-")).retrieve().toBodilessEntity();
+            throw new DomainRuleViolation("change has a payment requiring reconciliation");
+        }catch(HttpClientErrorException.NotFound absent){}
+        target.cancelCase("SUPERSEDED_BY_RECOVERY_REFUND",clock.instant(),PrefixedIds.newCommandId(),PrefixedIds.newCommandId(),correlationId);repository.save(target);return target;
+    }
+
     private PostSalesCase requiredCase(String id) {
         return repository.findById(PostSalesMapper.stripCasePrefix(id)).orElseThrow(() -> new CaseNotFoundException(id));
     }
