@@ -335,7 +335,10 @@ model instead of treating terminal state as an error.
 
 Clients obtain the consumed Finance Settlement amount snapshot from `GET /api/v1/invoice-amount-bases/{orderId}` before submitting a request.
 The response is the `AmountBasis` object defined above, including its original financial references and digest.
-The endpoint returns `404 NOT_FOUND` while the amount projection is unavailable and propagates storage failures as errors.
+The endpoint returns `200` only when the order projection is present, its `expected_total` is available, and both currency and minor units match the Finance Settlement amount projection.
+It returns `404 NOT_FOUND` when either projection or the expected total is unavailable, or when the totals differ, and propagates storage failures as errors.
+Order projection presence and matching totals do not establish lifecycle confirmation because creation events also contain a total.
+Invoice requests enforce the same projection and total requirements and return `412 PRECONDITION_FAILED` when they are unmet.
 Invoice creation loads order and amount projections using its existing PostgreSQL transaction connection.
 The same transaction commits the request, invoice, idempotency result and outbox events.
 
@@ -370,9 +373,8 @@ status `REJECTED`, not a 5xx.
 `PRECONDITION_FAILED`, `DOMAIN_RULE_VIOLATION`, `IDEMPOTENCY_KEY_REUSED`,
 `UNAVAILABLE`
 
-- `NOT_FOUND` is returned when the title, order snapshot, or Finance Settlement
-  amount basis reference cannot be found.
-- `PRECONDITION_FAILED` is returned when `titleVersion` is not current/usable.
+- `NOT_FOUND` is returned when the title cannot be found.
+- `PRECONDITION_FAILED` is returned when the title is not current or usable, the order or Finance Settlement projection is unavailable, the expected order total is missing or differs from the projected amount, or the supplied amount basis does not match the financial projection.
 - `CONFLICT` is returned when the same order/scope/amount basis already has an
   active or issued invoice request not covered by idempotent replay.
 - `DOMAIN_RULE_VIOLATION` is returned for over-invoicing, unsupported scope, or
