@@ -708,14 +708,10 @@ services:
           command: ["sleep", "10"]
     env:
       CONSUMER_THREADS: "4"
-    # 4 consumer threads do not fit in the default 500m CPU limit. Raising
-    # CONSUMER_THREADS without raising this caused a CrashLoopBackOff: the
-    # threads saturated half a core working through the backlog, the HTTP thread
-    # could not answer /healthz within the probe timeout, and kubelet restarted
-    # the pod every 64 seconds. Threads and CPU must be raised together.
+    # CPU headroom covers concurrent HTTP requests and event processing.
     resources:
-      requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: '1', memory: 2Gi }
+      requests: { cpu: 500m, memory: 256Mi }
+      limits: { cpu: '4', memory: 2Gi }
   identity-verification:
     db: identity_verification
     strategy:
@@ -818,28 +814,10 @@ services:
       # found no policy context, fell back to departureTime=now, and quoted a zero
       # refund. See the MISS/HIT logging in PostSalesApplicationService.
       CONSUMER_THREADS: "4"
-    # 4 consumer threads do not fit in the default 500m CPU limit. Raising
-    # CONSUMER_THREADS without raising this caused a CrashLoopBackOff: the
-    # threads saturated half a core working through the backlog, the HTTP thread
-    # could not answer /healthz within the probe timeout, and kubelet restarted
-    # the pod every 64 seconds. Threads and CPU must be raised together.
-    #
-    # 2 cores rather than 1: this is the busiest Java consumer -- 5 streams, and
-    # every refund it prices makes a synchronous call to fare-pricing while
-    # holding its thread. At 1 core the cgroup throttled a fifth of its periods,
-    # for longer in aggregate than the 10s liveness timeout, so /healthz (a
-    # constant map, no work of its own) still missed the probe and the pod took
-    # a SIGTERM mid-suite. The request stays low; this is a burst ceiling.
-    #
-    # 3Gi for the same reason. At 2Gi it settled at 1.76G -- flat, not growing,
-    # so not a leak -- which is what MaxRAMPercentage=70 permits it to reach, and
-    # that left under 400Mi for a GC burst on top of metaspace, code cache and
-    # Lettuce's direct buffers. The cgroup killed it (exit 137) rather than the
-    # heap failing, and the probe timeouts in the minutes before were GC pressure,
-    # not the earlier CPU starvation.
+    # CPU headroom covers concurrent post-sales requests and event processing.
     resources:
-      requests: { cpu: 200m, memory: 256Mi }
-      limits: { cpu: '2', memory: 3Gi }
+      requests: { cpu: 500m, memory: 256Mi }
+      limits: { cpu: '4', memory: 3Gi }
   notification:
     db: notification
     env:
