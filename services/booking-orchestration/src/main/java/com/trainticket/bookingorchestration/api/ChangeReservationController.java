@@ -14,14 +14,16 @@ import org.springframework.web.client.RestClient;
 public class ChangeReservationController {
     private final BookingOrchestrationService service;
     private final RestClient client;
-    private final String cases, orders, offers, fares;
+    private final String cases, orders, offers, fares, trips;
 
     public ChangeReservationController(BookingOrchestrationService service, RestClient.Builder builder,
         @Value("${POST_SALES_BASE_URL:http://post-sales:8080}") String cases,
         @Value("${JOURNEY_ORDER_BASE_URL:http://journey-order:8080}") String orders,
         @Value("${OFFER_MANAGEMENT_BASE_URL:http://offer-management:8080}") String offers,
-        @Value("${FARE_PRICING_BASE_URL:http://fare-pricing:8080}") String fares) {
+        @Value("${FARE_PRICING_BASE_URL:http://fare-pricing:8080}") String fares,
+        @Value("${TRIP_PLANNING_BASE_URL:http://trip-planning:8080}") String trips) {
         this.service=service; this.cases=cases; this.orders=orders; this.offers=offers; this.fares=fares;
+        this.trips=trips;
         var factory=new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(Duration.ofSeconds(3)); factory.setReadTimeout(Duration.ofSeconds(5));
         this.client=builder.requestFactory(factory).build();
@@ -51,8 +53,14 @@ public class ChangeReservationController {
         if (!offer.path("fareQuoteRef").asText().equals(quote.path("quoteId").asText())) fail("target fare response has another reference");
         String seatClass=quote.path("breakdown").path("seatClassMultiplier").path("seatClass").asText();
         if (seatClass.isBlank()) fail("target fare quote has no seat class");
+        JsonNode itinerary=get(trips,"/api/v1/itineraries/"+offer.path("itineraryRef").asText(),correlation);
+        if(!offer.path("itineraryRef").asText().equals(itinerary.path("itineraryRef").asText()))fail("target itinerary response has another reference");
+        JsonNode leg=null;
+        for(var candidate:itinerary.path("legs"))if(request.segmentRef().equals(candidate.path("serviceSegmentRef").asText()))leg=candidate;
+        if(leg==null || leg.path("servicePlanRef").asText().isBlank())fail("target segment has no scheduled service");
+        String date=java.time.Instant.parse(leg.path("departureTime").asText()).atOffset(java.time.ZoneOffset.UTC).toLocalDate().toString();
         return service.requestChangeReservation(request.caseId(),order.path("orderId").asText(),item.path("offerItemId").asText(),
-            request.segmentRef(),request.travelerRef(),seatClass,correlation);
+            request.segmentRef(),request.travelerRef(),seatClass,leg.path("servicePlanRef").asText(),date,correlation);
     }
     private JsonNode get(String base,String path,String correlation) {
         JsonNode result=client.get().uri(base+path).header("X-Correlation-Id",correlation).exchange((request,response)->{

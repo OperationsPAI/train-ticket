@@ -64,6 +64,10 @@ class ReservationFactsLiveTest {
                 assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM segment_booking_snapshots",Integer.class));
                 assertEquals(facts.classRef(),jdbc.queryForObject("SELECT data->>'classRef' FROM segment_booking_snapshots",String.class));
                 assertEquals(facts.offerItemRef(),jdbc.queryForObject("SELECT data->>'offerItemRef' FROM segment_booking_snapshots",String.class));
+                var reloaded = new PostgresSegmentBookingRepository(pool,mapper).findById(booking).orElseThrow().booking();
+                assertEquals(facts.scheduledServiceRef(),reloaded.scheduledServiceRef());
+                assertEquals(facts.serviceDate(),reloaded.serviceDate());
+                assertThrows(IllegalStateException.class, () -> reloaded.withSupplyReference(facts.scheduledServiceRef(), java.time.LocalDate.parse(facts.serviceDate()).plusDays(1).toString()));
                 var events = jdbc.queryForList("SELECT envelope::text FROM outbox WHERE envelope->>'eventType'='SegmentReservationRequested'",String.class);
                 assertEquals(1,events.size());
                 var payload = mapper.readTree(events.getFirst()).path("payload");
