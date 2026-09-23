@@ -74,6 +74,7 @@ impl PostgresEntitlementService {
                 "Idempotency-Key was reused with a different request body".into(),
             ));
         }
+        if record.status_code == 0 { return Ok(None); }
         serde_json::from_value(record.body)
             .map(Some)
             .map_err(|e| ApiErrorKind::Unavailable(e.to_string()))
@@ -641,6 +642,8 @@ impl PostgresEntitlementService {
         })
         .map_err(ApiErrorKind::from)?;
         let mut tx = self.pool().begin().await.map_err(to_api_storage)?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+            .bind(format!("entitlement-issue:{}",command.segment_booking_id)).execute(&mut *tx).await.map_err(to_api_storage)?;
         if let Some(response) = self
             .claim_idempotency::<IssueEntitlementResponse>(&mut tx, key, fingerprint)
             .await?
@@ -650,17 +653,24 @@ impl PostgresEntitlementService {
         }
         let mut initial_snapshot = EntitlementSnapshot::from_domain(&aggregate);
         initial_snapshot.seat_assignment_idempotency_key = seat_key.clone();
-        self.entitlement_repo
-            .save(&mut tx, aggregate.id().as_str(), None, &initial_snapshot)
-            .await
-            .map_err(to_api_storage)?;
-        tx.commit().await.map_err(to_api_storage)?;
+        let pending: Option<(i64,serde_json::Value)> = sqlx::query_as("SELECT version,data FROM entitlement_snapshots WHERE segment_booking_id=$1 AND data->>'purpose'=$2 ORDER BY id LIMIT 1 FOR UPDATE")
+            .bind(&command.segment_booking_id).bind(command.issue_purpose.to_contract()).fetch_optional(&mut *tx).await.map_err(to_api_storage)?;
+        let version = if let Some((version,data))=pending {
+            let snapshot:EntitlementSnapshot=serde_json::from_value(data).map_err(|error|ApiErrorKind::Unavailable(error.to_string()))?;
+            if snapshot.journey_order_id!=command.journey_order_id || snapshot.traveler_ref!=command.traveler_ref || snapshot.segment_ref!=command.segment_ref
+                || snapshot.seat_assignment_idempotency_key!=seat_key {return Err(ApiErrorKind::PreconditionFailed("pending issuance has different business references".into()));}
+            aggregate=snapshot.try_into_domain()?;
+            version
+        }else{
+            self.entitlement_repo.save(&mut tx,aggregate.id().as_str(),None,&initial_snapshot).await.map_err(to_api_storage)?;
+            1
+        };
+        let entitlement_id=aggregate.id().to_string();
 
         let seat_ref =
             allocate_seat_for_issue(command, seat_key.as_deref().unwrap_or(key), correlation_id)
                 .await?;
 
-        let mut tx = self.pool().begin().await.map_err(to_api_storage)?;
         let issued_at = current_rfc3339();
         let credential_no = self.next_credential_no(&mut tx).await?;
         let response = IssueEntitlementResponse {
@@ -693,7 +703,7 @@ impl PostgresEntitlementService {
         issued_snapshot.seat_ref = seat_ref.clone();
         issued_snapshot.seat_assignment_idempotency_key = seat_key;
         self.entitlement_repo
-            .save(&mut tx, aggregate.id().as_str(), Some(1), &issued_snapshot)
+            .save(&mut tx, aggregate.id().as_str(), Some(version), &issued_snapshot)
             .await
             .map_err(to_api_storage)?;
         let outbound = entitlement_issued_envelope(&response, command, correlation_id)?;
