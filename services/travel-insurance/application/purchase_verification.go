@@ -133,7 +133,7 @@ func (v PurchaseVerifier) VerifyRefund(ctx context.Context, policy domain.Policy
 	if err := v.read(ctx, "payment", "/api/v1/refunds/"+url.PathEscape(refundID), "", &refund); err != nil {
 		return err
 	}
-	if refund.ID != refundID || refund.PaymentID != policy.PaymentIntentID || refund.Business != policy.AncillaryOrderItemID || refund.Status != "SETTLED" || refund.Amount != policy.Premium {
+	if refund.ID != refundID || refund.PaymentID != policy.PaymentIntentID || refund.Business != "ancillary:"+policy.AncillaryOrderItemID || refund.Status != "SETTLED" || refund.Amount != policy.Premium {
 		return fmt.Errorf("%w: settled refund does not match policy premium", ErrDomainRule)
 	}
 	return nil
