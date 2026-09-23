@@ -1113,6 +1113,10 @@ export class SupportCase {
   }
 
   // ─── State machine guards ──────────────────────────────────────────────────
+  //
+  // Which status each action takes is the desk's working arrangement rather
+  // than a fact about the aggregate: it changes with the queues, not with the
+  // case. The lists below are the arrangement every deployment has run so far.
 
   private canClassify(): boolean {
     return this.snapshot.status === "Opened";
