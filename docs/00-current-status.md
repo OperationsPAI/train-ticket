@@ -20,6 +20,7 @@ The verified release for the ticketing error mapping is Helm revision 257, and t
 Capacity change compensation is deployed in revision 259, with validated loadgen handling in revision 260.
 Invoice creation reuses its transaction connection in revision 261.
 Synchronous accepted order policy inputs are deployed in revision 262.
+Elapsed difference payment handling is deployed in revision 263 and the recorded zero capture case completed compensation.
 Check `helm history` and the deployed image digests for the live release; repository HEAD and the running images can differ.
 
 ## Verified behavior
@@ -42,6 +43,10 @@ The six class purchase regression at revision 257 completed in 92.007 seconds.
 These tests establish their covered outcomes and do not certify every resident request or a complete peak traffic cycle.
 The revision 262 broad regression passes eligibility, recovery, multiple traveler purchase and post sales, and protected transfer checks in 238.495 seconds.
 Complete peak period and durable replay acceptance remain open.
+The continuous 600 second recording ending at 12:58:47 UTC contains 711900 requests and 10348 failed journeys, with request P99 reaching the 10 second deadline.
+That window spans several deployment revisions and is diagnostic evidence for peak latency.
+Its recorder reports zero dropped records.
+Identity verification, order creation and Post Sales requests account for the largest timeout groups.
 
 ## Supply integration
 
