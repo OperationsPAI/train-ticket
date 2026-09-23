@@ -148,6 +148,21 @@ public class PostSalesApplicationService {
         return current;
     }
 
+    public PostSalesCase failUnpaidChange(String caseId,String correlation) {
+        PostSalesCase initial=get(caseId);
+        repository.lockOrder(initial.journeyOrderId());
+        PostSalesCase current=get(caseId);
+        if(current.status()==PostSalesCaseStatus.FAILED)return current;
+        if(current.caseType()!=PostSalesCaseType.CHANGE || !current.changeOperations().containsKey("unpaid-compensation-completed")
+            || current.changeOperations().keySet().stream().anyMatch(name->name.startsWith("ticket:") || name.startsWith("void:") || name.equals("order-applied"))) {
+            throw new com.trainticket.postsales.domain.DomainRuleViolation("unpaid change compensation has not completed");
+        }
+        current.failCase("CHANGE_PAYMENT_TERMINATED","difference-payment",clock.instant(),"cmd-change-failed","cmd-change-failed",correlation);
+        repository.save(current);
+        publishNewEvents(current);
+        return current;
+    }
+
     public PostSalesCase approve(String caseId, String sourceCommandId, String correlationId) {
         PostSalesCase postSalesCase = get(caseId);
         if (isTerminalNonRefundable(postSalesCase)) {

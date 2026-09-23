@@ -54,6 +54,7 @@ class CapacityChangeConcurrencyTest {
                 new FarePricingAdjustmentQuoteClient("http://localhost:18001", "http://localhost:18001", "http://localhost:18001", RestClient.builder()),
                 new PostgresPostSalesPolicyContextStore(jdbc.getDataSource(), mapper),
                 new PostgresPostSalesExternalEventProjectionStore(jdbc.getDataSource(), mapper), Clock.systemUTC());
+            assertThrows(DomainRuleViolation.class, () -> transaction.execute(status -> service.failUnpaidChange(source.caseId(), "corr")));
             transaction.executeWithoutResult(status -> service.recordChangeOperation(source.caseId(), "order-applied", Map.of("orderId", source.journeyOrderId())));
             assertThrows(DomainRuleViolation.class, () -> transaction.execute(status -> service.completeChange(source.caseId(), "corr")));
             transaction.executeWithoutResult(status -> service.recordChangeCapacityReleased(source.caseId(), "booking-1"));

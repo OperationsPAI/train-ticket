@@ -53,6 +53,10 @@ class ChangeReservationLiveTest {
                 assertEquals("FIRST_CLASS",bookings.findById(first.segmentBookingId()).orElseThrow().booking().classRef());
                 assertTrue(sagas.findByJourneyOrderId(order).isEmpty());
                 assertThrows(BookingOrchestrationService.PreconditionFailedException.class,()->tx.execute(status->service.requestChangeReservation(caseId,order,item,segment,traveler,"SECOND_CLASS","corr-test")));
+                for(int index=0;index<16;index++)calls.add(workers.submit(()->tx.execute(status->service.cancelUnpaidChangeReservation(caseId,order,first.segmentBookingId(),"corr-"+com.trainticket.platformkit.idempotency.UuidV7.generate()))));
+                for(int index=16;index<calls.size();index++)assertEquals("CANCELLED",calls.get(index).get(10,TimeUnit.SECONDS).status());
+                assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM outbox WHERE envelope->>'eventType'='SegmentBookingCancelled'",Integer.class));
+                assertThrows(BookingOrchestrationService.PreconditionFailedException.class,()->tx.execute(status->service.cancelUnpaidChangeReservation("psc-other",order,first.segmentBookingId(),"corr-test")));
             } finally {admin.createStatement().execute("DROP SCHEMA "+schema+" CASCADE");}
         }
     }

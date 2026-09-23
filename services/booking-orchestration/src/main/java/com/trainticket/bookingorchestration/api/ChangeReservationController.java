@@ -62,10 +62,25 @@ public class ChangeReservationController {
         if (result==null) throw new IllegalStateException("missing change reference response");
         return result;
     }
+
+    @PostMapping("/{bookingId}/cancel")
+    public BookingOrchestrationService.SegmentBookingDetail cancel(@PathVariable String bookingId,
+        @RequestBody CancelRequest request,@RequestHeader("X-Correlation-Id")String correlation) {
+        JsonNode change=get(cases,"/api/v1/post-sales-cases/"+request.caseId(),correlation);
+        if(!request.caseId().equals(change.path("caseId").asText()) || !"CHANGE".equals(change.path("caseType").asText())
+            || !change.path("changeOperations").has("payment-terminated"))fail("replacement cancellation requires terminated change payment");
+        var names=change.path("changeOperations").fieldNames();
+        while(names.hasNext()) {
+            String name=names.next();
+            if(name.startsWith("ticket:") || name.startsWith("void:") || name.equals("order-applied"))fail("replacement cancellation cannot follow ticket changes");
+        }
+        return service.cancelUnpaidChangeReservation(request.caseId(),change.path("journeyOrderId").asText(),bookingId,correlation);
+    }
     private static void fail(String message) { throw new BookingOrchestrationService.PreconditionFailedException(message,null); }
     @ExceptionHandler(BookingOrchestrationService.PreconditionFailedException.class)
     public org.springframework.http.ResponseEntity<java.util.Map<String,String>> precondition(BookingOrchestrationService.PreconditionFailedException error) {
         return org.springframework.http.ResponseEntity.status(412).body(java.util.Map.of("code","PRECONDITION_FAILED","message",error.getMessage()));
     }
     public record Request(String caseId,String segmentRef,String travelerRef) {}
+    public record CancelRequest(String caseId) {}
 }
