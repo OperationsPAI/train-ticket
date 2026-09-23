@@ -1,0 +1,179 @@
+{
+  "recordedFrom": "Redis Streams events:journey-order, captured 2026-09-23",
+  "events": [
+    {
+      "id": "1790175188284-3",
+      "envelope": {
+        "eventId": "evt-01a0cec1-9509-7016-a8f0-4d78a518e5f5",
+        "payload": {
+          "offerId": "off-01a0cec1-9426-7609-8ab9-c6ca93b970db",
+          "orderId": "ord-01a0cec1-9509-7069-98d7-9380d5a307ef",
+          "segments": [
+            {
+              "origin": "tnd-01a0c801-ac3e-79ff-a1b9-4c65a7a5f21c",
+              "segmentRef": "seg-01a0c801-b123-7000-bf32-735865ad87fd",
+              "arrivalTime": "2026-10-08T01:05:00Z",
+              "destination": "tnd-01a0c801-acbd-71a4-96e3-ff1142bb1958",
+              "departureTime": "2026-10-07T16:50:00Z",
+              "transportMode": "TRAIN"
+            }
+          ],
+          "sourceIp": "2001:db8:cf0b:4978:57ad:2c90:7294:498c",
+          "accountId": "acc-01a0cec1-8169-744b-aeff-4ccd2c1dcaf7",
+          "createdAt": "2026-09-23T14:53:08.233196403Z",
+          "segmentRefs": [
+            "seg-01a0c801-b123-7000-bf32-735865ad87fd"
+          ],
+          "travelerRefs": [
+            {
+              "travelerId": "tvl-01a0cec1-8176-7fe9-b838-d3723ddc52c8",
+              "travelerType": "STUDENT"
+            }
+          ],
+          "monetarySummary": {
+            "total": {
+              "currency": "CNY",
+              "minorUnits": 5530
+            },
+            "currency": "CNY",
+            "feeTotal": {
+              "currency": "CNY",
+              "minorUnits": 0
+            },
+            "subtotal": {
+              "currency": "CNY",
+              "minorUnits": 5530
+            },
+            "taxTotal": {
+              "currency": "CNY",
+              "minorUnits": 0
+            },
+            "payableTotal": {
+              "currency": "CNY",
+              "minorUnits": 5530
+            },
+            "discountTotal": {
+              "currency": "CNY",
+              "minorUnits": 0
+            },
+            "cancelledTotal": {
+              "currency": "CNY",
+              "minorUnits": 0
+            }
+          }
+        },
+        "producer": "journey-order",
+        "eventType": "JourneyOrderCreated",
+        "occurredAt": "2026-09-23T14:53:08.233196403Z",
+        "causationId": "cmd-01a0cec1-9509-7f90-9c78-cc9e67bca07e",
+        "traceparent": "00-3954780245f7adadf083641d6548bf37-5ef707e025c07fb1-01",
+        "correlationId": "corr-01a0cec1-9486-7f8c-a520-c29fc5a15007",
+        "schemaVersion": 1
+      }
+    },
+    {
+      "id": "1790175198010-2",
+      "envelope": {
+        "eventId": "evt-01a0cec1-ba7c-7070-ba6e-15aefcbbde9b",
+        "payload": {
+          "orderId": "ord-01a0cec1-9509-7069-98d7-9380d5a307ef",
+          "accountId": "acc-01a0cec1-8169-744b-aeff-4ccd2c1dcaf7",
+          "confirmedAt": "2026-09-23T14:53:17.712Z",
+          "monetarySummary": {
+            "total": {
+              "currency": "CNY",
+              "minorUnits": 5530
+            },
+            "currency": "CNY",
+            "feeTotal": {
+              "currency": "CNY",
+              "minorUnits": 0
+            },
+            "subtotal": {
+              "currency": "CNY",
+              "minorUnits": 5530
+            },
+            "taxTotal": {
+              "currency": "CNY",
+              "minorUnits": 0
+            },
+            "payableTotal": {
+              "currency": "CNY",
+              "minorUnits": 5530
+            },
+            "discountTotal": {
+              "currency": "CNY",
+              "minorUnits": 0
+            },
+            "cancelledTotal": {
+              "currency": "CNY",
+              "minorUnits": 0
+            }
+          }
+        },
+        "producer": "journey-order",
+        "eventType": "JourneyOrderConfirmed",
+        "occurredAt": "2026-09-23T14:53:17.712Z",
+        "causationId": "evt-01a0cec1-ba11-74c0-b20b-5339b1266356",
+        "traceparent": "00-c706627ebc73d73c4fb0c53c40b2536e-372e44192b211047-01",
+        "correlationId": "corr-01a0cec1-ba11-74c0-b20b-5320dc25f7a6",
+        "schemaVersion": 1
+      }
+    },
+    {
+      "id": "1790175220838-2",
+      "envelope": {
+        "eventId": "evt-01a0cec2-1432-7f89-b1f4-9c91781d654b",
+        "payload": {
+          "orderId": "ord-01a0cec1-9509-7069-98d7-9380d5a307ef",
+          "accountId": "acc-01a0cec1-8169-744b-aeff-4ccd2c1dcaf7",
+          "segmentRefs": [
+            "seg-01a0c6e2-efa0-7000-a7fe-742066cee4d1"
+          ],
+          "travelerRefs": [
+            "tvl-01a0cec1-8176-7fe9-b838-d3723ddc52c8"
+          ],
+          "monetarySummary": {
+            "total": {
+              "currency": "CNY",
+              "minorUnits": 9250
+            },
+            "currency": "CNY",
+            "feeTotal": {
+              "currency": "CNY",
+              "minorUnits": 1500
+            },
+            "subtotal": {
+              "currency": "CNY",
+              "minorUnits": 13280
+            },
+            "taxTotal": {
+              "currency": "CNY",
+              "minorUnits": 0
+            },
+            "payableTotal": {
+              "currency": "CNY",
+              "minorUnits": 9250
+            },
+            "discountTotal": {
+              "currency": "CNY",
+              "minorUnits": 0
+            },
+            "cancelledTotal": {
+              "currency": "CNY",
+              "minorUnits": 5530
+            }
+          },
+          "postSalesCaseId": "psc-01a0cec2-0a6b-7fd9-abd7-340ca2231fc4"
+        },
+        "producer": "journey-order",
+        "eventType": "JourneyOrderPostSalesAdjusted",
+        "occurredAt": "2026-09-23T14:53:40.786769072Z",
+        "causationId": "cmd-01a0cec2-1432-7fef-b3ce-3fbe6aa67df7",
+        "traceparent": "00-0d5a414457be9fe8e122b790033df1a6-bb128555fd712f77-01",
+        "correlationId": "corr-15f1bda1-5624-74b0-ac66-1a15728bb74d",
+        "schemaVersion": 1
+      }
+    }
+  ]
+}

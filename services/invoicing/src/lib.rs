@@ -73,24 +73,28 @@ pub async fn build_runtime() -> Result<(Router, JoinHandle<()>), SubscribeFailed
     let handle = tokio::spawn(async move {
         let mut tasks = tokio::task::JoinSet::new();
         for (index, stream) in streams.into_iter().enumerate() {
-            let hs = hs.clone();
-            let consumer = format!("{consumer}-{index}");
-            tasks.spawn(async move {
-                let subscriber = rust_kit::messaging::redis_runtime::RedisEventSubscriber::from_env()
-                    .expect("Redis subscriber configuration")
-                    .with_event_filter(PostgresInvoicingService::handles_event);
-                subscriber.subscribe(
-                vec![stream],
-                "invoicing".into(),
-                consumer,
-                Box::new(move |e| {
-                    let svc = hs.clone();
-                    Box::pin(async move { svc.handle_subscribed_event(e).await })
-                }),
-            )
-            .await
-            .expect("invoicing Redis subscriber stopped");
-            });
+            let workers = if stream == adapters::messaging::journey_order_stream() { 4 } else { 1 };
+            for worker in 0..workers {
+                let hs = hs.clone();
+                let stream = stream.clone();
+                let consumer = format!("{consumer}-{index}-{worker}");
+                tasks.spawn(async move {
+                    let subscriber = rust_kit::messaging::redis_runtime::RedisEventSubscriber::from_env()
+                        .expect("Redis subscriber configuration")
+                        .with_event_filter(PostgresInvoicingService::handles_event);
+                    subscriber.subscribe(
+                        vec![stream],
+                        "invoicing".into(),
+                        consumer,
+                        Box::new(move |e| {
+                            let svc = hs.clone();
+                            Box::pin(async move { svc.handle_subscribed_event(e).await })
+                        }),
+                    )
+                    .await
+                    .expect("invoicing Redis subscriber stopped");
+                });
+            }
         }
         while let Some(result) = tasks.join_next().await { result.expect("invoicing event stream task failed"); }
     });
