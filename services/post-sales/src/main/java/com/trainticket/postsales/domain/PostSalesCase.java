@@ -26,9 +26,18 @@ public final class PostSalesCase {
     private PostSalesExecutionPlan executionPlanAggregate;
     private String terminalReason;
     private String targetOfferId;
+    private final Map<String, Map<String, Object>> changeOperations = new java.util.LinkedHashMap<>();
     private long version;
 
     public String targetOfferId() { return targetOfferId; }
+    public Map<String, Map<String, Object>> changeOperations() { return Map.copyOf(changeOperations); }
+    public PostSalesCase withChangeOperations(Map<String, Map<String, Object>> operations) { changeOperations.putAll(operations); return this; }
+    public void recordChangeOperation(String name, Map<String, Object> operation) {
+        if (caseType != PostSalesCaseType.CHANGE) throw new DomainRuleViolation("change operations require a CHANGE case");
+        Map<String,Object> existing=changeOperations.get(name);
+        if (existing!=null && !existing.equals(operation)) throw new DomainRuleViolation("change operation already has another result: "+name);
+        changeOperations.put(name,java.util.Collections.unmodifiableMap(new java.util.LinkedHashMap<>(operation)));
+    }
 
     public PostSalesCase withTargetOfferId(String targetOfferId) {
         this.targetOfferId = targetOfferId;
