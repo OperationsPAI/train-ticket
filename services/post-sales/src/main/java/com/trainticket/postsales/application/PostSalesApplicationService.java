@@ -108,6 +108,11 @@ public class PostSalesApplicationService {
         return current;
     }
 
+    public PostSalesCase reviseChangeOffer(String caseId,String expected,String replacement) {
+        PostSalesCase initial=get(caseId);repository.lockOrder(initial.journeyOrderId());
+        PostSalesCase current=get(caseId);current.reviseChangeOffer(expected,replacement);repository.save(current);return current;
+    }
+
     public PostSalesCase completeChange(String caseId,String correlation) {
         PostSalesCase initial=get(caseId);
         repository.lockOrder(initial.journeyOrderId());
