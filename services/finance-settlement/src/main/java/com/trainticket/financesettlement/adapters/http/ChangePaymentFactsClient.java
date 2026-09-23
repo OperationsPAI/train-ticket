@@ -37,7 +37,7 @@ public class ChangePaymentFactsClient {
         return orderId;
     }
 
-    private JsonNode read(String service,String path,String correlation) {
+    public JsonNode read(String service,String path,String correlation) {
         return client.get().uri(template.formatted(service)+path).header("X-Correlation-Id",correlation)
             .exchange((request,response)->{
                 if(!response.getStatusCode().is2xxSuccessful())throw new IllegalStateException("financial reference lookup returned "+response.getStatusCode());
