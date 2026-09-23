@@ -453,7 +453,7 @@ requirements:
     status: implemented
     code:
       - path: services/customer-service/src/domain.ts
-        description: Customer Service domain model: SupportCase, EvidenceRef, ManualActionRequest, CaseTimeline aggregates with lifecycle commands and domain events.
+        description: "Customer Service domain model: SupportCase, EvidenceRef, ManualActionRequest, CaseTimeline aggregates with lifecycle commands and domain events."
       - path: services/customer-service/src/index.ts
         description: Public exports, service profile, and health endpoint re-exports.
       - path: services/customer-service/src/profile.ts
@@ -962,8 +962,8 @@ requirements:
         description: "Contract organization, versioning, and conformance rules."
       - path: docs/08-contracts/shared-primitives.md
         description: "Language-neutral field-level definitions for EventEnvelope, IDs, Money, TimeWindow, and enums."
-      - path: docs/08-contracts/conformance-gaps.md
-        description: "Audit of service implementations against the contract spec."
+      - path: docs/TODO.md
+        description: "Current incomplete implementation and acceptance work."
       - path: docs/08-contracts/events/
         description: "Per-context event and command definitions (13 contexts)."
     depends_on:

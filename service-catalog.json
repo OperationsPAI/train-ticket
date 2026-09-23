@@ -172,7 +172,7 @@
         "SearchResult ranking explanations",
         "Non-authoritative PriceHint and AvailabilityHint snapshots"
       ],
-      "rationale": "Search is the most CPU-bound path in the system, so it was rewritten from Python to Rust for throughput. The retired Python implementation is gone; see deploy/KNOWN-ISSUES.md for the one capability that did not carry over (minimum connection times)."
+      "rationale": "Rust supports date and origin indexed candidate search. Remaining route feasibility and acceptance work is tracked in docs/TODO.md."
     },
     {
       "id": "offer-management",

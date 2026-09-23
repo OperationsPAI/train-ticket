@@ -1,6 +1,9 @@
 # Finance & Settlement — HTTP API
 
-Last updated: 2026-07-05
+Last updated: 2026-09-24.
+
+Runtime baseline: Helm revision 279.
+Remaining work is tracked in [TODO](../../TODO.md).
 
 ## Overview
 
@@ -9,15 +12,11 @@ timestamps, and Money.
 
 Finance & Settlement handles revenue recognition, reconciliation cases, and
 settlement views. It consumes upstream events and produces financial records.
-ADR-0003 Wave A same-wave increment（需同波实现）: Finance Settlement consumes Payment Channel
-`ChannelStatementGenerated`, `ChannelStatementFrozen`, and discrepancy events for
-daily SIM channel reconciliation. This requires same-wave code touchpoints in
-event consumer registration, statement payload validation, consumed-event dedup,
-and mapping Payment Channel SCREAMING_SNAKE `differenceType` values to the
-existing Finance difference strings.
-Commands are event-backed. `GenerateInvoice` is exposed as an HTTP command for
-idempotent invoice generation; other financial operations remain bus-only. Query
-endpoints are provided for reporting and audit.
+Finance Settlement consumes Payment Channel statement and discrepancy events, validates their fields and deduplicates by envelope `eventId`.
+Channel difference types are mapped to the existing Finance difference strings.
+HTTP writes include internal invoice generation and explicit change financial reconciliation.
+Daily reconciliation and supplier settlement queries read saved results; their calculation methods have no production scheduler or automatic caller in this service.
+The current endpoint inventory is documented in [Finance Settlement](../../02-domains/finance-settlement.md).
 
 ## Commands
 
@@ -93,6 +92,11 @@ Internal operations read endpoint for SYSTEM/OPS benefit cost attribution from
 Wallet / Promotion events. `accountId` is optional; when omitted the endpoint
 returns all cost entries in reverse occurrence order.
 
+For wallet compensation, issuance cost comes from `BenefitIssued.issuedAmount` only.
+Compensation approval and completion preserve the original revenue and create no refund projection or additional issuance cost.
+This endpoint also returns later benefit lifecycle deltas, including positive redemption values and negative reversal, revocation and expiry values.
+It does not calculate a net cost total.
+
 **Response (200):** Paginated response with `items`, `total`, `limit`, and `offset`.
 
 Item fields:
@@ -122,10 +126,6 @@ Item fields:
 | Command | Trigger | Description |
 |---|---|---|
 | `RecognizeRevenue` | `PaymentCaptured`, post-sales refund facts | Recognize revenue from capture facts and reverse previously recognized revenue from post-sales refund facts. |
-| `OpenReconciliationCase` | Mismatch detection, including Payment Channel statement discrepancies | Open a reconciliation case. ADR-0003 same-wave implementation validates channel statement refs and maps Payment Channel difference types without adding a new Finance enum. |
+| `OpenReconciliationCase` | Mismatch detection, including Payment Channel statement discrepancies | Opens a reconciliation case using validated statement references and mapped channel difference types. |
 | `ResolveReconciliationCase` | Manual or auto | Resolve a reconciliation case. |
 | `RebuildSettlementView` | Manual or scheduled | Rebuild a settlement view from event log. |
-
-## Open Issues
-
-- None.
