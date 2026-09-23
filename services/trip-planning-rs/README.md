@@ -25,12 +25,10 @@ their internals. Nothing here mutates capacity, fare, offer, or order state.
 
 ## Why Rust, and what that cost
 
-This service was originally Python. Search is the most CPU-bound path in the
-system — candidate assembly and ranking run per request over the whole plan index
-— so it was rewritten in Rust for throughput, and the Python implementation has
-been deleted. The image is still named `train-ticket/trip-planning`; note that
-`deploy/docker/trip-planning/Dockerfile` builds *this* crate despite the
-directory name lacking the `-rs` suffix.
+The service uses Rust for candidate assembly and ranking.
+Candidate lookup uses departure date and origin node indexes, resolving place references through current node mappings.
+The image is named `train-ticket/trip-planning` and `deploy/docker/trip-planning/Dockerfile` builds this crate.
+Recorded inventory and PostgreSQL verification are documented in [搜索性能验收](docs/search-performance-20260923.md).
 
 One capability did not carry over: **minimum connection times are not
 enforced.** The Python version consumed `MctRulePublished` / `MctRuleRetired`
