@@ -18,6 +18,7 @@ import javax.sql.DataSource;
  * service startup.
  */
 public final class LazyRedisOutboxRelayLifecycle implements AutoCloseable {
+    private static final org.slf4j.Logger LOGGER = org.slf4j.LoggerFactory.getLogger(LazyRedisOutboxRelayLifecycle.class);
     private static final Duration DEFAULT_POLL_INTERVAL = Duration.ofMillis(
         Long.parseLong(System.getenv().getOrDefault("OUTBOX_POLL_INTERVAL_MS", "50")));
     private static final String DEFAULT_REDIS_URL = "redis://localhost:6379";
@@ -64,6 +65,7 @@ public final class LazyRedisOutboxRelayLifecycle implements AutoCloseable {
             reconnectBackoff = Duration.ofSeconds(1);
         } catch (RuntimeException exception) {
             redisReady = false;
+            LOGGER.warn("outbox poll failed; reconnectDelayMs={}",reconnectBackoff.toMillis(),exception);
             closeRedisResources();
             nextConnectionAttemptNanos = System.nanoTime() + reconnectBackoff.toNanos();
             reconnectBackoff = reconnectBackoff.multipliedBy(2).compareTo(Duration.ofSeconds(5)) > 0

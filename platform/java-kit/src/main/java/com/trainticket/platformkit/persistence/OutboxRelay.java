@@ -61,11 +61,14 @@ public class OutboxRelay implements AutoCloseable {
     }
 
     public int pollOnce() {
+        long started = System.nanoTime();
         List<OutboxRow> rows = jdbc.query(
-            "SELECT seq, stream, envelope::text AS envelope FROM outbox WHERE published_at IS NULL ORDER BY seq LIMIT 100",
-            (rs, rowNum) -> new OutboxRow(rs.getLong("seq"), rs.getString("stream"), rs.getString("envelope"))
+            "SELECT seq, stream, envelope::text AS envelope, created_at FROM outbox WHERE published_at IS NULL ORDER BY seq LIMIT 100",
+            (rs, rowNum) -> new OutboxRow(rs.getLong("seq"), rs.getString("stream"), rs.getString("envelope"), rs.getTimestamp("created_at").toInstant())
         );
+        long selected = System.nanoTime();
         if (rows.isEmpty()) {
+            if (elapsedMillis(started,selected) >= 250) LOGGER.warn("outbox empty poll queryMs={}",elapsedMillis(started,selected));
             return 0;
         }
 
@@ -73,12 +76,22 @@ public class OutboxRelay implements AutoCloseable {
             .map(row -> new StreamMessage(row.stream(), row.envelope()))
             .toList());
         dependencyReady = true;
+        long published = System.nanoTime();
 
         String placeholders = String.join(", ", rows.stream().map(row -> "?").toList());
         Object[] seqs = rows.stream().map(OutboxRow::seq).toArray();
         jdbc.update("UPDATE outbox SET published_at = now() WHERE seq IN (" + placeholders + ") AND published_at IS NULL", seqs);
+        long marked = System.nanoTime();
+        long oldestAge = Duration.between(rows.stream().map(OutboxRow::createdAt).min(java.time.Instant::compareTo).orElseThrow(), java.time.Instant.now()).toMillis();
+        if (elapsedMillis(started,marked) >= 250 || oldestAge >= 1000) {
+            LOGGER.warn("outbox batch rows={} firstSeq={} lastSeq={} stream={} queryMs={} publishMs={} markMs={} oldestAgeMs={}",
+                rows.size(), rows.getFirst().seq(), rows.getLast().seq(), rows.getFirst().stream(), elapsedMillis(started,selected),
+                elapsedMillis(selected,published), elapsedMillis(published,marked), oldestAge);
+        }
         return rows.size();
     }
+
+    private static long elapsedMillis(long start,long end) { return TimeUnit.NANOSECONDS.toMillis(end-start); }
 
     /** Rows per retention DELETE. Small enough to finish quickly on an unindexed column. */
     private static final int CLEANUP_BATCH_SIZE = 1_000;
@@ -88,8 +101,9 @@ public class OutboxRelay implements AutoCloseable {
     private void safePollOnce() {
         try {
             pollOnceAndSweep();
-        } catch (RuntimeException ignored) {
+        } catch (RuntimeException exception) {
             dependencyReady = false;
+            LOGGER.warn("outbox publication failed; unpublished events remain pending",exception);
         }
     }
 
@@ -192,6 +206,6 @@ public class OutboxRelay implements AutoCloseable {
         maintenanceExecutor.shutdownNow();
     }
 
-    private record OutboxRow(long seq, String stream, String envelope) {
+    private record OutboxRow(long seq, String stream, String envelope, java.time.Instant createdAt) {
     }
 }
