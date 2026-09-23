@@ -15,7 +15,10 @@ public final class PaymentEventFilter implements EventSubscriber.EventHandler {
     public static boolean handles(EventEnvelope envelope) {
         return switch (envelope.producer()) {
             case "booking-orchestration" -> "SegmentReservationRequested".equals(envelope.eventType());
-            case "post-sales" -> "PostSalesApproved".equals(envelope.eventType());
+            case "post-sales" -> "PostSalesApproved".equals(envelope.eventType())
+                && !(envelope.payload() instanceof java.util.Map<?,?> payload
+                    && payload.get("approvedActions") instanceof java.util.Map<?,?> actions
+                    && "CHANGE".equals(actions.get("decisionKind")));
             case "ancillary-service" -> "AncillaryOrderItemRefundPending".equals(envelope.eventType());
             case "payment-channel" -> switch (envelope.eventType()) {
                 case "ChannelOrderSucceeded", "ChannelOrderRecoveryDetected", "ChannelOrderFailed", "ChannelOrderMissed",
