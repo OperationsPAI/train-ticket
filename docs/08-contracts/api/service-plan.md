@@ -1,6 +1,6 @@
 # Service Plan — HTTP API
 
-Last updated: 2026-07-05
+Last updated: 2026-09-23
 
 ## Overview
 
@@ -81,6 +81,13 @@ master schedule data used by Trip Planning and Capacity.
 
 **Error codes:** `VALIDATION_FAILED`, `NOT_FOUND`, `CONFLICT`
 
-## Open Issues
+### Get a Service Segment
 
-- None.
+`GET /api/v1/service-segments/{segmentRef}` returns the persisted segment snapshot.
+The response contains `segmentRef`, `scheduledServiceRef`, `originStopRef`, `destinationStopRef`, `departureTime` and `arrivalTime`.
+`actualDepartureTime` is present when recorded.
+Unknown references return `NOT_FOUND`.
+This operation does not generate inventory, change schedules or publish events.
+Consumers validate that the returned scheduled service and segment match their request.
+
+The HTTP and PostgreSQL verification is `internal/http/segment_live_test.go`.
