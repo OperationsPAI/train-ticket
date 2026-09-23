@@ -16,6 +16,12 @@ Missing context returns HTTP 404 for the amount basis and HTTP 412 for invoice c
 The recorded test uses an isolated PostgreSQL schema and requires `TEST_DATABASE_URL` with the `--ignored` Cargo option.
 Its recorded run passes in 0.25 seconds.
 
+The Journey Order stream uses four consumers in the same group with distinct consumer names.
+Projection writes retain order scoped PostgreSQL locks and source event timestamps.
+Creation events supply references without replacing a later confirmation or adjustment total.
+`order_concurrency_recorded` verifies all six event orders, 144 concurrent duplicate deliveries, independent order progress and service reconstruction.
+Its recorded PostgreSQL run passes in 0.41 seconds; live throughput remains separately measured.
+
 ## Recorded wallet compensation tests
 
 `src/adapters/compensation_recorded_tests.rs` verifies PostgreSQL state through the actual subscription handler using recorded case data and events.
