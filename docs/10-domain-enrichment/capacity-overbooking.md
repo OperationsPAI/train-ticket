@@ -1,138 +1,80 @@
-# Capacity & Availability Enrichment — Overbooking & Dynamic Capacity
+# Physical supply and standing quota integration
 
-## Context
+Last updated: 2026-09-23.
 
-**Service**: capacity-availability (Rust, `services/capacity-availability/`)
-**Current state**: 1,293-line domain in Rust with `CapacityPool`, `CapacityHold`, hold/confirm/release lifecycle, conflict detection, expiry management. This is already the richest domain model. Missing: overbooking strategy, dynamic capacity adjustment, waitlist trigger, capacity snapshots for fare-pricing.
+## Sources
 
-**Key files**:
-- `src/domain.rs` — core domain (1,293 lines)
-- `src/application.rs` — application service
-- `src/api.rs` — HTTP endpoints
-- `src/ports.rs` — port definitions
-- `migrations/` — SQL schema
+Service Plan owns scheduled service and segment timestamps.
+Seat Assignment owns published compositions and actual seat or berth allocations.
+Booking Orchestration records the accepted segment, traveler, class, service and date.
+Capacity owns Hold admission, lifecycle, concurrency and availability observations.
 
-**DDD spec**: `docs/02-domains/capacity-availability.md`
+The [Standing capacity policy](../08-contracts/standing-capacity-policy.md) defines a separate admission quota of ten percent of assignable second class seats, rounded down.
+Concrete seats and berths cannot be increased by this quota.
+The physical supply integration sets concrete overbooking to zero.
+The domain's configurable overbooking type is not evidence of an available operator policy endpoint.
 
-## Requirements
+## Admission calculation
 
-### R1: Overbooking Strategy
+Read published physical units or the versioned standing quota for the requested service, date and class.
+Include active seat allocations and pending Capacity holds.
+Use the Hold identifier to deduplicate allocations already represented by a Hold.
+Serialize admission by scheduled service, date and class and preserve the existing inventory transaction lock.
+One traveler reservation requests exactly one capacity unit.
+No remaining capacity produces the ordinary no capacity business outcome.
+Dependency or inconsistent source errors remain errors and do not manufacture capacity.
 
-Real railway/airline systems intentionally sell more seats than physically available, banking on historical no-show rates:
+Standing allocation has no SeatUnit or seat number.
+Its internal quota reference is an admission slot, and policy evidence is stored separately from physical seat topology.
+Standing snapshots report `physicalCapacity=0`; the separately calculated quota supplies `totalCapacity`.
+`capacity_supply_observations.sellable_capacity` records the admissible total for both concrete units and standing.
 
-```
-overbooking_config:
-  enabled: true
-  max_overbooking_pct: 5     # sell up to 105% of physical capacity
-  no_show_rate_default: 3.0  # historical 3% no-show rate
-  safety_margin_pct: 1.0     # keep 1% buffer
-  
-  # Effective sellable = physical_capacity * (1 + overbooking_pct/100)
-  # Example: 100 seats → 105 sellable
-```
+## Persistence and replay
 
-**Domain model changes in `domain.rs`**:
-- Add `OverbookingPolicy` struct: `max_overbooking_pct: f64`, `no_show_rate: f64`, `safety_margin_pct: f64`
-- Add `effective_capacity(&self) -> u32` method to `CapacityPool` that returns `physical_capacity * (1 + overbooking_pct)`
-- `request_hold()` checks against `effective_capacity()` instead of `physical_capacity`
-- When `confirmed_count > physical_capacity`, emit `OverbookingThresholdReached` event
-- Add `OverbookingThresholdReached` domain event with `pool_id`, `physical_capacity`, `confirmed_count`, `overbooking_pct`
+`reservation_supply_facts` records immutable accepted supply references per booking.
+`capacity_supply_observations` records the map version and supply used for admission.
+`InventoryPool.physical_units` separates current assignable supply from known historical unit references.
+Original Hold identifiers and audit snapshots remain readable through migration and release.
+Historical source lookup runs before the inventory transaction, with at most eight concurrent upstream reservation lookups per service instance.
+Each verified reservation is committed independently so a refused admission retains its source facts.
+Repeated queries and process restarts reuse these immutable PostgreSQL records.
+The locked admission query joins all active Holds to persisted reservation facts before reading current Seat Assignment supply.
+An active Hold without persisted facts prevents admission.
+Historical issued bookings can be resolved through their actual allocation and composition.
+Initial purchase reservations without their own immutable references use Journey Order's `purchase-source` endpoint, which reads the accepted Offer from the persisted creation timeline fact.
+Replacement reservations use the target Offer recorded by their change case.
+Missing or inconsistent historical source facts prevent inventory admission.
 
-### R2: Dynamic Remaining Capacity Signal
+## Verification and activation requirements
 
-Publish capacity snapshots for downstream consumers (fare-pricing dynamic pricing, trip-planning availability hints):
+Recorded PostgreSQL tests cover a full business class, availability count, a successful Hold lifecycle and replay of historical `standard` inventory.
+The full business class sample has 36 physical units and 36 occupied units, so new admission must be refused.
+Seat Assignment's standing test covers rounding, concurrent quota admission, replay and release.
 
-```
-Event: CapacitySnapshotUpdated
-Published after: every hold/confirm/release/expire operation
-Fields:
-  segmentRef: string
-  departureDate: date
-  totalCapacity: u32       # effective (with overbooking)
-  remainingCapacity: u32   # effective - active holds - confirmed
-  physicalCapacity: u32    # actual seats
-  holdCount: u32
-  confirmedCount: u32
-  utilizationPct: f64      # (confirmed + holds) / effective * 100
-  snapshotVersion: string
-```
+Production activation also requires the following evidence:
 
-**Domain model changes**:
-- Add `CapacitySnapshot` value object
-- `CapacityPool` gains `snapshot(&self) -> CapacitySnapshot` method
-- Every mutation method (`request_hold`, `confirm_hold`, `release_hold`, `expire_hold`) produces a `CapacitySnapshotUpdated` event alongside its existing event
+1. SeatMaps are published before inventory reservation, including the composition used for standing quota.
+2. Initial and replacement bookings carry accepted class, service and date references.
+3. All historical active holds are included across related segments and service dates.
+4. Ordered intervals, published map changes and overlapping occupancy are handled consistently.
+5. A no capacity outcome cancels replacement reservations while preserving the original ticket and refunding any captured difference payment.
+6. Waitlist consumes actual release facts with matching class, date and traveler intent.
+7. Snapshot events report the same combined occupancy used for admission across related inventory pools.
+8. Replayed reservations, standing substitutions and published composition changes retain consistent capacity ownership.
 
-### R3: Waitlist Trigger
+The current Capacity request path uses interval `[0,1)`.
+The domain's general overlap tests do not establish ordered route interval integration.
+Capacity unit selection and Seat Assignment's physical allocation are separate operations; quantity admission currently does not establish exact unit identity agreement.
+Complete these checks before activating the new admission path.
 
-When remaining capacity hits zero, signal the waitlist service:
+The Seat Assignment policy and loadgen preparation changes have passed online purchases for second class, first class, business class, both sleeper classes and standing.
+The Service Plan pagination endpoint exposes every persisted segment needed to locate historical inventory pools.
+The new Capacity calculation has passed local PostgreSQL admission and replay tests using deployed supply facts.
+The complete recorded inventory test covers 195 Holds across four pools and checks that all active bookings have persisted source facts.
+It verifies unchanged inventory records and repeated reads after service reconstruction.
+The recorded run on 2026-09-23 using the deployed original purchase source took 8.22 seconds for the cold query and 453 to 778 milliseconds for subsequent queries.
+These measurements cover the recorded sample and do not establish peak load latency.
+Production Capacity and the coordinated Booking behavior have not yet been switched to this calculation.
 
-```
-Condition: remaining_capacity == 0 AND there are pending hold requests
-Event: WaitlistActivated
-Fields:
-  segmentRef, departureDate, queuePosition: u32 (number of pending waitlisted)
-
-Condition: capacity freed (release/expire) AND waitlist is active
-Event: WaitlistCapacityFreed
-Fields:
-  segmentRef, departureDate, freedSlots: u32
-```
-
-**Domain model changes**:
-- Add `WaitlistState` enum: `Inactive`, `Active { queue_size: u32 }`
-- `CapacityPool` tracks `waitlist_state`
-- When `request_hold()` fails due to no capacity: instead of returning error, return `HoldWaitlisted` result and emit `WaitlistActivated`
-- When `release_hold()` or `expire_hold()` frees capacity AND `waitlist_state == Active`: emit `WaitlistCapacityFreed`
-
-### R4: Capacity Pool Segmentation
-
-Support multiple seat classes within a single segment:
-
-```
-CapacityPool structure:
-  segment_ref: "seg-xxx"
-  departure_date: "2026-07-20"
-  classes:
-    SECOND_CLASS:  { physical: 800, overbooking_pct: 5 }
-    FIRST_CLASS:   { physical: 100, overbooking_pct: 3 }
-    BUSINESS_CLASS: { physical: 20, overbooking_pct: 0 }
-    STANDING:      { physical: 200, overbooking_pct: 10 }
-```
-
-**Domain model changes**:
-- Split `CapacityPool` into `SegmentCapacity` (per segment) containing `ClassCapacity` sub-pools
-- Hold requests specify `seat_class`
-- Each class has its own overbooking policy, hold count, confirmed count
-- The `CapacitySnapshotUpdated` event includes per-class breakdown
-
-## Interface Contracts
-
-### Events produced (new)
-| Event Type | Trigger | Consumers |
-|-----------|---------|-----------|
-| `CapacitySnapshotUpdated` | Every capacity mutation | fare-pricing (dynamic pricing), trip-planning (availability hints), reporting |
-| `OverbookingThresholdReached` | confirmed > physical | admin-audit, notification, disruption-recovery |
-| `WaitlistActivated` | remaining == 0 | waitlist service |
-| `WaitlistCapacityFreed` | release/expire when waitlist active | waitlist service |
-
-### API changes
-- `POST /api/v1/capacity/holds` request adds optional `seatClass: string`
-- `GET /api/v1/capacity/segments/{segmentRef}/snapshot` — new endpoint returning current capacity snapshot with per-class breakdown
-- `PUT /api/v1/capacity/segments/{segmentRef}/overbooking-policy` — configure overbooking params (admin)
-
-## Test Criteria
-
-1. Pool with 100 physical seats, 5% overbooking → accepts 105 holds
-2. 106th hold request → WaitlistActivated event
-3. Cancel 1 confirmed hold when waitlist is active → WaitlistCapacityFreed event
-4. CapacitySnapshotUpdated emitted on every hold/confirm/release with correct counts
-5. Per-class capacity: first-class full does NOT block second-class booking
-6. OverbookingThresholdReached fires when confirmed > physical (but ≤ effective)
-
-## Files to Modify
-
-- `services/capacity-availability/src/domain.rs` — overbooking, snapshot, waitlist, class segmentation
-- `services/capacity-availability/src/api.rs` — new snapshot endpoint, seat class parameter
-- `services/capacity-availability/src/application.rs` — wire new events
-- `services/capacity-availability/migrations/` — schema update for class-level pools
-- `services/capacity-availability/tests/` — unit tests for overbooking logic
+The supply integration is under implementation and is not established as complete by the currently passing narrow tests.
+Check the rendered deployment image and live business regression before declaring the new inventory behavior active.
