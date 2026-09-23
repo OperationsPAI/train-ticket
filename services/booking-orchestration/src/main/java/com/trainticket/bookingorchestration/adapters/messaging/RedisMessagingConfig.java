@@ -1,6 +1,7 @@
 package com.trainticket.bookingorchestration.adapters.messaging;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.trainticket.bookingorchestration.application.BookingOrchestrationService;
 import com.trainticket.bookingorchestration.application.EventPublisher;
 import com.trainticket.bookingorchestration.application.EventSubscriber;
 import com.trainticket.bookingorchestration.application.PublishFailed;
@@ -49,6 +50,9 @@ public class RedisMessagingConfig {
         return config -> {
             try {
                 subscriber.subscribe(config.streams(), config.group(), config.consumerName(), envelope -> {
+                    if (!BookingOrchestrationService.handlesEvent(envelope.eventType())) {
+                        return com.trainticket.platformkit.messaging.HandlerResult.SUCCESS;
+                    }
                     var result = config.handler().apply(envelope);
                     for (int attempt = 0; result instanceof com.trainticket.bookingorchestration.application.HandlerResult.TransientError && attempt < 6; attempt++) {
                         try { Thread.sleep(25L << attempt); }
