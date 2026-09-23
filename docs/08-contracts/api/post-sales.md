@@ -146,6 +146,6 @@ The domain execution operations include:
 ## Integration status
 
 The recorded change operations support retry and restart recovery.
-Capacity compensation requires the corresponding Booking cancellation endpoint and validated loadgen handling before production activation.
-Partial ticket issuance and captured difference payment paths require live scenario verification.
+Capacity compensation, the Booking cancellation endpoint and loadgen validation are deployed together.
+The live two traveler scenario verifies one issued replacement followed by capacity rejection, replacement ticket voiding, full captured difference refund settlement and unchanged original tickets.
 See [capacity integration requirements](../../10-domain-enrichment/capacity-overbooking.md) for the production activation requirements.
