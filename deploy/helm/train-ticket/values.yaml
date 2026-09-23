@@ -547,6 +547,14 @@ services:
           command: ["sleep", "10"]
   service-plan:
     db: service_plan
+    strategy:
+      type: RollingUpdate
+      rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+    terminationGracePeriodSeconds: 45
+    lifecycle:
+      preStop:
+        exec:
+          command: ["sleep", "10"]
   capacity-availability:
     db: capacity_availability
     strategy:
