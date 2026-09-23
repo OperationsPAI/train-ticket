@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -301,6 +302,14 @@ func (s *Service) AllocateSeat(ctx context.Context, req AllocateSeatRequest) (*A
 				return derr("CONFLICT", "reservation already has an allocation with different references")
 			}
 			classMatches := standingOnly && existing.SeatRef.AllocationType == domain.AllocationTypeStanding
+			if existing.RequestedClassRef != "" {
+				if existing.RequestedClassRef != req.ClassRef || existing.IssuePurpose != req.IssuePurpose || !reflect.DeepEqual(normalizedPref(existing.Preferences), normalizedPref(req.SeatPreferences)) {
+					return derr("CONFLICT", "reservation allocation has different requested class, purpose or preferences")
+				}
+				if existing.SeatRef.AllocationType == domain.AllocationTypeStanding && !standingOnly {
+					classMatches = req.SeatPreferences != nil && req.SeatPreferences.AcceptStanding && existing.Preferences != nil && existing.Preferences.AcceptStanding
+				}
+			}
 			if !standingOnly && existing.SeatRef.AllocationType != domain.AllocationTypeStanding {
 				original, _, err := s.repo.GetSeatMap(tx, existing.SeatRef.SeatMapID)
 				if err != nil || original == nil {
@@ -372,6 +381,7 @@ func (s *Service) AllocateSeat(ctx context.Context, req AllocateSeatRequest) (*A
 		}
 		alloc := &domain.ContractSeatAllocation{SeatAllocationID: allocID, SegmentBookingID: req.SegmentBookingID, JourneyOrderID: req.JourneyOrderID, TravelerRef: req.TravelerRef, SegmentRef: req.SegmentRef, ScheduledServiceRef: req.ScheduledServiceRef, ServiceDate: req.ServiceDate, CapacityHoldID: req.CapacityHoldID, CapacityUnitRef: req.CapacityUnitRef, Interval: req.Interval, SeatRef: seatRef, Status: status, Preferences: req.SeatPreferences, CreatedAt: now, ExpiresAt: req.ExpiresAt}
 		alloc.StandingPolicy = standingPolicy
+		alloc.RequestedClassRef, alloc.IssuePurpose = req.ClassRef, req.IssuePurpose
 		if err := s.repo.SaveSeatAllocation(tx, alloc); err != nil {
 			return derr("CONFLICT", err.Error())
 		}
@@ -599,6 +609,9 @@ func allocationPayload(a domain.ContractSeatAllocation, timeKey string, now time
 	p := map[string]any{"seatAllocationId": a.SeatAllocationID, "segmentBookingId": a.SegmentBookingID, "journeyOrderId": a.JourneyOrderID, "travelerRef": a.TravelerRef, "segmentRef": a.SegmentRef, "scheduledServiceRef": a.ScheduledServiceRef, "serviceDate": a.ServiceDate, "capacityHoldId": a.CapacityHoldID, "capacityUnitRef": a.CapacityUnitRef, "interval": a.Interval, "seatRef": a.SeatRef, "expiresAt": a.ExpiresAt, "status": a.Status, timeKey: now}
 	if a.StandingPolicy != nil {
 		p["standingPolicy"] = a.StandingPolicy
+	}
+	if a.RequestedClassRef != "" {
+		p["requestedClassRef"], p["issuePurpose"] = a.RequestedClassRef, a.IssuePurpose
 	}
 	if a.Preferences != nil {
 		p["preferences"] = a.Preferences
