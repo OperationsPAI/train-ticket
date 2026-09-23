@@ -89,6 +89,11 @@ export function createApp(instrumentation: InstrumentationHooks = {}, dependenci
   stateChanging(app, idempotencyStore, "POST", "/api/v1/ancillary-offers/:ancillaryOfferId/select", async (request, ctx) => ({ statusCode: 201, body: await runCommand((svc) => svc.selectOffer(param(request, "ancillaryOfferId"), request.body as any, ctx.correlationId)) }), replyNoop);
   app.get("/api/v1/ancillary-offers/:ancillaryOfferId", async (request, reply) => handleRead(reply, request, () => runCommand((svc) => svc.getOffer(param(request, "ancillaryOfferId")))));
   stateChanging(app,idempotencyStore,"POST","/api/v1/ancillary-order-items/:ancillaryOrderItemId/payment",async(request,ctx)=>({statusCode:200,body:await runCommand(svc=>svc.preparePayment(param(request,"ancillaryOrderItemId"),ctx.correlationId))}),replyNoop);
+  stateChanging(app,idempotencyStore,"POST","/api/v1/ancillary-order-items/:ancillaryOrderItemId/payment/resolve-late",async(request,ctx)=>{
+    const id=param(request,"ancillaryOrderItemId");
+    await runCommand(svc=>svc.prepareLatePaymentResolution(id,ctx.correlationId));
+    return {statusCode:200,body:await runCommand(svc=>svc.resolveLatePayment(id,ctx.correlationId))};
+  },replyNoop);
   stateChanging(app, idempotencyStore, "POST", "/api/v1/ancillary-order-items/:ancillaryOrderItemId/confirm", async (request, ctx) => ({ statusCode: 200, body: await runCommand((svc) => svc.confirmOrderItem(param(request, "ancillaryOrderItemId"), request.body as any, ctx.correlationId)) }), replyNoop);
   stateChanging(app, idempotencyStore, "POST", "/api/v1/ancillary-order-items/:ancillaryOrderItemId/fulfillment-ready", async (request, ctx) => ({ statusCode: 200, body: await runCommand((svc) => svc.fulfillmentReady(param(request, "ancillaryOrderItemId"), request.body as any, ctx.correlationId)) }), replyNoop);
   stateChanging(app, idempotencyStore, "POST", "/api/v1/ancillary-order-items/:ancillaryOrderItemId/cancel", async (request, ctx) => ({ statusCode: 200, body: await runCommand((svc) => svc.cancelOrderItem(param(request, "ancillaryOrderItemId"), request.body as any, ctx.correlationId)) }), replyNoop);
