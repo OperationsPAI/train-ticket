@@ -187,3 +187,9 @@ consumer that has to resolve the originating order subscribes to.
 | `capturedAmount` | `Money` | yes | Amount collected by the channel. |
 | `channel` | string | yes | Payment channel. |
 | `channelTransactionId` | string | yes | Channel transaction reference. |
+
+### LatePaymentCaseResolved
+
+Published by `payment` after the refund assigned to a late collection settles.
+The payload contains `latePaymentCaseId`, `paymentIntentId`, `refundId` and `resolution` equal to `REFUNDED`.
+The original payment remains terminal and no ticket issuance is requested.
