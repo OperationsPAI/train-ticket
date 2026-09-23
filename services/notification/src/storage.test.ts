@@ -139,7 +139,7 @@ describe("notification PostgreSQL pilot seams", () => {
     assert.equal(await isDuplicateBusinessNotification(client as never, duplicate), true);
   });
 
-  it("detects transfer-management business duplicates using nested connection travelers", async () => {
+  it("requires every connection traveler to have a stored notification", async () => {
     const client = new FakeDuplicateNotificationClient();
     const event: EventEnvelope = {
       eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b04010",
@@ -182,7 +182,7 @@ describe("notification PostgreSQL pilot seams", () => {
       triggerBusinessRef: "ConnectionMissed:con-401",
     };
 
-    assert.equal(await isDuplicateBusinessNotification(client as never, event), true);
+    assert.equal(await isDuplicateBusinessNotification(client as never, event), false);
   });
 
   it("marks readiness unavailable while configured storage is not ready", async () => {
