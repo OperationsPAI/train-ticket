@@ -9,6 +9,10 @@ pub struct PostgresInvoicingService {
 
 const STREAM: &str = "events:invoicing";
 
+#[cfg(test)]
+#[path = "compensation_recorded_tests.rs"]
+mod compensation_recorded_tests;
+
 fn internal(e: impl std::fmt::Display) -> InvoicingError {
     InvoicingError::Internal(e.to_string())
 }
@@ -301,6 +305,9 @@ impl PostgresInvoicingService {
         envelope: rust_kit::messaging::EventEnvelope,
         stream: &str,
     ) -> Result<(), InvoicingError> {
+        if envelope.event_type=="PostSalesApplied" && envelope.payload["caseType"]=="COMPENSATION" {
+            return Ok(());
+        }
         if matches!(envelope.event_type.as_str(),"PostSalesApplied"|"RefundSettled") {
             return self.reconcile_settled_refunds(envelope).await;
         }
