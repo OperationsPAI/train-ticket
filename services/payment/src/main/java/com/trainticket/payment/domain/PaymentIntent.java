@@ -277,6 +277,21 @@ public final class PaymentIntent {
             "capture arrived after " + status.name().toLowerCase(), occurredAt, sourceCommandId, causationId, correlationId);
     }
 
+    public void recognizeLateCollectionForRefund(LatePaymentCase lateCase) {
+        if (!isLateCaptureCandidate() || !paymentIntentId.equals(lateCase.paymentIntentId())
+            || channelRef == null || !ChannelRouter.normalize(channelRef.channel()).equals(ChannelRouter.normalize(lateCase.channel()))
+            || !Objects.equals(channelRef.channelTransactionId(), lateCase.channelTransactionId())) {
+            throw new DomainRuleViolation("late collection does not match this terminal payment");
+        }
+        if (!capturedAmount.isZero()) {
+            if (!capturedAmount.equals(lateCase.capturedAmount())) throw new DomainRuleViolation("late collection amount mismatch");
+            return;
+        }
+        requirePositiveWithinIntent(lateCase.capturedAmount(), "late captured amount");
+        capturedAmount = lateCase.capturedAmount();
+        channelTransactionRefs.add(channelTransactionKey(lateCase.channel(), lateCase.channelTransactionId()));
+    }
+
     /**
      * Whether a channel-confirmed capture for this intent must be recorded as a late payment case
      * rather than applied. Exactly the precondition {@link #recordLateCapture} enforces, exposed so

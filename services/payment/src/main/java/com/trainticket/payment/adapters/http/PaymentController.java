@@ -73,6 +73,24 @@ public class PaymentController {
         return PaymentHttpMapper.refundDetails(service.getRefund(refundId));
     }
 
+    @GetMapping("/payment-intents/{paymentIntentId}/late-payment")
+    public Map<String, Object> latePayment(@PathVariable String paymentIntentId) {
+        var lateCase = service.latePaymentForIntent(paymentIntentId);
+        return Map.of("latePaymentCaseId", lateCase.latePaymentCaseId(), "paymentIntentId", paymentIntentId,
+            "status", lateCase.status().name(), "capturedAmount", PaymentHttpMapper.money(lateCase.capturedAmount()),
+            "refundId", lateCase.refundId() == null ? "" : lateCase.refundId());
+    }
+
+    @PostMapping("/payment-intents/{paymentIntentId}/late-payment/refund")
+    public RefundDetailsResponse refundLatePayment(@PathVariable String paymentIntentId,
+        @RequestHeader("Idempotency-Key") String key, @RequestBody LateRefundRequest request, HttpServletRequest httpRequest) {
+        requireText(request.businessRef(), "businessRef");
+        requireText(request.businessCaseRef(), "businessCaseRef");
+        requireText(request.reason(), "reason");
+        service.prepareLatePaymentRefund(paymentIntentId, request.businessRef(), request.businessCaseRef(), request.reason(), key, correlationId(httpRequest));
+        return PaymentHttpMapper.refundDetails(service.submitLatePaymentRefund(paymentIntentId, correlationId(httpRequest)));
+    }
+
     @GetMapping("/payment-intents/by-business/{businessRef}")
     public PaymentIntentDetailsResponse latestIntentForBusiness(@PathVariable String businessRef) {
         return PaymentHttpMapper.intentDetails(service.latestIntentForBusiness(businessRef));

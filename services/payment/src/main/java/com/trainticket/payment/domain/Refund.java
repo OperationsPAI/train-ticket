@@ -135,6 +135,18 @@ public final class Refund {
     }
 
     public String refundId() { return refundId; }
+    public static Refund requestLate(PaymentIntent intent, LatePaymentCase lateCase, String caseRef, String reason,
+                                     String key, Instant now, String commandId, String correlation) {
+        intent.recognizeLateCollectionForRefund(lateCase);
+        if (lateCase.capturedAmount().isGreaterThan(intent.refundableBalance())) {
+            throw new DomainRuleViolation("late collection has already been refunded");
+        }
+        Refund refund = new Refund("rf-" + UUID.randomUUID(), intent.paymentIntentId(), lateCase.capturedAmount(), caseRef, reason, key);
+        refund.channelRef = intent.channelRef();
+        refund.domainEvents.add(new RefundRequested(createEnvelope("RefundRequested", now, commandId, correlation),
+            refund.refundId, refund.paymentIntentId, refund.amount, caseRef, reason, key));
+        return refund;
+    }
     public String paymentIntentId() { return paymentIntentId; }
     public Money amount() { return amount; }
     public String sourceCaseRef() { return sourceCaseRef; }

@@ -300,6 +300,57 @@ public class PaymentCommandService {
         return intent;
     }
 
+    public LatePaymentCase latePaymentForIntent(String paymentIntentId) {
+        PaymentIntent intent = getIntent(paymentIntentId);
+        ChannelRef route = intent.channelRef();
+        if (route == null || route.channelTransactionId() == null) throw new NotFoundException("late payment case not found");
+        return latePaymentCaseRepository.findById(LatePaymentCase.caseId(paymentIntentId, ChannelRouter.normalize(route.channel()), route.channelTransactionId()))
+            .orElseThrow(() -> new NotFoundException("late payment case not found"));
+    }
+
+    @Transactional
+    public Refund prepareLatePaymentRefund(String paymentIntentId, String businessRef, String caseRef, String reason, String key, String correlation) {
+        PaymentIntent intent = getIntent(paymentIntentId);
+        if (!intent.businessRef().equals(requireText(businessRef, "businessRef"))) throw new DomainRuleViolation("late refund business reference mismatch");
+        LatePaymentCase lateCase = latePaymentForIntent(paymentIntentId);
+        if (lateCase.refundId() != null) {
+            Refund existing = getRefund(lateCase.refundId());
+            if (!existing.sourceCaseRef().equals(caseRef) || !existing.reasonCode().equals(reason)) {
+                throw new DomainRuleViolation("late refund resolution details mismatch");
+            }
+            return existing;
+        }
+        if (lateCase.status() != com.trainticket.payment.domain.LatePaymentCaseStatus.OPEN) throw new DomainRuleViolation("late payment case is already resolved");
+        Refund refund = Refund.requestLate(intent, lateCase, caseRef, reason, key, Instant.now(clock), commandId(key), correlation);
+        lateCase.withRefundId(refund.refundId());
+        paymentIntentRepository.save(intent);
+        refundRepository.save(refund);
+        latePaymentCaseRepository.save(lateCase);
+        publish(refund.domainEvents());
+        return refund;
+    }
+
+    @Transactional
+    public Refund submitLatePaymentRefund(String paymentIntentId, String correlation) {
+        PaymentIntent intent = getIntent(paymentIntentId);
+        LatePaymentCase lateCase = latePaymentForIntent(paymentIntentId);
+        Refund refund = getRefund(requireText(lateCase.refundId(), "late refundId"));
+        if (refund.status() == com.trainticket.payment.domain.RefundStatus.SETTLED) return refund;
+        ChannelRef route = refund.channelRef();
+        String refundKey = foldedUuidV7("late-refund:" + refund.refundId());
+        String submitKey = foldedUuidV7("late-refund-submit:" + refund.refundId());
+        refund.rememberChannelRefundKeys(refundKey, submitKey);
+        String channelCorrelation = "corr-" + foldedUuidV7("late-refund-correlation:" + refund.refundId());
+        PaymentChannelClient.HandoffRefund handoff = paymentChannelClient.handoffRefund(intent, refund, refundKey, submitKey, channelCorrelation, route);
+        if (refund.status() != com.trainticket.payment.domain.RefundStatus.SUBMITTED) refund.recordChannelHandoff(handoff.channelRef());
+        refundRepository.save(refund);
+        if ("SUCCEEDED".equals(handoff.status())) {
+            return settleRefundFromChannel(refund.refundId(), paymentIntentId, refund.amount(), handoff.channelRefundId(), route.channelOrderId(),
+                route.channel(), route.channelTransactionId(), handoff.channelRefundTransactionId(), commandId(submitKey), correlation);
+        }
+        return refund;
+    }
+
     private void recordLateCapture(
         PaymentIntent intent,
         Money amount,
@@ -369,6 +420,16 @@ public class PaymentCommandService {
         paymentIntentRepository.save(intent);
         refundRepository.save(refund);
         publishNewEvents(refund.domainEvents(), beforeRefund);
+        if (intent.isLateCaptureCandidate()) {
+            LatePaymentCase lateCase = latePaymentForIntent(paymentIntentId);
+            if (!refund.refundId().equals(lateCase.refundId())) throw new DomainRuleViolation("refund is not assigned to the late payment case");
+            lateCase.resolve("REFUNDED:" + refund.refundId());
+            latePaymentCaseRepository.save(lateCase);
+            eventPublisher.publish(new EventEnvelope(com.trainticket.platformkit.messaging.PrefixedIds.newEventId(), "LatePaymentCaseResolved",
+                Instant.now(clock), com.trainticket.platformkit.messaging.PrefixedIds.newCorrelationId(),
+                com.trainticket.platformkit.messaging.PrefixedIds.newCommandId(), "payment", 1,
+                Map.of("latePaymentCaseId", lateCase.latePaymentCaseId(), "paymentIntentId", paymentIntentId, "refundId", refund.refundId(), "resolution", "REFUNDED")));
+        }
         return refund;
     }
 

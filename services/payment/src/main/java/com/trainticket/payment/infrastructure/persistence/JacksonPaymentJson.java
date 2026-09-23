@@ -179,6 +179,7 @@ final class JacksonPaymentJson {
         root.put("reason", lateCase.reason());
         root.put("detectedAt", lateCase.detectedAt().toString());
         root.put("status", lateCase.status().name());
+        root.put("refundId", lateCase.refundId());
         if (lateCase.resolutionNote() == null) {
             root.putNull("resolutionNote");
         } else {
@@ -202,7 +203,7 @@ final class JacksonPaymentJson {
             Instant.parse(text(root, "detectedAt")),
             LatePaymentCaseStatus.valueOf(text(root, "status")),
             root.path("resolutionNote").isNull() ? null : root.path("resolutionNote").asText(null)
-        );
+        ).withRefundId(root.path("refundId").asText(null));
     }
 
     static String reservationJson(ReservationPaymentRequest request, ObjectMapper objectMapper) {        ObjectNode root = objectMapper.createObjectNode();

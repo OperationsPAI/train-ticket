@@ -21,6 +21,7 @@ public final class LatePaymentCase {
     private final List<PaymentEvent> domainEvents;
     private LatePaymentCaseStatus status;
     private String resolutionNote;
+    private String refundId;
     private long version;
 
     private LatePaymentCase(
@@ -94,7 +95,7 @@ public final class LatePaymentCase {
      * consumer-side eventId dedup cannot collapse them. With a random id each report would open a
      * separate case for one payment, and the operator resolving one would leave the other open.
      */
-    private static String caseId(String paymentIntentId, String channel, String channelTransactionId) {
+    public static String caseId(String paymentIntentId, String channel, String channelTransactionId) {
         String material = requireText(paymentIntentId, "paymentIntentId")
             + ":" + requireText(channel, "channel")
             + ":" + requireText(channelTransactionId, "channelTransactionId");
@@ -119,6 +120,14 @@ public final class LatePaymentCase {
     public Instant detectedAt() { return detectedAt; }
     public LatePaymentCaseStatus status() { return status; }
     public String resolutionNote() { return resolutionNote; }
+    public String refundId() { return refundId; }
+    public LatePaymentCase withRefundId(String refundId) {
+        if (this.refundId != null && !this.refundId.equals(refundId)) {
+            throw new DomainRuleViolation("late payment refund is already assigned");
+        }
+        this.refundId = refundId;
+        return this;
+    }
     public List<PaymentEvent> domainEvents() { return List.copyOf(domainEvents); }
     public long version() { return version; }
 

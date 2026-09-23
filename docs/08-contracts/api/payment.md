@@ -19,6 +19,19 @@ model fields, and event serializer/deserializer support for `channelRef`.
 
 ## Endpoints
 
+### Resolve a Late Collection by Refund
+
+`GET /api/v1/payment-intents/{paymentIntentId}/late-payment` returns the recorded late collection, its amount, status and assigned refund ID.
+`POST /api/v1/payment-intents/{paymentIntentId}/late-payment/refund` accepts `businessRef`, `businessCaseRef` and `reason`, with an `Idempotency-Key` header.
+The business reference must match the original payment.
+The operation persists one refund for the recorded late collection before submitting it to the original channel order and transaction.
+Repeated resolution commands reuse that refund.
+Changed resolution details are rejected.
+The payment remains `EXPIRED` or `CANCELLED`; its captured and refunded amounts record the actual funds.
+No `PaymentCaptured` event is published.
+The case becomes `RESOLVED` after refund settlement and publishes `LatePaymentCaseResolved`.
+The response is the refund details, including the current settlement status.
+
 ### Read Captured Payment Facts
 
 **GET** `/api/v1/internal/payment-intents/{paymentIntentId}/captured-facts`
