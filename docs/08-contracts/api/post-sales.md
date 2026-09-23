@@ -59,6 +59,9 @@ It validates those references and returns the policy inputs with the quote resul
 Evaluation uses those accepted inputs and the recorded count of applied changes.
 It does not require the asynchronous order projection to have arrived when the synchronous order facts are available.
 Malformed or unavailable order facts fail evaluation.
+External quote and accepted order reads run without a database transaction.
+Saving the decision acquires the order lock, reloads the current case, validates unchanged scope and target, and commits the decision and events in a short transaction.
+Concurrent evaluations return the same persisted decision and do not publish duplicate decision events.
 
 **POST** `/api/v1/post-sales-cases/{caseId}/evaluate`
 
