@@ -92,6 +92,47 @@ public class BookingOrchestrationService {
         });
     }
 
+    @Transactional
+    public SegmentBookingDetail requestChangeReservation(String caseId, String orderId, String offerItemId, String segmentRef,
+        String travelerRef, String classRef, String correlationId) {
+        for (String value : List.of(caseId,orderId,offerItemId,segmentRef,travelerRef,classRef)) {
+            if (value.isBlank()) throw new IllegalArgumentException("change reservation references must not be blank");
+        }
+        sagas.lockReference(caseId);
+        String purpose = "change:" + caseId;
+        String bookingKey = orderId + ":" + segmentRef + ":" + travelerRef + ":" + purpose;
+        var existing = segmentBookings.findByIdempotencyKey(bookingKey);
+        if (existing.isPresent()) {
+            if (!existing.get().booking().offerItemRef().equals(offerItemId) || !classRef.equals(existing.get().booking().classRef())) throw new PreconditionFailedException("change reservation references another offer item or class", null);
+            return getSegmentBooking(existing.get().booking().segmentBookingId()).orElseThrow();
+        }
+        String sagaId = "saga-" + foldedId("change-saga:" + caseId);
+        var saga = sagas.findById(sagaId).orElse(null);
+        if (saga == null) {
+            saga = BookingSaga.start(sagaId,orderId,"1",purpose,List.of(
+                BookingSaga.stepPlan("change-reservations",sagaId+":reservations",Duration.ofMinutes(15),3,"release-capacity")),clock);
+            saga.advanceTo(BookingSagaStatus.CONFIRMING);
+            sagas.save(saga,correlationId);
+            publishEvents(saga.pullEvents(),correlationId,PrefixedIds.newCommandId());
+        }
+        if (!saga.journeyOrderId().equals(orderId)) throw new PreconditionFailedException("change saga belongs to another order",null);
+        var booking = SegmentBooking.requestReservation("sb-" + foldedId("change-booking:" + bookingKey),orderId,offerItemId,segmentRef,travelerRef,purpose,clock).withClassRef(classRef);
+        segmentBookings.save(booking,sagaId);
+        eventPublisher.publish(new EventEnvelope(PrefixedIds.newEventId(),"SegmentReservationRequested",clock.instant(),correlationId,
+            PrefixedIds.newCommandId(),PRODUCER,1,Map.of("segmentBookingId",booking.segmentBookingId(),"journeyOrderId",orderId,
+                "segmentRef",segmentRef,"travelerRef",travelerRef,"idempotencyKey",booking.idempotencyKey(),"classRef",classRef,"postSalesCaseId",caseId)));
+        return getSegmentBooking(booking.segmentBookingId()).orElseThrow();
+    }
+
+    private static String foldedId(String material) {
+        try {
+            byte[] bytes = java.util.Arrays.copyOf(java.security.MessageDigest.getInstance("SHA-256").digest(material.getBytes(java.nio.charset.StandardCharsets.UTF_8)),16);
+            bytes[6]=(byte)((bytes[6]&15)|112); bytes[8]=(byte)((bytes[8]&63)|128);
+            var buffer=java.nio.ByteBuffer.wrap(bytes);
+            return new UUID(buffer.getLong(),buffer.getLong()).toString();
+        } catch (java.security.NoSuchAlgorithmException error) { throw new IllegalStateException(error); }
+    }
+
     public RequestReservationResult requestReservation(String sagaId, RequestReservationCommand command,
                                                        String idempotencyKey, String correlationId) {
         BookingSaga saga = sagas.findById(sagaId)

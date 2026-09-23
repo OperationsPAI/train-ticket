@@ -81,6 +81,7 @@ final class JacksonBookingOrchestrationJson {
         node.put("segmentRef", booking.segmentRef());
         node.put("travelerRef", booking.travelerRef());
         node.put("bookingPurpose", booking.bookingPurpose());
+        node.put("classRef", booking.classRef());
         node.put("idempotencyKey", booking.idempotencyKey());
         node.put("status", booking.status().name());
         booking.capacityHoldId().ifPresent(value -> node.put("capacityHoldId", value));
@@ -109,7 +110,7 @@ final class JacksonBookingOrchestrationJson {
             node.path("segmentRef").asText(), node.path("travelerRef").asText(), node.path("bookingPurpose").asText(),
             SegmentBookingStatus.valueOf(node.path("status").asText()), textOrNull(node, "capacityHoldId"), providerReference,
             textOrNull(node, "entitlementId"), textOrNull(node, "failureReason"), textOrNull(node, "cancellationReason"),
-            textOrNull(node, "seatAllocationRef"), Clock.systemUTC());
+            textOrNull(node, "seatAllocationRef"), Clock.systemUTC()).withClassRef(textOrNull(node,"classRef"));
     }
 
     private static String textOrNull(ObjectNode node, String field) { return node.has(field) && !node.get(field).isNull() ? node.get(field).asText() : null; }
