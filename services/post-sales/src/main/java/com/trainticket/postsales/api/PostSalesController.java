@@ -28,6 +28,8 @@ import org.springframework.web.bind.annotation.RestController;
 @Validated
 public class PostSalesController {
     private final PostSalesApplicationService service;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.trainticket.postsales.application.RefundFundingService refundFunding;
 
     public PostSalesController(PostSalesApplicationService service) {
         this.service = service;
@@ -80,6 +82,7 @@ public class PostSalesController {
         @RequestHeader("Idempotency-Key") String idempotencyKey,
         HttpServletRequest httpRequest
     ) {
+        if(refundFunding!=null)refundFunding.prepare(caseId,requestCorrelationId(httpRequest));
         return PostSalesMapper.approveResponse(service.approve(caseId, commandId(), requestCorrelationId(httpRequest)));
     }
 
