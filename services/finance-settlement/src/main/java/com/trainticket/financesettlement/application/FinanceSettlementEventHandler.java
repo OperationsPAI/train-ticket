@@ -713,6 +713,7 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             return;
         }
         Object approvedActions = payload.get("approvedActions");
+        if(approvedActions instanceof Map<?,?> actions && "COMPENSATION".equals(actions.get("decisionKind")))return;
         if (approvedActions instanceof Map<?, ?> actions && actions.get("refund") instanceof Map<?, ?> refund) {
             Money refundAmount = money(((Map<?, ?>) refund).get("amount"), "approvedActions.refund.amount");
             projections.saveApprovedRefund(caseId, refundAmount);
@@ -720,6 +721,7 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
     }
 
     private void applyPostSales(EventEnvelope envelope, Map<String, Object> payload) {
+        if("COMPENSATION".equals(payload.get("caseType")))return;
         String orderId = text(payload, "orderId");
         String caseId = text(payload, "caseId");
         if("CHANGE".equals(payload.get("caseType"))) {
