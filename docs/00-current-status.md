@@ -77,6 +77,12 @@ The 600 second recording ending at 15:05:19 UTC contains 473704 requests and 154
 Search service connection acquisition waits and related reservation and pricing failures remain under investigation.
 After revision 276, the recorded invoice failure order `ord-01a0cea1-e9e8-7f84-90cd-95afced4b75e` successfully receives invoice `ein-01a0ced0-1811-7aa0-85d9-57d8029644c6` in a 0.088 second live check.
 That completion does not establish peak period projection latency.
+The first revision 276 broad regression fails in 115.450 seconds on identity, risk and traveler waits during continued shared resource pressure.
+After the four core outbox retention indexes are created online, the same broad regression passes in 249.297 seconds without changing workload or polling budgets.
+All four indexes are valid and ready, and the observed selection plans use their published time ranges.
+The subsequent 30.22 second sample contains zero new outbox sequential scans and 121443 heap page reads across the four tables, with 5732 expired records removed.
+This sample and the earlier 5800696 page sample have different load periods, so they do not establish a controlled latency improvement ratio.
+The [outbox index verification](09-performance/outbox-retention-indexes.md) records exact predicates, migration identities, local PostgreSQL tests and production evidence.
 Complete peak period and durable replay acceptance remain open.
 The continuous 600 second recording ending at 12:58:47 UTC contains 711900 requests and 10348 failed journeys, with request P99 reaching the 10 second deadline.
 That window spans several deployment revisions and is diagnostic evidence for peak latency.
