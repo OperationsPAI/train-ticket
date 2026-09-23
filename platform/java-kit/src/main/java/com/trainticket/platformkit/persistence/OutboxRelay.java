@@ -26,6 +26,8 @@ public class OutboxRelay implements AutoCloseable {
     private final Duration pollInterval;
     private volatile boolean dependencyReady = true;
     private final ScheduledExecutorService executor;
+    private final java.util.concurrent.ExecutorService maintenanceExecutor;
+    private final AtomicBoolean maintenanceRunning = new AtomicBoolean();
     private final AtomicBoolean running = new AtomicBoolean();
     private int pollCount;
 
@@ -42,6 +44,11 @@ public class OutboxRelay implements AutoCloseable {
         }
         this.executor = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread thread = new Thread(r, "outbox-relay");
+            thread.setDaemon(true);
+            return thread;
+        });
+        this.maintenanceExecutor = Executors.newSingleThreadExecutor(r -> {
+            Thread thread = new Thread(r, "outbox-retention");
             thread.setDaemon(true);
             return thread;
         });
@@ -86,20 +93,17 @@ public class OutboxRelay implements AutoCloseable {
         }
     }
 
-    /**
-     * One poll, plus the retention sweep every {@link #CLEANUP_EVERY_N} polls.
-     *
-     * Both schedulers go through here. {@link LazyRedisOutboxRelayLifecycle}
-     * drives the relay itself rather than calling {@link #start()}, and when it
-     * called {@link #pollOnce()} directly it silently ran without the sweep:
-     * `n_tup_del` on idempotency_records was 0 in every Java service on the
-     * deployed cluster, traveler_profile having reached 12811917 rows in
-     * 7855 MB and journey_order 4756058 rows in 6028 MB.
-     */
+    /** Publishes events and schedules one independent retention sweep at a time. */
     public void pollOnceAndSweep() {
         pollOnce();
-        if (++pollCount % CLEANUP_EVERY_N == 0) {
-            cleanup();
+        if (++pollCount % CLEANUP_EVERY_N == 0 && maintenanceRunning.compareAndSet(false, true)) {
+            maintenanceExecutor.execute(() -> {
+                try {
+                    cleanup();
+                } finally {
+                    maintenanceRunning.set(false);
+                }
+            });
         }
     }
 
@@ -185,6 +189,7 @@ public class OutboxRelay implements AutoCloseable {
     public void close() {
         running.set(false);
         executor.shutdownNow();
+        maintenanceExecutor.shutdownNow();
     }
 
     private record OutboxRow(long seq, String stream, String envelope) {

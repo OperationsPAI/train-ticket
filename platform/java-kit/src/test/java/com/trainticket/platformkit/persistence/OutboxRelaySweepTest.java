@@ -16,7 +16,7 @@ import org.springframework.jdbc.core.JdbcOperations;
 class OutboxRelaySweepTest {
     /** Records every statement the relay issues, and reports an empty outbox. */
     private static final class RecordingJdbc {
-        private final List<String> statements = new ArrayList<>();
+        private final List<String> statements = new java.util.concurrent.CopyOnWriteArrayList<>();
         private final JdbcOperations jdbc = mock(JdbcOperations.class);
 
         RecordingJdbc() {
@@ -69,12 +69,15 @@ class OutboxRelaySweepTest {
     //
     // Polling is what must trigger the sweep, so that is what this drives.
     @Test
-    void pollingEventuallySweeps() {
+    void pollingEventuallySweeps() throws InterruptedException {
         RecordingJdbc recording = new RecordingJdbc();
         OutboxRelay relay = relayOn(recording);
         for (int poll = 0; poll < 20; poll++) {
             relay.pollOnceAndSweep();
         }
+        long deadline=System.nanoTime()+Duration.ofSeconds(2).toNanos();
+        while(recording.statements.stream().noneMatch(sql->sql.contains("DELETE FROM idempotency_records")) && System.nanoTime()<deadline)Thread.sleep(10);
+        relay.close();
         assertTrue(
             recording.statements.stream().anyMatch(sql -> sql.contains("DELETE FROM idempotency_records")),
             "20 polls swept nothing; the tables grow for as long as the service runs"
