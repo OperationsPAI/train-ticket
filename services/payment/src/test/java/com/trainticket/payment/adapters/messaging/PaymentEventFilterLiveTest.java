@@ -40,6 +40,13 @@ class PaymentEventFilterLiveTest {
                     events.add(mapper.treeToValue(row, EventEnvelope.class));
                 }
                 var ignored = events.stream().filter(event -> !PaymentEventFilter.handles(event)).limit(100).toList();
+                var changes=new ArrayList<EventEnvelope>();
+                for(var row:mapper.readTree(Files.readString(Path.of(System.getenv("TEST_PAYMENT_CHANGE_EVENTS"))))) {
+                    var event=mapper.readValue(row.get(1).get(1).asText(),EventEnvelope.class);
+                    if(event.eventType().equals("PostSalesApproved") && mapper.valueToTree(event.payload()).path("approvedActions").path("decisionKind").asText().equals("CHANGE"))changes.add(event);
+                }
+                assertFalse(changes.isEmpty());
+                for(var change:changes)assertFalse(PaymentEventFilter.handles(change));
                 assertEquals(100, ignored.size());
                 var required = events.stream().filter(event -> "SegmentReservationRequested".equals(event.eventType()) && PaymentEventFilter.handles(event)).findFirst().orElseThrow();
                 var handler = new PaymentEventFilter(context.getBean(PaymentInboundEventHandler.class));
@@ -50,6 +57,7 @@ class PaymentEventFilterLiveTest {
                     try {
                         var ignoredResult = workers.submit(() -> {
                             for (var event : ignored) assertEquals(HandlerResult.SUCCESS, handler.handle(event));
+                            for (var event : changes) assertEquals(HandlerResult.SUCCESS, handler.handle(event));
                         });
                         ignoredResult.get(2, TimeUnit.SECONDS);
                         var requiredResult = workers.submit(() -> handler.handle(required));
@@ -63,6 +71,18 @@ class PaymentEventFilterLiveTest {
                 assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM reservation_payment_requests", Integer.class));
                 assertEquals(required.eventId(), jdbc.queryForObject("SELECT event_id FROM processed_events", String.class));
                 assertEquals(mapper.valueToTree(required.payload()).path("segmentBookingId").asText(), jdbc.queryForObject("SELECT segment_booking_id FROM reservation_payment_requests", String.class));
+                EventEnvelope approved=null;
+                for(String line:Files.readAllLines(Path.of(System.getenv("TEST_MISSING_REFUND_EVENTS")))) {
+                    var row=mapper.readTree(line);var fields=row.path("fields");
+                    for(int index=0;index<fields.size();index+=2)if(fields.get(index).asText().equals("envelope")) {
+                        var event=mapper.readValue(fields.get(index+1).asText(),EventEnvelope.class);
+                        if(event.eventType().equals("PostSalesApproved"))approved=event;
+                    }
+                }
+                assertNotNull(approved);
+                assertEquals(HandlerResult.TRANSIENT_FAILURE,handler.handle(approved));
+                assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM processed_events WHERE event_id=?",Integer.class,approved.eventId()));
+                assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM refund_snapshots",Integer.class));
             } finally {
                 if (context != null) context.close();
                 admin.createStatement().execute("DROP SCHEMA " + schema + " CASCADE");
