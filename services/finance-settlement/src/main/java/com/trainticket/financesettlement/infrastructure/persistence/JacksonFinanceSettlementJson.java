@@ -47,15 +47,19 @@ final class JacksonFinanceSettlementJson {
         node.put("recognizedAt", recognition.recognizedAt().toString());
         node.put("reversed", recognition.reversed());
         money(node.putObject("reversedAmount"), recognition.reversedAmount());
+        ObjectNode reversals = node.putObject("reversalAmounts");
+        recognition.reversalAmounts().forEach((reference, amount) -> money(reversals.putObject(reference), amount));
         if (recognition.reversalReason() != null) node.put("reversalReason", recognition.reversalReason());
         return new RevenueRecognitionSnapshot(node);
     }
 
     static RevenueRecognition toRevenue(RevenueRecognitionSnapshot snapshot, ObjectMapper mapper) {
         ObjectNode n = snapshot.data();
+        java.util.Map<String, Money> reversals = new java.util.LinkedHashMap<>();
+        n.path("reversalAmounts").fields().forEachRemaining(entry -> reversals.put(entry.getKey(),money((ObjectNode)entry.getValue())));
         return RevenueRecognition.rehydrate(n.path("revenueRecognitionId").asText(), n.path("orderId").asText(), n.path("orderItemId").asText(), n.path("componentCode").asText(),
             money(n.withObject("amount")), n.path("recognitionPolicyVersion").asText(), n.path("sourceEventId").asText(), Instant.parse(n.path("recognizedAt").asText()),
-            n.path("reversed").asBoolean(false), money(n.withObject("reversedAmount")), textOrNull(n, "reversalReason"));
+            n.path("reversed").asBoolean(false), money(n.withObject("reversedAmount")), textOrNull(n, "reversalReason")).withReversalAmounts(reversals);
     }
 
     static ReconciliationCaseSnapshot caseSnapshot(ReconciliationCase c, ObjectMapper mapper) {
