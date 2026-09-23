@@ -36,6 +36,8 @@ Revision 273 deploys wallet case issuance deduplication and compensation preserv
 Revision 274 deploys the approved wallet compensation executor and loadgen validation.
 Revision 275 retains terminal compensation mismatch evidence without automatically repeating execution and ignores refund instructions on compensation approvals in Finance Settlement.
 Revision 276 requires complete invoice order and amount projections and uses four Journey Order stream consumers with order scoped projection locking.
+Revision 277 deploys date and origin indexed trip search and independent Post Sales capacity event processing.
+Its complete broad live regression passes in 225.475 seconds with eligibility, recovery selections, multi traveler post sales and protected transfer.
 Check `helm history` and the deployed image digests for the live release; repository HEAD and the running images can differ.
 
 ## Verified behavior
