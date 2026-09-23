@@ -604,14 +604,7 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             orderId=changeOrder(envelope,payload,captured);
             service.lockOrder(orderId);
             paymentIntentOrderReferences.save(paymentIntentId,orderId);
-            var existing=serviceRevenue(orderId).stream().filter(item->paymentIntentId.equals(item.orderItemId()) && "change-payment".equals(item.componentCode())).findFirst();
-            if(existing.isPresent()) {
-                if(!existing.get().amount().equals(captured))throw new DomainRuleViolation("change recognition differs from actual payment amount");
-                return;
-            }
-            RevenueRecognition recognition=RevenueRecognition.recognize(orderId,paymentIntentId,"change-payment",captured,"change-payment-v1",
-                envelope.eventId(),envelope.occurredAt(),clock.instant(),causationIdOrEventId(envelope),envelope.correlationId());
-            service.saveAndPublish(recognition);
+            ensureChangeRevenue(orderId,text(payload,"businessRef"),paymentIntentId,captured,envelope.eventId(),envelope.occurredAt(),envelope);
             return;
         }
         paymentIntentOrderReferences.save(paymentIntentId,orderId);
@@ -791,8 +784,10 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             if(!orderId.equals(changePayments.orderFor(caseId,paymentId,due,envelope.correlationId())))throw new DomainRuleViolation("change payment belongs to another order");
             var payment=changePayments.read("payment","/api/v1/payment-intents/"+paymentId,envelope.correlationId());
             if(!"CAPTURED".equals(payment.path("status").asText()) || !due.equals(jsonMoney(payment.path("capturedAmount"))))throw new OutOfOrderEventException("change difference is not captured");
-            var recognition=revenues.stream().filter(item->paymentId.equals(item.orderItemId()) && "change-payment".equals(item.componentCode())).findFirst()
-                .orElseThrow(()->new OutOfOrderEventException("change payment revenue is not assigned to the original order"));
+            var facts=changePayments.read("payment","/api/v1/internal/payment-intents/"+paymentId+"/captured-facts",envelope.correlationId());
+            if(facts.path("events").size()!=1)throw new DomainRuleViolation("change payment requires one authoritative captured event");
+            var capturedEvent=facts.path("events").get(0);
+            var recognition=ensureChangeRevenue(orderId,caseId,paymentId,due,capturedEvent.path("eventId").asText(),Instant.parse(capturedEvent.path("occurredAt").asText()),envelope);
             if(!recognition.amount().equals(due))throw new DomainRuleViolation("change difference recognition amount mismatch");
         }
         var refunds=changePayments.read("payment","/api/v1/refunds?businessCaseRef="+caseId,envelope.correlationId());
@@ -822,6 +817,27 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             if(recognition.domainEvents().size()>first)service.saveAndPublish(recognition,first);
         }
         service.recordChangeFee(orderId,jsonMoney(change.path("decision").path("changeAssessment").path("changeFee")),caseId,envelope.correlationId());
+    }
+
+    private RevenueRecognition ensureChangeRevenue(String orderId,String caseId,String paymentId,Money amount,String sourceId,Instant capturedAt,EventEnvelope envelope) {
+        var existing=serviceRevenue(orderId).stream().filter(item->paymentId.equals(item.orderItemId()) && "change-payment".equals(item.componentCode())).findFirst();
+        if(existing.isPresent()) {
+            if(!existing.get().amount().equals(amount) || !existing.get().sourceEventId().equals(sourceId))throw new DomainRuleViolation("change recognition differs from captured payment");
+            return existing.get();
+        }
+        var misplaced=serviceRevenue(caseId).stream().filter(item->item.sourceEventId().equals(sourceId)).toList();
+        if(misplaced.size()>1)throw new DomainRuleViolation("payment has duplicate revenue requiring reconciliation");
+        for(var previous:misplaced) {
+            if(!previous.amount().equals(amount) || !previous.reversedAmount().isZero())throw new DomainRuleViolation("change payment revenue requires checked reversal reconciliation");
+            int first=previous.domainEvents().size();
+            previous.reverse("payment revenue reassigned to journey order","reassign:"+paymentId,amount,clock.instant(),causationIdOrEventId(envelope),causationIdOrEventId(envelope),envelope.correlationId());
+            service.saveAndPublish(previous,first);
+        }
+        var recognition=RevenueRecognition.recognize(orderId,paymentId,"change-payment",amount,"change-payment-v1",sourceId,capturedAt,
+            clock.instant(),causationIdOrEventId(envelope),envelope.correlationId());
+        service.saveAndPublish(recognition);
+        paymentIntentOrderReferences.save(paymentId,orderId);
+        return recognition;
     }
 
     private static Money jsonMoney(com.fasterxml.jackson.databind.JsonNode node) {

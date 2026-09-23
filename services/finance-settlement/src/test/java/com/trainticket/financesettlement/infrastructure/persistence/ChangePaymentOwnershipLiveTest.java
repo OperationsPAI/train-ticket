@@ -41,6 +41,9 @@ class ChangePaymentOwnershipLiveTest {
             var jdbc=new JdbcTemplate(pool);jdbc.execute("CREATE SCHEMA "+schema);
             try {
                 try(var files=Files.list(Path.of("migrations"))){for(var file:files.sorted().toList())jdbc.execute(Files.readString(file));}
+                var previous=mapper.readTree(Files.readString(Path.of(System.getenv("TEST_MISPLACED_REVENUE"))));
+                assertEquals(caseId,previous.path("data").path("orderId").asText());
+                jdbc.update("INSERT INTO revenue_recognition_snapshots(id,version,data) VALUES (?,?,?::jsonb)",previous.path("id").asText(),previous.path("version").asLong(),previous.path("data").toString());
                 var revenues=new PostgresFinanceRepositories.RevenueRecognitions(pool,mapper);
                 var projections=new PostgresFinanceSettlementProjectionRepository(pool);
                 var refs=new PostgresReferenceRepositories.PaymentIntentRefs(pool);
@@ -50,11 +53,11 @@ class ChangePaymentOwnershipLiveTest {
                 var handler=new FinanceSettlementEventHandler(new PostgresConsumedEventLogRepository(pool),refs,new PostgresReferenceRepositories.SegmentBookingRefs(pool),projections,Clock.systemUTC(),service).withChangePayments(client);
                 var tx=new TransactionTemplate(new DataSourceTransactionManager(pool));
                 for(int attempt=0;attempt<2;attempt++)assertEquals(HandlerResult.SUCCESS,tx.execute(status->handler.handle(event)));
-                assertTrue(revenues.findByOrderId(caseId).isEmpty());
+                assertEquals(Money.zero(amount.currency()),revenues.findByOrderId(caseId).getFirst().netAmount());
                 var revenue=revenues.findByOrderId(order).getFirst();
                 assertEquals(amount,revenue.amount());assertEquals(paymentId,revenue.orderItemId());
                 assertEquals("change-payment",revenue.componentCode());assertEquals(order,refs.findOrderReference(paymentId).orElseThrow());
-                assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM revenue_recognition_snapshots",Integer.class));
+                assertEquals(2,jdbc.queryForObject("SELECT count(*) FROM revenue_recognition_snapshots",Integer.class));
                 assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM outbox WHERE envelope->>'eventType'='RevenueRecognized'",Integer.class));
                 assertTrue(projections.findCapture(order).isEmpty());
                 var paidCase=client.read("post-sales","/api/v1/post-sales-cases/"+caseId,event.correlationId());
@@ -74,7 +77,7 @@ class ChangePaymentOwnershipLiveTest {
                 long expectedRefund=lowerCase.path("decision").path("refundableAmount").path("minorUnits").asLong();
                 assertEquals(expectedRefund,lowerRevenue.reversedAmount().amount().movePointRight(2).longValueExact());
                 assertFalse(lowerRevenue.reversed());
-                assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM outbox WHERE envelope->>'eventType'='RevenueRecognitionReversed'",Integer.class));
+                assertEquals(2,jdbc.queryForObject("SELECT count(*) FROM outbox WHERE envelope->>'eventType'='RevenueRecognitionReversed'",Integer.class));
                 assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM fee_accrual_snapshots WHERE data->>'sourceEventId'=?",Integer.class,lowerCaseId));
             } finally {jdbc.execute("DROP SCHEMA "+schema+" CASCADE");}
         }
