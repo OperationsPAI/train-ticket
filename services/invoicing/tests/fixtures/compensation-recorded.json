@@ -1,0 +1,422 @@
+{
+  "commands": [
+    {
+      "id": "ivr-01a0cb60-e4a4-7a71-bdf3-7bbe7e8a59fe",
+      "data": {
+        "status": "ISSUED",
+        "orderId": "ord-01a0cb60-c339-7053-bf38-5f62b7636253",
+        "titleId": "ivt-01a0cb60-e49d-7c41-8695-137ab19bcc65",
+        "version": 4,
+        "accountId": "acc-01a0cb5f-9d97-722f-b30f-d6a1e22d54c8",
+        "createdAt": "2026-09-22T23:08:39.972Z",
+        "updatedAt": "2026-09-22T23:08:39.972Z",
+        "eInvoiceId": "ein-01a0cb60-e4a4-7a71-bdf3-7bca590c0bae",
+        "simSeedRef": "loadgen-accept",
+        "amountBasis": {
+          "taxLines": [
+            {
+              "taxCode": "VAT_SIM",
+              "taxAmount": {
+                "currency": "CNY",
+                "minorUnits": 0
+              },
+              "taxableAmount": {
+                "currency": "CNY",
+                "minorUnits": 49185
+              },
+              "taxRateBasisPoints": 0
+            }
+          ],
+          "basisType": "REVENUE_RECOGNITION",
+          "totalAmount": {
+            "currency": "CNY",
+            "minorUnits": 49185
+          },
+          "amountBasisHash": "sha256:b78a8385a92b4b80bd6fb4250f9b19e52bca388b0c42ade5175b363f63d5cf5b",
+          "revenueRecognitionIds": [
+            "01a0cb60-daf6-7014-aa5a-88ceeb67b938"
+          ]
+        },
+        "invoiceScope": {
+          "scopeType": "ORDER"
+        },
+        "titleVersion": 1,
+        "gatewayProfile": "SIM_TAX_BUREAU_CN_V1",
+        "clientRequestId": "01a0cb60-e4a2-7356-bc6f-0a5e2a82aaf0",
+        "invoiceRequestId": "ivr-01a0cb60-e4a4-7a71-bdf3-7bbe7e8a59fe",
+        "recipientEmailMasked": "l***@example.com"
+      },
+      "kind": "requests",
+      "order_id": "ord-01a0cb60-c339-7053-bf38-5f62b7636253",
+      "account_id": "acc-01a0cb5f-9d97-722f-b30f-d6a1e22d54c8"
+    },
+    {
+      "id": "ein-01a0cb60-e4a4-7a71-bdf3-7bca590c0bae",
+      "data": {
+        "status": "ISSUED",
+        "orderId": "ord-01a0cb60-c339-7053-bf38-5f62b7636253",
+        "issuedAt": "2026-09-22T23:08:39.972Z",
+        "createdAt": "2026-09-22T23:08:39.972Z",
+        "updatedAt": "2026-09-22T23:08:39.972Z",
+        "eInvoiceId": "ein-01a0cb60-e4a4-7a71-bdf3-7bca590c0bae",
+        "downloadRef": "artifact://invoicing/ein-01a0cb60-e4a4-7a71-bdf3-7bca590c0bae",
+        "invoiceType": "BLUE",
+        "totalAmount": {
+          "currency": "CNY",
+          "minorUnits": 49185
+        },
+        "gatewayStatus": "ACCEPTED",
+        "invoiceNumber": "SIMF6CC770B70476E67",
+        "gatewayProfile": "SIM_TAX_BUREAU_CN_V1",
+        "gatewayRequestId": "igr-f6cc770b-7047-7e67-973f-c6bd66886b45",
+        "invoiceRequestId": "ivr-01a0cb60-e4a4-7a71-bdf3-7bbe7e8a59fe"
+      },
+      "kind": "invoices",
+      "order_id": "ord-01a0cb60-c339-7053-bf38-5f62b7636253",
+      "account_id": "acc-01a0cb5f-9d97-722f-b30f-d6a1e22d54c8"
+    },
+    {
+      "id": "ein-01a0cb62-08aa-79a1-9a9a-1c10df42f61d",
+      "data": {
+        "status": "RED_FLUSHED",
+        "orderId": "ord-01a0cb60-c339-7053-bf38-5f62b7636253",
+        "issuedAt": "2026-09-22T23:09:54.672673742Z",
+        "createdAt": "2026-09-22T23:09:54.672673742Z",
+        "updatedAt": "2026-09-22T23:09:54.672673742Z",
+        "eInvoiceId": "ein-01a0cb62-08aa-79a1-9a9a-1c10df42f61d",
+        "downloadRef": "artifact://invoicing/ein-01a0cb62-08aa-79a1-9a9a-1c10df42f61d",
+        "invoiceType": "RED",
+        "totalAmount": {
+          "currency": "CNY",
+          "minorUnits": 49185
+        },
+        "gatewayStatus": "ACCEPTED",
+        "invoiceNumber": "RED32D407647390042C",
+        "gatewayProfile": "SIM_TAX_BUREAU_CN_V1",
+        "gatewayRequestId": "igr-0f8e3047-5874-7668-9850-483633f4d4bc",
+        "invoiceRequestId": "ivr-01a0cb60-e4a4-7a71-bdf3-7bbe7e8a59fe"
+      },
+      "kind": "invoices",
+      "order_id": "ord-01a0cb60-c339-7053-bf38-5f62b7636253",
+      "account_id": "acc-01a0cb5f-9d97-722f-b30f-d6a1e22d54c8"
+    },
+    {
+      "id": "irf-146fde72-4eef-71cb-8715-22e703817d23",
+      "data": {
+        "status": "COMPLETED",
+        "orderId": "ord-01a0cb60-c339-7053-bf38-5f62b7636253",
+        "version": 4,
+        "createdAt": "2026-09-22T23:09:54.672673742Z",
+        "updatedAt": "2026-09-22T23:09:54.672673742Z",
+        "redFlushId": "irf-146fde72-4eef-71cb-8715-22e703817d23",
+        "redInvoiceId": "ein-01a0cb62-08aa-79a1-9a9a-1c10df42f61d",
+        "postSalesCaseId": "psc-01a0cb62-0823-7f8f-b035-f63b807c21cb",
+        "redInvoiceNumber": "RED32D407647390042C",
+        "originalInvoiceId": "ein-01a0cb60-e4a4-7a71-bdf3-7bca590c0bae",
+        "refundFactEventId": "evt-01a0cb62-0872-7fb8-8ebf-b60965bda590",
+        "refundReleaseFlagStatus": "VIOLATION_OBSERVED",
+        "refundRedFlushObservationStatus": "VIOLATION_OBSERVED"
+      },
+      "kind": "red_flushes",
+      "order_id": "ord-01a0cb60-c339-7053-bf38-5f62b7636253",
+      "account_id": "acc-01a0cb5f-9d97-722f-b30f-d6a1e22d54c8"
+    }
+  ],
+  "projections": [
+    {
+      "id": "ord-01a0cb60-c339-7053-bf38-5f62b7636253",
+      "data": {
+        "taxLines": [
+          {
+            "taxCode": "VAT_SIM",
+            "taxAmount": {
+              "currency": "CNY",
+              "minorUnits": 0
+            },
+            "taxableAmount": {
+              "currency": "CNY",
+              "minorUnits": 49185
+            },
+            "taxRateBasisPoints": 0
+          }
+        ],
+        "basisType": "REVENUE_RECOGNITION",
+        "totalAmount": {
+          "currency": "CNY",
+          "minorUnits": 49185
+        },
+        "amountBasisHash": "sha256:b78a8385a92b4b80bd6fb4250f9b19e52bca388b0c42ade5175b363f63d5cf5b",
+        "revenueRecognitionIds": [
+          "01a0cb60-daf6-7014-aa5a-88ceeb67b938"
+        ]
+      },
+      "kind": "amounts"
+    },
+    {
+      "id": "ord-01a0cb60-c339-7053-bf38-5f62b7636253",
+      "data": {
+        "account_id": "acc-01a0cb5f-9d97-722f-b30f-d6a1e22d54c8",
+        "segment_refs": [
+          "seg-01a0c750-05c8-7000-865d-2713a2e319ac"
+        ],
+        "traveler_refs": [
+          "tvl-01a0cb5f-9da1-701f-8d7f-33a9d1493a38"
+        ],
+        "expected_total": {
+          "currency": "CNY",
+          "minorUnits": 49185
+        }
+      },
+      "kind": "orders"
+    }
+  ],
+  "approved": {
+    "eventId": "evt-01a0cb62-0872-7fb8-8ebf-b60965bda590",
+    "payload": {
+      "caseId": "psc-01a0cb62-0823-7f8f-b035-f63b807c21cb",
+      "orderId": "ord-01a0cb60-c339-7053-bf38-5f62b7636253",
+      "approvedActions": {
+        "steps": [
+          {
+            "type": "VOID_ENTITLEMENT",
+            "policy": "NORMAL",
+            "reason": "REFUND",
+            "entitlementId": "ent-01a0cb60-e0a7-7e13-a317-8dd04477817e"
+          },
+          {
+            "type": "RELEASE_CAPACITY",
+            "segmentBookingId": "sb-01a0cb60-cbb6-726b-817a-5b7d4ef376f0"
+          }
+        ],
+        "refund": {
+          "amount": {
+            "currency": "CNY",
+            "minorUnits": 47185
+          },
+          "orderId": "ord-01a0cb60-c339-7053-bf38-5f62b7636253"
+        },
+        "approvalRef": "http-approval",
+        "decisionKind": "COMPENSATION"
+      }
+    },
+    "producer": "post-sales",
+    "eventType": "PostSalesApproved",
+    "occurredAt": "2026-09-22T23:09:54.672673742Z",
+    "causationId": "cmd-01a0cb62-086f-7fc0-bada-557dfb5e8518",
+    "traceparent": "00-b66cf98a0ed2faf1b13590bd7fc9e1a4-d8ae4e59f348377c-01",
+    "correlationId": "corr-01a0cb62-086f-7faa-8e03-e62241e4551c",
+    "schemaVersion": 1
+  },
+  "applied": {
+    "eventId": "evt-01a0cb62-0903-7020-8884-ed7bb3937115",
+    "payload": {
+      "caseId": "psc-01a0cb62-0823-7f8f-b035-f63b807c21cb",
+      "orderId": "ord-01a0cb60-c339-7053-bf38-5f62b7636253",
+      "resultSummary": {
+        "description": "all scoped capacity released"
+      }
+    },
+    "producer": "post-sales",
+    "eventType": "PostSalesApplied",
+    "occurredAt": "2026-09-22T23:09:54.818349719Z",
+    "causationId": "evt-01a0cb62-08d1-7532-9fab-acc736654552",
+    "traceparent": "00-b66cf98a0ed2faf1b13590bd7fc9e1a4-0f0e40d8aa6a6497-01",
+    "correlationId": "corr-01a0cb62-086f-7faa-8e03-e62241e4551c",
+    "schemaVersion": 1
+  },
+  "case": {
+    "scope": {
+      "segmentRefs": [
+        "seg-01a0c750-05c8-7000-865d-2713a2e319ac"
+      ],
+      "travelerRefs": [
+        "tvl-01a0cb5f-9da1-701f-8d7f-33a9d1493a38"
+      ],
+      "orderItemRefs": [
+        "sb-01a0cb60-cbb6-726b-817a-5b7d4ef376f0"
+      ],
+      "entitlementRefs": [
+        "ent-01a0cb60-e0a7-7e13-a317-8dd04477817e"
+      ]
+    },
+    "caseId": "01a0cb62-0823-7f8f-b035-f63b807c21cb",
+    "status": "APPLIED",
+    "actorRef": "acc-01a0cb5f-9d97-722f-b30f-d6a1e22d54c8",
+    "caseType": "COMPENSATION",
+    "decision": {
+      "kind": "COMPENSATION",
+      "caseId": "01a0cb62-0823-7f8f-b035-f63b807c21cb",
+      "version": 1,
+      "eligible": true,
+      "quotedAt": "2026-09-22T23:09:54.616223866Z",
+      "expiresAt": "2026-09-22T23:24:54.616223866Z",
+      "reasonCode": "ELIGIBLE",
+      "ruleSnapshot": {
+        "evaluatedAt": "2026-09-22T23:09:54.616223866Z",
+        "fareRuleVersion": "rule-v1",
+        "inputSnapshotRefs": {
+          "journeyOrderId": "ord-01a0cb60-c339-7053-bf38-5f62b7636253",
+          "postSalesCaseId": "01a0cb62-0823-7f8f-b035-f63b807c21cb"
+        },
+        "farePricingEvaluationRef": "aq-01a0cb62-084e-754a-8657-1d342b04d276",
+        "originalOfferRuleSnapshotRef": "offer-rule-snapshot-01a0cb62-0823-7f8f-b035-f63b807c21cb"
+      },
+      "amountSnapshot": {
+        "feeAmount": {
+          "currency": "CNY",
+          "minorUnits": 0
+        },
+        "explanation": "fare-pricing adjustment quote aq-01a0cb62-084e-754a-8657-1d342b04d276",
+        "refundAmount": {
+          "currency": "CNY",
+          "minorUnits": 47185
+        },
+        "extraChargeAmount": {
+          "currency": "CNY",
+          "minorUnits": 0
+        },
+        "componentDecisions": []
+      },
+      "changeAssessment": null,
+      "refundAssessment": null,
+      "changeFlowSnapshot": null
+    },
+    "createdAt": "2026-09-22T23:09:54.595677546Z",
+    "reasonCode": "SERVICE_QUALITY_COMPLAINT",
+    "executionPlan": [
+      {
+        "type": "DECISION_CONFIRMED",
+        "status": "PLANNED",
+        "maxRetries": 0,
+        "completedAt": null,
+        "externalRef": null,
+        "failureReason": null,
+        "targetContext": "aq-01a0cb62-084e-754a-8657-1d342b04d276",
+        "idempotencyKey": "post-sales:01a0cb62-0823-7f8f-b035-f63b807c21cb:decision"
+      },
+      {
+        "type": "VOID_ENTITLEMENT",
+        "status": "PLANNED",
+        "maxRetries": 2,
+        "completedAt": null,
+        "externalRef": null,
+        "failureReason": null,
+        "targetContext": "ent-01a0cb60-e0a7-7e13-a317-8dd04477817e",
+        "idempotencyKey": "post-sales:01a0cb62-0823-7f8f-b035-f63b807c21cb:void-entitlement"
+      },
+      {
+        "type": "CANCEL_SEGMENT",
+        "status": "PLANNED",
+        "maxRetries": 2,
+        "completedAt": null,
+        "externalRef": null,
+        "failureReason": null,
+        "targetContext": "seg-01a0c750-05c8-7000-865d-2713a2e319ac",
+        "idempotencyKey": "post-sales:01a0cb62-0823-7f8f-b035-f63b807c21cb:cancel-segment"
+      },
+      {
+        "type": "RELEASE_CAPACITY",
+        "status": "PLANNED",
+        "maxRetries": 2,
+        "completedAt": null,
+        "externalRef": null,
+        "failureReason": null,
+        "targetContext": "seg-01a0c750-05c8-7000-865d-2713a2e319ac",
+        "idempotencyKey": "post-sales:01a0cb62-0823-7f8f-b035-f63b807c21cb:release-capacity"
+      },
+      {
+        "type": "REQUEST_REFUND",
+        "status": "PLANNED",
+        "maxRetries": 1,
+        "completedAt": null,
+        "externalRef": null,
+        "failureReason": null,
+        "targetContext": "payment:refund",
+        "idempotencyKey": "post-sales:01a0cb62-0823-7f8f-b035-f63b807c21cb:refund"
+      },
+      {
+        "type": "APPLY_RESULT",
+        "status": "PLANNED",
+        "maxRetries": 0,
+        "completedAt": null,
+        "externalRef": null,
+        "failureReason": null,
+        "targetContext": "ord-01a0cb60-c339-7053-bf38-5f62b7636253",
+        "idempotencyKey": "post-sales:01a0cb62-0823-7f8f-b035-f63b807c21cb:apply-result"
+      }
+    ],
+    "idempotencyKey": "01a0cb62-081d-77f4-885f-1e4d4d43cbfa",
+    "journeyOrderId": "ord-01a0cb60-c339-7053-bf38-5f62b7636253",
+    "terminalReason": "all scoped capacity released",
+    "releasedOrderItems": [
+      "sb-01a0cb60-cbb6-726b-817a-5b7d4ef376f0"
+    ],
+    "executionPlanAggregate": {
+      "steps": [
+        {
+          "type": "DECISION_CONFIRMED",
+          "status": "EXECUTING",
+          "maxRetries": 0,
+          "completedAt": null,
+          "externalRef": null,
+          "failureReason": null,
+          "targetContext": "aq-01a0cb62-084e-754a-8657-1d342b04d276",
+          "idempotencyKey": "post-sales:01a0cb62-0823-7f8f-b035-f63b807c21cb:decision"
+        },
+        {
+          "type": "VOID_ENTITLEMENT",
+          "status": "PLANNED",
+          "maxRetries": 2,
+          "completedAt": null,
+          "externalRef": null,
+          "failureReason": null,
+          "targetContext": "ent-01a0cb60-e0a7-7e13-a317-8dd04477817e",
+          "idempotencyKey": "post-sales:01a0cb62-0823-7f8f-b035-f63b807c21cb:void-entitlement"
+        },
+        {
+          "type": "CANCEL_SEGMENT",
+          "status": "PLANNED",
+          "maxRetries": 2,
+          "completedAt": null,
+          "externalRef": null,
+          "failureReason": null,
+          "targetContext": "seg-01a0c750-05c8-7000-865d-2713a2e319ac",
+          "idempotencyKey": "post-sales:01a0cb62-0823-7f8f-b035-f63b807c21cb:cancel-segment"
+        },
+        {
+          "type": "RELEASE_CAPACITY",
+          "status": "PLANNED",
+          "maxRetries": 2,
+          "completedAt": null,
+          "externalRef": null,
+          "failureReason": null,
+          "targetContext": "seg-01a0c750-05c8-7000-865d-2713a2e319ac",
+          "idempotencyKey": "post-sales:01a0cb62-0823-7f8f-b035-f63b807c21cb:release-capacity"
+        },
+        {
+          "type": "REQUEST_REFUND",
+          "status": "PLANNED",
+          "maxRetries": 1,
+          "completedAt": null,
+          "externalRef": null,
+          "failureReason": null,
+          "targetContext": "payment:refund",
+          "idempotencyKey": "post-sales:01a0cb62-0823-7f8f-b035-f63b807c21cb:refund"
+        },
+        {
+          "type": "APPLY_RESULT",
+          "status": "PLANNED",
+          "maxRetries": 0,
+          "completedAt": null,
+          "externalRef": null,
+          "failureReason": null,
+          "targetContext": "ord-01a0cb60-c339-7053-bf38-5f62b7636253",
+          "idempotencyKey": "post-sales:01a0cb62-0823-7f8f-b035-f63b807c21cb:apply-result"
+        }
+      ],
+      "caseId": "01a0cb62-0823-7f8f-b035-f63b807c21cb",
+      "status": "EXECUTING",
+      "version": 1
+    }
+  }
+}
