@@ -54,12 +54,16 @@ def test_report_response_snapshots_events_and_replay_share_canonical_type():
                     assert result["disruption"]["classification"]["type"] == disruption_type
                     assert result["incident"]["disruptionType"] == disruption_type
                     assert result["recoveryCases"][0]["affectedScope"]["disruptionType"] == disruption_type
+                    assert result["recoveryCases"][0]["status"] == "AWAITING_USER_CHOICE"
+                    assert result["recoveryCases"][0]["optionSet"]["requiresUserChoice"] is True
+                    assert {option["optionType"] for option in result["recoveryCases"][0]["optionSet"]["options"]} == {"WAIT", "REFUND", "COMPENSATION", "MANUAL"}
                     assert result["serviceAlert"]["disruptionType"] == disruption_type
                     with pool.connection() as conn:
                         events_before = conn.execute("SELECT count(*) FROM outbox").fetchone()[0]
                         persisted_case = conn.execute("SELECT data FROM recovery_case_snapshots WHERE id=%s", (result["recoveryCases"][0]["caseId"],)).fetchone()[0]
                         declared = conn.execute("SELECT envelope->'payload' FROM outbox WHERE envelope->>'eventType'='DisruptionDeclared' AND envelope->'payload'->>'disruptionId'=%s", (result["disruption"]["disruptionId"],)).fetchone()[0]
                     assert persisted_case["affectedScope"]["disruptionType"] == disruption_type
+                    assert persisted_case["status"] == "AWAITING_USER_CHOICE"
                     assert declared["type"] == disruption_type
                     with TestClient(app()) as client:
                         replay = client.post("/api/v1/disruptions", json=body, headers={"Idempotency-Key": key})

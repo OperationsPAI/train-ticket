@@ -394,7 +394,7 @@ class DisruptionRecoveryService:
             events.append(_envelope("RecoveryCaseOpened", case.caseId, 1, {"caseId": case.caseId, "incidentId": incident.incidentId, "disruptionId": disruption_id, "journeyOrderId": order_id, "affectedScope": dict(case.affectedScope), "openedAt": rfc3339_utc(at), "status": "OPENED"}, correlation_id, causation_id, at))
             case = case.assess(at)
             reaccommodation = _reaccommodation_from_report(data, at)
-            wait_only = reaccommodation is None and (order_id.endswith("0") or str(data.get("autoRecovery") or "").upper() == "WAIT")
+            wait_only = reaccommodation is None and str(data.get("autoRecovery") or "").upper() == "WAIT"
             option_set = build_option_set(case.caseId, order_id, segment, at, prefixed_uuid7("ros"), tuple(prefixed_uuid7("rop") for _ in range(4)), wait_only, reaccommodation)
             refund_scope = data.get("refundScope")
             if isinstance(refund_scope, Mapping) and not wait_only:
