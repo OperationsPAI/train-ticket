@@ -602,6 +602,7 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
         Money captured = money(payload.get("capturedAmount"), "capturedAmount");
         if("change".equals(payload.get("purpose"))) {
             orderId=changeOrder(envelope,payload,captured);
+            service.lockOrder(orderId);
             paymentIntentOrderReferences.save(paymentIntentId,orderId);
             var existing=serviceRevenue(orderId).stream().filter(item->paymentIntentId.equals(item.orderItemId()) && "change-payment".equals(item.componentCode())).findFirst();
             if(existing.isPresent()) {
@@ -714,6 +715,10 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
     private void applyPostSales(EventEnvelope envelope, Map<String, Object> payload) {
         String orderId = text(payload, "orderId");
         String caseId = text(payload, "caseId");
+        if("CHANGE".equals(payload.get("caseType"))) {
+            applyChangeFinance(envelope,orderId,caseId);
+            return;
+        }
         Money refund = projections.findApprovedRefund(caseId)
             .orElseThrow(() -> new OutOfOrderEventException("PostSalesApplied received before PostSalesApproved refund amount"));
         if (refund.isZero()) {
@@ -770,6 +775,59 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             causationIdOrEventId(envelope),
             envelope.correlationId()
         );
+    }
+
+    private void applyChangeFinance(EventEnvelope envelope,String orderId,String caseId) {
+        if(changePayments==null)throw new IllegalStateException("change payment facts client is required");
+        var change=changePayments.read("post-sales","/api/v1/post-sales-cases/"+caseId,envelope.correlationId());
+        if(!caseId.equals(change.path("caseId").asText()) || !orderId.equals(change.path("journeyOrderId").asText())
+            || !"CHANGE".equals(change.path("caseType").asText()) || !"APPLIED".equals(change.path("status").asText()))throw new DomainRuleViolation("applied change financial reference mismatch");
+        service.lockOrder(orderId);
+        Money expected=jsonMoney(change.path("decision").path("refundableAmount"));
+        Money due=jsonMoney(change.path("decision").path("amountDue"));
+        var revenues=serviceRevenue(orderId);
+        if(!due.isZero()) {
+            String paymentId=change.path("changeOperations").path("difference-payment").path("paymentIntentId").asText();
+            if(!orderId.equals(changePayments.orderFor(caseId,paymentId,due,envelope.correlationId())))throw new DomainRuleViolation("change payment belongs to another order");
+            var payment=changePayments.read("payment","/api/v1/payment-intents/"+paymentId,envelope.correlationId());
+            if(!"CAPTURED".equals(payment.path("status").asText()) || !due.equals(jsonMoney(payment.path("capturedAmount"))))throw new OutOfOrderEventException("change difference is not captured");
+            var recognition=revenues.stream().filter(item->paymentId.equals(item.orderItemId()) && "change-payment".equals(item.componentCode())).findFirst()
+                .orElseThrow(()->new OutOfOrderEventException("change payment revenue is not assigned to the original order"));
+            if(!recognition.amount().equals(due))throw new DomainRuleViolation("change difference recognition amount mismatch");
+        }
+        var refunds=changePayments.read("payment","/api/v1/refunds?businessCaseRef="+caseId,envelope.correlationId());
+        if(!refunds.path("items").isArray() || refunds.path("total").asInt(-1)!=refunds.path("items").size())throw new DomainRuleViolation("change refund list is incomplete");
+        Money total=Money.zero(expected.currency());
+        var refs=new java.util.HashSet<String>();
+        var matched=new java.util.LinkedHashMap<String,RevenueRecognition>();
+        var amounts=new java.util.LinkedHashMap<String,Money>();
+        for(var refund:refunds.path("items")) {
+            String refundId=refund.path("refundId").asText(),paymentId=refund.path("paymentIntentId").asText();
+            if(refundId.isBlank() || !refs.add(refundId) || !caseId.equals(refund.path("businessCaseRef").asText()))throw new DomainRuleViolation("change refund identity mismatch");
+            if(!"SETTLED".equals(refund.path("status").asText()))throw new OutOfOrderEventException("change refund has not settled");
+            Money amount=jsonMoney(refund.path("amount"));
+            var facts=changePayments.read("payment","/api/v1/internal/payment-intents/"+paymentId+"/captured-facts",envelope.correlationId());
+            var sourceIds=new java.util.HashSet<String>();
+            facts.path("events").forEach(event->sourceIds.add(event.path("eventId").asText()));
+            var recognition=revenues.stream().filter(item->sourceIds.contains(item.sourceEventId())).findFirst()
+                .orElseThrow(()->new OutOfOrderEventException("refunded payment revenue is not assigned to this order"));
+            if(!recognition.amount().equals(jsonMoney(facts.path("capturedAmount"))) || jsonMoney(facts.path("refundedAmount")).compareTo(amount)<0)throw new DomainRuleViolation("refund exceeds its actual payment facts");
+            matched.put(refundId,recognition);amounts.put(refundId,amount);total=total.plus(amount);
+        }
+        if(!total.equals(expected))throw new DomainRuleViolation("settled change refunds differ from approved total");
+        for(String refundId:matched.keySet()) {
+            var recognition=matched.get(refundId);
+            int first=recognition.domainEvents().size();
+            recognition.reverse("change fare difference refunded",refundId,amounts.get(refundId),clock.instant(),causationIdOrEventId(envelope),causationIdOrEventId(envelope),envelope.correlationId());
+            if(recognition.domainEvents().size()>first)service.saveAndPublish(recognition,first);
+        }
+        service.recordChangeFee(orderId,jsonMoney(change.path("decision").path("changeAssessment").path("changeFee")),caseId,envelope.correlationId());
+    }
+
+    private static Money jsonMoney(com.fasterxml.jackson.databind.JsonNode node) {
+        if(!node.path("minorUnits").isIntegralNumber() || !node.path("currency").isTextual())throw new DomainRuleViolation("financial money is incomplete");
+        Currency currency=Currency.getInstance(node.path("currency").asText());
+        return new Money(currency,BigDecimal.valueOf(node.path("minorUnits").asLong(),currency.getDefaultFractionDigits()));
     }
 
     private String supplierReferenceForOrder(String orderId) {
