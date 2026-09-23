@@ -85,6 +85,14 @@ class ChangePaymentOwnershipLiveTest {
                 assertEquals(HandlerResult.SUCCESS,tx.execute(status->handler.handle(originalCapture)));
                 for(var recorded:repeated.path("cases")) {
                     var completion=applied(recorded,event.correlationId());
+                    if("REFUND".equals(recorded.path("caseType").asText())) {
+                        var refunds=client.read("payment","/api/v1/refunds?businessCaseRef="+recorded.path("caseId").asText(),event.correlationId());
+                        for(var refund:refunds.path("items")) {
+                            var settled=new EventEnvelope(com.trainticket.platformkit.messaging.PrefixedIds.newEventId(),"RefundSettled",java.time.Instant.now(),event.correlationId(),null,"payment",1,
+                                java.util.Map.of("refundId",refund.path("refundId").asText()));
+                            assertEquals(HandlerResult.SUCCESS,tx.execute(status->handler.handle(settled)));
+                        }
+                    }
                     for(int attempt=0;attempt<2;attempt++)assertEquals(HandlerResult.SUCCESS,tx.execute(status->handler.handle(completion)));
                 }
                 String repeatedOrder=repeated.path("order").path("orderId").asText();
