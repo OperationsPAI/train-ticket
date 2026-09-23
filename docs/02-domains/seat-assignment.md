@@ -1,241 +1,105 @@
 # Seat Assignment Domain Design
 
-## Metadata
+更新日期：2026 年 9 月 24 日。
+实现位置：[services/seat-assignment](../../services/seat-assignment/README.md)，使用 Go、PostgreSQL 和 Redis Streams。
 
-| Field | Value |
+## 领域职责
+
+Seat Assignment 管理已发布编组中的具体座位、铺位和站票分配事实。
+Capacity 管理 Hold 和容量准入，Service Plan 管理班次、日期与站序，Entitlement 管理票证。
+Seat Assignment 保存这些领域的引用，为出票提供 `seatRef`，并处理确认、释放和过期消息。
+剩余工作统一见 [docs/TODO.md](../TODO.md)。
+
+当前服务包含 `ContractSeatMap`、`ContractSeatAllocation` 和按 segment/date 保存的 `SeatInventory`、`SeatAssignment` 两组模型。
+内部出票分配接口使用前一组模型及其已发布编组。
+`/seat-assignments` 使用后一组模型，不能将该入口的评分算法、分组请求和本地 Hold 语义直接套用于内部出票接口。
+
+## SeatMap 与分配身份
+
+| 对象 | 当前设计 |
 |---|---|
-| Domain | Seat Assignment |
-| Status | proposed-ddd-baseline |
-| Owner Agent | agentm-seat-assignment |
-| Last Updated | 2026-07-10 |
-| High-Level Inputs | `docs/adr/0003-commercial-realism-scope.md`, `docs/02-domains/capacity-availability.md`, `docs/02-domains/entitlement-ticketing.md`, `docs/02-domains/service-plan.md` |
+| `ContractSeatMap` | 绑定 `scheduledServiceRef`、`serviceDate`、`compositionVersion`、`compositionSeed`、`mappingVersion` 和版本。 |
+| `Coach` / `SeatUnit` | 表达席别、车厢、座位或铺位、位置、相邻分组及可分配状态。 |
+| `ContractSeatAllocation` | 绑定订单、预订、旅客、segment、服务、日期、Capacity Hold、容量引用和半开区间。 |
+| `SeatRef` | 保存分配类型、SeatMap 引用、具体座位展示或 `STANDING` 展示。 |
+| `SeatPreferences` | 保存接受 standing、相邻分组、位置等请求信息和版本。 |
 
-## 1. 领域目标
+编组由确定性的 SIM seed 生成，支持 `CRH380A` 座席和 `SLEEPER` 铺位等输入。
+它不是实际铁路车辆接口提供的编组。
+SeatMap 标识和单元标识由编组材料确定，同材料重放保留身份。
+已发布 SeatMap 的拓扑不可原地修改；改变供给需要发布新的编组。
+旧分配保留其原 SeatMap 和单元引用。
 
-Seat Assignment 负责在出票时刻回答“具体哪个座/铺”。Capacity & Availability 管“有多少张”、段级 Hold/Confirmed Occupancy 和超卖不变量；本域只在已有容量预留之上，为旅客分配具体 SeatUnit、卧铺铺位或明确的 `standing` 无座语义，并在退票、改签、出票失败和取消时释放回座位池。
+内部新分配要求已有适用的 `PUBLISHED` SeatMap。
+选择最多读取一百份 published maps，数量超过该限制会返回冲突，避免在不完整集合上选择。
+同一服务和日期的分配在 PostgreSQL 事务 advisory lock 内读取有效占用并保存结果。
+具体座位的冲突判定使用 `[fromSeq,toSeq)`，相邻区间允许复用。
 
-独立建模原因：座位图随车辆编组版本变化，连座与卧铺偏好需要自己的求解和降级解释；Entitlement 需要稳定座位展示事实但不应拥有座位冲突判断；Service Plan 拥有计划和站序但不拥有座位占用。
+## Standing 政策
 
-## 2. 边界
+[Standing capacity policy](../08-contracts/standing-capacity-policy.md) 中的 `standing-second-class-10pct-v1` 政策与 Seat Assignment 准入已发布。
+限额为已发布编组中可分配二等座数量的 10%，向下取整。
+已售二等座仍计入基数，商务座、一等座和铺位不计入。
+缺少二等座编组时拒绝站票分配。
 
-### In Scope
+直接购买站票和接受 standing substitution 均占用同一限额。
+分配记录包含政策版本、基数、比例、限额和原编组引用。
+站票的 `allocationType` 与 `displayLabel` 均为 `STANDING`，没有 `seatUnitRef`、`coachNo` 或 `seatNo`。
+站票是成功分配结果，不能显示为座位待定。
 
-- 版本化 `SeatMap`：按 `scheduledServiceRef`、运行日期、编组版本、车厢、席别和 SeatUnit 建模。
-- `SeatAllocation`：绑定 `segmentBookingId`、`travelerRef`、Capacity hold/occupancy 引用和站序半开区间 `[fromSeq,toSeq)`。
-- 同一 SeatUnit 在重叠站段不可重复分配；相邻不重叠站段可复用。
-- `AdjacencyGroup` 连座/同车厢/同排/相邻铺偏好及降级解释。
-- 卧铺上/中/下铺、同隔间、照护关系等偏好求解。
-- `StandingAllocation`：有容量预留但无具体座位时的无座票语义。
-- 退票、改签、取消、出票失败、Entitlement 作废后的座位释放、重分配和审计账本。
-- 座位图、座位占用区间、分配结果、连座结果、铺位偏好结果和客服时间线读模型。
+准入检查统计区间内最大同时 standing 占用，并包括缺少政策元数据的历史有效站票。
+释放或过期后可重新使用名额。
+编组限额减少到已有占用以下时拒绝新增分配，已有票证保持其记录。
+当前 Seat Assignment 检查自身有效分配；合并尚未分配座位的 Capacity Hold 属于未提交、未部署的 Capacity 联合 supply 实现。
+Booking coordinated 行为尚未启用。
 
-### Out of Scope
+## 内部分配与重放
 
-- 不计算余票、Quota、AvailabilitySnapshot、Hold 或超卖保护；归 Capacity & Availability。
-- 不拥有 Service Plan、ScheduledService、ServiceSegment、StopSequence 或计划发布。
-- 不创建 JourneyOrder、Booking Saga、PaymentIntent 或 SegmentBooking 商业状态。
-- 不签发、作废、冻结 Entitlement；只提供座位展示事实。
-- 不定价、不判断退改手续费、实名资格、风控或通知渠道。
-- 不接真实铁路/第三方选座网络；外部方一律 SIM/ACL。
-- 本任务只写设计文档，不新增 `docs/08-contracts` 或代码。
+`POST /api/v1/internal/seat-allocations` 接受一个旅客的预订、订单、服务、日期、席别、区间、Hold、容量引用、用途、到期时间及 preferences。
+用途支持 `INITIAL`、`REPLACEMENT`、`MANUAL_RECOVERY`、`PROVIDER_REBUILD` 和 `DISRUPTION_REPLACEMENT`。
+同一有效 `segmentBookingId` 重放时，引用、区间、原请求席别、用途、preferences 和到期时间必须一致。
+接受 standing substitution 的结果保留 `requestedClassRef` 与 `issuePurpose`，重放不会重复占用站票名额。
 
-## 3. 统一语言补充
+内部选择器按可分配单元过滤占用和 `avoidSeatUnitRefs`，并尝试满足已有同组分配的车厢、排或相邻分组要求。
+无法满足相邻要求时保留 `NO_ADJACENT_BLOCK` 解释。
+它按单个旅客逐次分配，没有一次原子分配整个同行组的保证。
+位置和铺位 preferences 会被校验并记录，但当前内部选择器没有使用全部位置字段进行评分。
+`AdjacencyGroupCreated` 等消息由该次分配生成，不代表独立持久化的完整分组求解工作流。
 
-| Term | Definition | Notes |
-|---|---|---|
-| `SeatMap` | 某计划服务、运行日、编组版本下的座位/铺位拓扑。 | 发布版本不可原地覆盖。 |
-| `SeatMapVersion` | SeatMap 不可变版本。 | 历史分配必须可用旧版本解释。 |
-| `VehicleComposition` | 车厢序列、车型、席别、SeatUnit 摘要。 | 来源 Service Plan/SIM ACL。 |
-| `Coach` | 编组中的车厢。 | 含 `coachNo`、席别、可分配标记。 |
-| `SeatUnit` | 可分配座位或铺位。 | 无座不用虚拟 SeatUnit。 |
-| `BerthPosition` | 卧铺位置。 | `UPPER`、`MIDDLE`、`LOWER`、`SIDE_UPPER`、`SIDE_LOWER`。 |
-| `SeatAllocation` | 旅客在站段上的座位/铺位分配。 | 必须绑定容量引用。 |
-| `StandingAllocation` | 无座分配。 | 是成功语义，不是失败。 |
-| `AllocationInterval` | 分配覆盖的站序半开区间。 | 与 Capacity `StationInterval` 一致。 |
-| `AdjacencyGroup` | 同行旅客连座/相邻铺请求和结果。 | 记录满足或降级原因。 |
-| `PreferenceProfile` | 座位/铺位偏好快照。 | 偏好不是保证。 |
-| `ReleaseReason` | 释放原因。 | `VOIDED`、`CHANGED`、`ISSUE_FAILED`、`DISRUPTION` 等。 |
+请求中的 `capacityUnitRef` 是关联信息，具体 `seatRef.seatUnitRef` 由本服务选择。
+当前入口检查引用字段和本地重放一致性，没有同步向 Capacity 验证 Hold 的当前状态或建立跨服务原子分配。
+该入口要求 `expiresAt` 非空，但没有以当前时间检查其是否已经过期。
+数量准入与最终座位身份的一致保证不能从字段存在推导。
 
-## 4. 上下游契约
+## 生命周期与消息
 
-仅引用 `docs/08-contracts/` 已存在的上下文、事件、命令或端点；Seat Assignment 新事件/命令只在第 7 节出现。
-
-### Upstream
-
-| Upstream Context | Consumed Contract | Reason |
-|---|---|---|
-| Service Plan | `ServicePlanPublished`, `ServicePlanChanged`; `POST /api/v1/scheduled-services`; `POST /api/v1/service-segments`; `GET /api/v1/scheduled-services/{serviceRef}` | 初始化 SeatMap，取得计划服务、服务段和站点时间。 |
-| Capacity & Availability | `CapacityHeld`, `CapacityHoldConfirmed`, `CapacityReleased`, `CapacityHoldExpired`; `POST /api/v1/capacity-holds`; `POST /api/v1/capacity-holds/{holdId}/confirm`; `POST /api/v1/capacity-holds/{holdId}/release`; `GET /api/v1/capacity-holds/{holdId}` | 分配必须绑定容量预留；释放/过期驱动座位回收。 |
-| Booking Orchestration | `SegmentReservationRequested`, `SegmentCapacityHolding`, `SegmentReservationConfirmed`, `SegmentReservationFailed`, `SegmentBookingCancelled`; `POST /api/v1/internal/booking-sagas`; `POST /api/v1/internal/booking-sagas/{sagaId}/request-reservation`; `POST /api/v1/internal/booking-sagas/{sagaId}/mark-ticketed` | 提供 segmentBookingId、travelerRef 和 Saga 取消/失败事实。 |
-| Entitlement & Ticketing | `EntitlementIssued`, `EntitlementVoided`, `EntitlementIssueFailed`; `POST /api/v1/entitlements`; `POST /api/v1/entitlements/{entitlementId}/void`; `GET /api/v1/entitlements/{entitlementId}` | 出票确认分配；作废/失败释放分配。 |
-| Provider Integration | `ProviderReservationConfirmed`, `ProviderReservationFailed`, `ProviderReservationTimedOut`, `ProviderTicketIssued` | 外部席位/出票结果必须经既有 ACL 归一。 |
-
-### Downstream
-
-| Downstream Context | Published/Used Existing Contract | Reason |
-|---|---|---|
-| Entitlement & Ticketing | `IssueEntitlement` command; `EntitlementIssued` | 出票需要座位展示输入；字段后续契约化，本文不改契约。 |
-| Notification | `ScheduleNotification`, `NotificationScheduled`, `NotificationDispatched`, `NotificationDelivered`, `NotificationFailed`, `NotificationCancelled` | 座位号、无座、连座降级可触发通知；发送归 Notification。 |
-| Booking Orchestration | `SegmentReservationConfirmed`, `SegmentTicketed`, `BookingSagaCompleted`, `BookingSagaFailed` | 分配结果作为 Saga 前置/补偿输入；Saga 状态不归本域。 |
-| Capacity & Availability | `ReleaseHold`, `CapacityReleased`, `CapacityHoldExpired`; `GET /api/v1/capacity-holds/{holdId}` | 座位释放不替代容量释放。 |
-| Customer Service | `AppendTimelineEntry`, `CaseTimelineEntryAppended`; `GET /api/v1/support-cases/{caseId}` | 客服可把座位分配事实追加到工单时间线并查询工单；客服不直接修改本域状态。 |
-| Reporting | `DefineMetric`, `PublishMetricVersion`, `RebuildReadModel`, `ReadModelRebuilt`; `GET /api/v1/metrics/{metricId}`, `GET /api/v1/dashboards/{dashboardId}` | 报表可定义和重建座位相关指标；只读查询和指标定义不反向修改 Seat Assignment。 |
-
-## 5. 聚合设计
-
-| Aggregate Root | Invariants | Commands | Events |
-|---|---|---|---|
-| `SeatMap` | 同一 `scheduledServiceRef + serviceDate + compositionVersion` 只有一个 published 版本；SeatUnit 唯一；不可分配 SeatUnit 不能分配。 | `BuildSeatMap`, `PublishSeatMapVersion`, `RetireSeatMapVersion`, `MarkSeatUnitUnavailable`, `ReopenSeatUnit` | `SeatMapBuilt`, `SeatMapVersionPublished`, `SeatMapVersionRetired`, `SeatUnitUnavailableMarked`, `SeatUnitReopened` |
-| `SeatAllocation` | active 分配必须有容量引用；同 SeatUnit 重叠区间不可重复；Standing 不占 SeatUnit；终态不可普通回退。 | `AllocateSeat`, `AssignStanding`, `ConfirmSeatAllocation`, `ReleaseSeatAllocation`, `ExpireSeatAllocation`, `FailSeatAllocation`, `ReassignSeat` | `SeatAllocated`, `StandingAssigned`, `SeatAllocationConfirmed`, `SeatAllocationReleased`, `SeatAllocationExpired`, `SeatAllocationFailed`, `SeatReassigned` |
-| `AdjacencyGroup` | 成员来自同订单/同行关系；求解记录成功、部分成功或降级；不能越过容量边界。 | `CreateAdjacencyGroup`, `SolveAdjacentAllocation`, `AcceptAdjacencyDegradation`, `CancelAdjacencyGroup` | `AdjacencyGroupCreated`, `AdjacentAllocationSolved`, `AdjacencyDegradationAccepted`, `AdjacencyGroupCancelled` |
-| `BerthPreferenceRequest` | 只适用于 berth SeatMap；同旅客同 segmentBooking 只有一个 active preference；必须记录匹配/降级。 | `RecordBerthPreference`, `ApplyBerthPreference`, `CancelBerthPreference` | `BerthPreferenceRecorded`, `BerthPreferenceApplied`, `BerthPreferenceCancelled` |
-| `SeatAllocationLedger` | 分配、确认、释放、失败、人工修正均追加；同幂等材料只入账一次；账本不可改写。 | `AppendSeatAllocationLedgerEvent`, `AppendSeatAllocationCorrection`, `DetectSeatAllocationDiscrepancy` | `SeatAllocationLedgerAppended`, `SeatAllocationCorrectionAppended`, `SeatAllocationDiscrepancyDetected` |
-
-区间冲突判断与 Capacity 一致：`existingFromSeq < requestToSeq && requestFromSeq < existingToSeq`。A-C 与 C-E 允许复用；A-C 与 B-D 拒绝；A-E 与 B-C 拒绝。
-
-## 6. 状态机
-
-### `SeatMap` 状态机
-
-| State | Meaning | Next |
-|---|---|---|
-| `Draft` | 构建中，不可分配。 | `Validating`, `Failed` |
-| `Validating` | 校验 SeatUnit、车厢、席别和站序兼容。 | `Published`, `Failed` |
-| `Published` | 新分配权威版本。 | `Superseded`, `Retired` |
-| `Superseded` | 被新版本替代，解释历史分配。 | `Retired` |
-| `Retired` | 服务结束或撤回，仅查询安息。 | - |
-| `Failed` | 构建/校验失败，不可逆。 | - |
-
-### `SeatAllocation` 状态机
-
-| State | Meaning | Next |
-|---|---|---|
-| `Requested` | 收到分配命令，校验容量引用和偏好。 | `Allocated`, `Standing`, `Failed`, `Missed` |
-| `Allocated` | 已临时占用具体 SeatUnit。 | `Confirmed`, `Released`, `Expired`, `Allocated`, `Missed` |
-| `Standing` | 已分配无座。 | `Confirmed`, `Released`, `Expired`, `Missed` |
-| `Confirmed` | 出票后成为凭证展示事实。 | `Released` |
-| `Released` | 已释放回座位池，终态可查询安息。 | - |
-| `Expired` | Hold/TTL 过期，终态可查询安息。 | - |
-| `Failed` | 分配失败，终态不可逆。 | - |
-| `Missed` | 晚到事实、已过窗口或 Saga 已终结，终态不可逆。 | - |
-
-规则：`Confirmed` 禁止被普通过期任务释放；`Released`/`Expired`/`Failed`/`Missed` 需要新 allocationId 才能重新开始。Failed/Missed/Cancelled 类不可逆，不通过人工 SQL 回滚；人工恢复创建新事实并引用原失败事件。
-
-### `AdjacencyGroup` 状态机
-
-| State | Meaning | Next |
-|---|---|---|
-| `Open` | 请求已创建。 | `Solving`, `Cancelled` |
-| `Solving` | 正在求解。 | `Satisfied`, `PartiallySatisfied`, `Failed` |
-| `Satisfied` | 全部满足。 | `Closed` |
-| `PartiallySatisfied` | 部分满足并记录降级。 | `Closed` |
-| `Failed` | 无可接受组合，不可逆。 | - |
-| `Cancelled` | 上游取消，不可逆。 | - |
-| `Closed` | 归档，仅查询。 | - |
-
-## 7. 命令和领域事件
-
-以下为本域新增命令/事件，尚未写入 `docs/08-contracts/`。后续契约化必须使用事件 envelope、camelCase JSON、RFC3339 UTC、SCREAMING_SNAKE 枚举和 UUID-v7 ID。
-
-| Command | Aggregate | Event | Idempotency Key |
-|---|---|---|---|
-| `BuildSeatMap` | `SeatMap` | `SeatMapBuilt` / `SeatMapBuildFailed` | `scheduledServiceRef + serviceDate + compositionVersion + buildSourceRef` |
-| `PublishSeatMapVersion` | `SeatMap` | `SeatMapVersionPublished` | `seatMapId + seatMapVersion + publishRequestId` |
-| `RetireSeatMapVersion` | `SeatMap` | `SeatMapVersionRetired` | `seatMapId + seatMapVersion + retireReason + sourceEventId` |
-| `MarkSeatUnitUnavailable` | `SeatMap` | `SeatUnitUnavailableMarked` | `seatMapId + seatMapVersion + seatUnitRef + unavailableReason + sourceEventId` |
-| `ReopenSeatUnit` | `SeatMap` | `SeatUnitReopened` | `seatMapId + seatMapVersion + seatUnitRef + reopenReason + sourceEventId` |
-| `CreateAdjacencyGroup` | `AdjacencyGroup` | `AdjacencyGroupCreated` | `journeyOrderId + segmentRef + sortedTravelerRefs + preferenceVersion` |
-| `RecordBerthPreference` | `BerthPreferenceRequest` | `BerthPreferenceRecorded` | `segmentBookingId + travelerRef + preferenceVersion` |
-| `CancelBerthPreference` | `BerthPreferenceRequest` | `BerthPreferenceCancelled` | `berthPreferenceRequestId + cancelReason + sourceEventId` |
-| `AllocateSeat` | `SeatAllocation` | `SeatAllocated` / `SeatAllocationFailed` | `segmentBookingId + travelerRef + capacityHoldId + allocationPurpose` |
-| `AssignStanding` | `SeatAllocation` | `StandingAssigned` | `segmentBookingId + travelerRef + capacityHoldId + standingPolicyVersion` |
-| `SolveAdjacentAllocation` | `AdjacencyGroup` | `AdjacentAllocationSolved` / `SeatAllocationFailed` | `adjacencyGroupId + seatMapVersion + capacityHoldSetHash + solveAttemptNo` |
-| `AcceptAdjacencyDegradation` | `AdjacencyGroup` | `AdjacencyDegradationAccepted` | `adjacencyGroupId + acceptedByRef + degradationVersion + sourceEventId` |
-| `CancelAdjacencyGroup` | `AdjacencyGroup` | `AdjacencyGroupCancelled` | `adjacencyGroupId + cancelReason + sourceEventId` |
-| `ApplyBerthPreference` | `BerthPreferenceRequest`, `SeatAllocation` | `BerthPreferenceApplied` / `SeatAllocationFailed` | `berthPreferenceRequestId + allocationAttemptId` |
-| `ConfirmSeatAllocation` | `SeatAllocation` | `SeatAllocationConfirmed` | `seatAllocationId + entitlementId + issueEventId` |
-| `ReleaseSeatAllocation` | `SeatAllocation` | `SeatAllocationReleased` | `seatAllocationId + releaseReason + sourceEventId` |
-| `ExpireSeatAllocation` | `SeatAllocation` | `SeatAllocationExpired` | `seatAllocationId + capacityHoldExpiredEventId` |
-| `FailSeatAllocation` | `SeatAllocation` | `SeatAllocationFailed` | `seatAllocationId + failureReason + sourceEventId` |
-| `MarkSeatAllocationMissed` | `SeatAllocation` | `SeatAllocationMissed` | `seatAllocationId + missedReason + sourceEventId` |
-| `ReassignSeat` | `SeatAllocation` | `SeatReassigned` | `seatAllocationId + oldSeatUnitRef + newSeatUnitRef + reassignCaseId` |
-| `AppendSeatAllocationLedgerEvent` | `SeatAllocationLedger` | `SeatAllocationLedgerAppended` | `seatAllocationId + sourceEventId + ledgerEventType` |
-| `AppendSeatAllocationCorrection` | `SeatAllocationLedger` | `SeatAllocationCorrectionAppended` | `seatAllocationId + correctionCaseId + correctionVersion` |
-| `DetectSeatAllocationDiscrepancy` | `SeatAllocationLedger` | `SeatAllocationDiscrepancyDetected` | `seatMapVersion + detectionRunId` |
-
-语义：`SeatAllocated` 不表示已支付或出票；`StandingAssigned` 不创建伪 SeatUnit；`SeatAllocationReleased` 不替代 `CapacityReleased`；`SeatAllocationFailed` 原因至少覆盖 `NO_COMPATIBLE_SEAT`、`OVERLAPPING_ALLOCATION`、`CAPACITY_REFERENCE_MISSING`、`PREFERENCE_UNSATISFIABLE`、`SEAT_MAP_VERSION_STALE`。
-
-幂等材料折叠 Notes：命令先规范化材料（排序 travelerRefs、规范 interval、SeatUnitRef、枚举和 sourceEventId），仓库以 `idempotencyKey + materialHash` 裁决；同 key 同 material 返回原结果，同 key 不同 material 产生冲突失败事件。`allocationId`、`seatMapId`、`adjacencyGroupId`、`ledgerEventId` 由仓库生成 UUID-v7。
-
-## 8. 策略和 Saga 参与点
-
-- 出票时刻分配：搜索、报价和普通 Hold 阶段不承诺具体座位；Booking Orchestration 在容量 Hold/确认条件满足、调用 `IssueEntitlement` 前请求分配。成功后座位号进入出票展示输入；失败且不接受 standing 时由 Saga 重试、降级或补偿。
-- Saga 输入：`CapacityHeld` 校验容量引用并分配；`EntitlementIssued` 确认分配；`EntitlementIssueFailed`、`SegmentReservationFailed`、`SegmentBookingCancelled` 释放未确认分配；`EntitlementVoided` 释放已确认分配。
-- 连座策略：硬约束为容量引用有效、SeatMapVersion 可用、席别匹配、站段不重叠；软偏好按同车厢、同排相邻、靠窗/过道、上下铺组合降级。每次降级记录 `degradationReason`。
-- 卧铺策略：按 `LOWER`/`MIDDLE`/`UPPER`、同隔间、相邻铺、照护关系过滤。偏好不是保证；无匹配时按策略降级并保留解释。
-- Standing 策略：容量允许但无 SeatUnit 或业务明确销售无座时创建 `StandingAllocation`；不占座、不参与连座、不展示为“座位待定”。
-- 改签/退票：新段先分配新座，旧 Entitlement 作废后释放旧座；若新票失败，旧 confirmed 分配不得自动释放。Capacity 释放仍由 `ReleaseHold`/`CapacityReleased` 链路完成。
-- Service Plan 变化：`ServicePlanPublished` 和 `ServicePlanChanged` 触发 SeatMap 构建/重建；影响已分配座位时只发布差异或重分配事实，不直接取消订单或票证。
-
-## 9. 读模型
-
-| Read Model | Source Events | Consumers |
-|---|---|---|
-| `SeatMapView` | `SeatMapBuilt`, `SeatMapVersionPublished`, `SeatUnitUnavailableMarked`, `SeatUnitReopened` | 运营、客服、分配策略、未来选座 UI。 |
-| `SeatOccupancyIntervalView` | `SeatAllocated`, `StandingAssigned`, `SeatAllocationConfirmed`, `SeatAllocationReleased`, `SeatAllocationExpired`, `SeatReassigned` | 冲突检查、排障、上座区间分析。 |
-| `SeatAssignmentBySegmentBookingView` | SeatAllocation lifecycle events + `EntitlementIssued` / `EntitlementVoided` refs | Entitlement 展示、Booking Saga、客服。 |
-| `AdjacencyGroupResultView` | `AdjacencyGroupCreated`, `AdjacentAllocationSolved`, `AdjacencyDegradationAccepted`, `SeatAllocationFailed` | 同行订单、客服解释、通知变量。 |
-| `BerthPreferenceOutcomeView` | `BerthPreferenceRecorded`, `BerthPreferenceApplied`, `SeatAllocationFailed` | 卧铺偏好展示、客服、运营统计。 |
-| `StandingAllocationView` | `StandingAssigned`, `SeatAllocationConfirmed`, `SeatAllocationReleased` | 凭证展示、通知、无座占比。 |
-| `SeatAllocationTimeline` | all Seat Assignment events plus consumed event refs | Customer Service、Admin & Audit、故障回放。 |
-| `SeatAllocationDiscrepancyView` | ledger and discrepancy events | 运营排障、Reporting、人工纠错。 |
-
-读模型不可反向推进聚合；客服换座或释放必须发命令；Reporting 只消费脱敏维度。
-
-## 10. 外部系统和防腐层
-
-Seat Assignment 第一阶段无真实外部依赖。所有外部方一律模拟，遵守 ADR-0003 “SIMULATED behind ACLs, no real integrations” 裁定，并对照 Provider Integration：外部语言不进入核心聚合，raw 模拟输入只保留在 ACL 审计日志，核心模型只接收平台语言。
-
-### Seat Composition SIM Gateway
-
-| Capability | Deterministic Behavior | Protection Rule |
-|---|---|---|
-| 导入编组座位图 | 给定 `scheduledServiceRef + serviceDate + compositionSeed`，生成稳定车厢序列、SeatUnit、席别和铺位。 | 无真实网络、无真实铁路接口。 |
-| 模拟编组变更 | 同 seed 加 `changeScenario` 确定性产生加挂、减挂、车厢替换、座位禁用。 | 先映射为 SeatMap draft，再由聚合校验发布。 |
-| 模拟不可分配座位 | 基于 seed 选择固定 SeatUnit 标为维护、保留或故障。 | 必须走 `MarkSeatUnitUnavailable` 和审计。 |
-| 模拟外部席位号 | 产生可重复 externalSeatCode，并经 ACL 映射到 SeatUnitRef。 | 外部编码不可直接成为核心 ID。 |
-
-SIM 必须可种子化；相同 seed、输入版本和 mapping version 产生相同 SeatMap；错误场景也由 seed 决定。禁止真实凭证、真实供应商账号、真实网络和不可复现随机熵。
-
-ACL：Service Plan ACL 转为 `VehicleCompositionSeed`、`StopSequenceSnapshot`；Capacity ACL 转为 `CapacityReservationRef`，不复制库存数量逻辑；Entitlement ACL 将 `EntitlementIssued`/`EntitlementVoided`/`EntitlementIssueFailed` 转为确认或释放触发；Notification ACL 只提供变量，发送和回执由 Notification 处理。
-
-## 11. 当前服务迁移影响
-
-| Current Service | Migration Impact |
+| 输入或操作 | 当前结果 |
 |---|---|
-| `ts-seat-service` | 从“余票 + 随机座位 + 订单反推”拆分：余票/Hold 归 Capacity；座位图、分配和释放归 Seat Assignment。 |
-| `ts-preserve-service`, `ts-preserve-other-service` | 订票成功不能随机写座位；Booking 在出票前请求分配，再进入 `IssueEntitlement`。 |
-| `ts-order-service`, `ts-order-other-service` | 订单只保存 seatAllocationId/entitlementId 投影，不保存座位权威状态。 |
-| `ts-cancel-service` | 取消/退票由 Entitlement/Post Sales 事实驱动释放座位；退款和容量释放归原上下文。 |
-| `ts-rebook-service` | 新段先分配新座；旧 Entitlement 作废后释放旧座。 |
-| `ts-travel-service`, `ts-travel2-service` | 编组和站序输入通过 Service Plan/SIM ACL，不由查询服务拼装座位图。 |
-| `ts-admin-travel-service`, `ts-admin-basic-info-service` | 编组、座位禁用、车厢调整必须走 SeatMap 版本和审批命令。 |
-| `ts-admin-order-service` | 人工换座、释放、纠错必须调用命令并写 Ledger。 |
-| `ts-notification-service` | 消费座位分配/变更事实或投影，发送座位号、无座、降级通知。 |
-| `ts-execute-service` | 检票/进站/使用事实不释放座位。 |
+| 建立具体座位或铺位分配 | `ALLOCATED`，发布 `SeatAllocated`。 |
+| 建立站票分配 | `STANDING`，发布 `StandingAssigned`。 |
+| `EntitlementIssued` / `TicketIssued` | 确认匹配分配，发布确认事实。 |
+| `EntitlementVoided` / `EntitlementIssueFailed` / `PostSalesApplied` | 处理匹配分配的释放。 |
+| `CapacityReleased` | 按 Hold 身份释放匹配分配。 |
+| `CapacityHoldExpired` | 将可过期分配转为 `EXPIRED`，已确认分配不由普通到期操作释放。 |
 
-迁移切片：先旁路投影旧数据并检测差异；接入 SIM 编组生成 SeatMapVersion；新订单在 Capacity Hold 后接入 `AllocateSeat`；接入 Entitlement 和 Capacity 释放闭环；开启连座/卧铺偏好；最后移除旧写路径。
+内部 allocation 状态为 `ALLOCATED`、`STANDING`、`CONFIRMED`、`RELEASED` 和 `EXPIRED`。
+失败请求通过 HTTP 错误返回，不能假定每次失败都创建 `FAILED` 或 `MISSED` 分配记录。
+释放座位与释放 Capacity Hold 分别记录，座位事件不代替库存释放事实。
+当前订阅流为 Booking、Entitlement、Post Sales 和 Capacity；Service Plan 发布本身没有自动构建 SeatMap 的订阅处理。
 
-## 12. 验收标准
+## HTTP 与持久化
 
-- 聚合所有权明确：`SeatMap`、`SeatAllocation`、`AdjacencyGroup`、`BerthPreferenceRequest`、`SeatAllocationLedger` 归本域。
-- 严格区分 Capacity 管“有多少张”、本域管“具体哪个座/铺”；分配必须绑定段级 Hold/occupancy。
-- SeatMap 版本化且历史可解释；发布后不原地覆盖。
-- 同一 SeatUnit 在不重叠站段可复用，重叠站段不可重复分配。
-- `StandingAllocation` 表达无座/超员语义，不伪造 SeatUnit。
-- 连座和卧铺偏好有降级解释且不越过容量、席别、区间硬约束。
-- 状态机列明终态可查询安息；`Failed`、`Missed`、`Cancelled` 不可逆。
-- 命令含幂等键，材料折叠和 UUID-v7 仓库裁决已写明。
-- 上下游表只引用既有契约；新命令/事件只在第 7 节。
-- 外部方一律 SIM：可种子化、确定性、无真实网络、无真实凭证。
-- 只新增设计文档，不新增契约文档、代码或服务目录；`make check` 应通过。
+| 接口集合 | 用途 |
+|---|---|
+| `/api/v1/seat-maps` | 创建、分页查询和读取 SeatMap。 |
+| `/api/v1/seat-maps/{seatMapId}/publish`、`/retire` | 带预期版本的发布和停用。 |
+| SeatMap 下的 `/seat-units/{seatUnitRef}/mark-unavailable`、`/reopen` | 修改未发布编组中的单元可分配状态。 |
+| `/api/v1/internal/seat-allocations` | 内部出票前分配。 |
+| `/api/v1/seat-allocations` | 按预订查询或按分配标识读取结果。 |
+| `/api/v1/internal/capacity-facts` | 读取服务、日期和席别对应的已发布供给及有效占用。 |
+| `/api/v1/seat-assignments` | segment/date 座位请求、可用性、确认和释放。 |
+
+`capacity-facts` 对 `STANDING` 返回空 `units`、政策及有效站票，对具体席别返回可分配单元和相应历史分配。
+SeatMap、allocation、inventory、幂等记录、处理过的事件和 outbox 使用 PostgreSQL 保存。
+接口字段见 [Seat Assignment HTTP API](../08-contracts/api/seat-assignment.md)。
+源码与已有验证范围见 [seat-assignment-impl.md](../10-domain-enrichment/seat-assignment-impl.md)。
