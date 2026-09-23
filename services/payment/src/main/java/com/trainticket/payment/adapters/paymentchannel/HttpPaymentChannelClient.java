@@ -64,6 +64,20 @@ public final class HttpPaymentChannelClient implements PaymentChannelClient {
         return new HandoffOrder(out.channelOrderId(), text(submitted, "status"), out.channelTransactionId(), out);
     }
 
+    public JsonNode refundFacts(String channelRefundId) {
+        return restClient.get().uri("/api/v1/channel-refunds/"+channelRefundId).exchange((request,response)->{
+            if(!response.getStatusCode().is2xxSuccessful())throw new IllegalStateException("channel refund facts unavailable: "+response.getStatusCode());
+            return mapper.readTree(response.getBody());
+        });
+    }
+
+    public HandoffRefund resumeRefund(JsonNode facts,String submitKey,String correlation,ChannelRef ref) {
+        JsonNode submitted=post("/api/v1/channel-refunds/"+text(facts,"channelRefundId")+"/submit",submitKey,correlation,
+            Map.of("expectedVersion",facts.path("version").asLong(),"requestFingerprint",text(facts,"requestFingerprint")));
+        ChannelRef out=new ChannelRef(ref.channel(),ref.channelOrderId(),text(submitted,"channelRefundId"),ref.channelTransactionId(),optionalText(submitted,"channelRefundTransactionId"),null,ref.faultSeedRef());
+        return new HandoffRefund(out.channelRefundId(),text(submitted,"status"),out.channelRefundTransactionId(),out);
+    }
+
     @Override
     public HandoffRefund handoffRefund(PaymentIntent intent, Refund refund, String refundIdempotencyKey, String submitIdempotencyKey, String correlationId, ChannelRef originalRoute) {
         ChannelRef ref = Objects.requireNonNull(originalRoute, "channelRef is required");
