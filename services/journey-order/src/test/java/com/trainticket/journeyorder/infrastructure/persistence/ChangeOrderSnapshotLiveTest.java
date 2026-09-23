@@ -46,6 +46,15 @@ class ChangeOrderSnapshotLiveTest {
                 restored.applyChange(caseId,offer,segments,items,Money.of("CNY","15.00"),Instant.now());
                 assertEquals(count,restored.orderItems().size());
                 assertEquals(1,restored.timeline().stream().filter(f->"ChangeApplied".equals(f.factType())).count());
+                var refund=mapper.readTree(Files.readString(Path.of(System.getenv("TEST_REFUND_CASE"))));
+                Money penalty=Money.fromMinorUnits(refund.path("decision").path("refundAssessment").path("penaltyAmount").path("minorUnits").asLong(),"CNY");
+                String refundId=refund.path("caseId").asText();
+                restored.applyScopedPostSalesCancellation(segments.stream().map(SegmentOrderSnapshot::segmentRef).toList(),List.of(traveler),refundId,penalty,Instant.now(),"evt-refund","corr-refund");
+                repo.saveOrder(restored,stored.idempotencyKey());
+                var refunded=repo.findOrder(id).orElseThrow().order();
+                assertEquals(Money.of("CNY","15.00").plus(penalty),refunded.monetarySummary().payableTotal());
+                refunded.applyScopedPostSalesCancellation(segments.stream().map(SegmentOrderSnapshot::segmentRef).toList(),List.of(traveler),refundId,penalty,Instant.now(),"evt-refund-replay","corr-refund");
+                assertEquals(1,refunded.orderItems().stream().filter(item->item.orderItemId().equals("post-sales-fee:"+refundId)).count());
             }finally{jdbc.execute("SET search_path TO public");jdbc.execute("DROP SCHEMA "+schema+" CASCADE");}
         }
     }

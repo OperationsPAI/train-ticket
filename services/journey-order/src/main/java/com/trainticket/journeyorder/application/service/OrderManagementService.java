@@ -649,7 +649,9 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
             if(envelope.payload() instanceof Map<?,?> data && data.get("scope") instanceof Map<?,?> scope){
                 var segments=((List<?>)scope.get("segmentRefs")).stream().map(String::valueOf).toList();
                 var travelers=((List<?>)scope.get("travelerRefs")).stream().map(String::valueOf).toList();
-                order.applyScopedPostSalesCancellation(segments,travelers,requiredTextPayload(envelope,"caseId"),envelope.occurredAt(),envelope.eventId(),envelope.correlationId());
+                Money retainedFee=Money.zero(order.monetarySummary().currency());
+                if(data.get("retainedFee") instanceof Map<?,?> fee)retainedFee=Money.fromMinorUnits(((Number)fee.get("minorUnits")).longValue(),String.valueOf(fee.get("currency")));
+                order.applyScopedPostSalesCancellation(segments,travelers,requiredTextPayload(envelope,"caseId"),retainedFee,envelope.occurredAt(),envelope.eventId(),envelope.correlationId());
             } else {
             order.applyPostSalesItemCancellation(
                 textPayload(envelope, "orderItemId", order.orderItems().getFirst().orderItemId()),
