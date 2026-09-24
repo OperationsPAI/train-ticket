@@ -47,6 +47,7 @@ export type NotificationTaskStatus =
   | "Planned"
   | "Authorized"
   | "Delivering"
+  | "Unknown"
   | "Delivered"
   | "Failed"
   | "Cancelled";
@@ -62,11 +63,12 @@ export type DeliveryReceiptOutcome =
   | "Bounced"
   | "Rejected"
   | "Timeout"
+  | "Unknown"
   | "Expired";
 
-export type DeliveryAttemptStatus = "SENT" | "DELIVERED" | "FAILED" | "BOUNCED";
+export type DeliveryAttemptStatus = "SENT" | "DELIVERED" | "FAILED" | "BOUNCED" | "UNKNOWN";
 
-export type NotificationStatus = "QUEUED" | "SENDING" | "SENT" | "DELIVERED" | "FAILED";
+export type NotificationStatus = "QUEUED" | "SENDING" | "SENT" | "DELIVERED" | "FAILED" | "UNKNOWN";
 
 export type NotificationTemplateType =
   | "ORDER_CONFIRMED"
@@ -164,6 +166,9 @@ export type RecordDeliveryReceipt = Readonly<{
   providerMessage?: string;
   recordedAt: Date;
   finalFailure?: boolean;
+  attemptId?: string;
+  messageId?: string;
+  retryAt?: Date;
 }>;
 
 export type CancelNotification = Readonly<{
@@ -264,7 +269,10 @@ export type NotificationDomainEvent =
   | NotificationDispatched
   | NotificationDelivered
   | NotificationFailed
+  | NotificationDeliveryUnknown
   | NotificationCancelled;
+
+export type NotificationDeliveryUnknown = Omit<NotificationFailed, "type"> & Readonly<{ type: "NotificationDeliveryUnknown" }>;
 
 // ─── NotificationTask Aggregate ────────────────────────────────────────────────
 
@@ -293,6 +301,10 @@ export class NotificationTask {
   private constructor(private readonly snapshot: NotificationTaskSnapshot) {
     deepFreeze(this.snapshot);
     Object.freeze(this);
+  }
+
+  static restore(snapshot: NotificationTaskSnapshot): NotificationTask {
+    return new NotificationTask(cloneForSnapshot(snapshot));
   }
 
   static schedule(
@@ -376,7 +388,7 @@ export class NotificationTask {
 
   recordReceipt(
     command: RecordDeliveryReceipt,
-  ): { task: NotificationTask; event: NotificationDelivered | NotificationFailed } {
+  ): { task: NotificationTask; event: NotificationDelivered | NotificationFailed | NotificationDeliveryUnknown } {
     if (this.snapshot.status === "Delivered" || this.snapshot.status === "Cancelled") {
       throw new DomainError(
         "TASK_IN_TERMINAL_STATE",
@@ -389,7 +401,7 @@ export class NotificationTask {
     const receipts = [...this.snapshot.receipts, receipt.toSnapshot()];
 
     const isDelivered = command.outcome === "Delivered";
-    const newStatus: NotificationTaskStatus = isDelivered
+    const newStatus: NotificationTaskStatus = command.outcome === "Unknown" ? "Unknown" : isDelivered
       ? "Delivered"
       : command.finalFailure === false
         ? "Delivering"
@@ -420,10 +432,10 @@ export class NotificationTask {
       return { task: new NotificationTask(newSnapshot), event };
     }
 
-    const event: NotificationFailed = deepFreeze({
-      type: "NotificationFailed" as const,
+    const event: NotificationFailed | NotificationDeliveryUnknown = deepFreeze({
+      type: command.outcome === "Unknown" ? "NotificationDeliveryUnknown" as const : "NotificationFailed" as const,
       eventId: newEventId(),
-      eventType: "NotificationFailed",
+      eventType: command.outcome === "Unknown" ? "NotificationDeliveryUnknown" : "NotificationFailed",
       schemaVersion: 1,
       occurredAt: new Date(command.recordedAt),
       correlationId: this.snapshot.correlationId,
@@ -713,6 +725,9 @@ export type DeliveryReceiptSnapshot = Readonly<{
   providerCode?: string;
   providerMessage?: string;
   recordedAt: Date;
+  attemptId?: string;
+  messageId?: string;
+  retryAt?: Date;
 }>;
 
 export class DeliveryReceipt {
@@ -733,6 +748,9 @@ export class DeliveryReceipt {
       providerCode: command.providerCode,
       providerMessage: command.providerMessage,
       recordedAt: new Date(command.recordedAt),
+      attemptId: command.attemptId,
+      messageId: command.messageId,
+      retryAt: command.retryAt,
     });
 
     return new DeliveryReceipt(snapshot);
