@@ -1,33 +1,47 @@
 package com.trainticket.payment.application;
 
 import com.trainticket.platformkit.messaging.EventEnvelope;
+import com.trainticket.payment.domain.ChannelRef;
 import com.trainticket.payment.domain.DomainRuleViolation;
 import com.trainticket.payment.domain.Money;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.interceptor.TransactionAspectSupport;
+import org.springframework.transaction.support.TransactionTemplate;
 
 @Component
 public class PaymentInboundEventHandler implements EventSubscriber.EventHandler {
     private static final Logger LOGGER = LoggerFactory.getLogger(PaymentInboundEventHandler.class);
+    private static final Set<String> NON_PAYABLE_DECISIONS = Set.of("CHANGE", "COMPENSATION");
 
     private final ConsumedEventDeduplicator deduplicator;
     private final PaymentCommandService paymentCommands;
+    private final TransactionTemplate transactionTemplate;
 
     public PaymentInboundEventHandler(ConsumedEventDeduplicator deduplicator, PaymentCommandService paymentCommands) {
+        this(deduplicator, paymentCommands, Optional.empty());
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public PaymentInboundEventHandler(ConsumedEventDeduplicator deduplicator, PaymentCommandService paymentCommands, Optional<PlatformTransactionManager> transactionManager) {
         this.deduplicator = Objects.requireNonNull(deduplicator, "deduplicator is required");
         this.paymentCommands = Objects.requireNonNull(paymentCommands, "paymentCommands are required");
+        this.transactionTemplate = transactionManager.map(TransactionTemplate::new).orElse(null);
     }
 
     @Override
-    @Transactional
     public HandlerResult handle(EventEnvelope envelope) {
         try {
-            if (!deduplicator.recordIfNew(envelope.eventId())) {
+            if (deduplicator.isProcessed(envelope.eventId())) {
                 return HandlerResult.SUCCESS;
             }
             dispatch(envelope);
@@ -41,10 +55,6 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
             // taxonomy in docs/00-current-status.md, FATAL is reserved for the
             // latter; a conformant event meeting unknown or advanced local state
             // is ack-skipped with a WARN.
-            //
-            // The transaction is still rolled back: the nested command
-            // transaction may already be rollback-only, so nothing can be
-            // committed on this path regardless of classification.
             LOGGER.warn("eventType={} eventId={} rejected by local state; ack-skipped without applying",
                 envelope.eventType(), envelope.eventId(), exception);
             rollbackCurrentTransactionIfActive();
@@ -60,6 +70,37 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
             rollbackCurrentTransactionIfActive();
             return HandlerResult.TRANSIENT_FAILURE;
         }
+    }
+
+    /**
+     * Runs one branch effect and the deduplication record in the same transaction, so a
+     * failure leaves no record behind and the retry processes the event again.
+     */
+    private void applyOnce(EventEnvelope envelope, Runnable effect) {
+        runInTransaction(() -> {
+            effect.run();
+            deduplicator.recordIfNew(envelope.eventId());
+        });
+    }
+
+    /** Records an event that needs no business effect, so a duplicate delivery is skipped. */
+    private void markProcessed(EventEnvelope envelope) {
+        runInTransaction(() -> deduplicator.recordIfNew(envelope.eventId()));
+    }
+
+    private void runInTransaction(Runnable work) {
+        if (transactionTemplate == null) {
+            work.run();
+            return;
+        }
+        transactionTemplate.executeWithoutResult(status -> work.run());
+    }
+
+    private <T> T inTransaction(Supplier<T> work) {
+        if (transactionTemplate == null) {
+            return work.get();
+        }
+        return transactionTemplate.execute(status -> work.get());
     }
 
     private static void rollbackCurrentTransactionIfActive() {
@@ -90,16 +131,14 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
 
     private void handleSegmentReservationRequested(EventEnvelope envelope) {
         InboundEventPayload payload = InboundEventPayload.from(envelope);
-        paymentCommands.recordReservationPaymentRequest(
-            envelope.eventId(),
-            payload.requiredText("segmentBookingId"),
-            payload.requiredText("journeyOrderId"),
-            payload.requiredText("segmentRef"),
-            payload.requiredText("travelerRef"),
-            payload.requiredText("idempotencyKey"),
-            envelope.correlationId(),
-            envelope.occurredAt()
-        );
+        String segmentBookingId = payload.requiredText("segmentBookingId");
+        String journeyOrderId = payload.requiredText("journeyOrderId");
+        String segmentRef = payload.requiredText("segmentRef");
+        String travelerRef = payload.requiredText("travelerRef");
+        String idempotencyKey = payload.requiredText("idempotencyKey");
+        applyOnce(envelope, () -> paymentCommands.recordReservationPaymentRequest(
+            envelope.eventId(), segmentBookingId, journeyOrderId, segmentRef, travelerRef, idempotencyKey,
+            envelope.correlationId(), envelope.occurredAt()));
     }
 
     private void handleChannelOrderSucceeded(EventEnvelope envelope) {
@@ -107,25 +146,20 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
         Money amount = "ChannelOrderRecoveryDetected".equals(envelope.eventType())
             ? payload.requiredMoney("recoveredAmount")
             : payload.requiredMoney("succeededAmount");
-        paymentCommands.captureIntentFromChannel(
-            payload.requiredText("paymentIntentId"),
-            amount,
-            payload.requiredText("channel"),
-            payload.requiredText("channelTransactionId"),
-            payload.requiredText("channelOrderId"),
-            envelope.eventId(),
-            envelope.correlationId()
-        );
+        String paymentIntentId = payload.requiredText("paymentIntentId");
+        String channel = payload.requiredText("channel");
+        String channelTransactionId = payload.requiredText("channelTransactionId");
+        String channelOrderId = payload.requiredText("channelOrderId");
+        applyOnce(envelope, () -> paymentCommands.captureIntentFromChannel(
+            paymentIntentId, amount, channel, channelTransactionId, channelOrderId,
+            envelope.eventId(), envelope.correlationId()));
     }
 
     private void handleChannelOrderFailed(EventEnvelope envelope) {
         InboundEventPayload payload = InboundEventPayload.from(envelope);
-        paymentCommands.failIntentFromChannel(
-            payload.requiredText("paymentIntentId"),
-            envelope.eventType(),
-            envelope.eventId(),
-            envelope.correlationId()
-        );
+        String paymentIntentId = payload.requiredText("paymentIntentId");
+        applyOnce(envelope, () -> paymentCommands.failIntentFromChannel(
+            paymentIntentId, envelope.eventType(), envelope.eventId(), envelope.correlationId()));
     }
 
     private void handleChannelRefundSucceeded(EventEnvelope envelope) {
@@ -133,33 +167,31 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
         Money amount = "ChannelRefundRecoveryDetected".equals(envelope.eventType())
             ? payload.requiredMoney("recoveredAmount")
             : payload.requiredMoney("succeededAmount");
-        paymentCommands.settleRefundFromChannel(
-            payload.requiredText("refundId"),
-            payload.requiredText("paymentIntentId"),
-            amount,
-            payload.requiredText("channelRefundId"),
-            payload.optionalText("channelOrderId"),
-            payload.optionalText("channel"),
-            payload.optionalText("originalChannelTransactionId"),
-            payload.requiredText("channelRefundTransactionId"),
-            envelope.eventId(),
-            envelope.correlationId()
-        );
+        String refundId = payload.requiredText("refundId");
+        String paymentIntentId = payload.requiredText("paymentIntentId");
+        String channelRefundId = payload.requiredText("channelRefundId");
+        String channelOrderId = payload.optionalText("channelOrderId");
+        String channel = payload.optionalText("channel");
+        String originalChannelTransactionId = payload.optionalText("originalChannelTransactionId");
+        String channelRefundTransactionId = payload.requiredText("channelRefundTransactionId");
+        applyOnce(envelope, () -> paymentCommands.settleRefundFromChannel(
+            refundId, paymentIntentId, amount, channelRefundId, channelOrderId, channel,
+            originalChannelTransactionId, channelRefundTransactionId, envelope.eventId(), envelope.correlationId()));
     }
 
     private void handleChannelRefundFailed(EventEnvelope envelope) {
         InboundEventPayload payload = InboundEventPayload.from(envelope);
-        paymentCommands.failRefundFromChannel(
-            payload.requiredText("refundId"),
-            envelope.eventType(),
-            envelope.eventId(),
-            envelope.correlationId()
-        );
+        String refundId = payload.requiredText("refundId");
+        applyOnce(envelope, () -> paymentCommands.failRefundFromChannel(
+            refundId, envelope.eventType(), envelope.eventId(), envelope.correlationId()));
     }
 
     private void handlePostSalesApproved(EventEnvelope envelope) {
         InboundEventPayload payload = InboundEventPayload.from(envelope);
-        if(java.util.Set.of("CHANGE","COMPENSATION").contains(String.valueOf(payload.optionalDecisionKindFromApprovedActions())))return;
+        if (NON_PAYABLE_DECISIONS.contains(String.valueOf(payload.optionalDecisionKindFromApprovedActions()))) {
+            markProcessed(envelope);
+            return;
+        }
         String caseId = payload.requiredText("caseId");
         String reason = payload.optionalText("reason");
         if(envelope.payload() instanceof Map<?,?> data && data.get("approvedActions") instanceof Map<?,?> actions && actions.get("refunds") instanceof java.util.List<?> refunds){
@@ -173,12 +205,14 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
                 total=total.add(amount);
             }
             if(!total.equals(payload.moneyFromApprovedActions()))throw new IllegalArgumentException("refund allocations differ from the approved amount");
+            List<RefundSubmission> submissions=new ArrayList<>();
             for(Object raw:refunds){
                 if(!(raw instanceof Map<?,?> allocation) || !(allocation.get("amount") instanceof Map<?,?> value))throw new IllegalArgumentException("refund payment allocation is invalid");
                 String paymentId=String.valueOf(allocation.get("paymentIntentId"));
                 Money allocated=Money.fromMinorUnits(((Number)value.get("minorUnits")).longValue(),String.valueOf(value.get("currency")));
-                requestRefund(paymentId,allocated,reason==null?"post-sales-approved":reason,caseId,caseId+":"+paymentId,envelope.correlationId());
+                submissions.add(new RefundSubmission(paymentId,allocated,reason==null?"post-sales-approved":reason,caseId,caseId+":"+paymentId));
             }
+            submitRefunds(envelope,submissions);
             return;
         }
         String intentId = payload.optionalPaymentIntentIdFromApprovedActions();
@@ -188,6 +222,7 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
             if (intentId == null && orderRef != null) {
                 Money approved=payload.moneyFromApprovedActions();
                 if(approved!=null && !approved.isZero())throw new IllegalStateException("approved refund awaits payment intent for order "+orderRef);
+                markProcessed(envelope);
                 return;
             }
         }
@@ -198,6 +233,7 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
             // a dropped refund.
             LOGGER.debug("payment ignoring PostSalesApproved case={} eventId={}: the approval "
                     + "references no payment intent or order", caseId, envelope.eventId());
+            markProcessed(envelope);
             return;
         }
         Money amount = payload.moneyFromApprovedActions();
@@ -205,17 +241,19 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
             String decisionKind = payload.optionalDecisionKindFromApprovedActions();
             LOGGER.info("payment received PostSalesApproved without a payable refund: case={} intent={} eventId={} decisionKind={} amount={}",
                 caseId, intentId, envelope.eventId(), decisionKind, amount);
+            markProcessed(envelope);
             return;
         }
         LOGGER.info("payment requesting refund from PostSalesApproved case={} intent={} amount={} reason={}",
             caseId, intentId, amount, reason);
-        requestRefund(intentId, amount, reason == null ? "post-sales-approved" : reason, caseId, caseId, envelope.correlationId());
+        submitRefunds(envelope, List.of(new RefundSubmission(intentId, amount, reason == null ? "post-sales-approved" : reason, caseId, caseId)));
     }
 
     private void handleAncillaryOrderItemRefundPending(EventEnvelope envelope) {
         InboundEventPayload payload = InboundEventPayload.from(envelope);
         String recommendation = payload.requiredText("recommendation");
         if ("NO_REFUND".equals(recommendation) || "MANUAL_REVIEW".equals(recommendation)) {
+            markProcessed(envelope);
             return;
         }
         if (!"FULL_REFUND".equals(recommendation) && !"PARTIAL_REFUND".equals(recommendation)) {
@@ -223,6 +261,7 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
         }
         Money amount = payload.requiredMoney("refundableAmount");
         if (amount.isZero()) {
+            markProcessed(envelope);
             return;
         }
         String intentId = payload.requiredText("paymentIntentId");
@@ -232,23 +271,47 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
         }
         if (!intent.amount().currency().equals(amount.currency()) || amount.isGreaterThan(intent.capturedAmount()))
             throw new IllegalArgumentException("Ancillary refund amount exceeds its captured payment");
-        requestRefund(
-            intentId,
-            amount,
-            payload.requiredText("reasonCode"),
-            businessCaseRef(payload),
-            "ancillary-refund:" + envelope.eventId(),
-            envelope.correlationId()
-        );
+        submitRefunds(envelope, List.of(new RefundSubmission(
+            intentId, amount, payload.requiredText("reasonCode"), businessCaseRef(payload), "ancillary-refund:" + envelope.eventId())));
     }
 
-    private void requestRefund(String intentId, Money amount, String reason, String businessCaseRef, String idempotencyKey, String correlationId) {
-        com.trainticket.payment.domain.ChannelRef route = paymentCommands.getIntent(intentId).channelRef();
-        if (route != null && route.channel() != null && route.channelOrderId() != null && route.channelTransactionId() != null) {
-            paymentCommands.requestRefund(intentId, amount, reason, businessCaseRef, idempotencyKey, correlationId, route);
-            return;
+    /**
+     * Prepares every refund in one transaction, hands each routed refund to the channel
+     * outside any transaction, then applies the channel results together with the event
+     * deduplication record. A failure before or during that last transaction leaves no
+     * deduplication record, so the retry submits to the channel again on the same keys.
+     */
+    private void submitRefunds(EventEnvelope envelope, List<RefundSubmission> requests) {
+        List<PaymentCommandService.RefundHandoff> prepared = inTransaction(() -> {
+            List<PaymentCommandService.RefundHandoff> handoffs = new ArrayList<>();
+            for (RefundSubmission request : requests) {
+                ChannelRef route = paymentCommands.getIntent(request.paymentIntentId()).channelRef();
+                if (route == null || route.channel() == null || route.channelOrderId() == null || route.channelTransactionId() == null) {
+                    paymentCommands.requestRefund(request.paymentIntentId(), request.amount(), request.reason(), request.businessCaseRef(), request.idempotencyKey(), envelope.correlationId());
+                    continue;
+                }
+                handoffs.add(paymentCommands.prepareRefundSubmission(
+                    request.paymentIntentId(), request.amount(), request.reason(), request.businessCaseRef(), request.idempotencyKey(), envelope.correlationId(), route));
+            }
+            return handoffs;
+        });
+        List<AppliedRefundHandoff> applied = new ArrayList<>();
+        for (PaymentCommandService.RefundHandoff handoff : prepared) {
+            if (!handoff.needsChannel()) continue;
+            applied.add(new AppliedRefundHandoff(handoff, paymentCommands.handoffRefund(handoff, envelope.correlationId())));
         }
-        paymentCommands.requestRefund(intentId, amount, reason, businessCaseRef, idempotencyKey, correlationId);
+        runInTransaction(() -> {
+            for (AppliedRefundHandoff application : applied) {
+                paymentCommands.applyRefundHandoff(application.handoff(), application.channelHandoff());
+            }
+            deduplicator.recordIfNew(envelope.eventId());
+        });
+    }
+
+    private record RefundSubmission(String paymentIntentId, Money amount, String reason, String businessCaseRef, String idempotencyKey) {
+    }
+
+    private record AppliedRefundHandoff(PaymentCommandService.RefundHandoff handoff, PaymentChannelClient.HandoffRefund channelHandoff) {
     }
 
     private static String businessCaseRef(InboundEventPayload payload) {
