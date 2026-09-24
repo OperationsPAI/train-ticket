@@ -3,6 +3,7 @@ package com.trainticket.postsales.application;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.trainticket.postsales.domain.*;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
@@ -13,16 +14,21 @@ import org.springframework.web.client.RestClient;
 
 @Service
 public class ChangeExecutionService {
+    /// The replacement reservation saga records a fifteen minute deadline for its own step, so a
+    /// case that has waited longer than that can only be terminal.
+    private static final Duration RESERVATION_WAIT_LIMIT = Duration.ofMinutes(15);
+
     private final PostSalesApplicationService cases;
     private final RestClient client;
     private final ObjectMapper mapper;
     private final String baseTemplate;
     private final RefundFundingService funding;
     private final ChangeExecutionGuard guard;
+    private final Clock clock;
 
-    public ChangeExecutionService(PostSalesApplicationService cases,RestClient.Builder builder,ObjectMapper mapper,RefundFundingService funding,ChangeExecutionGuard guard,
+    public ChangeExecutionService(PostSalesApplicationService cases,RestClient.Builder builder,ObjectMapper mapper,RefundFundingService funding,ChangeExecutionGuard guard,Clock clock,
         @Value("${CHANGE_SERVICE_URL_TEMPLATE:http://%s:8080}") String baseTemplate) {
-        this.cases=cases;this.mapper=mapper;this.baseTemplate=baseTemplate;this.funding=funding;this.guard=guard;
+        this.cases=cases;this.mapper=mapper;this.baseTemplate=baseTemplate;this.funding=funding;this.guard=guard;this.clock=clock;
         var factory=new SimpleClientHttpRequestFactory();factory.setConnectTimeout(Duration.ofSeconds(2));factory.setReadTimeout(Duration.ofSeconds(5));
         client=builder.requestFactory(factory).build();
     }
@@ -69,7 +75,10 @@ public class ChangeExecutionService {
                     return cases.recordChangeOperation(caseId,"capacity-rejected",Map.of("segmentBookingId",bookingId,"source","booking-orchestration","code","NO_AVAILABLE_CAPACITY"));
                 }
                 if("FAILED".equals(text(booking,"status")) || "CANCELLED".equals(text(booking,"status")))throw new DomainRuleViolation("replacement reservation failed: "+bookingId);
-                if(!"CONFIRMED".equals(text(booking,"status"))) { waitingForReservation=true;continue; }
+                if(!"CONFIRMED".equals(text(booking,"status"))) {
+                    if(reservationWaitExpired(ops.get(name)))return cases.failReservationTimeout(caseId,correlation);
+                    waitingForReservation=true;continue;
+                }
                 JsonNode hold=getPending("capacity-availability","/api/v1/capacity-holds/"+text(booking,"capacityHoldId"),correlation);
                 if(hold==null || !"CONFIRMED".equals(text(hold,"status"))) { waitingForReservation=true;continue; }
                 return cases.recordChangeOperation(caseId,"confirmed:"+bookingId,Map.of("booking",map(booking),"hold",map(hold)));
@@ -365,7 +374,19 @@ public class ChangeExecutionService {
                 return mapper.readTree(response.getBody());
             });
         String operation=result.path("capacityRejected").asBoolean()?"capacity-rejected":result.path("paymentExpired").asBoolean()?"difference-rejected":name;
-        return cases.recordChangeOperation(change.caseId(),operation,map(result));
+        Map<String,Object> recorded=new java.util.LinkedHashMap<>(map(result));
+        if(name.startsWith("booking:"))recorded.put("requestedAt",clock.instant().toString());
+        return cases.recordChangeOperation(change.caseId(),operation,recorded);
+    }
+
+    private boolean reservationWaitExpired(Map<String,Object> operation) {
+        return reservationWaitExpired(operation, clock.instant());
+    }
+
+    static boolean reservationWaitExpired(Map<String,Object> operation, Instant now) {
+        Object requestedAt=operation.get("requestedAt");
+        if(requestedAt==null)return false;
+        return Instant.parse(String.valueOf(requestedAt)).plus(RESERVATION_WAIT_LIMIT).isBefore(now);
     }
     private JsonNode get(String service,String path,String correlation) {
         return client.get().uri(baseTemplate.formatted(service)+path).header("X-Correlation-Id",correlation).exchange((request,response)->{
