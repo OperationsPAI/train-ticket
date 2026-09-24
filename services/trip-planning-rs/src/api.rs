@@ -206,12 +206,20 @@ async fn search_itineraries_handler(
         planning_snapshot_refs: planning_snapshot_refs.clone(),
     };
 
-    // Persist itinerary snapshots
-    for itin_json in &itineraries {
-        let value = serde_json::to_value(itin_json).unwrap_or_default();
-        state.save_itinerary(&itin_json.itinerary_ref, value).await
-            .map_err(|error| storage_error(error, &correlation_id))?;
-    }
+    // Persist itinerary snapshots in one statement for the whole search.
+    let snapshots: Vec<(String, serde_json::Value)> = itineraries
+        .iter()
+        .map(|itinerary| {
+            (
+                itinerary.itinerary_ref.clone(),
+                serde_json::to_value(itinerary).unwrap_or_default(),
+            )
+        })
+        .collect();
+    state
+        .save_itineraries(&snapshots)
+        .await
+        .map_err(|error| storage_error(error, &correlation_id))?;
 
     // Publish ItineraryProposed event via outbox
     state
