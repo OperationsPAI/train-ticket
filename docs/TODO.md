@@ -40,6 +40,12 @@ Revision 300 attributes that limit: Customer Service fell twenty nine thousand e
 Raising those consumer threads, the service pools and the Identity Verification worker count moved the ten minute cycle to 14 failed journeys out of 41567, all of them the seat or standing rejection that T15 covers.
 The tuning lives in the chart now, so a redeploy keeps it.
 
+Revision 303 raised the published supply cache from two seconds to thirty seconds, which cut the peak reservation failures from 11092 in the revision 302 window to 125 and 236 in the two thirty second peak windows.
+Revision 304 gave Seat Assignment a composition view and an occupancy view, and revision 305 made Capacity cache the composition until the occupancy reports another version; the second class admission payload fell from 383324 bytes to 13988 bytes.
+The burst at 07:00 then exposed the next limit: Trip Planning's one GiB memory limit killed the pod with exit code 137, and the 400 seconds around it recorded 6727 search timeouts, 632 order snapshot failures and 245 change execution failures while Customer Service fell 26747 events behind on the identity verification stream.
+Revision 306 raised that memory limit to 3Gi.
+The next peak measurement must confirm that the Trip Planning restarts stop and that the identity verification consumers keep the backlog inside the reservation polling window.
+
 ## Notification
 
 ### T02: Finish and release durable notification delivery
@@ -61,32 +67,22 @@ After deployment every subscribed stream reports zero lag and zero pending, the 
 
 ### T03: Complete coordinated supply integration
 
-Status: first activation attempt failed on performance and was rolled back; Capacity work committed as `caafa668` and committed Booking source changes are not jointly activated.
+Status: activated on revisions 294 to 305; the open requirement is a clean peak cycle.
 
-Revisions 284 to 286 activated the integration and produced reservation failures for fifteen to thirty four percent of journeys, a Journey Order heap failure, and a Capacity consumer lag of twenty four to thirty thousand entries.
-Revision 287 restored the previous Capacity and Booking images; the reservation path returned to zero failures in the measured cycle.
-The evidence is under `.scratch/runtime-fixes/goal-rev284-*.json`, `goal-rev286-*.json` and `rollback-supply-integration.log`.
+The integration is live: the load generator presents the accepted class, scheduled service and date with each reservation, Booking persists them, and Capacity admits against Seat Assignment's published supply.
+The pool snapshot stores unit counts, so one Hold rewrite is about five kilobytes instead of about one hundred and forty kilobytes.
+The published supply is split into a composition that is cached until its version changes and an occupancy that is read on the admission interval, which cut the second class admission payload from 383324 bytes to 13988 bytes.
+The Capacity consumer still reached 13730 events of lag in the measured burst, so its peak throughput stays the open requirement.
 
-The next attempt must first satisfy these performance requirements.
-
-1. [ ] A Hold must not rewrite the whole pool snapshot; measure and bound the bytes written per reservation.
-2. [ ] Fact resolution must reuse the accepted reservation record instead of repeating several upstream reads per reservation.
-3. [ ] The Capacity consumer must keep zero lag on the Booking stream at peak before activation.
-4. [ ] Peak reservation latency must stay inside the load generator polling window in a single cluster rehearsal.
-
-Second attempt on revisions 294 to 297: the load generator now presents the accepted class, scheduled service and date with the reservation, and Booking persists them, which removed the repeated upstream reads that overloaded Journey Order in the first attempt.
-Capacity alone still could not keep up: its consumer processed twenty seven to fifty three events per second while the Booking stream produced about one hundred and fifty, and the lag grew from three thousand to twelve thousand five hundred in forty five seconds.
-The cause is the pool snapshot: every Hold and confirmation rewrites the whole document, which carries every capacity unit reference, about one hundred and forty kilobytes for a second class pool of thirteen hundred and seventy five units.
-Revision 297 restored the previous Capacity image; the consumer returned to zero lag and the reservation failures stopped.
-The next attempt must store the composition reference and unit count instead of the full unit list, or move Hold records out of the pool document, before Capacity is activated again.
-
-1. [ ] Resolve accepted class, service, date, original purchase source, interval and composition for every active historical Hold; reject ambiguous source facts.
-2. [ ] Define and enforce the binding between a Hold and its allocated physical unit, including historical references and composition replacement mappings.
-3. [ ] Separate accepted travel class from occupancy class for standing substitution, and atomically reserve standing quota before allocation.
-4. [ ] Derive availability and `CapacitySnapshotUpdated` from the same combined Hold and allocation occupancy across related pools and overlapping intervals.
-5. [ ] Fence expired or released Holds against late confirmation or allocation and include unfinished allocation attempts in occupancy accounting.
-6. [ ] Verify overlap, nonoverlap, physical classes, standing, composition changes, replay and concurrent release using recorded source facts.
-7. [ ] Coordinate Booking and Capacity deployment only after these checks; retain the current Booking image boundary until then.
+1. [ ] The Capacity consumer must keep zero lag on the Booking stream at peak.
+2. [ ] Peak reservation latency must stay inside the load generator polling window in a single cluster rehearsal.
+3. [ ] Resolve accepted class, service, date, original purchase source, interval and composition for every active historical Hold; reject ambiguous source facts.
+4. [ ] Define and enforce the binding between a Hold and its allocated physical unit, including historical references and composition replacement mappings.
+5. [ ] Separate accepted travel class from occupancy class for standing substitution, and atomically reserve standing quota before allocation.
+6. [ ] Derive availability and `CapacitySnapshotUpdated` from the same combined Hold and allocation occupancy across related pools and overlapping intervals.
+7. [ ] Fence expired or released Holds against late confirmation or allocation and include unfinished allocation attempts in occupancy accounting.
+8. [ ] Verify overlap, nonoverlap, physical classes, standing, composition changes, replay and concurrent release using recorded source facts.
+9. [ ] Keep Booking and Capacity deployed from the same source revision while these checks remain open.
 
 Current two stop intervals and the deployed standing policy do not prove general multistop admission correctness.
 See [capacity design](10-domain-enrichment/capacity-overbooking.md) and [standing policy](08-contracts/standing-capacity-policy.md).
