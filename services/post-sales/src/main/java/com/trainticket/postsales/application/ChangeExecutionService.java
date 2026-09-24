@@ -76,7 +76,13 @@ public class ChangeExecutionService {
                 }
                 if("FAILED".equals(text(booking,"status")) || "CANCELLED".equals(text(booking,"status")))throw new DomainRuleViolation("replacement reservation failed: "+bookingId);
                 if(!"CONFIRMED".equals(text(booking,"status"))) {
-                    if(reservationWaitExpired(ops.get(name)))return cases.failReservationTimeout(caseId,correlation);
+                    Map<String,Object> waiting=ops.get("waiting:"+name);
+                    if(!ops.get(name).containsKey("requestedAt") && waiting==null) {
+                        // Operations recorded before the wait deadline existed carry no request
+                        // time; start their clock now instead of treating them as fresh forever.
+                        return cases.recordChangeOperation(caseId,"waiting:"+name,Map.of("since",clock.instant().toString()));
+                    }
+                    if(reservationWaitExpired(ops.get(name),waiting))return cases.failReservationTimeout(caseId,correlation);
                     waitingForReservation=true;continue;
                 }
                 JsonNode hold=getPending("capacity-availability","/api/v1/capacity-holds/"+text(booking,"capacityHoldId"),correlation);
@@ -379,14 +385,15 @@ public class ChangeExecutionService {
         return cases.recordChangeOperation(change.caseId(),operation,recorded);
     }
 
-    private boolean reservationWaitExpired(Map<String,Object> operation) {
-        return reservationWaitExpired(operation, clock.instant());
+    private boolean reservationWaitExpired(Map<String,Object> operation,Map<String,Object> waiting) {
+        Object requestedAt=operation==null?null:operation.get("requestedAt");
+        if(requestedAt==null && waiting!=null)requestedAt=waiting.get("since");
+        return reservationWaitExpired(requestedAt==null?null:String.valueOf(requestedAt), clock.instant());
     }
 
-    static boolean reservationWaitExpired(Map<String,Object> operation, Instant now) {
-        Object requestedAt=operation.get("requestedAt");
+    static boolean reservationWaitExpired(String requestedAt, Instant now) {
         if(requestedAt==null)return false;
-        return Instant.parse(String.valueOf(requestedAt)).plus(RESERVATION_WAIT_LIMIT).isBefore(now);
+        return Instant.parse(requestedAt).plus(RESERVATION_WAIT_LIMIT).isBefore(now);
     }
     private JsonNode get(String service,String path,String correlation) {
         return client.get().uri(baseTemplate.formatted(service)+path).header("X-Correlation-Id",correlation).exchange((request,response)->{
