@@ -4,7 +4,7 @@ Last verified: 2026-09-24, Asia/Beijing.
 
 ## Runtime
 
-The resident Helm release is `train-ticket` in namespace `train-ticket`, revision **290**.
+The resident Helm release is `train-ticket` in namespace `train-ticket`, revision **293**.
 PostgreSQL stores business snapshots, idempotency records, processed event records and transactional outboxes.
 Redis Streams carries events; the current chart has no Redis persistent volume or AOF.
 Database persistence alone does not prove recovery of every event after transport data is lost.
@@ -72,6 +72,8 @@ Scratch logs and module build outputs are local evidence and are not versioned r
 | Payment connection pool | The pool size is 32 instead of the default 10, which removes the multi-second waits that timed out post sales and entitlement calls. | Deployed in revision 282. |
 | Finance settlement consumers | Eight consumer threads, a 32 connection pool and a two core limit keep revenue recognition inside the load generator polling window. | Deployed in revision 283. |
 | Change reservation deadline | A change case whose replacement reservation never confirms now reaches `CHANGE_RESERVATION_TIMED_OUT` after fifteen minutes and the original tickets stay valid. | Deployed in revision 290. |
+| Traveler Profile connection pool | The pool size is 40 instead of the default 10, which removes the burst wait that timed out traveler creation. | Deployed in revision 292. |
+| Unpaid change Hold release | Compensation requests the release of a cancelled replacement whose Hold survived a transport loss. | Deployed in revision 293. |
 | Notification verification | Ten focused subtests and their parent pass; full module tests and quota deferral recovery acceptance are incomplete. | Existing notification delay remains an active issue. |
 | Online retention indexes | Verified in the owning databases and represented by migration files. | Some service images do not yet include their new migration file; online index creation did not modify migration version records. |
 
