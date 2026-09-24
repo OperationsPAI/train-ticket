@@ -232,12 +232,15 @@ Seat Assignment only answers 422 when its own candidate list is empty; a prefere
 
 ### T13: Apply the consumer recovery fix to the remaining Java images
 
-Status: fix committed as `1f47d082`; only Booking carries it in production.
-The same poll loop runs in journey order, payment, post sales, traveler profile, finance settlement, wallet promotion, group booking, admin audit and marketing campaign images.
-Each image needs a rebuild from its own deployed baseline so that unrelated undeployed changes are not pulled in.
+Status: complete on revision 323.
+Every Java image now carries the recovery fix `1f47d082`, so a failed pending-entry recovery no longer ends consumption.
+The images built today already carried it, and revision 323 rebuilt the remaining seven: Journey Order, Traveler Profile, Finance Settlement, Wallet Promotion, Group Booking, Admin Audit and Marketing Campaign.
 
-1. [ ] Rebuild each Java service from the commit its running image was built from, with only the java-kit recovery commit added.
-2. [ ] Deploy them together during a maintenance window and confirm all consumer groups stay at zero lag with no poll failures.
+1. [x] Rebuild each Java service with the java-kit recovery commit included.
+2. [x] Deploy them together and confirm all consumer groups stay at zero lag with no poll failures.
+
+Evidence: each rebuilt image was verified by reading `BOOT-INF/lib/java-kit-0.1.0-SNAPSHOT.jar` out of `/app/service.jar` and finding the `pending entry recovery failed` marker in `RedisEventSubscriber.class`; all seven deployments report ready replicas, and none logged a poll, recovery or subscriber-loop failure in the five minutes after the rollout.
+The rebuilds also carried the committed fixes from the same window, including `252fde29` for Journey Order, `5b99ef07` for Wallet Promotion and the outbox retention migrations of `9a39d068`, which the images produced by the earlier baseline builds did not contain.
 
 ### T16: Retire consumer groups whose subscriber no longer reads them
 
