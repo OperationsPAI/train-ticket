@@ -26,6 +26,9 @@ Measured lag at peak: customer service 15019, traveler profile 13551, journey or
 Reservation confirmations then exceed the load generator window, and the failures disappear once the peak passes.
 Reducing peak load, extending polling or raising timeouts is not an acceptable remedy, so the consumer throughput itself has to improve.
 
+Revision 291 repeats the pattern: a peak window failed 489 purchase and 25 transfer reservations while the following window had none, and the consumer lag fell back to 1502 and 3916 afterwards.
+The next investigation must attribute the Booking saga confirmation latency at peak, because the reservation deadline depends on it.
+
 ## Notification
 
 ### T02: Finish and release durable notification delivery
