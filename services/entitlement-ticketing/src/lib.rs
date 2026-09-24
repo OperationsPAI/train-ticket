@@ -96,20 +96,48 @@ pub async fn build_runtime() -> Result<(Router, JoinHandle<()>), application::Su
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| format!("entitlement-ticketing-{}", uuid::Uuid::now_v7()));
-    let handler_service = Arc::clone(&service);
+    // One subscriber loop handles one message at a time, which capped issuance
+    // handling near one hundred and eighty events per second while the Booking
+    // stream produced about two hundred during a peak. Every worker keeps its
+    // own consumer name, and the writes behind them retry optimistic conflicts.
+    let workers: usize = std::env::var("CONSUMER_THREADS")
+        .unwrap_or_else(|_| "1".to_string())
+        .parse()
+        .expect("CONSUMER_THREADS must be a positive integer");
+    assert!(
+        workers > 0 && workers <= 32,
+        "CONSUMER_THREADS must be between 1 and 32"
+    );
+    let mut worker_handles = Vec::with_capacity(workers);
+    for index in 0..workers {
+        let subscriber = subscriber.clone();
+        let streams = streams.clone();
+        let group = group.clone();
+        let handler_service = Arc::clone(&service);
+        let consumer_name = if workers == 1 {
+            consumer_name.clone()
+        } else {
+            format!("{consumer_name}-{index}")
+        };
+        worker_handles.push(tokio::spawn(async move {
+            subscriber
+                .subscribe(
+                    streams,
+                    group,
+                    consumer_name,
+                    Box::new(move |envelope| {
+                        let service = Arc::clone(&handler_service);
+                        Box::pin(async move { service.handle_subscribed_event(envelope).await })
+                    }),
+                )
+                .await
+                .expect("entitlement-ticketing Redis subscriber stopped");
+        }));
+    }
     let subscriber_handle = tokio::spawn(async move {
-        subscriber
-            .subscribe(
-                streams,
-                group,
-                consumer_name,
-                Box::new(move |envelope| {
-                    let service = Arc::clone(&handler_service);
-                    Box::pin(async move { service.handle_subscribed_event(envelope).await })
-                }),
-            )
-            .await
-            .expect("entitlement-ticketing Redis subscriber stopped");
+        for handle in worker_handles {
+            let _ = handle.await;
+        }
     });
     Ok((router_with_postgres_state(service), subscriber_handle))
 }
