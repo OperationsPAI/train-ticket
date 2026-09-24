@@ -75,14 +75,14 @@ public class ChangeExecutionService {
                     return cases.recordChangeOperation(caseId,"capacity-rejected",Map.of("segmentBookingId",bookingId,"source","booking-orchestration","code","NO_AVAILABLE_CAPACITY"));
                 }
                 if("FAILED".equals(text(booking,"status")) || "CANCELLED".equals(text(booking,"status")))throw new DomainRuleViolation("replacement reservation failed: "+bookingId);
+                Map<String,Object> waiting=ops.get("waiting:"+name);
+                if(!ops.get(name).containsKey("requestedAt") && waiting==null) {
+                    // Operations recorded before the wait deadline existed carry no request time;
+                    // start their clock now instead of treating them as fresh forever.
+                    return cases.recordChangeOperation(caseId,"waiting:"+name,Map.of("since",clock.instant().toString()));
+                }
+                if(reservationWaitExpired(ops.get(name),waiting))return cases.failReservationTimeout(caseId,correlation);
                 if(!"CONFIRMED".equals(text(booking,"status"))) {
-                    Map<String,Object> waiting=ops.get("waiting:"+name);
-                    if(!ops.get(name).containsKey("requestedAt") && waiting==null) {
-                        // Operations recorded before the wait deadline existed carry no request
-                        // time; start their clock now instead of treating them as fresh forever.
-                        return cases.recordChangeOperation(caseId,"waiting:"+name,Map.of("since",clock.instant().toString()));
-                    }
-                    if(reservationWaitExpired(ops.get(name),waiting))return cases.failReservationTimeout(caseId,correlation);
                     waitingForReservation=true;continue;
                 }
                 JsonNode hold=getPending("capacity-availability","/api/v1/capacity-holds/"+text(booking,"capacityHoldId"),correlation);
