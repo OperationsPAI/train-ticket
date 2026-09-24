@@ -3,11 +3,11 @@
 ## 当前发布状态
 
 服务位于 `services/notification`，使用 TypeScript、Fastify、PostgreSQL、Redis Streams 和 Nodemailer。
-线上 revision 279 具备事件映射、模板渲染、渠道选择、频控、合并、延期记录和发送回执，但 SMTP 仍位于 PostgreSQL 消费事务内。
+线上具备事件映射、模板渲染、渠道选择、频控、合并、延期记录和发送回执，SMTP 在 revision 280 起移出 PostgreSQL 消费事务。
 该路径等待 SMTP 时占用数据库连接和收件人事务锁。
-durable queue 已在提交 `41917b85` 中实现，尚未部署，新设计在线上未生效。
+durable queue 已在提交 `41917b85` 中实现，并随 revision 280 部署。
 本文其余处提到的工作区行为均来自该提交。
-本文的 claim、事务外 SMTP、稳定 MessageID、`Unknown` 以及 API 追加字段均属于尚未发布的仓库能力。
+本文的 claim、事务外 SMTP、稳定 MessageID、`Unknown` 以及 API 追加字段自 revision 280 起在线上生效。
 
 ## 模板与渠道
 
@@ -99,5 +99,5 @@ PostgreSQL 使用 `notification_rate_limits` 保存窗口内发送记录。
 PostgreSQL/Mailpit durable delivery 包含 10 个子项及父项，共 11 PASS，耗时 20.8 秒。
 该专项测试覆盖入队后发送、并发 claim、旧 claim 失效、SMTP 接受后的结果丢失、稳定 MessageID 重试、事务外 SMTP、迟到结果竞争、32 个任务发送、连接中断、3 次有界重试及来源事件去重。
 完整 `npm test` 尚未运行，quota 延期恢复未专项验收。
-上述结果属于工作区验证，线上 revision 279 仍使用事务内 SMTP 路径。
+上述结果属于本地验证，线上自 revision 280 起使用事务外 SMTP 路径。
 待办统一见 [docs/TODO.md](../TODO.md)。

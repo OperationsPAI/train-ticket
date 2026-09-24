@@ -21,5 +21,5 @@ The approval model supports decisions and escalation, while the HTTP routes expo
 Approval decisions have no HTTP operation, and the runtime contains no simulated approver scheduler.
 Budget and billing event processing accepts `JourneyOrderConfirmed`, `PaymentCaptured`, `PostSalesRefundCompleted` and `TripCancelled`; corporate billing requires an `agreementId`.
 The monthly invoice endpoint uses caller supplied lines and discount rate; it does not automatically discover all completed trips or issue a tax invoice.
-Deployment and verification evidence, including differences from workspace code, are recorded in [current status](../00-current-status.md) for Helm revision 279.
+Deployment and verification evidence, including differences from workspace code, are recorded in [current status](../00-current-status.md).
 Remaining work is maintained only in [TODO](../TODO.md).
