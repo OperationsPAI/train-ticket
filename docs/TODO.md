@@ -25,7 +25,7 @@ Sources: `.scratch/runtime-fixes/goal-rev278-ten-minute-window.json`, `goal-rev2
 
 ### T02: Finish and release durable notification delivery
 
-Status: confirmed notification delay; implementation remains uncommitted and undeployed in `services/notification/`.
+Status: confirmed notification delay; implementation is committed as `41917b85` and undeployed in `services/notification/`.
 The deployed path holds a database connection and recipient lock during SMTP.
 Recorded order and post sales events remain without notification tasks after one minute; compensation credit notification samples have reached SMTP acceptance.
 
@@ -43,7 +43,7 @@ It does not establish full module or deployed acceptance.
 
 ### T03: Complete coordinated supply integration
 
-Status: uncommitted Capacity work and committed Booking source changes are not jointly activated.
+Status: Capacity work committed as `caafa668` and committed Booking source changes are not jointly activated.
 
 1. [ ] Resolve accepted class, service, date, original purchase source, interval and composition for every active historical Hold; reject ambiguous source facts.
 2. [ ] Define and enforce the binding between a Hold and its allocated physical unit, including historical references and composition replacement mappings.
@@ -141,5 +141,5 @@ Approved complaint compensation issuance itself is deployed and verified; these 
 ## Handoff rules
 
 No additional implementation or deployment is requested by this documentation closeout.
-Preserve unpublished Capacity and Notification changes in the shared worktree; do not include their source code in a documentation commit or deploy them implicitly.
+Capacity and Notification changes are committed as `caafa668` and `41917b85` and remain unpublished; do not deploy them implicitly.
 On completion, attach code, deployment and business verification evidence, update the owning design and API documentation, and mark the checkbox here.

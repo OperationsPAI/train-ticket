@@ -56,9 +56,9 @@ Scratch logs and module build outputs are local evidence and are not versioned r
 
 | Component | Workspace state | Deployment state |
 |---|---|---|
-| Capacity supply integration | Uncommitted implementation, migration and recorded tests remain in the worktree. | Not activated. |
+| Capacity supply integration | Implementation, migration and recorded tests are committed as `caafa668`. | Not activated. |
 | Booking accepted supply | Main branch contains accepted source changes. | Running image remains based on `c5bb352d` plus compensation commit `1e62d420`; do not deploy main Booking independently. |
-| Notification delivery queue | Uncommitted queue, claim, SMTP and receipt changes; compile and focused PostgreSQL/Mailpit tests pass. | Not deployed; revision 279 still uses the transaction held sending path. |
+| Notification delivery queue | Queue, claim, SMTP and receipt changes are committed as `41917b85`; compile and focused PostgreSQL/Mailpit tests pass. | Not deployed; revision 279 still uses the transaction held sending path. |
 | Notification verification | Ten focused subtests and their parent pass; full module tests and quota deferral recovery acceptance are incomplete. | Existing notification delay remains an active issue. |
 | Online retention indexes | Verified in the owning databases and represented by migration files. | Some service images do not yet include their new migration file; online index creation did not modify migration version records. |
 
