@@ -301,8 +301,17 @@ public class ChangeExecutionService {
                 Map.of("caseId",caseId),correlation);
             JsonNode booking=get("booking-orchestration","/api/v1/internal/segment-bookings/"+bookingId,correlation);
             if(!"CANCELLED".equals(text(booking,"status")))return change;
-            JsonNode hold=get("capacity-availability","/api/v1/capacity-holds/"+text(booking,"capacityHoldId"),correlation);
-            if(!"RELEASED".equals(text(hold,"status")))return change;
+            String holdId=text(booking,"capacityHoldId");
+            JsonNode hold=getPending("capacity-availability","/api/v1/capacity-holds/"+holdId,correlation);
+            if(hold==null || !"RELEASED".equals(text(hold,"status"))) {
+                // A cancelled replacement whose Hold survived a transport loss would otherwise
+                // block the compensation forever, so request the release that the cancellation
+                // event should have caused.
+                String releaseName="release-hold:"+bookingId;
+                if(!ops.containsKey(releaseName))return saveCommand(change,releaseName,"capacity-availability",
+                    "/api/v1/capacity-holds/"+holdId+"/release",Map.of(),correlation);
+                return change;
+            }
         }
         for(String ticket:change.scope().entitlementRefs()) {
             if(!"ISSUED".equals(text(get("entitlement-ticketing","/api/v1/entitlements/"+ticket,correlation),"status"))) {
