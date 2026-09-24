@@ -34,13 +34,15 @@ class SingleConnectionLookupTest {
             try {
                 jdbc.execute("SET search_path TO " + schema);
                 jdbc.execute(Files.readString(Path.of("migrations/001_booking_orchestration_persistence.sql")));
+                jdbc.execute(Files.readString(Path.of("migrations/005_booking_saga_step_deadlines.sql")));
                 ObjectMapper mapper = new ObjectMapper().registerModule(new JavaTimeModule());
                 var sagas = new PostgresBookingSagaRepository(dataSource, mapper);
                 var bookings = new PostgresSegmentBookingRepository(dataSource, mapper);
                 var service = new com.trainticket.bookingorchestration.application.BookingOrchestrationService(
                     Clock.systemUTC(), new TransactionalOutboxEventPublisher(
                         new com.trainticket.platformkit.persistence.OutboxAppender(dataSource, mapper), mapper),
-                    sagas, bookings, new PostgresPaymentIntentSagaReferenceRepository(dataSource), new PostgresConsumedEventRepository(dataSource));
+                    sagas, bookings, new PostgresPaymentIntentSagaReferenceRepository(dataSource), new PostgresConsumedEventRepository(dataSource),
+                    new PostgresBookingSagaStepDeadlineRepository(dataSource));
                 service.handleUpstreamEvent(new com.trainticket.platformkit.messaging.EventEnvelope(
                     com.trainticket.platformkit.messaging.PrefixedIds.newEventId(), "ChannelOrderSubmitted", java.time.Instant.now(),
                     com.trainticket.platformkit.messaging.PrefixedIds.newCorrelationId(), com.trainticket.platformkit.messaging.PrefixedIds.newCommandId(),
