@@ -567,6 +567,11 @@ services:
       preStop:
         exec:
           command: ["sleep", "10"]
+    env:
+      # The Booking stream peaks near 150 events per second while a Hold needs
+      # several database writes. Four threads fell behind during a peak window,
+      # so the reservation confirmation missed the load generator window.
+      CONSUMER_THREADS: "12"
   fare-pricing:
     db: fare_pricing
     strategy:
@@ -698,7 +703,7 @@ services:
         exec:
           command: ["sleep", "10"]
     env:
-      CONSUMER_THREADS: "4"
+      CONSUMER_THREADS: "4"   # 4 streams
     # CPU headroom covers concurrent HTTP requests and event processing.
     resources:
       requests: { cpu: 500m, memory: 256Mi }
@@ -716,8 +721,12 @@ services:
         exec:
           command: ["sleep", "10"]
     env:
-      # Four worker pools share a 64 connection budget.
-      PG_MAX_POOL_SIZE: "16"
+      # Eight worker pools share the same 64 connection budget, so the HTTP and
+      # subscriber concurrency doubles without adding connections. Two
+      # subscribers on one process could not follow the identity verification
+      # stream during a peak and its callers timed out.
+      PG_MAX_POOL_SIZE: "8"
+      WEB_CONCURRENCY: "8"
     # Spiky rather than persistently hot: measured p50 utilization 0.285 of a
     # core against the shared 2-core default, with p95 and peak both at 2.0. So
     # the ceiling clips its bursts, and a clipped burst is a latency tail every
@@ -746,6 +755,10 @@ services:
           command: ["sleep", "10"]
     env:
       CONSUMER_THREADS: "4"   # 4 streams
+      # Ten connections were fully busy with 807 callers waiting while the
+      # capture and refund paths held transactions open across channel calls,
+      # which pushed P99 of payment intent creation to five seconds.
+      HIKARI_MAX_POOL_SIZE: "32"
     # JVM event consumer on 4 streams. 512Mi is not enough at
     # MaxRAMPercentage=70 -- see the note on defaults.resources. The CPU limit
     # goes with CONSUMER_THREADS above: 4 threads do not fit in 500m, and
@@ -769,6 +782,10 @@ services:
           command: ["sleep", "10"]
     env:
       SEAT_ASSIGNMENT_BASE_URL: http://seat-assignment:8080
+      # The Booking stream peaks near 150 events per second and ticket issuance
+      # waits for entitlement processing; four threads fell 6.5 thousand events
+      # behind during a peak.
+      CONSUMER_THREADS: "8"
   fulfillment:
     db: fulfillment
     env:
@@ -809,7 +826,10 @@ services:
       # request arriving before its order's JourneyOrderCreated had been processed
       # found no policy context, fell back to departureTime=now, and quoted a zero
       # refund. See the MISS/HIT logging in PostSalesApplicationService.
-      CONSUMER_THREADS: "4"
+      # Twelve rather than four: change and refund cases must finish inside the
+      # load generator polling window, and during a peak the case backlog grew
+      # until the window expired.
+      CONSUMER_THREADS: "12"
     # CPU headroom covers concurrent post-sales requests and event processing.
     resources:
       requests: { cpu: 500m, memory: 256Mi }
@@ -851,6 +871,15 @@ services:
       preStop:
         exec:
           command: ["sleep", "10"]
+    env:
+      # One subscriber thread could not follow the identity verification stream
+      # during a peak, which delayed the traveler snapshot that Offer Management
+      # requires before it can create an offer.
+      CONSUMER_THREADS: "8"
+      # Ten pooled connections with hundreds of waiting callers produced
+      # `Connection is not available, request timed out after 15000ms` and three
+      # thousand timed out traveler creations in four minutes.
+      HIKARI_MAX_POOL_SIZE: "40"
     # JVM event consumer -- see the note on defaults.resources.
     #
     # 4 cores: measured at 96.3% of a 500m limit over a full envelope, so the
@@ -904,7 +933,10 @@ services:
         exec:
           command: ["sleep", "10"]
     env:
-      CONSUMER_THREADS: "4"   # 5 streams
+      # Eight rather than four: this consumer fell twenty nine thousand events
+      # behind on the identity verification stream during a peak, and the
+      # identity checks its callers wait for then missed their client deadlines.
+      CONSUMER_THREADS: "8"   # 5 streams
       CONSUMER_BATCH_CONCURRENCY: "4"
     # 4 consumer threads do not fit in the default 500m CPU limit. Raising
     # CONSUMER_THREADS without raising this caused a CrashLoopBackOff: the
@@ -928,7 +960,11 @@ services:
         exec:
           command: ["sleep", "10"]
     env:
-      CONSUMER_THREADS: "4"   # 7 streams
+      # Eight rather than four: revenue recognition has to finish inside the
+      # invoice polling window, and four threads could not follow the payment and
+      # booking streams at peak.
+      CONSUMER_THREADS: "8"   # 7 streams
+      HIKARI_MAX_POOL_SIZE: "32"
     # 4 consumer threads do not fit in the default 500m CPU limit. Raising
     # CONSUMER_THREADS without raising this caused a CrashLoopBackOff: the
     # threads saturated half a core working through the backlog, the HTTP thread
@@ -936,12 +972,15 @@ services:
     # the pod every 64 seconds. Threads and CPU must be raised together.
     resources:
       requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: '1', memory: 2Gi }
+      limits: { cpu: '2', memory: 2Gi }
   reporting:
     db: reporting
     env:
       REPORTING_CONSUMERS_PER_STREAM: "4"
       WEB_CONCURRENCY: "2"
+      # Eight rather than four: the projection consumer fell 3.6 thousand events
+      # behind on the journey order stream during a peak.
+      CONSUMER_THREADS: "8"
     # Event ingestion and background projection refresh share this CPU budget.
     resources:
       requests: { cpu: 100m, memory: 256Mi }
