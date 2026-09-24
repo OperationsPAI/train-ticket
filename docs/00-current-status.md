@@ -4,7 +4,7 @@ Last verified: 2026-09-24, Asia/Beijing.
 
 ## Runtime
 
-The resident Helm release is `train-ticket` in namespace `train-ticket`, revision **306**.
+The resident Helm release is `train-ticket` in namespace `train-ticket`, revision **318**.
 PostgreSQL stores business snapshots, idempotency records, processed event records and transactional outboxes.
 Redis Streams carries events; the current chart has no Redis persistent volume or AOF.
 Database persistence alone does not prove recovery of every event after transport data is lost.
@@ -51,6 +51,7 @@ See the [standing policy](08-contracts/standing-capacity-policy.md), [APIs](08-c
 | Ten minute resident cycle at revision 283 | 384661 requests, 44212 journeys, P99 241 milliseconds, 4 failed journeys and 2 unexpected HTTP errors, all seat or standing rejections | `.scratch/runtime-fixes/goal-rev283-ten-minute-window.json` |
 | Ten minute resident cycle at revision 300 | 362212 requests, 41567 journeys, P99 226 milliseconds, 14 failed journeys, all seat or standing rejections | `.scratch/runtime-fixes/goal-rev300-ten-minute.json` |
 | Ten minute resident cycle at revision 306 | 451150 requests, 49821 journeys, P99 2888 milliseconds, 7143 failed journeys, 5634 reservation confirmations and 1331 post sales case status checks | `.scratch/runtime-fixes/goal-rev306-ten-minute.json` |
+| Fifteen minute window at revisions 315 to 318 | 465276 requests, 53234 journeys, P99 354 milliseconds, 17 failed journeys, 15 boarding record races and 2 post sales executions | `.scratch/runtime-fixes/goal-rev317-fifteen-minute.json` |
 | Stable full peak acceptance | Not established | [TODO](TODO.md#acceptance) |
 
 The revision 278 ten minute recording ending at 2026-09-23 15:49:14 UTC contains 601683 requests and 9163 failed journeys, with request P99 of 9744.922 milliseconds.
@@ -77,6 +78,10 @@ Scratch logs and module build outputs are local evidence and are not versioned r
 | Traveler Profile connection pool | The pool size is 40 instead of the default 10, which removes the burst wait that timed out traveler creation. | Deployed in revision 292. |
 | Unpaid change Hold release | Compensation requests the release of a cancelled replacement whose Hold survived a transport loss. | Deployed in revision 293. |
 | Reservation supply facts | The load generator presents the accepted class, scheduled service and date and Booking persists them. | Deployed in revisions 294 and 295. |
+| Reservation supply views | Seat Assignment answers a composition view and an occupancy view, and Capacity caches the composition until its version changes. | Deployed in revisions 304 and 305. |
+| Journey Order verification lookup | The traveler containment index covers only orders that are still open, so a verification event reads 19 blocks instead of 863. | Deployed in revision 306 as an online index. |
+| Booking saga step deadline | Steps record when their wait started, and a one second sweep fails overdue steps with their recorded compensation. | Deployed in revision 317. |
+| Payment channel handoff | The channel call runs outside any transaction, and the inbound path keeps its deduplication record with the business effect. | Deployed in revision 318. |
 | Peak consumer tuning | Capacity availability, customer service, entitlement ticketing, finance settlement, post sales, reporting and traveler profile consume with more threads, the payment, finance settlement and traveler profile pools are larger, and Identity Verification runs eight workers over the same connection budget. | Deployed in revisions 286 to 300 and persisted in the chart. |
 | Notification verification | Ten focused subtests and their parent pass; full module tests and quota deferral recovery acceptance are incomplete. | Existing notification delay remains an active issue. |
 | Online retention indexes | Verified in the owning databases and represented by migration files. | Some service images do not yet include their new migration file; online index creation did not modify migration version records. |
