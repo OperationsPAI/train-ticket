@@ -5,10 +5,11 @@ import { it } from "node:test";
 import { Pool } from "pg";
 import { createEventEnvelope, withTransaction } from "@trainticket/ts-kit";
 import { notificationChannelGatewayFromEnv } from "./adapters/channel-gateways.js";
-import { deliverOrDefer, retryDeferredNotifications } from "./adapters/storage/runtime.js";
+import { claimDelivery, sendClaim } from "./adapters/storage/delivery-queue.js";
+import { deliverOrDefer } from "./adapters/storage/runtime.js";
 import { PostgresNotificationAggregator } from "./adapters/storage/notification-repository.js";
 
-it("persists rate limited notifications and retries through SMTP after the limit expires", {
+it("defers a rate limited notification in the delivery queue and sends it after the limit expires", {
   skip: !process.env.TEST_DATABASE_URL || !process.env.TEST_SMTP_URL,
 }, async () => {
   const schema = `deferred_test_${randomUUID().replaceAll("-", "")}`;
@@ -28,7 +29,7 @@ it("persists rate limited notifications and retries through SMTP after the limit
       assert.equal(await new PostgresNotificationAggregator(client).shouldSuppress(candidate), false);
       await client.query("ROLLBACK");
     } finally { client.release(); }
-    assert.equal((await pool.query("SELECT count(*) FROM notification_aggregation")).rows[0].count, "0");
+    assert.equal((await pool.query("SELECT count(*)::int AS n FROM notification_aggregation")).rows[0].n, 0);
     await pool.query("INSERT INTO notification_rate_limits(recipient_ref,channel,occurred_at) SELECT $1,'EMAIL',now() FROM generate_series(1,20)", [recipient]);
     const event = createEventEnvelope({ producer: "journey-order", eventType: "JourneyOrderConfirmed", payload: {
       accountId: recipient, orderId: order, origin: "Beijing", destination: "Shanghai", departureTime: new Date().toISOString(),
@@ -36,18 +37,24 @@ it("persists rate limited notifications and retries through SMTP after the limit
     } });
     const gateway = notificationChannelGatewayFromEnv({ SMTP_URL: process.env.TEST_SMTP_URL });
     assert.equal(await withTransaction(pool, (transaction) => deliverOrDefer(transaction, event, "events:journey-order", gateway)), "ack");
-    assert.equal((await pool.query("SELECT count(*) FROM notification_deferred")).rows[0].count, "1");
-    assert.equal((await pool.query("SELECT count(*) FROM notification_task_snapshots")).rows[0].count, "0");
-    assert.equal((await pool.query("SELECT count(*) FROM notification_aggregation")).rows[0].count, "0");
+    const queued = await pool.query("SELECT state,available_at>now() AS deferred FROM notification_delivery_queue");
+    assert.equal(queued.rowCount, 1);
+    assert.equal(queued.rows[0].state, "Ready");
+    assert.equal(queued.rows[0].deferred, true);
+    assert.equal((await pool.query("SELECT count(*)::int AS n FROM notification_delivery_evidence WHERE kind='QuotaDeferred'")).rows[0].n, 1);
+    assert.equal((await pool.query("SELECT count(*)::int AS n FROM notification_task_snapshots")).rows[0].n, 1);
+    assert.equal((await pool.query("SELECT data->>'status' AS status FROM notification_task_snapshots")).rows[0].status, "Planned");
+    assert.equal((await pool.query("SELECT count(*)::int AS n FROM notification_deferred")).rows[0].n, 0);
+    assert.equal(await claimDelivery(pool), undefined);
     await pool.query("UPDATE notification_rate_limits SET occurred_at=now()-interval '25 hours'");
-    await pool.query("UPDATE notification_deferred SET retry_at=now()");
-    await retryDeferredNotifications(pool, gateway);
-    assert.equal((await pool.query("SELECT count(*) FROM notification_deferred")).rows[0].count, "0");
-    const tasks = await pool.query("SELECT data FROM notification_task_snapshots");
-    assert.equal(tasks.rows.length, 1);
-    assert.equal(tasks.rows[0].data.status, "Delivered", JSON.stringify(tasks.rows[0].data.receipts));
-    await retryDeferredNotifications(pool, gateway);
-    assert.equal((await pool.query("SELECT count(*) FROM notification_task_snapshots")).rows[0].count, "1");
+    await pool.query("UPDATE notification_delivery_queue SET available_at=now()");
+    const claim = (await claimDelivery(pool))!;
+    await sendClaim(pool, gateway, claim);
+    assert.equal((await pool.query("SELECT data->>'status' AS status FROM notification_task_snapshots")).rows[0].status, "Delivered");
+    assert.equal((await pool.query("SELECT count(*)::int AS n FROM notification_rate_limits WHERE task_id IS NOT NULL")).rows[0].n, 1);
+    assert.equal((await pool.query("SELECT count(*)::int AS n FROM notification_deferred")).rows[0].n, 0);
+    await withTransaction(pool, (transaction) => deliverOrDefer(transaction, event, "events:journey-order", gateway));
+    assert.equal((await pool.query("SELECT count(*)::int AS n FROM notification_task_snapshots")).rows[0].n, 1);
   } finally {
     await pool.end();
     await admin.query(`DROP SCHEMA ${schema} CASCADE`);
