@@ -9,14 +9,10 @@
 本次文档收尾不执行构建、部署或新增测试。
 
 禁止对当前 resident279 执行默认 `make deploy`、`make deploy-fast`、其依赖部署目标或缺少完整配置的 Helm upgrade。
-Makefile 默认使用 `IMAGE_TAG=local` 和单独的 `values-cluster.yaml`，无法据此保留常驻 release 的完整配置与逐服务镜像引用。
+Makefile 默认使用 `IMAGE_TAG=local`，无法据此保留常驻 release 的逐服务镜像引用。
 `deploy-fast` 仍会应用 Helm 配置、执行种子脚本和冒烟写入，不能作为当前常驻环境的配置更新捷径。
 
-常驻 Skaffold profile 按以下顺序加载配置：
-
-1. [values-cluster.yaml](../deploy/helm/values-cluster.yaml) 指定镜像仓库和存储类型。
-2. [values-case.yaml](../deploy/helm/values-case.yaml) 指定集中遥测、stdout 记录和 600 秒负载周期。
-3. [values-resident.yaml](../deploy/helm/values-resident.yaml) 启用常驻 exporter 和 loadgen PVC。
+常驻 Skaffold profile 只加载 chart 自带的 [values.yaml](../deploy/helm/train-ticket/values.yaml)，镜像仓库、存储类型、集中遥测、负载周期与常驻 exporter 都在这一份文件里。
 
 [skaffold.yaml](../skaffold.yaml) 使用 `inputDigest` 生成镜像标签，通过 `setValueTemplates` 传入 `services.<name>.image` 和 `loadgen.image`。
 chart 的镜像函数优先使用这些完整镜像引用。
@@ -34,7 +30,7 @@ kind 路径还需要已经创建的独立 kind 集群，Skaffold 路径需要 Sk
 
 现有 `make deploy` 脚本可用于新建的独立 kind 测试环境。
 `deploy/build-images.sh` 根据渲染清单构建 `train-ticket/<service>:<tag>` 并执行 `kind load`。
-`values-cluster.yaml` 指向镜像仓库，因此新 kind 环境必须提供与本地加载镜像名称一致的 values 文件。
+chart 自带的 `values.yaml` 指向镜像仓库，因此新 kind 环境必须提供与本地加载镜像名称一致的 values 文件。
 [部署资产说明](../deploy/README.md#separate-kind-cluster) 给出了该文件的完整最小示例。
 以下示例假设已创建 `train-ticket-test` 集群与该环境的 `deploy/helm/values-test.local.yaml`，并已验证默认 StorageClass 和基础设施镜像可用。
 
@@ -52,7 +48,7 @@ make deploy KIND_CLUSTER=train-ticket-test KCTX=kind-train-ticket-test \
 
 ### 使用镜像仓库的新测试环境
 
-Skaffold `case` profile 使用 `values-cluster.yaml` 和 `values-case.yaml`，通过命名空间区分测试 release。
+Skaffold `case` profile 使用与常驻环境相同的单一 values 文件，通过命名空间区分测试 release，并关闭只允许常驻 release 运行的两个节点级 exporter。
 该 profile 要求集中存储 `clickhouse.telemetry.svc.cluster.local` 已经可用，并验证目标环境的 StorageClass 与镜像仓库访问。
 
 ```bash
@@ -65,11 +61,10 @@ skaffold run -p case --kube-context <test-context> \
 部署阶段位于 profile 中，`resident` profile 指向常驻命名空间，不能用于本次文档收尾。
 使用 `-b` 限定构建对象不等于保留其他部署对象，后续更新仍需要检查完整渲染结果与已部署镜像引用。
 
-### Production 与 ACR 配置
+### 镜像仓库环境
 
-[values-prod.yaml](../deploy/helm/values-prod.yaml) 定义分片数据库和服务资源配置。
-[values-acr.yaml](../deploy/helm/values-acr.yaml) 叠加指定仓库布局与目标环境配置。
-现有 `make push-images` 和 `make deploy-acr` 可供经过前提验证的新目标环境使用。
+仓库只保留一份 values 文件：`deploy/helm/train-ticket/values.yaml` 同时定义镜像仓库、存储类型、分片数据库、服务资源和负载生成配置。
+需要部署到其它镜像仓库或存储类型时，用 `HELM_VALUES` 指向该环境自己的 values 文件，然后使用 `make push-images` 与 `make deploy-acr`。
 
 | 入口 | 输入与行为 |
 | --- | --- |
