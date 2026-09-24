@@ -1,6 +1,6 @@
 # Seat Assignment — HTTP API
 
-Last updated: 2026-09-23
+Last updated: 2026-09-24
 
 ## Overview
 
@@ -420,6 +420,15 @@ It does not create, release or alter an allocation.
 | `units` | Assignable concrete SeatUnits in the class; empty for standing |
 | `allocations` | Active allocations in this class, preserving original booking, order, traveler, hold and interval references |
 | `standingPolicy` | Versioned quota evidence, present for standing |
+
+An optional `view` parameter selects the response scope.
+The default `view=full` returns every field above.
+`view=composition` returns the composition identity, `units` and `standingPolicy`, and omits `allocations`.
+`view=occupancy` returns the composition identity and `allocations`, and omits `units` and `standingPolicy`.
+All three views return the same `seatMapId`, `seatMapVersion` and `compositionVersion`.
+Capacity caches the composition view until the occupancy view reports another composition version, so the admission path carries the active allocations rather than every physical unit.
+An occupancy response whose composition identity differs from the cached composition requires a fresh composition read before admission.
+Any other `view` value returns a validation error.
 
 Concrete allocations on historical maps still count against their class and retain their original map references.
 Missing allocation references or incomplete published map selection return an error.

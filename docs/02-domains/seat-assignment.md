@@ -96,10 +96,12 @@ Booking coordinated 行为尚未启用。
 | SeatMap 下的 `/seat-units/{seatUnitRef}/mark-unavailable`、`/reopen` | 修改未发布编组中的单元可分配状态。 |
 | `/api/v1/internal/seat-allocations` | 内部出票前分配。 |
 | `/api/v1/seat-allocations` | 按预订查询或按分配标识读取结果。 |
-| `/api/v1/internal/capacity-facts` | 读取服务、日期和席别对应的已发布供给及有效占用。 |
+| `/api/v1/internal/capacity-facts` | 读取服务、日期和席别对应的已发布供给及有效占用，`view` 选择返回范围。 |
 | `/api/v1/seat-assignments` | segment/date 座位请求、可用性、确认和释放。 |
 
 `capacity-facts` 对 `STANDING` 返回空 `units`、政策及有效站票，对具体席别返回可分配单元和相应历史分配。
+缺省视图 `full` 返回上述全部内容，视图 `composition` 只返回编组标识、可分配单元和政策，视图 `occupancy` 只返回编组标识和有效占用。
+三个视图返回相同的编组标识和版本号，调用方据此判断缓存是否仍然有效。
 SeatMap、allocation、inventory、幂等记录、处理过的事件和 outbox 使用 PostgreSQL 保存。
 接口字段见 [Seat Assignment HTTP API](../08-contracts/api/seat-assignment.md)。
 源码与已有验证范围见 [seat-assignment-impl.md](../10-domain-enrichment/seat-assignment-impl.md)。

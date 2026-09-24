@@ -78,6 +78,8 @@ The runtime registers SeatMap creation, listing, reading, publication, retiremen
 `GET /api/v1/seat-allocations` and the identifier endpoint read persisted results.
 
 `GET /api/v1/internal/capacity-facts` returns the selected published map, assignable units and active allocations for a service, date and class.
+The `view` parameter splits that response: `composition` returns the map identity, assignable units and standing policy, while `occupancy` returns the map identity and active allocations.
+Capacity caches the composition until the occupancy reports another version, so admission does not transfer every physical unit.
 For `STANDING`, it returns an empty units array, standing policy evidence and active standing allocations.
 Concrete allocations are resolved through their recorded composition, including historical map references.
 

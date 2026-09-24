@@ -108,6 +108,30 @@ func TestRecordedCapacityFactsPreservePhysicalClassAndActiveOccupancy(t *testing
 		if class == "BUSINESS_CLASS" && len(facts.Units) != 36 {
 			t.Fatal("recorded business inventory must contain 36 seats")
 		}
+		composition, err := svc.CapacityComposition(ctx, source.SeatMap.ScheduledServiceRef, source.SeatMap.ServiceDate, class)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if composition.SeatMapID != facts.SeatMapID || composition.SeatMapVersion != facts.SeatMapVersion || composition.CompositionVersion != facts.CompositionVersion {
+			t.Fatalf("%s composition identity differs from the full facts", class)
+		}
+		compositionUnits, _ := json.Marshal(composition.Units)
+		factsUnits, _ := json.Marshal(facts.Units)
+		if string(compositionUnits) != string(factsUnits) {
+			t.Fatalf("%s composition units differ from the full facts", class)
+		}
+		occupancy, err := svc.CapacityOccupancy(ctx, source.SeatMap.ScheduledServiceRef, source.SeatMap.ServiceDate, class)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if occupancy.SeatMapID != facts.SeatMapID || occupancy.SeatMapVersion != facts.SeatMapVersion || occupancy.CompositionVersion != facts.CompositionVersion {
+			t.Fatalf("%s occupancy identity differs from the full facts", class)
+		}
+		occupancyAllocations, _ := json.Marshal(occupancy.Allocations)
+		factsAllocations, _ := json.Marshal(facts.Allocations)
+		if string(occupancyAllocations) != string(factsAllocations) {
+			t.Fatalf("%s occupancy allocations differ from the full facts", class)
+		}
 	}
 	if _, err := svc.CapacityFacts(ctx, source.SeatMap.ScheduledServiceRef, source.SeatMap.ServiceDate, "UNLISTED"); err == nil {
 		t.Fatal("unknown class accepted")
