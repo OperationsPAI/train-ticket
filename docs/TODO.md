@@ -52,6 +52,12 @@ Each saga hop pays that delay, and a reservation spans several hops.
 `ANALYZE` and `VACUUM` on the outbox tables restored the index plan: the same query is 11 to 15 milliseconds in Booking Orchestration, and no slow batch has been logged since.
 The condition is operational rather than a code defect, so the open question is whether autovacuum keeps these tables analysed under the resident write rate.
 
+Revision 319 and 320 then moved the burst failures off the reservation path: the eight minute window that carried the 11:33 burst failed 8 reservations and 491 post sales case or refund checks, where the equivalent window at revision 318 failed 405 reservations.
+The post sales cases that the load generator reported did reach `APPLIED` a few seconds later, so the remaining gap is the ten second client budget rather than a stuck case.
+The largest burst so far, at 11:51 with 73154 requests in thirty seconds, still produced 8032 failed journeys: 3054 quote timeouts in Fare Pricing, 2026 search timeouts in Trip Planning, 1431 post sales case checks and 818 reservation waits.
+That burst is the one measurement that pushes the identity verification stream to 29532 undelivered entries against its 30000 entry cap, which is the point where trimming can drop an event before a consumer reads it.
+The next steps are the identity verification service's own latency under that burst, which its HTTP callers in Fare Pricing and Journey Order wait on, and a larger retention cap for that stream.
+
 ## Notification
 
 ### T02: Finish and release durable notification delivery
