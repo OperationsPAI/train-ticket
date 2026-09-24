@@ -66,7 +66,9 @@ The remaining work is the post sales case pipeline inside the ten second client 
 Revision 322 gives Trip Planning a 32 connection pool after searches waited over two seconds for a connection and answered 503 while the database itself had spare capacity, and revision 324 runs two replicas of the seven services on the reservation path.
 The change cases that waited past their fifteen minute deadline are now failed by the saga sweep, which removes the change case backlog: the windows after 13:55 report boarding and no-show failures only.
 The remaining user visible failure is `failed_at_boarding` with 404 `fulfillment record not found`, steady at one to twenty per thirty second window.
-Measured in the same period: 4385 entitlements were issued or updated in five minutes against 3692 fulfillment records created in the same interval, so about sixteen percent of the issued tickets have no fulfillment record when the load generator boards them, and its nine attempt 404 budget does not cover that gap.
+The totals say the projection is complete: 3033370 entitlements against 3028056 fulfillment records, a shortfall of 5314.
+The 404 is therefore a race or a key mismatch rather than a missing projection: the load generator boards immediately after issuance and retries a 404 nine times over about nine seconds, and the five freshly issued entitlements sampled for a record did not have one fifteen seconds later, which points at the lookup key rather than at the delay.
+Revision 329 gives Fulfillment eight reader loops per stream (`CONSUMER_WORKERS` in the Go kit, one loop per stream until now) on the theory that one loop could not keep up with the entitlement stream; the boarding 404 rate did not change, so the next step is the lookup key itself: `FindByEntitlementSegment` matches entitlement, segment booking and segment, and the boarding request carries the values the load generator recorded at purchase time.
 
 ## Notification
 

@@ -57,6 +57,11 @@ type RedisConfig struct {
 	ReadBlock       time.Duration
 	RecoveryEvery   time.Duration
 	RecoveryMinIdle time.Duration
+	// Consumers is the number of reader loops per stream. One loop processes a
+	// read batch on its own goroutine, so a stream whose events each need a
+	// database write is limited by one handler's latency; several loops share
+	// the same group and each registers its own consumer name.
+	Consumers int
 }
 
 type RedisEventBus struct {
@@ -101,7 +106,31 @@ func NewRedisEventBusWithClient(client *redis.Client, cfg RedisConfig) *RedisEve
 	if cfg.RecoveryMinIdle == 0 {
 		cfg.RecoveryMinIdle = 60 * time.Second
 	}
+	if cfg.Consumers == 0 {
+		cfg.Consumers = consumersFromEnv()
+	}
+	if cfg.Consumers < 1 {
+		cfg.Consumers = 1
+	}
 	return &RedisEventBus{client: client, cfg: cfg, dedup: NewInMemoryDedupStore(), observer: ObserverFromEnv("")}
+}
+
+// consumersFromEnv reads CONSUMER_WORKERS, the number of reader loops per
+// stream. Unset or invalid keeps the single loop this service has always run.
+func consumersFromEnv() int {
+	raw := strings.TrimSpace(os.Getenv("CONSUMER_WORKERS"))
+	if raw == "" {
+		return 1
+	}
+	workers, err := strconv.Atoi(raw)
+	if err != nil || workers < 1 {
+		log.Printf("WARN CONSUMER_WORKERS=%q is not a positive integer; using 1", raw)
+		return 1
+	}
+	if workers > 32 {
+		return 32
+	}
+	return workers
 }
 
 // WithObserver overrides the event consumer observer. Nil resets to no-op.
@@ -193,11 +222,17 @@ func (b *RedisEventBus) Subscribe(ctx context.Context, sub Subscription, handler
 	b.cancel = append(b.cancel, cancel)
 	b.mu.Unlock()
 	for _, stream := range streams {
-		b.wg.Add(1)
-		go func(stream string) {
-			defer b.wg.Done()
-			b.consumeLoop(runCtx, []string{stream}, sub.Group, sub.ConsumerName, handler, sub.EventFilter)
-		}(stream)
+		for worker := 0; worker < b.cfg.Consumers; worker++ {
+			consumer := sub.ConsumerName
+			if b.cfg.Consumers > 1 {
+				consumer = fmt.Sprintf("%s-%d", sub.ConsumerName, worker)
+			}
+			b.wg.Add(1)
+			go func(stream, consumer string) {
+				defer b.wg.Done()
+				b.consumeLoop(runCtx, []string{stream}, sub.Group, consumer, handler, sub.EventFilter)
+			}(stream, consumer)
+		}
 	}
 	return nil
 }
