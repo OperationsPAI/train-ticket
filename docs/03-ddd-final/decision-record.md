@@ -45,7 +45,7 @@ Fare 拥有价格规则，Offer 保存面向购买的报价引用。
 
 Service Plan 的 `GET /api/v1/internal/service-segments/:segmentRef/supply` 提供区间及停站版本。
 Seat Assignment 的 `GET /api/v1/internal/capacity-facts` 提供已发布供给事实。
-Capacity 新联合供给仍未提交、未部署，工作状态见 [TODO](../TODO.md)。
+Capacity 新联合供给已在提交 `caafa668` 中实现，尚未部署，工作状态见 [TODO](../TODO.md)。
 
 ## DR-005 Supplier And Place Ownership
 
@@ -153,7 +153,7 @@ Booking 身份连接旅客、分段、日期、席别与占用结果。
 Journey Order 的 accepted purchase source 接口提供订单创建时接受的 Offer。
 订单改签后，原购买来源继续支持原预订事实核对。
 Seat Assignment 重放使用已记录编组和政策证据。
-Capacity 新联合供给仍未提交、未部署，其引用固化和接入工作见 [TODO](../TODO.md)。
+Capacity 新联合供给已在提交 `caafa668` 中实现，尚未部署，其引用固化和接入工作见 [TODO](../TODO.md)。
 
 ## DR-016 Waitlist
 
@@ -209,4 +209,4 @@ Loyalty Membership 拥有会员积分和等级，Marketing Campaign 拥有活动
 Notification 消费订单、支付、出票、售后等业务事实，选择模板和渠道，记录通知状态与发送尝试。
 `GET /api/v1/notifications/:id/trail` 提供触达记录查询。
 业务服务拥有业务完成状态，Notification 拥有发送结果。
-Notification durable 发送队列为 WIP、未部署，工作状态见 [TODO](../TODO.md)。
+Notification durable 发送队列已在提交 `41917b85` 中实现、尚未部署，工作状态见 [TODO](../TODO.md)。
