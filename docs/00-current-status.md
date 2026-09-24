@@ -52,6 +52,7 @@ See the [standing policy](08-contracts/standing-capacity-policy.md), [APIs](08-c
 | Ten minute resident cycle at revision 300 | 362212 requests, 41567 journeys, P99 226 milliseconds, 14 failed journeys, all seat or standing rejections | `.scratch/runtime-fixes/goal-rev300-ten-minute.json` |
 | Ten minute resident cycle at revision 306 | 451150 requests, 49821 journeys, P99 2888 milliseconds, 7143 failed journeys, 5634 reservation confirmations and 1331 post sales case status checks | `.scratch/runtime-fixes/goal-rev306-ten-minute.json` |
 | Fifteen minute window at revisions 315 to 318 | 465276 requests, 53234 journeys, P99 354 milliseconds, 17 failed journeys, 15 boarding record races and 2 post sales executions | `.scratch/runtime-fixes/goal-rev317-fifteen-minute.json` |
+| Eighteen minute window at revision 321 | 557863 requests, 64845 journeys, P99 257 milliseconds, 0 failed journeys and 0 unexpected HTTP errors | `.scratch/runtime-fixes/goal-rev321-eighteen-minute.json` |
 | Stable full peak acceptance | Not established | [TODO](TODO.md#acceptance) |
 
 The revision 278 ten minute recording ending at 2026-09-23 15:49:14 UTC contains 601683 requests and 9163 failed journeys, with request P99 of 9744.922 milliseconds.
