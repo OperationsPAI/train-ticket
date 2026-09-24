@@ -22,13 +22,15 @@ import { DirectSuccessGateway, type NotificationChannelGateway, NonConformantNot
 import { RateLimitExceeded, type NotificationTask } from "../../domain.js";
 import { redisUrl } from "../messaging/stream-config.js";
 import { PostgresNotificationAggregator, PostgresNotificationTaskRepository, PostgresRateLimitRepository, PostgresRecipientContactRepository, PostgresUserPreferenceRepository } from "./notification-repository.js";
+import { PostgresDeliveryScheduler, startDeliveryWorker } from "./delivery-queue.js";
+import type { NotificationTrailResponse } from "../../app.js";
 
 export type NotificationStorageRuntime = Readonly<{
   ready: () => Promise<boolean>;
   failure: () => unknown;
   /** Migration retry state, surfaced on `/readyz` so a stuck boot is diagnosable. */
   schema: () => ReturnType<MigrationSupervisor["detail"]>;
-  getNotificationTrail: (notificationId: string) => Promise<Readonly<{ notificationId: string; status: string; attempts: readonly Readonly<{ channelUsed: string; attemptedAt: string; status: string; reason?: string }>[] }> | undefined>;
+  getNotificationTrail: (notificationId: string) => Promise<NotificationTrailResponse | undefined>;
   handleExternalTrigger: (envelope: EventEnvelope, stream?: string) => Promise<"ack" | "retry" | "dlq">;
   stop: () => Promise<void>;
 }>;
@@ -55,6 +57,7 @@ export async function startNotificationStorage(channelGateway: NotificationChann
     onFailure: (error) => console.error(sanitizedErrorForLog(error)),
   });
   relay.start();
+  const deliveryWorker = startDeliveryWorker(pool, channelGateway);
 
   let retrying: Promise<void> | undefined;
   const retryTimer = setInterval(() => {
@@ -69,23 +72,7 @@ export async function startNotificationStorage(channelGateway: NotificationChann
     ready: migrationsAwareReadiness(migrations, pool),
     failure: () => migrations.failure(),
     schema: () => migrations.detail(),
-    getNotificationTrail: async (notificationId) => withTransaction(pool, async (client) => {
-      const record = await new PostgresNotificationTaskRepository(client).get(notificationId);
-      if (!record) {
-        return undefined;
-      }
-      const snapshot = record.data;
-      return {
-        notificationId,
-        status: snapshot.status,
-        attempts: snapshot.receipts.map((receipt) => ({
-          channelUsed: receipt.channel,
-          attemptedAt: new Date(receipt.recordedAt).toISOString(),
-          status: receipt.outcome === "Delivered" ? "DELIVERED" : receipt.outcome === "Bounced" ? "BOUNCED" : "FAILED",
-          ...(receipt.providerCode ? { reason: receipt.providerCode } : {}),
-        })),
-      };
-    }),
+    getNotificationTrail: notificationId => getNotificationTrail(pool, notificationId),
     handleExternalTrigger: async (original, stream) => {
       if (!templateCodeFor(original)) return "ack";
       return withTransaction(pool, async (client) => {
@@ -100,6 +87,7 @@ export async function startNotificationStorage(channelGateway: NotificationChann
     stop: async () => {
       clearInterval(retryTimer);
       await retrying;
+      await deliveryWorker.stop();
       // Stop the migration retry first: otherwise a shutdown during the retry
       // window leaves a backoff timer running and can issue queries against a
       // pool that is being torn down.
@@ -109,6 +97,30 @@ export async function startNotificationStorage(channelGateway: NotificationChann
       await Promise.allSettled([redis.quit(), pool.end()]);
     },
   };
+}
+
+export async function getNotificationTrail(pool: import("pg").Pool, notificationId: string): Promise<NotificationTrailResponse | undefined> {
+  return withTransaction(pool, async client => {
+    await client.query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    const record = await new PostgresNotificationTaskRepository(client).get(notificationId);
+    if (!record) return undefined;
+    const queue = await client.query("SELECT state,message_id,available_at FROM notification_delivery_queue WHERE task_id=$1", [notificationId]);
+    const attempts = queue.rowCount ? await client.query("SELECT claim_token,attempt_number,channel,state,claimed_at,started_at,completed_at,message_id,result FROM notification_delivery_attempts WHERE task_id=$1 ORDER BY attempt_number", [notificationId]) : undefined;
+    const evidence = queue.rowCount ? await client.query("SELECT seq,claim_token,kind,recorded_at,evidence FROM notification_delivery_evidence WHERE task_id=$1 ORDER BY seq", [notificationId]) : undefined;
+    return {
+      notificationId, status: record.data.status, resultUnknown: record.data.status === "Unknown" || queue.rows[0]?.state === "Unknown",
+      attempts: record.data.receipts.map(receipt => ({
+        channelUsed: receipt.channel, attemptedAt: new Date(receipt.recordedAt).toISOString(),
+        status: receipt.outcome === "Delivered" ? "DELIVERED" : receipt.outcome === "Unknown" ? "UNKNOWN" : receipt.outcome === "Bounced" ? "BOUNCED" : "FAILED",
+        attemptId: receipt.attemptId, messageId: receipt.messageId, retryAt: receipt.retryAt,
+        ...(receipt.providerCode ? { reason: receipt.providerCode } : {}),
+      })),
+      ...(queue.rows[0] ? { delivery: {
+        state: queue.rows[0].state, messageId: queue.rows[0].message_id, availableAt: queue.rows[0].available_at,
+        attempts: attempts!.rows, evidence: evidence!.rows,
+      } } : {}),
+    };
+  });
 }
 
 export async function deliverOrDefer(client: import("pg").PoolClient, envelope: EventEnvelope, stream: string | undefined, channelGateway: NotificationChannelGateway): Promise<"ack" | "dlq"> {
@@ -125,6 +137,7 @@ export async function deliverOrDefer(client: import("pg").PoolClient, envelope: 
           new TransactionalNotificationTaskStore(new PostgresNotificationTaskRepository(client)),
           new PostgresRecipientContactRepository(client), new PostgresRateLimitRepository(client),
           new PostgresNotificationAggregator(client),
+          new PostgresDeliveryScheduler(client),
         );
         await application.handleExternalTrigger(envelope, recipient);
       }

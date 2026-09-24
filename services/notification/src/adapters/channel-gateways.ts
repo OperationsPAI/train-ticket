@@ -1,4 +1,6 @@
 import nodemailer, { type Transporter } from "nodemailer";
+import { createHash } from "node:crypto";
+import { deliveryErrorEvidence } from "./delivery-errors.js";
 
 import type { NotificationTaskSnapshot } from "../domain.js";
 import { DirectSuccessGateway, type DeliveryResult, type NotificationChannelGateway } from "../application/notification-service.js";
@@ -18,33 +20,55 @@ export function recipientEmailAddress(recipientRef: string): string {
 
 export type SmtpTransporter = Pick<Transporter, "sendMail">;
 
+export function smtpMessageId(taskId: string): string {
+  return `<${createHash("sha256").update(taskId).digest("hex")}@notification.train-ticket.local>`;
+}
+
 export class SmtpChannelGateway implements NotificationChannelGateway {
   constructor(
     private readonly transporter: SmtpTransporter,
     private readonly fallback: NotificationChannelGateway = new DirectSuccessGateway(),
   ) {}
 
-  async send(task: NotificationTaskSnapshot): Promise<DeliveryResult> {
+  async send(task: NotificationTaskSnapshot, lateResult?: (result: DeliveryResult) => Promise<void>): Promise<DeliveryResult> {
     if (task.channel !== "EMAIL") {
       return this.fallback.send(task);
     }
 
-    try {
-      const result = await withSmtpTimeout(this.transporter.sendMail({
+    let timedOut = false;
+    const sending: Promise<DeliveryResult> = this.transporter.sendMail({
         from: EMAIL_FROM,
         to: recipientEmailAddress(task.recipientRef),
         subject: `[train-ticket] ${task.templateCode}`,
         text: renderTextBody(task.variables),
+        messageId: smtpMessageId(task.notificationTaskId),
         headers: {
           "X-Notification-Task-Id": task.notificationTaskId,
           "X-Template-Code": task.templateCode,
           "X-Correlation-Id": task.correlationId,
         },
-      }));
-      return { ok: true, providerMessageId: result.messageId };
-    } catch (error) {
-      return smtpErrorToDeliveryResult(error);
-    }
+      }).then(result => {
+        if (!result.accepted?.length) return { ok: false, outcome: "Rejected", providerCode: "NO_ACCEPTED_RECIPIENT", retryable: false } as const;
+        return { ok: true, providerMessageId: result.messageId, providerResponse: result.response } as const;
+      }, smtpErrorToDeliveryResult);
+    const observed = sending.then(async result => {
+      if (timedOut && lateResult) await lateResult(result);
+      return result;
+    });
+    // Observe persistence errors even after the caller received Unknown.
+    void observed.catch(error => console.error({ component: "notification-smtp", code: "LATE_RESULT_PERSIST_FAILED", error: deliveryErrorEvidence(error) }));
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        observed,
+        new Promise<DeliveryResult>(resolve => {
+          timer = setTimeout(() => {
+            timedOut = true;
+            resolve({ ok: false, outcome: "Unknown", providerCode: "SMTP_DEADLINE_EXCEEDED" });
+          }, SMTP_TIMEOUT_MS);
+        }),
+      ]);
+    } finally { if (timer) clearTimeout(timer); }
   }
 }
 
@@ -80,27 +104,6 @@ function defaultSmtpPort(protocol: string): number {
   return protocol === "smtps:" ? 465 : 25;
 }
 
-async function withSmtpTimeout<T>(send: Promise<T>): Promise<T> {
-  let timeout: NodeJS.Timeout | undefined;
-  try {
-    return await Promise.race([
-      send,
-      new Promise<T>((_resolve, reject) => {
-        timeout = setTimeout(() => reject(smtpTimeoutError()), SMTP_TIMEOUT_MS);
-      }),
-    ]);
-  } finally {
-    if (timeout !== undefined) {
-      clearTimeout(timeout);
-    }
-  }
-}
-
-function smtpTimeoutError(): Error & { code: string } {
-  const error = new Error("SMTP delivery timed out");
-  return Object.assign(error, { code: "ETIMEDOUT" });
-}
-
 function renderTextBody(variables: Readonly<Record<string, string>>): string {
   return Object.entries(variables)
     .map(([key, value]) => `${key}: ${value}`)
@@ -109,6 +112,8 @@ function renderTextBody(variables: Readonly<Record<string, string>>): string {
 
 function smtpErrorToDeliveryResult(error: unknown): DeliveryResult {
   const details = smtpErrorDetails(error);
+  // Nodemailer also labels a disconnect after DATA as CONN.
+  const knownUnsent = details.connectionRefused || details.providerCode === "EDNS";
   if (details.responseCode !== undefined) {
     if (details.responseCode >= 500 && details.responseCode <= 599) {
       return {
@@ -116,6 +121,7 @@ function smtpErrorToDeliveryResult(error: unknown): DeliveryResult {
         outcome: "Rejected",
         providerCode: details.providerCode,
         providerMessage: details.providerMessage,
+        retryable: false,
       };
     }
     if (details.responseCode >= 400 && details.responseCode <= 499) {
@@ -124,15 +130,17 @@ function smtpErrorToDeliveryResult(error: unknown): DeliveryResult {
         outcome: "Timeout",
         providerCode: details.providerCode,
         providerMessage: details.providerMessage,
+        retryable: true,
       };
     }
   }
 
   return {
     ok: false,
-    outcome: "Timeout",
+    outcome: knownUnsent ? "Timeout" : "Unknown",
     providerCode: details.providerCode,
     providerMessage: details.providerMessage,
+    retryable: knownUnsent,
   };
 }
 
@@ -140,6 +148,8 @@ function smtpErrorDetails(error: unknown): Readonly<{
   responseCode?: number;
   providerCode?: string;
   providerMessage?: string;
+  command?: string;
+  connectionRefused?: boolean;
 }> {
   if (!isRecord(error)) {
     return { providerMessage: "SMTP delivery failed" };
@@ -152,8 +162,10 @@ function smtpErrorDetails(error: unknown): Readonly<{
 
   return {
     responseCode,
+    command,
+    connectionRefused: error.syscall === "connect" && (error.errno === "ECONNREFUSED" || error.code === "ECONNREFUSED" || /\bECONNREFUSED\b/.test(stringValue(error.message) ?? "")),
     providerCode: code ?? (responseCode !== undefined ? String(responseCode) : command),
-    providerMessage: response,
+    providerMessage: JSON.stringify({ ...deliveryErrorEvidence(error), ...(responseCode ? { reason: `SMTP ${responseCode} rejected the operation` } : {}), responseCode, command: command && /^(CONN|EHLO|HELO|AUTH|MAIL FROM|RCPT TO|DATA|QUIT)$/.test(command) ? command : undefined }),
   };
 }
 
