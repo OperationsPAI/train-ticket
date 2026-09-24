@@ -139,8 +139,20 @@ func (h *Handler) allocateSeat(c *gin.Context) {
 }
 
 func (h *Handler) capacityFacts(c *gin.Context) {
-	resp, err := h.svc.CapacityFacts(c.Request.Context(), c.Query("scheduledServiceRef"), c.Query("serviceDate"), c.Query("classRef"))
-	h.write(c, http.StatusOK, resp, err)
+	service, date, class := c.Query("scheduledServiceRef"), c.Query("serviceDate"), c.Query("classRef")
+	switch c.DefaultQuery("view", "full") {
+	case "full":
+		resp, err := h.svc.CapacityFacts(c.Request.Context(), service, date, class)
+		h.write(c, http.StatusOK, resp, err)
+	case "composition":
+		resp, err := h.svc.CapacityComposition(c.Request.Context(), service, date, class)
+		h.write(c, http.StatusOK, resp, err)
+	case "occupancy":
+		resp, err := h.svc.CapacityOccupancy(c.Request.Context(), service, date, class)
+		h.write(c, http.StatusOK, resp, err)
+	default:
+		httpkit.WriteError(c, http.StatusBadRequest, httpkit.ValidationFailed, "view must be full, composition or occupancy", nil)
+	}
 }
 func (h *Handler) getSeatAllocation(c *gin.Context) {
 	resp, err := h.svc.GetSeatAllocation(c.Request.Context(), c.Param("seatAllocationId"))
