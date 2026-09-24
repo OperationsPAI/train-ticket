@@ -763,6 +763,10 @@ services:
       # stream during a peak and its callers timed out.
       PG_MAX_POOL_SIZE: "8"
       WEB_CONCURRENCY: "8"
+      # 30000 entries is forty three seconds of this stream at a burst of seven
+      # hundred events per second, and the largest burst left 29532 undelivered;
+      # the next step is trimming an event before a consumer reads it.
+      EVENT_STREAM_MAXLEN: "90000"
     # Spiky rather than persistently hot: measured p50 utilization 0.285 of a
     # core against the shared 2-core default, with p95 and peak both at 2.0. So
     # the ceiling clips its bursts, and a clipped burst is a latency tail every
@@ -1006,8 +1010,11 @@ services:
       # Eight rather than four: revenue recognition has to finish inside the
       # invoice polling window, and four threads could not follow the payment and
       # booking streams at peak.
-      CONSUMER_THREADS: "8"   # 7 streams
-      HIKARI_MAX_POOL_SIZE: "32"
+      # Twenty four: eight threads read the seven streams at 75 to 106 events per
+      # second while the booking stream alone produced 150 to 230, and the lag
+      # grew from thirteen seconds to fifty seven within a minute.
+      CONSUMER_THREADS: "24"   # 7 streams
+      HIKARI_MAX_POOL_SIZE: "48"
     # 4 consumer threads do not fit in the default 500m CPU limit. Raising
     # CONSUMER_THREADS without raising this caused a CrashLoopBackOff: the
     # threads saturated half a core working through the backlog, the HTTP thread
@@ -1015,7 +1022,7 @@ services:
     # the pod every 64 seconds. Threads and CPU must be raised together.
     resources:
       requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: '2', memory: 2Gi }
+      limits: { cpu: '4', memory: 3Gi }
   reporting:
     db: reporting
     env:
