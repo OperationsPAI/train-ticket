@@ -46,6 +46,7 @@ final class JacksonBookingOrchestrationJson {
             stepNode.put("compensationAction", step.compensationAction());
             stepNode.put("status", step.status().name());
             stepNode.put("attemptNumber", step.attemptNumber());
+            step.startedAt().ifPresent(startedAt -> stepNode.put("startedAt", startedAt.toString()));
             step.failureReason().ifPresent(reason -> stepNode.put("failureReason", reason));
         }
         return new BookingSagaSnapshot(node);
@@ -63,6 +64,7 @@ final class JacksonBookingOrchestrationJson {
                 stepNode.path("compensationAction").asText(),
                 BookingStepStatus.valueOf(stepNode.path("status").asText()),
                 stepNode.path("attemptNumber").asInt(),
+                stepNode.has("startedAt") ? java.time.Instant.parse(stepNode.path("startedAt").asText()) : null,
                 stepNode.path("failureReason").isMissingNode() ? null : stepNode.path("failureReason").asText()
             ));
         }

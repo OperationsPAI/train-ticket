@@ -28,11 +28,12 @@ class CapacityReplayWriteLiveTest {
             var jdbc=new JdbcTemplate(pool);jdbc.execute("CREATE SCHEMA "+schema);
             try {
                 jdbc.execute(Files.readString(Path.of("migrations/001_booking_orchestration_persistence.sql")));
+                jdbc.execute(Files.readString(Path.of("migrations/005_booking_saga_step_deadlines.sql")));
                 for(String type:java.util.List.of("booking","saga")) {
                     var row=source.path(type);String table=type.equals("booking")?"segment_booking_snapshots":"booking_saga_snapshots";
                     jdbc.update("INSERT INTO "+table+"(id,version,data) VALUES(?,?,?::jsonb)",row.path("id").asText(),row.path("version").asLong(),row.path("data").toString());
                 }
-                var service=new BookingOrchestrationService(Clock.systemUTC(),new TransactionalOutboxEventPublisher(new OutboxAppender(pool,mapper),mapper),new PostgresBookingSagaRepository(pool,mapper),new PostgresSegmentBookingRepository(pool,mapper),new PostgresPaymentIntentSagaReferenceRepository(pool),new PostgresConsumedEventRepository(pool));
+                var service=new BookingOrchestrationService(Clock.systemUTC(),new TransactionalOutboxEventPublisher(new OutboxAppender(pool,mapper),mapper),new PostgresBookingSagaRepository(pool,mapper),new PostgresSegmentBookingRepository(pool,mapper),new PostgresPaymentIntentSagaReferenceRepository(pool),new PostgresConsumedEventRepository(pool),new PostgresBookingSagaStepDeadlineRepository(pool));
                 var tx=new TransactionTemplate(new DataSourceTransactionManager(pool));
                 var event=mapper.treeToValue(source.path("event"),EventEnvelope.class);
                 for(int attempt=0;attempt<3;attempt++) {

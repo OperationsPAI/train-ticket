@@ -2,6 +2,7 @@ package com.trainticket.bookingorchestration.domain;
 
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -137,10 +138,22 @@ public final class BookingSaga {
         record(new BookingSagaStepFailed(nextEventId(), sagaId, now(), step.name(), step.idempotencyKey(), reason));
     }
 
+    /**
+     * Records that a step has begun waiting for its response and returns the deadline the sweep
+     * enforces. A deadline exists only for a step whose wait start was recorded.
+     */
+    public Instant beginStepWait(String stepIdempotencyKey) {
+        requireNotTerminal();
+        BookingSagaStep step = step(stepIdempotencyKey);
+        step.beginWaiting(now());
+        return step.waitDeadline().orElseThrow();
+    }
+
     public void retryStep(String stepIdempotencyKey) {
         requireNotTerminal();
         BookingSagaStep step = step(stepIdempotencyKey);
         step.scheduleRetry();
+        step.beginWaiting(now());
         record(new BookingSagaRetryScheduled(nextEventId(), sagaId, now(), step.name(), step.idempotencyKey(),
             step.attemptNumber()));
     }
