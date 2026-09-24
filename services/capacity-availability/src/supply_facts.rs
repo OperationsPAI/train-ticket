@@ -9,11 +9,15 @@ use std::time::{Duration, Instant};
 /// admission from repeating the same upstream reads for every Hold.
 const ROUTE_CACHE_TTL: Duration = Duration::from_secs(30);
 const SERVICE_SEGMENTS_CACHE_TTL: Duration = Duration::from_secs(30);
-/// Published seat supply carries allocations, which change while the composition stays fixed.
-/// Every Capacity Hold in the same pool is still counted from the database, so the published
-/// supply only has to be fresh enough to notice seats that another channel allocated. Thirty
-/// seconds keeps that window while avoiding a three hundred kilobyte fetch per reservation.
+/// Published seat occupancy carries the active allocations, which change while the composition
+/// stays fixed. Every Capacity Hold in the same pool is still counted from the database, so the
+/// published occupancy only has to be fresh enough to notice seats that another channel
+/// allocated. Thirty seconds keeps that window while avoiding a three hundred kilobyte fetch per
+/// reservation.
 const SEAT_SUPPLY_CACHE_TTL: Duration = Duration::from_secs(30);
+/// The published composition only changes when a new seat map version is published, so it is
+/// cached until the occupancy reports another version.
+const SEAT_COMPOSITION_CACHE_TTL: Duration = Duration::from_secs(300);
 const SUPPLY_CACHE_CAPACITY: usize = 4096;
 
 struct CacheEntry<T> {
@@ -116,6 +120,54 @@ pub struct StandingPolicy {
     pub basis_units: usize,
     pub percent: usize,
     pub limit: usize,
+}
+
+/// The published composition of one class: the physical units and their metadata. It changes
+/// only when a new seat map version is published.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SeatComposition {
+    pub scheduled_service_ref: String,
+    pub service_date: String,
+    pub class_ref: String,
+    pub seat_map_id: String,
+    pub seat_map_version: u64,
+    pub composition_version: String,
+    pub captured_at: String,
+    pub units: Vec<PhysicalUnit>,
+    pub standing_policy: Option<StandingPolicy>,
+}
+
+/// The active allocations of one class together with the composition identity they were
+/// resolved against.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SeatOccupancy {
+    pub scheduled_service_ref: String,
+    pub service_date: String,
+    pub class_ref: String,
+    pub seat_map_id: String,
+    pub seat_map_version: u64,
+    pub composition_version: String,
+    pub captured_at: String,
+    pub allocations: Vec<Allocation>,
+}
+
+impl SeatComposition {
+    fn supply(&self, occupancy: &SeatOccupancy) -> SeatSupply {
+        SeatSupply {
+            scheduled_service_ref: self.scheduled_service_ref.clone(),
+            service_date: self.service_date.clone(),
+            class_ref: self.class_ref.clone(),
+            seat_map_id: self.seat_map_id.clone(),
+            seat_map_version: self.seat_map_version,
+            composition_version: self.composition_version.clone(),
+            captured_at: self.captured_at.clone(),
+            units: self.units.clone(),
+            allocations: occupancy.allocations.clone(),
+            standing_policy: self.standing_policy.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -399,6 +451,7 @@ pub struct SupplyClient {
     routes: Arc<Mutex<HashMap<String, CacheEntry<SegmentRoute>>>>,
     services: Arc<Mutex<HashMap<String, CacheEntry<Vec<String>>>>>,
     seats: Arc<Mutex<HashMap<String, CacheEntry<SeatSupply>>>>,
+    compositions: Arc<Mutex<HashMap<String, CacheEntry<SeatComposition>>>>,
 }
 
 impl SupplyClient {
@@ -463,6 +516,7 @@ impl SupplyClient {
             routes: Arc::new(Mutex::new(HashMap::new())),
             services: Arc::new(Mutex::new(HashMap::new())),
             seats: Arc::new(Mutex::new(HashMap::new())),
+            compositions: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -717,16 +771,78 @@ impl SupplyClient {
             cached.validate(reservation)?;
             return Ok(cached);
         }
-        let supply = self.fetch_seats(reservation, correlation).await?;
+        let occupancy = self.fetch_occupancy(reservation, correlation).await?;
+        require(
+            occupancy.scheduled_service_ref == reservation.scheduled_service_ref
+                && occupancy.service_date == reservation.service_date
+                && occupancy.class_ref == reservation.class_ref,
+            "seat occupancy references differ from the requested reservation",
+        )?;
+        require(
+            !occupancy.seat_map_id.is_empty()
+                && occupancy.seat_map_version > 0
+                && !occupancy.composition_version.is_empty()
+                && !occupancy.captured_at.is_empty(),
+            "seat occupancy requires a published map version",
+        )?;
+        let composition = match cache_lookup(&self.compositions, &key) {
+            Some(cached)
+                if cached.seat_map_id == occupancy.seat_map_id
+                    && cached.seat_map_version == occupancy.seat_map_version
+                    && cached.composition_version == occupancy.composition_version =>
+            {
+                cached
+            }
+            _ => {
+                let composed = self.fetch_composition(reservation, correlation).await?;
+                require(
+                    composed.scheduled_service_ref == occupancy.scheduled_service_ref
+                        && composed.service_date == occupancy.service_date
+                        && composed.class_ref == occupancy.class_ref
+                        && composed.seat_map_id == occupancy.seat_map_id
+                        && composed.seat_map_version == occupancy.seat_map_version
+                        && composed.composition_version == occupancy.composition_version,
+                    "seat composition differs from the occupancy it was resolved for",
+                )?;
+                cache_store(
+                    &self.compositions,
+                    key.clone(),
+                    composed.clone(),
+                    SEAT_COMPOSITION_CACHE_TTL,
+                );
+                composed
+            }
+        };
+        let supply = composition.supply(&occupancy);
+        supply.validate(reservation)?;
         cache_store(&self.seats, key, supply.clone(), SEAT_SUPPLY_CACHE_TTL);
         Ok(supply)
     }
 
-    async fn fetch_seats(
+    async fn fetch_occupancy(
         &self,
         reservation: &ReservationSupply,
         correlation: &str,
-    ) -> Result<SeatSupply, AppError> {
+    ) -> Result<SeatOccupancy, AppError> {
+        self.fetch_facts_view(reservation, correlation, "occupancy")
+            .await
+    }
+
+    async fn fetch_composition(
+        &self,
+        reservation: &ReservationSupply,
+        correlation: &str,
+    ) -> Result<SeatComposition, AppError> {
+        self.fetch_facts_view(reservation, correlation, "composition")
+            .await
+    }
+
+    async fn fetch_facts_view<T: serde::de::DeserializeOwned>(
+        &self,
+        reservation: &ReservationSupply,
+        correlation: &str,
+        view: &str,
+    ) -> Result<T, AppError> {
         let url = format!(
             "{}/api/v1/internal/capacity-facts",
             self.base("seat-assignment")
@@ -738,6 +854,7 @@ impl SupplyClient {
                 ("scheduledServiceRef", &reservation.scheduled_service_ref),
                 ("serviceDate", &reservation.service_date),
                 ("classRef", &reservation.class_ref),
+                ("view", &view.to_string()),
             ])
             .header("X-Correlation-Id", correlation);
         let response = rust_kit::outbound::inject_trace_context(request)
@@ -746,16 +863,15 @@ impl SupplyClient {
             .map_err(|e| AppError::Unavailable(e.to_string()))?;
         if !response.status().is_success() {
             return Err(AppError::Unavailable(format!(
-                "seat supply returned {}",
+                "seat {} view returned {}",
+                view,
                 response.status()
             )));
         }
-        let result: SeatSupply = response
+        response
             .json()
             .await
-            .map_err(|e| AppError::Unavailable(e.to_string()))?;
-        result.validate(reservation)?;
-        Ok(result)
+            .map_err(|e| AppError::Unavailable(e.to_string()))
     }
 
     pub async fn segment(&self, segment: &str, correlation: &str) -> Result<Value, AppError> {
