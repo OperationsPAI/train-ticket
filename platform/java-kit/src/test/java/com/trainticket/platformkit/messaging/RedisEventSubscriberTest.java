@@ -46,6 +46,60 @@ class RedisEventSubscriberTest {
         assertThat(streams.acked).doesNotContain("1-0");
     }
 
+    /**
+     * A failing recovery pass must not stop delivery. Redis answers BUSYGROUP for a repeated
+     * XGROUP CREATE, and an auto-claim that surfaced it used to fail the entire poll iteration,
+     * which left the consumer stalled while new entries piled up behind it.
+     */
+    @Test
+    void failingRecoveryStillDeliversNewEntries() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
+        EventEnvelope event = new EventEnvelopeFactory("journey-order").create("JourneyOrderCreated", Map.of("orderId", "ord-1"));
+        RecoveryFailingStreams streams = new RecoveryFailingStreams(List.of(
+            new RedisStreamOperations.StreamEntry("1-0", objectMapper.writeValueAsString(event))
+        ));
+        RedisEventSubscriber subscriber = new RedisEventSubscriber(
+            streams, objectMapper, null, new InMemoryConsumedEventStore(),
+            RedisEventSubscriber.defaultEventConsumerTracer(), 1);
+        CountDownLatch handled = new CountDownLatch(1);
+
+        try {
+            subscriber.subscribe(List.of("events:journey-order"), "booking-orchestration", "consumer-1", envelope -> {
+                handled.countDown();
+                return HandlerResult.SUCCESS;
+            });
+
+            assertThat(handled.await(5, TimeUnit.SECONDS)).isTrue();
+        } finally {
+            subscriber.close();
+        }
+        assertThat(streams.acked).containsExactly("1-0");
+    }
+
+    /**
+     * XGROUP CREATE runs once per stream. Repeating it every poll iteration is what produced the
+     * BUSYGROUP reply that a recovery pass could turn into a permanently stalled consumer.
+     */
+    @Test
+    void createsTheConsumerGroupOnceRatherThanOnEveryPollIteration() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
+        RecoveryFailingStreams streams = new RecoveryFailingStreams(List.of());
+        RedisEventSubscriber subscriber = new RedisEventSubscriber(
+            streams, objectMapper, null, new InMemoryConsumedEventStore(),
+            RedisEventSubscriber.defaultEventConsumerTracer(), 1);
+
+        try {
+            subscriber.subscribe(List.of("events:journey-order"), "booking-orchestration", "consumer-1", envelope -> HandlerResult.SUCCESS);
+            for (int attempt = 0; attempt < 200 && streams.readGroupCalls.get() < 5; attempt++) {
+                Thread.sleep(20);
+            }
+            assertThat(streams.readGroupCalls.get()).isGreaterThanOrEqualTo(5);
+        } finally {
+            subscriber.close();
+        }
+        assertThat(streams.createGroupCalls.get()).isEqualTo(1);
+    }
+
 
     @Test
     void fatalHandlerResultMovesMessageToDlqWithAttributionMetadata() throws Exception {
@@ -562,6 +616,61 @@ class RedisEventSubscriberTest {
         @Override public int deliveryCount(String stream, String group, String messageId) { return 1; }
         @Override public void ack(String stream, String group, String messageId) { acked.add(messageId); }
         @Override public void moveToDlq(String stream, String envelopeJson, DlqMetadata metadata) {}
+    }
+
+    /**
+     * Fails every recovery pass the way a repeated group creation does, and hands out one batch of
+     * new entries so the poll loop has to keep reading past that failure.
+     */
+    private static final class RecoveryFailingStreams implements RedisStreamOperations {
+        private final List<StreamEntry> batch;
+        private final List<String> acked = Collections.synchronizedList(new ArrayList<>());
+        private final AtomicInteger createGroupCalls = new AtomicInteger();
+        private final AtomicInteger readGroupCalls = new AtomicInteger();
+        private boolean delivered;
+
+        private RecoveryFailingStreams(List<StreamEntry> batch) {
+            this.batch = batch;
+        }
+
+        @Override
+        public void createGroup(String stream, String group) {
+            createGroupCalls.incrementAndGet();
+        }
+
+        @Override
+        public String publish(String stream, String envelopeJson) {
+            return "1-0";
+        }
+
+        @Override
+        public synchronized List<StreamEntry> readGroup(String stream, String group, String consumerName) {
+            readGroupCalls.incrementAndGet();
+            if (delivered) {
+                return List.of();
+            }
+            delivered = true;
+            return batch;
+        }
+
+        @Override
+        public List<StreamEntry> autoClaim(String stream, String group, String consumerName) {
+            throw new RuntimeException("BUSYGROUP Consumer Group name already exists");
+        }
+
+        @Override
+        public int deliveryCount(String stream, String group, String messageId) {
+            return 1;
+        }
+
+        @Override
+        public void ack(String stream, String group, String messageId) {
+            acked.add(messageId);
+        }
+
+        @Override
+        public void moveToDlq(String stream, String envelopeJson, DlqMetadata metadata) {
+        }
     }
 
     /**
