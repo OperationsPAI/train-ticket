@@ -3,6 +3,7 @@ pub mod api;
 pub mod application;
 pub mod domain;
 pub mod ports;
+pub mod supply_facts;
 
 use axum::Router;
 #[cfg(feature = "redis-impl")]
