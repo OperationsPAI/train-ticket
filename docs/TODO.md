@@ -63,6 +63,11 @@ Revision 321 writes the itineraries of one search in a single statement instead 
 The eighteen minute window at 11:57 carries 557863 requests and 64845 journeys with P99 of 257 milliseconds, zero failed journeys and zero unexpected HTTP errors, and the bursts that follow it fail on the post sales case path alone: 580 change case checks and 429 reservation waits across the thirty minute window 12:00 to 12:31, against 8032 failed journeys in the ten minute window around the 11:51 burst.
 The remaining work is the post sales case pipeline inside the ten second client budget at three to eight times bursts, and the retention cap of the identity verification stream, which reached 29532 undelivered entries against its 30000 entry limit at that burst.
 
+Revision 322 gives Trip Planning a 32 connection pool after searches waited over two seconds for a connection and answered 503 while the database itself had spare capacity, and revision 324 runs two replicas of the seven services on the reservation path.
+The change cases that waited past their fifteen minute deadline are now failed by the saga sweep, which removes the change case backlog: the windows after 13:55 report boarding and no-show failures only.
+The remaining user visible failure is `failed_at_boarding` with 404 `fulfillment record not found`, steady at one to twenty per thirty second window.
+Measured in the same period: 4385 entitlements were issued or updated in five minutes against 3692 fulfillment records created in the same interval, so about sixteen percent of the issued tickets have no fulfillment record when the load generator boards them, and its nine attempt 404 budget does not cover that gap.
+
 ## Notification
 
 ### T02: Finish and release durable notification delivery
