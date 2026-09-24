@@ -714,6 +714,7 @@ pub const TERMINAL_HOLD_RETENTION_MILLIS: u64 = 900_000;
 pub struct InventoryPool {
     pub identity: InventoryPoolIdentity,
     pub(crate) capacity_units: HashSet<CapacityUnitRef>,
+    pub(crate) physical_units: Option<HashSet<CapacityUnitRef>>,
     holds: HashMap<HoldId, CapacityHold>,
     idempotency_index: HashMap<IdempotencyKey, HoldId>,
     /// 已退出 aggregate 的终态 hold 留下的 idempotency key。保留这些 key 才能
@@ -739,6 +740,7 @@ impl InventoryPool {
         Ok(Self {
             identity,
             capacity_units: unique,
+            physical_units: None,
             holds: HashMap::new(),
             idempotency_index: HashMap::new(),
             retired_idempotency_keys: HashMap::new(),
@@ -772,10 +774,11 @@ impl InventoryPool {
     }
 
     pub fn physical_capacity(&self) -> u32 {
-        self.capacity_units.len() as u32
+        if self.identity.sellable_unit_type_ref == "STANDING_QUOTA" { 0 } else { self.physical_unit_refs().len() as u32 }
     }
 
     pub fn effective_capacity(&self) -> u32 {
+        if self.identity.sellable_unit_type_ref == "STANDING_QUOTA" { return self.physical_unit_refs().len() as u32; }
         let physical = self.physical_capacity() as f64;
         (physical * (1.0 + self.overbooking_policy.max_overbooking_pct.max(0.0) / 100.0)).floor()
             as u32
@@ -786,7 +789,19 @@ impl InventoryPool {
     }
 
     pub fn total_units(&self) -> usize {
-        self.capacity_units.len()
+        self.physical_unit_refs().len()
+    }
+
+    pub fn physical_unit_refs(&self) -> &HashSet<CapacityUnitRef> {
+        self.physical_units.as_ref().unwrap_or(&self.capacity_units)
+    }
+
+    pub fn apply_physical_supply(&mut self, service: String, date: String, units: HashSet<CapacityUnitRef>) {
+        self.capacity_units.extend(units.iter().cloned());
+        self.physical_units = Some(units);
+        self.identity.scheduled_service_ref = service;
+        self.identity.service_date = date;
+        self.overbooking_policy = OverbookingPolicy::none();
     }
 
     pub fn hold(&self, hold_id: &HoldId) -> Option<&CapacityHold> {
@@ -966,7 +981,7 @@ impl InventoryPool {
         };
         self.version += 1;
         let mut events = vec![event, self.snapshot_updated_event(now)];
-        if self.confirmed_count() > self.physical_capacity() {
+        if self.identity.sellable_unit_type_ref != "STANDING_QUOTA" && self.confirmed_count() > self.physical_capacity() {
             events.push(DomainEvent::OverbookingThresholdReached(
                 OverbookingThresholdReached {
                     envelope: EventEnvelope::new(
@@ -1080,14 +1095,14 @@ impl InventoryPool {
             .collect();
 
         let mut available_units: Vec<CapacityUnitRef> = self
-            .capacity_units
+            .physical_unit_refs()
             .difference(&occupied)
             .cloned()
             .collect::<Vec<_>>();
         available_units.sort_by(|a, b| a.as_str().cmp(b.as_str()));
 
         let available_count = available_units.len();
-        let total_units = self.capacity_units.len();
+        let total_units = self.physical_unit_refs().len();
         let sellable = available_count > 0;
         let status = if total_units == 0 || available_count == 0 {
             AvailabilityStatus::Unavailable
@@ -1242,7 +1257,7 @@ impl InventoryPool {
         interval: &StationInterval,
         now: u64,
     ) -> Option<CapacityUnitRef> {
-        let mut units: Vec<&CapacityUnitRef> = self.capacity_units.iter().collect();
+        let mut units: Vec<&CapacityUnitRef> = self.physical_unit_refs().iter().collect();
         units.sort_by(|a, b| a.as_str().cmp(b.as_str()));
         units
             .into_iter()
