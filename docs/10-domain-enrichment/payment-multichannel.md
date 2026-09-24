@@ -20,5 +20,5 @@ Late captures preserve the cancelled or expired intent state and have a separate
 Default routing covers the three SIM channels and does not imply external provider settlement.
 Payment publishes funds facts; Journey Order and the fulfillment services own order and ticket effects.
 Post Sales complaint compensation uses Wallet Promotion and is separate from original payment refunds.
-Deployment and verification evidence, including differences from workspace code, are recorded in [current status](../00-current-status.md) for Helm revision 279.
+Deployment and verification evidence, including differences from workspace code, are recorded in [current status](../00-current-status.md).
 Remaining work is maintained only in [TODO](../TODO.md).

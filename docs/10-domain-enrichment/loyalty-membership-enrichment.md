@@ -20,5 +20,5 @@ Payment reconciliation verifies the stored purchase payment, order owner and ori
 Bonus calculation depends on fields supplied by the payment event; ordinary capture events do not establish every travel or birthday bonus input.
 Ticket redemption records points and a discount amount within Loyalty; it does not itself reduce a Payment intent.
 Expiry and annual evaluation are exposed as commands, without a monthly expiry scheduler in the service runtime.
-Deployment and verification evidence, including differences from workspace code, are recorded in [current status](../00-current-status.md) for Helm revision 279.
+Deployment and verification evidence, including differences from workspace code, are recorded in [current status](../00-current-status.md).
 Remaining work is maintained only in [TODO](../TODO.md).

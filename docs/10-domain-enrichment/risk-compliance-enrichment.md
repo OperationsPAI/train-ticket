@@ -21,5 +21,5 @@ The two scoring interfaces have separate policies and response vocabularies.
 Evaluation contains account, payment and refund history handlers, but the default subscriptions contain only the three streams listed above.
 An evaluation override updates that evaluation; order block lifting is a separate operation.
 Risk decisions do not themselves change payment, capacity or ticket state.
-Deployment and verification evidence, including differences from workspace code, are recorded in [current status](../00-current-status.md) for Helm revision 279.
+Deployment and verification evidence, including differences from workspace code, are recorded in [current status](../00-current-status.md).
 Remaining work is maintained only in [TODO](../TODO.md).
