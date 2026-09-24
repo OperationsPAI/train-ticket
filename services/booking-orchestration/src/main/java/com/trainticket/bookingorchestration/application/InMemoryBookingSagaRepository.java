@@ -11,6 +11,7 @@ import org.springframework.stereotype.Repository;
 public class InMemoryBookingSagaRepository implements BookingSagaRepository {
     private final ConcurrentHashMap<String, BookingSaga> sagas = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, String> correlationIdToSaga = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, String> sagaToCorrelationId = new ConcurrentHashMap<>();
 
     @Override
     public Optional<BookingSaga> findById(String sagaId) {
@@ -31,9 +32,15 @@ public class InMemoryBookingSagaRepository implements BookingSagaRepository {
     }
 
     @Override
+    public Optional<String> findCorrelationId(String sagaId) {
+        return Optional.ofNullable(sagaToCorrelationId.get(sagaId));
+    }
+
+    @Override
     public void save(BookingSaga saga, String correlationId) {
         sagas.put(saga.sagaId(), saga);
         if (correlationId != null && !correlationId.isBlank()) {
+            sagaToCorrelationId.put(saga.sagaId(), correlationId);
             correlationIdToSaga.putIfAbsent(correlationId, saga.sagaId());
         }
     }
