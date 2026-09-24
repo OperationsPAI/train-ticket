@@ -35,10 +35,12 @@ class ChangeReservationLiveTest {
             try(var pool=new HikariDataSource(config); var workers=Executors.newFixedThreadPool(8)) {
                 var jdbc=new JdbcTemplate(pool);
                 jdbc.execute(Files.readString(Path.of("migrations/001_booking_orchestration_persistence.sql")));
+                jdbc.execute(Files.readString(Path.of("migrations/005_booking_saga_step_deadlines.sql")));
                 var sagas=new PostgresBookingSagaRepository(pool,mapper);
                 var bookings=new PostgresSegmentBookingRepository(pool,mapper);
                 var service=new BookingOrchestrationService(Clock.systemUTC(),new TransactionalOutboxEventPublisher(new OutboxAppender(pool,mapper),mapper),
-                    sagas,bookings,new PostgresPaymentIntentSagaReferenceRepository(pool),new PostgresConsumedEventRepository(pool));
+                    sagas,bookings,new PostgresPaymentIntentSagaReferenceRepository(pool),new PostgresConsumedEventRepository(pool),
+                    new PostgresBookingSagaStepDeadlineRepository(pool));
                 var tx=new TransactionTemplate(new DataSourceTransactionManager(pool));
                 String caseId=source.path("caseId").asText(),order=source.path("journeyOrderId").asText();
                 String item=offer.path("items").get(0).path("offerItemId").asText(),segment=offer.path("items").get(0).path("segmentRef").asText();

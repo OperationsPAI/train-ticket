@@ -87,6 +87,15 @@ public class PostgresBookingSagaRepository implements BookingSagaRepository {
     }
 
     @Override
+    public Optional<String> findCorrelationId(String sagaId) {
+        return jdbc.query(
+            "SELECT data->>'correlationId' AS correlation_id FROM booking_saga_snapshots WHERE id = ?",
+            rs -> rs.next() ? Optional.ofNullable(rs.getString("correlation_id")) : Optional.empty(),
+            sagaId
+        );
+    }
+
+    @Override
     public void save(BookingSaga saga, String correlationId) {
         long newVersion = snapshots.save(
             saga.sagaId(),
