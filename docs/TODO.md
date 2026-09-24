@@ -59,6 +59,10 @@ That burst is the one measurement that pushes the identity verification stream t
 The per service latency of that window attributes the timeouts: Trip Planning reports p50 2724 milliseconds and p99 10001 for 44842 searches while using 157m of its two cores, Fare Pricing reports p50 95 milliseconds and p99 10001 for 30848 quotes, and Identity Verification stays at p50 103 and p99 1033.
 The next step is therefore Trip Planning's own search path under a burst, which calls one HTTP hop that is healthy and writes an itinerary snapshot per search, and then the retention cap for the identity verification stream.
 
+Revision 321 writes the itineraries of one search in a single statement instead of one insert per itinerary.
+The eighteen minute window at 11:57 carries 557863 requests and 64845 journeys with P99 of 257 milliseconds, zero failed journeys and zero unexpected HTTP errors, and the bursts that follow it fail on the post sales case path alone: 580 change case checks and 429 reservation waits across the thirty minute window 12:00 to 12:31, against 8032 failed journeys in the ten minute window around the 11:51 burst.
+The remaining work is the post sales case pipeline inside the ten second client budget at three to eight times bursts, and the retention cap of the identity verification stream, which reached 29532 undelivered entries against its 30000 entry limit at that burst.
+
 ## Notification
 
 ### T02: Finish and release durable notification delivery
