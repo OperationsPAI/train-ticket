@@ -21,5 +21,5 @@ The SIM gateway is a local deterministic implementation without an external iden
 The local duplicate ticket check requires both segment and departure date and uses the service's recorded ticket registry.
 Preorder purchase limit facts and local duplicate ticket checks are separate paths; their existence does not establish universal duplicate booking prevention.
 Fare Pricing calculates discounts, and Journey Order owns order state.
-Deployment and verification evidence, including differences from workspace code, are recorded in [current status](../00-current-status.md) for Helm revision 279.
+Deployment and verification evidence, including differences from workspace code, are recorded in [current status](../00-current-status.md).
 Remaining work is maintained only in [TODO](../TODO.md).
