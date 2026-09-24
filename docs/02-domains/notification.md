@@ -3,9 +3,9 @@
 ## 实现与发布状态
 
 本域实现位于 `services/notification`，使用 TypeScript、Fastify、PostgreSQL、Redis Streams 和 Nodemailer。
-本文根据当前工作区代码描述模型及运行机制。
+本文根据仓库当前实现描述模型及运行机制，该实现已提交、尚未部署。
 线上 revision 279 仍在 PostgreSQL 消费事务内调用 SMTP，发送期间占用数据库连接及收件人事务锁。
-工作区 durable queue 为未提交 WIP，尚未部署，事务外发送、claim、`Unknown` 和 API 追加字段均未在线上生效。
+durable queue 已在提交 `41917b85` 中实现，尚未部署，事务外发送、claim、`Unknown` 和 API 追加字段均未在线上生效。
 
 ## 领域边界
 
@@ -34,7 +34,7 @@ Notification 不修改 Journey Order、Capacity、Payment、Entitlement 或 Post
 `Authorized` 是允许 dispatch 的状态，当前调度路径直接使用 `Planned`。
 普通 Preference 禁用时，应用服务创建任务并发布 `NotificationCancelled`，原因是 `SUPPRESSED_BY_PREFERENCES`。
 `transactionRequired` 默认值为 `true`，只跳过普通 Preference 检查，quota 仍然生效。
-工作区新增 `Unknown`，表示发送结果无法确认；确定失败且仍有重试或后续渠道时，任务保持 `Delivering`。
+未发布实现新增 `Unknown`，表示发送结果无法确认；确定失败且仍有重试或后续渠道时，任务保持 `Delivering`。
 
 ## 事件输入与收件人
 
@@ -66,9 +66,9 @@ Notification 不修改 Journey Order、Capacity、Payment、Entitlement 或 Post
 
 `notification_deferred` 保存事件延期信息，`notification_aggregation` 保存合并窗口信息。
 延期扫描每秒运行一次，每次最多处理 8 条到期事件。
-工作区新增 `notification_delivery_queue`、`notification_delivery_attempts` 和 `notification_delivery_evidence`，并增加按任务及渠道唯一的 quota 预留记录。
+未发布实现新增 `notification_delivery_queue`、`notification_delivery_attempts` 和 `notification_delivery_evidence`，并增加按任务及渠道唯一的 quota 预留记录。
 
-## 工作区 durable queue
+## 未发布的 durable queue
 
 消费事务保存 `Planned` 任务、`NotificationScheduled` outbox、渠道计划、quota 决策和队列记录后提交。
 队列领取使用 `FOR UPDATE SKIP LOCKED`，每次创建独立 claim token、attempt 编号和 30 秒租约。
@@ -94,11 +94,11 @@ SMTP 的 5 秒期限表示本次等待结束，无法确定发送结果时使用
 ## 查询与验证边界
 
 `GET /api/v1/notifications/{id}/trail` 返回任务状态和按回执生成的发送记录。
-工作区使用 `REPEATABLE READ READ ONLY` 查询任务、队列、attempt 和 evidence，追加 `resultUnknown` 与 `delivery` 等字段。
+未发布实现使用 `REPEATABLE READ READ ONLY` 查询任务、队列、attempt 和 evidence，追加 `resultUnknown` 与 `delivery` 等字段。
 字段的发布状态见[API 说明](../08-contracts/api/notification.md)。
 EMAIL 的 `Delivered` 表示 SMTP 接受邮件；PUSH、SMS、IN_APP 使用直接成功适配器，当前没有外部供应商送达验证。
 
 最新记录为 compile PASS，PostgreSQL/Mailpit durable delivery 共 10 个子项及父项 11 PASS，20.8 秒。
 完整 `npm test` 尚未运行，quota 延期恢复未专项验收。
-线上 revision 279 仍使用事务内 SMTP 路径，工作区验证不构成部署完成证明。
+线上 revision 279 仍使用事务内 SMTP 路径，该验证不构成部署完成证明。
 待办统一见 [docs/TODO.md](../TODO.md)。
