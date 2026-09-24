@@ -171,13 +171,17 @@ Approved complaint compensation issuance itself is deployed and verified; these 
 
 ### T12: Move payment channel calls out of database transactions
 
-Status: mitigated on revision 282; the underlying transaction shape remains.
-`captureIntent` and `requestRefund` call the payment channel over HTTP inside `@Transactional` methods.
-Those calls hold a pooled connection in `idle in transaction` for seconds, and the default pool of ten connections then queues unrelated reads and writes.
+Status: complete on revision 318.
+`captureIntent` and `requestRefund` now commit the channel order and submit keys in a short transaction, call the channel outside any transaction, and apply the handoff in a second short transaction.
+The inbound event path uses the same shape and keeps its deduplication record in the same transaction as the business effect, so a failed handoff still retries.
 
-1. [ ] Persist the channel handoff keys in a short transaction, call the channel outside any transaction, and apply the result in a second short transaction.
-2. [ ] Preserve single channel submission per intent through the recorded order and submit keys, and verify concurrent capture and refund attempts.
-3. [ ] Re-measure payment tail latency and connection occupancy after the change; the pool increase to 32 is a mitigation, not the design fix.
+1. [x] Persist the channel handoff keys in a short transaction, call the channel outside any transaction, and apply the result in a second short transaction.
+2. [x] Preserve single channel submission per intent through the recorded order and submit keys, and verify concurrent capture and refund attempts.
+3. [x] Re-measure payment tail latency and connection occupancy after the change.
+
+Evidence: the module suite is 65 tests with no failures, including concurrent capture and refund cases and a live case that reads `pg_stat_activity` while the channel stub handles the request and finds no `idle in transaction` session (`.scratch/runtime-fixes/goal-t12-payment-tests-live-full.log`).
+A negative control that moved the deduplication record back into the channel transaction reproduced the idle session and failed that assertion.
+`OrphanRefundRecoveryService.recover` still reads post sales and calls the channel inside a transaction, and no test covers that entry point.
 
 Evidence: with the default pool, `POST /api/v1/payment-intents` and `GET /api/v1/refunds` reached P99 of about five seconds and post sales and entitlement calls timed out; after revision 282 the same routes report P99 of 283 and 38 milliseconds.
 The window is `.scratch/runtime-fixes/goal-rev281-payment-routes.json` and `.scratch/runtime-fixes/goal-rev282-payment-pool-window.json`.
@@ -231,16 +235,16 @@ Evidence: the three groups were deleted and a fresh `XINFO GROUPS` listing on th
 
 ### T17: Enforce Booking saga step timeouts
 
-Status: the post sales side is deployed; the Booking sweep is still missing.
-Each saga step persists `timeoutMillis`, but nothing sweeps overdue steps, so a reservation whose events never arrive stays `PENDING` forever.
-Case `psc-01a0d125-f1a7-7f93-884a-d626125a411f` keeps its saga `CONFIRMING` with a `change-reservations` step whose fifteen minute deadline expired more than ten minutes earlier.
-The change case stays `APPROVED`, so every retry by the load generator repeats the same failure instead of reaching a terminal outcome.
+Status: complete on revision 317.
+Each step now records when its wait started, and a deadline index holds only the waits in flight.
+A one second sweep fails overdue steps with `STEP_TIMED_OUT`, runs the recorded compensation, and leaves a terminal saga behind.
 
-1. [ ] Add a scheduled sweep in Booking Orchestration that fails steps past their deadline and runs the recorded compensation action.
+1. [x] Add a scheduled sweep in Booking Orchestration that fails steps past their deadline and runs the recorded compensation action.
 2. [x] Make the owning change case terminal when its replacement reservation waits past the recorded deadline.
-3. [ ] Re-run the recorded change flow against a saga whose events never arrive, including the Booking sweep once it exists.
+3. [x] Re-run the recorded change flow against a saga whose events never arrive, including the Booking sweep.
 
-Evidence: revision 290 records `waiting:booking:...` for a reservation that carries no request time and fails the case with `CHANGE_RESERVATION_TIMED_OUT` once fifteen minutes have passed.
+Evidence: the module suite is 94 tests with no failures, and the sweeper, its migration and its outbound events were exercised against the live database (`.scratch/runtime-fixes/booking-saga-timeout-sweep-tests.log`, `booking-saga-timeout-sweep-live-tests.log`).
+Sagas that were already waiting before revision 317 carry no wait start and are not swept; case `psc-01a0d125-f1a7-7f93-884a-d626125a411f` is one of them and reaches its user visible outcome through the post sales deadline instead.
 
 ## Handoff rules
 
