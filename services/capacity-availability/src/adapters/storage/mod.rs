@@ -1732,9 +1732,15 @@ fn inbound_from_app_error(error: AppError) -> InboundEventError {
 #[serde(rename_all = "camelCase")]
 struct InventoryPoolSnapshot {
     identity: InventoryPoolIdentitySnapshot,
+    /// 兼容字段：新文档不再写入逐个 unit 引用，只写入数量。
+    #[serde(default)]
     capacity_units: Vec<String>,
     #[serde(default)]
     physical_units: Option<Vec<String>>,
+    #[serde(default)]
+    capacity_unit_count: Option<usize>,
+    #[serde(default)]
+    physical_unit_count: Option<usize>,
     holds: Vec<CapacityHoldSnapshot>,
     overbooking_policy: Option<OverbookingPolicy>,
     /// 已退出 aggregate 的终态 hold 留下的 idempotency key。hold 本体移到
@@ -1745,12 +1751,6 @@ struct InventoryPoolSnapshot {
 
 impl InventoryPoolSnapshot {
     fn from_domain(pool: &InventoryPool) -> Self {
-        let mut capacity_units: Vec<_> = pool
-            .capacity_unit_refs()
-            .into_iter()
-            .map(|unit| unit.to_string())
-            .collect();
-        capacity_units.sort();
         let mut holds: Vec<_> = pool
             .holds()
             .into_iter()
@@ -1769,11 +1769,12 @@ impl InventoryPoolSnapshot {
             .sort_by(|left, right| left.idempotency_key.cmp(&right.idempotency_key));
         Self {
             identity: InventoryPoolIdentitySnapshot::from_domain(&pool.identity),
-            capacity_units,
-            physical_units: pool.physical_units.as_ref().map(|units| {
-                let mut refs: Vec<_> = units.iter().map(ToString::to_string).collect();
-                refs.sort(); refs
-            }),
+            // 逐单元引用会让一次 Hold 写入放大到上百 KB，文档只保留数量，具体
+            // 引用由准入路径上的已发布供给补全。
+            capacity_units: Vec::new(),
+            physical_units: None,
+            capacity_unit_count: Some(pool.capacity_unit_count()),
+            physical_unit_count: Some(pool.physical_unit_count()),
             holds,
             overbooking_policy: Some(pool.overbooking_policy()),
             retired_idempotency_keys,
@@ -1789,7 +1790,8 @@ impl InventoryPoolSnapshot {
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(to_internal)?,
         )
-        .map_err(to_internal)?;
+        .map_err(to_internal)?
+        .with_stored_unit_counts(self.capacity_unit_count, self.physical_unit_count);
         if let Some(units) = self.physical_units {
             pool.physical_units = Some(units.into_iter().map(CapacityUnitRef::new).collect::<Result<_,_>>().map_err(to_internal)?);
         }
@@ -2342,6 +2344,97 @@ mod tests {
         )
         .unwrap();
         CapacityHoldSnapshot::from_domain(&hold)
+    }
+
+    fn synthetic_pool() -> InventoryPool {
+        let identity = InventoryPoolIdentity::new(
+            "pool:seg:first".to_string(),
+            "ss-01a0c750-858b-7000-85ff-366dc4e428a5",
+            "2026-09-25",
+            "FIRST_CLASS",
+            "SEAT",
+            "seg",
+            "seg",
+            "sha256:composition",
+        )
+        .unwrap();
+        InventoryPool::new(
+            identity,
+            ["01A", "01B", "01C"]
+                .iter()
+                .map(|unit| CapacityUnitRef::new(*unit).unwrap())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap()
+    }
+
+    /// The persisted document keeps counts and Hold state only. Persisting every
+    /// unit reference made one Hold write about a hundred kilobytes, which is what
+    /// the Capacity consumer could not follow on the Booking stream.
+    #[test]
+    fn pool_snapshot_keeps_counts_without_unit_references() {
+        let mut pool = synthetic_pool();
+        let now = now_millis();
+        let interval = StationInterval::new(0, 1).unwrap();
+        let unit = pool.find_available_unit(&interval, now).unwrap();
+        let hold = CapacityHold::request(
+            HoldId::new("hold-compact").unwrap(),
+            HoldScope::new(
+                pool.identity.pool_id.clone(),
+                unit,
+                interval.clone(),
+                ReferenceMetadata::new(
+                    "booking-orchestration",
+                    "purchase-hold",
+                    Some("ord-compact"),
+                    Some("sb-compact"),
+                    Some("tvl-compact"),
+                )
+                .unwrap(),
+            ),
+            IdempotencyKey::new("idem-compact").unwrap(),
+            now,
+            now + 300_000,
+        )
+        .unwrap();
+        pool.request_hold(hold, now).unwrap();
+
+        let snapshot = InventoryPoolSnapshot::from_domain(&pool);
+        let document = serde_json::to_string(&snapshot).unwrap();
+        assert!(
+            !document.contains("01C"),
+            "free unit references must stay out of the persisted document: {document}"
+        );
+        assert!(document.contains("\"capacityUnits\":[]"));
+        assert!(
+            document.len() < 1_500,
+            "a compacted pool document stays small, was {} bytes",
+            document.len()
+        );
+        assert_eq!(snapshot.capacity_unit_count, Some(3));
+        assert_eq!(snapshot.physical_unit_count, Some(3));
+
+        let restored = InventoryPoolSnapshot::from_domain(&pool)
+            .try_into_domain()
+            .unwrap();
+        assert_eq!(restored.total_units(), 3);
+        assert_eq!(restored.physical_capacity(), 3);
+        assert!(restored.physical_unit_refs().is_empty());
+        assert!(restored.hold(&HoldId::new("hold-compact").unwrap()).is_some());
+        assert_eq!(restored.availability_snapshot("avs-compact", interval.clone(), now, now + 10).available_count, 2);
+
+        let mut supplied = restored;
+        supplied.apply_physical_supply(
+            "ss-01a0c750-858b-7000-85ff-366dc4e428a5".into(),
+            "2026-09-25".into(),
+            ["01A", "01B", "01C"]
+                .iter()
+                .map(|unit| CapacityUnitRef::new(*unit).unwrap())
+                .collect(),
+        );
+        assert_eq!(supplied.physical_unit_refs().len(), 3);
+        assert_eq!(supplied.total_units(), 3);
+        assert!(supplied.find_available_unit(&interval, now).is_some());
     }
 
     #[test]

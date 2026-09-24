@@ -346,8 +346,13 @@ async fn physical_supply_hold_replay_and_release_preserve_counts_and_identity() 
         facts.journey_order_id
     );
     assert_eq!(
-        snapshot["physicalUnits"].as_array().unwrap().len(),
-        physical.units.len()
+        snapshot["physicalUnitCount"].as_u64().unwrap() as usize,
+        physical.units.len(),
+        "the pool document keeps the published count instead of every unit reference"
+    );
+    assert!(
+        snapshot["physicalUnits"].is_null(),
+        "unit references stay out of the document; admission restores them from the published supply"
     );
     let hold = service.get_hold(&first.hold_id).await.unwrap();
     assert!(
@@ -401,7 +406,7 @@ async fn physical_supply_hold_replay_and_release_preserve_counts_and_identity() 
             .await
             .unwrap();
     assert_eq!(
-        snapshot["physicalUnits"].as_array().unwrap().len(),
+        snapshot["physicalUnitCount"].as_u64().unwrap() as usize,
         physical.units.len()
     );
     assert_eq!(
