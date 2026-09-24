@@ -182,6 +182,9 @@ Those calls hold a pooled connection in `idle in transaction` for seconds, and t
 Evidence: with the default pool, `POST /api/v1/payment-intents` and `GET /api/v1/refunds` reached P99 of about five seconds and post sales and entitlement calls timed out; after revision 282 the same routes report P99 of 283 and 38 milliseconds.
 The window is `.scratch/runtime-fixes/goal-rev281-payment-routes.json` and `.scratch/runtime-fixes/goal-rev282-payment-pool-window.json`.
 
+The same transaction shape appears in other services: at revision 297 the Dispatch and Fulfillment databases held `idle in transaction` sessions for two to three minutes while their handlers were waiting on something else.
+Those sessions keep a pooled connection and any row locks for the whole wait, which is a candidate explanation for the peak bursts recorded under T01.
+
 ### T14: Verify change saga completion inside the load generator polling window
 
 Status: confirmed tail latency; about one percent of change cases finish after the ten poll budget.
