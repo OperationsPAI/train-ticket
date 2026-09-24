@@ -563,6 +563,9 @@ services:
           command: ["sleep", "10"]
   capacity-availability:
     db: capacity_availability
+    # Two replicas: every reservation takes a Hold here, and the pool locks are
+    # database advisory locks, so replicas coordinate through PostgreSQL.
+    replicas: 2
     strategy:
       type: RollingUpdate
       rollingUpdate:
@@ -684,6 +687,10 @@ services:
       limits: { cpu: '4', memory: 2Gi }
   journey-order:
     db: journey_order
+    # Two replicas for the same reason as Booking Orchestration: eleven streams
+    # share one handler pool, and the identity verification consumer alone
+    # reached 29532 undelivered entries at the largest burst.
+    replicas: 2
     strategy:
       type: RollingUpdate
       rollingUpdate:
@@ -719,6 +726,12 @@ services:
       limits: { cpu: '3', memory: 2Gi }
   booking-orchestration:
     db: booking_orchestration
+    # Two replicas: the saga confirms a reservation through several hops, and a
+    # burst of three to eight times the mean rate queued events behind the single
+    # consumer group long enough for the load generator's ten second poll to
+    # expire. The stream is a Redis consumer group and the saga writes are
+    # versioned, so a second replica shares the work without new coordination.
+    replicas: 2
     strategy:
       type: RollingUpdate
       rollingUpdate:
@@ -811,8 +824,14 @@ services:
       limits: { cpu: '2', memory: 2Gi }
   provider-integration:
     db: provider_integration
+    # Two replicas: the provider reservation is a saga step whose confirmation
+    # the capacity Hold waits for.
+    replicas: 2
   entitlement-ticketing:
     db: entitlement_ticketing
+    # Two replicas: ticket issuance follows the reservation, and its consumer
+    # group is read from a Redis stream.
+    replicas: 2
     strategy:
       type: RollingUpdate
       rollingUpdate:
@@ -850,6 +869,10 @@ services:
           command: ["sleep", "10"]
   post-sales:
     db: post_sales
+    # Two replicas: the change and refund cases that the load generator polls
+    # are executed here, and a burst left its journey order consumer ten thousand
+    # events behind.
+    replicas: 2
     strategy:
       type: RollingUpdate
       rollingUpdate:
@@ -1094,6 +1117,9 @@ services:
       PLACE_NETWORK_URL: http://place-network:8080
   seat-assignment:
     db: seat_assignment
+    # Two replicas: the seat allocation runs once per issued ticket and its
+    # consumers read the capacity stream.
+    replicas: 2
     strategy:
       type: RollingUpdate
       rollingUpdate:
