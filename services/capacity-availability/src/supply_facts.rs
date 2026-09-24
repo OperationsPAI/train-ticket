@@ -2,7 +2,50 @@ use crate::application::AppError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+/// Route and segment lists change only when the service plan changes, so a short lived cache keeps
+/// admission from repeating the same upstream reads for every Hold.
+const ROUTE_CACHE_TTL: Duration = Duration::from_secs(30);
+const SERVICE_SEGMENTS_CACHE_TTL: Duration = Duration::from_secs(30);
+/// Published seat supply is invalidated quickly because it carries allocations. Two seconds is
+/// shorter than the load generator polling interval and every Capacity Hold in the same pool is
+/// still counted from the database.
+const SEAT_SUPPLY_CACHE_TTL: Duration = Duration::from_secs(2);
+const SUPPLY_CACHE_CAPACITY: usize = 4096;
+
+struct CacheEntry<T> {
+    value: T,
+    expires_at: Instant,
+}
+
+fn cache_lookup<T: Clone>(
+    cache: &Mutex<HashMap<String, CacheEntry<T>>>,
+    key: &str,
+) -> Option<T> {
+    let guard = cache.lock().ok()?;
+    let entry = guard.get(key)?;
+    if entry.expires_at <= Instant::now() {
+        return None;
+    }
+    Some(entry.value.clone())
+}
+
+fn cache_store<T>(cache: &Mutex<HashMap<String, CacheEntry<T>>>, key: String, value: T, ttl: Duration) {
+    if let Ok(mut guard) = cache.lock() {
+        if guard.len() >= SUPPLY_CACHE_CAPACITY {
+            guard.clear();
+        }
+        guard.insert(
+            key,
+            CacheEntry {
+                value,
+                expires_at: Instant::now() + ttl,
+            },
+        );
+    }
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -352,10 +395,22 @@ pub struct SupplyClient {
     client: reqwest::Client,
     base_template: String,
     reservation_permits: std::sync::Arc<tokio::sync::Semaphore>,
+    routes: Arc<Mutex<HashMap<String, CacheEntry<SegmentRoute>>>>,
+    services: Arc<Mutex<HashMap<String, CacheEntry<Vec<String>>>>>,
+    seats: Arc<Mutex<HashMap<String, CacheEntry<SeatSupply>>>>,
 }
 
 impl SupplyClient {
     pub async fn route(&self, segment: &str, correlation: &str) -> Result<SegmentRoute, AppError> {
+        if let Some(cached) = cache_lookup(&self.routes, segment) {
+            return Ok(cached);
+        }
+        let route = self.fetch_route(segment, correlation).await?;
+        cache_store(&self.routes, segment.to_owned(), route.clone(), ROUTE_CACHE_TTL);
+        Ok(route)
+    }
+
+    async fn fetch_route(&self, segment: &str, correlation: &str) -> Result<SegmentRoute, AppError> {
         let value = self
             .get(
                 "service-plan",
@@ -404,6 +459,9 @@ impl SupplyClient {
                 .map_err(|e| AppError::Unavailable(e.to_string()))?,
             base_template,
             reservation_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(8)),
+            routes: Arc::new(Mutex::new(HashMap::new())),
+            services: Arc::new(Mutex::new(HashMap::new())),
+            seats: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -650,6 +708,24 @@ impl SupplyClient {
         reservation: &ReservationSupply,
         correlation: &str,
     ) -> Result<SeatSupply, AppError> {
+        let key = format!(
+            "{}|{}|{}",
+            reservation.scheduled_service_ref, reservation.service_date, reservation.class_ref
+        );
+        if let Some(cached) = cache_lookup(&self.seats, &key) {
+            cached.validate(reservation)?;
+            return Ok(cached);
+        }
+        let supply = self.fetch_seats(reservation, correlation).await?;
+        cache_store(&self.seats, key, supply.clone(), SEAT_SUPPLY_CACHE_TTL);
+        Ok(supply)
+    }
+
+    async fn fetch_seats(
+        &self,
+        reservation: &ReservationSupply,
+        correlation: &str,
+    ) -> Result<SeatSupply, AppError> {
         let url = format!(
             "{}/api/v1/internal/capacity-facts",
             self.base("seat-assignment")
@@ -697,6 +773,24 @@ impl SupplyClient {
     }
 
     pub async fn service_segments(
+        &self,
+        service: &str,
+        correlation: &str,
+    ) -> Result<Vec<String>, AppError> {
+        if let Some(cached) = cache_lookup(&self.services, service) {
+            return Ok(cached);
+        }
+        let segments = self.fetch_service_segments(service, correlation).await?;
+        cache_store(
+            &self.services,
+            service.to_owned(),
+            segments.clone(),
+            SERVICE_SEGMENTS_CACHE_TTL,
+        );
+        Ok(segments)
+    }
+
+    async fn fetch_service_segments(
         &self,
         service: &str,
         correlation: &str,
