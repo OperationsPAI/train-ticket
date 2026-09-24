@@ -42,7 +42,18 @@ After deployment every subscribed stream reports zero lag and zero pending, the 
 
 ### T03: Complete coordinated supply integration
 
-Status: Capacity work committed as `caafa668` and committed Booking source changes are not jointly activated.
+Status: first activation attempt failed on performance and was rolled back; Capacity work committed as `caafa668` and committed Booking source changes are not jointly activated.
+
+Revisions 284 to 286 activated the integration and produced reservation failures for fifteen to thirty four percent of journeys, a Journey Order heap failure, and a Capacity consumer lag of twenty four to thirty thousand entries.
+Revision 287 restored the previous Capacity and Booking images; the reservation path returned to zero failures in the measured cycle.
+The evidence is under `.scratch/runtime-fixes/goal-rev284-*.json`, `goal-rev286-*.json` and `rollback-supply-integration.log`.
+
+The next attempt must first satisfy these performance requirements.
+
+1. [ ] A Hold must not rewrite the whole pool snapshot; measure and bound the bytes written per reservation.
+2. [ ] Fact resolution must reuse the accepted reservation record instead of repeating several upstream reads per reservation.
+3. [ ] The Capacity consumer must keep zero lag on the Booking stream at peak before activation.
+4. [ ] Peak reservation latency must stay inside the load generator polling window in a single cluster rehearsal.
 
 1. [ ] Resolve accepted class, service, date, original purchase source, interval and composition for every active historical Hold; reject ambiguous source facts.
 2. [ ] Define and enforce the binding between a Hold and its allocated physical unit, including historical references and composition replacement mappings.
@@ -191,6 +202,17 @@ Neither service subscribes to those streams any more, so each group shows lag pi
 
 1. [ ] Confirm the owning service and configuration for each stale group, then delete the group or the abandoned pending entries.
 2. [ ] Record the decision so future log or lag reviews do not read these groups as stalled consumers.
+
+### T17: Enforce Booking saga step timeouts
+
+Status: confirmed gap; recorded deadlines are never evaluated.
+Each saga step persists `timeoutMillis`, but nothing sweeps overdue steps, so a reservation whose events never arrive stays `PENDING` forever.
+Case `psc-01a0d125-f1a7-7f93-884a-d626125a411f` keeps its saga `CONFIRMING` with a `change-reservations` step whose fifteen minute deadline expired more than ten minutes earlier.
+The change case stays `APPROVED`, so every retry by the load generator repeats the same failure instead of reaching a terminal outcome.
+
+1. [ ] Add a scheduled sweep that fails steps past their deadline and runs the recorded compensation action.
+2. [ ] Make the owning change or post sales case terminal when its reservation saga ends.
+3. [ ] Re-run the recorded change flow against a saga whose events never arrive.
 
 ## Handoff rules
 
