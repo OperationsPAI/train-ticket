@@ -56,7 +56,8 @@ Revision 319 and 320 then moved the burst failures off the reservation path: the
 The post sales cases that the load generator reported did reach `APPLIED` a few seconds later, so the remaining gap is the ten second client budget rather than a stuck case.
 The largest burst so far, at 11:51 with 73154 requests in thirty seconds, still produced 8032 failed journeys: 3054 quote timeouts in Fare Pricing, 2026 search timeouts in Trip Planning, 1431 post sales case checks and 818 reservation waits.
 That burst is the one measurement that pushes the identity verification stream to 29532 undelivered entries against its 30000 entry cap, which is the point where trimming can drop an event before a consumer reads it.
-The next steps are the identity verification service's own latency under that burst, which its HTTP callers in Fare Pricing and Journey Order wait on, and a larger retention cap for that stream.
+The per service latency of that window attributes the timeouts: Trip Planning reports p50 2724 milliseconds and p99 10001 for 44842 searches while using 157m of its two cores, Fare Pricing reports p50 95 milliseconds and p99 10001 for 30848 quotes, and Identity Verification stays at p50 103 and p99 1033.
+The next step is therefore Trip Planning's own search path under a burst, which calls one HTTP hop that is healthy and writes an itinerary snapshot per search, and then the retention cap for the identity verification stream.
 
 ## Notification
 
