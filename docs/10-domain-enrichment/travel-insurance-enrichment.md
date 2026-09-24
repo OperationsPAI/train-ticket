@@ -19,5 +19,5 @@ Policy cancellation checks the recorded premium refund before publishing cancell
 `PayoutAdvice`, local `PAID_OUT` status and `InsurancePayoutCompleted` record the insurance decision.
 The approval method contains no Payment refund or Wallet credit call, so those records alone do not establish delivery of funds.
 The cancellation path verifies a premium refund and does not initiate that refund.
-Deployment and verification evidence, including differences from workspace code, are recorded in [current status](../00-current-status.md) for Helm revision 279.
+Deployment and verification evidence, including differences from workspace code, are recorded in [current status](../00-current-status.md).
 Remaining work is maintained only in [TODO](../TODO.md).

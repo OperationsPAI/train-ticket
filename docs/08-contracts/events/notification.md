@@ -7,9 +7,9 @@ consumer group 为 `notification`，consumer name 为 `notification-<HOSTNAME �
 持久化运行时，任务及 outbox 在 PostgreSQL 事务内提交，relay 再发布事件。
 
 线上 revision 279 仍在消费事务内调用 SMTP。
-durable queue 已在提交 `41917b85` 中实现，尚未部署，新设计在线上未生效。
-`NotificationDeliveryUnknown`、`Unknown` 结果以及 attempt 关联字段属于该提交中尚未发布的内容。
-`NotificationScheduled` 表示任务已经创建，该提交中可发送任务的队列记录与该事件在同一事务中提交。
+durable queue 已在 revision 280 部署，新设计在线上生效。
+`NotificationDeliveryUnknown`、`Unknown` 结果以及 attempt 关联字段自 revision 280 起可用。
+`NotificationScheduled` 表示任务已经创建，可发送任务的队列记录与该事件在同一事务中提交。
 普通 Preference 抑制的任务会记录 scheduled 和 cancelled 事件，不进入发送队列。
 未发布实现的 `NotificationDispatched` 在 worker 开始发送的事务中生成。
 

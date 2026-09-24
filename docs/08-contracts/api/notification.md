@@ -4,8 +4,7 @@
 
 Notification 通过业务事件创建通知，HTTP 提供发送记录及健康查询。
 线上 revision 279 仍使用事务内 SMTP 发送路径。
-durable queue 已在提交 `41917b85` 中实现，尚未部署，新设计在线上未生效。
-本文标注为“未发布”的状态值和追加字段来自该提交，不属于 revision 279 的响应保证。
+durable queue 已在 revision 280 部署，本文描述的状态值和追加字段属于当前响应保证。
 
 当前路由由 `services/notification/src/app.ts` 注册。
 发送、dispatch、取消及记录回执属于内部方法，没有 HTTP 写接口，也没有独立的命令 stream 订阅入口。
@@ -41,10 +40,10 @@ durable queue 已在提交 `41917b85` 中实现，尚未部署，新设计在线
 `Delivered` 和 `DELIVERED` 在 EMAIL 路径中表示 SMTP 已接受邮件，不表示用户阅读或邮箱最终送达。
 当前 PUSH、SMS、IN_APP 由 `DirectSuccessGateway` 返回成功。
 
-## 未发布的 delivery 对象
+## delivery 对象
 
-未发布实现通过一个 `REPEATABLE READ READ ONLY` 事务查询任务快照、队列、发送 attempt 和 evidence。
-以下对象全部属于未发布追加内容。
+服务通过一个 `REPEATABLE READ READ ONLY` 事务查询任务快照、队列、发送 attempt 和 evidence。
+以下对象属于 revision 280 起的响应内容。
 
 | 字段 | 类型 | 说明 |
 |---|---|---|

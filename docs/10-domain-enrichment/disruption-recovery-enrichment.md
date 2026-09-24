@@ -20,5 +20,5 @@ Batch processing uses supplied bookings and alternatives and emits decision and 
 Its `PassengerRebooked` and `CompensationIssued` events do not themselves execute ticket changes or money transfers.
 Selected recovery options use the downstream calls described above, whose resulting state remains owned by those services.
 Batch `slaMinutes` and compensation `issuedBy` fields are recorded policy values and do not establish measured completion times.
-Deployment and verification evidence, including differences from workspace code, are recorded in [current status](../00-current-status.md) for Helm revision 279.
+Deployment and verification evidence, including differences from workspace code, are recorded in [current status](../00-current-status.md).
 Remaining work is maintained only in [TODO](../TODO.md).
