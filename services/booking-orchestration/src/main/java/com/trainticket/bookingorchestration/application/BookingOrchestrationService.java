@@ -34,6 +34,8 @@ import org.springframework.transaction.interceptor.TransactionAspectSupport;
 public class BookingOrchestrationService {
 
     private static final String PRODUCER = "booking-orchestration";
+    private static final String STEP_TIMED_OUT = "SAGA_STEP_TIMED_OUT";
+    private static final String RELEASE_CAPACITY_COMPENSATION = "release-capacity";
     private static final Logger LOGGER = LoggerFactory.getLogger(BookingOrchestrationService.class);
 
     private final Clock clock;
@@ -42,30 +44,36 @@ public class BookingOrchestrationService {
     private final SegmentBookingRepository segmentBookings;
     private final PaymentIntentSagaReferenceRepository paymentIntentRefs;
     private final ConsumedEventRepository consumedEvents;
+    private final BookingSagaStepDeadlineRepository stepDeadlines;
 
 
     public BookingOrchestrationService(Clock clock, EventPublisher eventPublisher) {
         this(clock, eventPublisher, new InMemoryBookingSagaRepository(), new InMemorySegmentBookingRepository(),
-            new InMemoryPaymentIntentSagaReferenceRepository(), new InMemoryConsumedEventRepository());
+            new InMemoryPaymentIntentSagaReferenceRepository(), new InMemoryConsumedEventRepository(),
+            new InMemoryBookingSagaStepDeadlineRepository());
     }
 
     @Autowired
     public BookingOrchestrationService(Clock clock, EventPublisher eventPublisher, BookingSagaRepository sagas,
                                        SegmentBookingRepository segmentBookings,
                                        PaymentIntentSagaReferenceRepository paymentIntentRefs,
-                                       ConsumedEventRepository consumedEvents) {
+                                       ConsumedEventRepository consumedEvents,
+                                       BookingSagaStepDeadlineRepository stepDeadlines) {
         this.clock = Objects.requireNonNull(clock, "clock is required");
         this.eventPublisher = Objects.requireNonNull(eventPublisher, "eventPublisher is required");
         this.sagas = Objects.requireNonNull(sagas, "sagas repository is required");
         this.segmentBookings = Objects.requireNonNull(segmentBookings, "segmentBookings repository is required");
         this.paymentIntentRefs = Objects.requireNonNull(paymentIntentRefs, "paymentIntentRefs repository is required");
         this.consumedEvents = Objects.requireNonNull(consumedEvents, "consumedEvents repository is required");
+        this.stepDeadlines = Objects.requireNonNull(stepDeadlines, "stepDeadlines repository is required");
     }
 
     public StartSagaResult startSaga(StartSagaCommand command, String idempotencyKey, String correlationId) {
         String sagaId = "saga-" + com.trainticket.platformkit.idempotency.UuidV7.generate();
         BookingSaga saga = startSagaAggregate(sagaId, command.journeyOrderId(), command.segmentRefs());
+        Instant riskDeadline = saga.beginStepWait(sagaId + ":risk");
         sagas.save(saga, correlationId);
+        stepDeadlines.schedule(sagaId, sagaId + ":risk", riskDeadline);
         String causationId = "cmd-" + UUID.randomUUID();
         publishEvents(saga.pullEvents(), correlationId, causationId);
         publishRiskAssessmentRequested(sagaId, command.journeyOrderId(), command.accountId(), correlationId, causationId);
@@ -112,7 +120,9 @@ public class BookingOrchestrationService {
             saga = BookingSaga.start(sagaId,orderId,"1",purpose,List.of(
                 BookingSaga.stepPlan("change-reservations",sagaId+":reservations",Duration.ofMinutes(15),3,"release-capacity")),clock);
             saga.advanceTo(BookingSagaStatus.CONFIRMING);
+            Instant reservationDeadline = saga.beginStepWait(sagaId + ":reservations");
             sagas.save(saga,correlationId);
+            stepDeadlines.schedule(sagaId, sagaId + ":reservations", reservationDeadline);
             publishEvents(saga.pullEvents(),correlationId,PrefixedIds.newCommandId());
         }
         if (!saga.journeyOrderId().equals(orderId)) throw new PreconditionFailedException("change saga belongs to another order",null);
@@ -322,7 +332,9 @@ public class BookingOrchestrationService {
         String accountId = firstText(payload, "accountId", "buyerRef");
         String sagaId = "saga-" + com.trainticket.platformkit.idempotency.UuidV7.generate();
         BookingSaga saga = startSagaAggregate(sagaId, journeyOrderId, segmentRefs);
+        Instant riskDeadline = saga.beginStepWait(sagaId + ":risk");
         sagas.save(saga, correlationId);
+        stepDeadlines.schedule(sagaId, sagaId + ":risk", riskDeadline);
         publishEvents(saga.pullEvents(), correlationId, causationId);
         publishRiskAssessmentRequested(sagaId, journeyOrderId, accountId, correlationId, causationId);
     }
@@ -534,7 +546,9 @@ public class BookingOrchestrationService {
         BookingSaga saga = sagas.findById(sagaId).orElse(null);
         if (saga != null && saga.status() == BookingSagaStatus.TICKETING && allSegmentsTicketed(saga.sagaId())) {
             saga.advanceTo(BookingSagaStatus.INVOICING);
+            Instant invoiceDeadline = saga.beginStepWait(sagaId + ":invoice");
             sagas.save(saga, correlationId);
+            stepDeadlines.schedule(sagaId, sagaId + ":invoice", invoiceDeadline);
             publishEvents(saga.pullEvents(), correlationId, causationId);
             String paymentRef = paymentRefForSaga(saga.sagaId());
             publishInvoiceRequested(saga.sagaId(), saga.journeyOrderId(), paymentRef, correlationId, causationId);
@@ -605,15 +619,19 @@ public class BookingOrchestrationService {
         }
         if ("PASS".equals(verdict)) {
             saga.recordStepSucceeded(sagaId + ":risk");
+            stepDeadlines.clear(sagaId, sagaId + ":risk");
             saga.advanceTo(BookingSagaStatus.RESERVING);
+            beginReserveStepWaits(saga);
             sagas.save(saga, correlationId);
             publishEvents(saga.pullEvents(), correlationId, causationId);
         } else if ("BLOCK".equals(verdict)) {
             saga.fail("risk-blocked");
+            stepDeadlines.clearSaga(sagaId);
             sagas.save(saga, correlationId);
             publishEvents(saga.pullEvents(), correlationId, causationId);
         } else if ("CHALLENGE".equals(verdict) || "HOLD".equals(verdict)) {
             saga.moveToManualReview("risk-" + verdict.toLowerCase(java.util.Locale.ROOT));
+            stepDeadlines.clearSaga(sagaId);
             sagas.save(saga, correlationId);
             publishEvents(saga.pullEvents(), correlationId, causationId);
         } else {
@@ -658,6 +676,7 @@ public class BookingOrchestrationService {
             return;
         }
         saga.recordStepSucceeded(sagaId + ":invoice");
+        stepDeadlines.clear(sagaId, sagaId + ":invoice");
         saga.complete();
         sagas.save(saga, correlationId);
         publishEvents(saga.pullEvents(), correlationId, causationId);
@@ -716,12 +735,138 @@ public class BookingOrchestrationService {
         return BookingSaga.start(sagaId, journeyOrderId, "1", "purchase", plan, clock);
     }
 
+    /**
+     * The reserve steps begin waiting when the saga starts reserving, so each of them records its
+     * own wait start and the sweep can enforce the deadline they carry.
+     */
+    private void beginReserveStepWaits(BookingSaga saga) {
+        for (BookingSagaStep step : saga.steps()) {
+            if (!step.name().startsWith("reserve-")) {
+                continue;
+            }
+            Instant deadline = saga.beginStepWait(step.idempotencyKey());
+            stepDeadlines.schedule(saga.sagaId(), step.idempotencyKey(), deadline);
+        }
+    }
+
+    /**
+     * Returns the wait deadlines that have passed, oldest first, so one sweep tick has a bounded
+     * amount of work and the oldest waits are handled first.
+     */
+    public List<BookingSagaStepDeadlineRepository.BookingSagaStepDeadline> findDueStepDeadlines(int limit) {
+        return stepDeadlines.findDue(clock.instant(), limit);
+    }
+
+    /**
+     * Fails the awaited steps whose recorded deadline passed, runs their compensation action and
+     * fails the saga. The saga snapshot decides: a step that finished through the normal event
+     * flow keeps its outcome, and a sweep that loses the optimistic write race publishes nothing.
+     */
+    @Transactional
+    public boolean expireTimedOutStep(String sagaId, String stepIdempotencyKey) {
+        Instant now = clock.instant();
+        BookingSaga saga = sagas.findById(sagaId).orElse(null);
+        if (saga == null) {
+            stepDeadlines.clear(sagaId, stepIdempotencyKey);
+            return false;
+        }
+        if (sweepSkipsSaga(saga)) {
+            stepDeadlines.clearSaga(sagaId);
+            return false;
+        }
+        BookingSagaStep waiting = waitingStep(saga, stepIdempotencyKey);
+        if (waiting == null) {
+            stepDeadlines.clear(sagaId, stepIdempotencyKey);
+            return false;
+        }
+        Optional<Instant> deadline = waiting.waitDeadline();
+        if (deadline.isEmpty()) {
+            // A snapshot written before wait starts were recorded carries no deadline to enforce.
+            stepDeadlines.clear(sagaId, stepIdempotencyKey);
+            return false;
+        }
+        if (deadline.get().isAfter(now)) {
+            // The index row is older than the recorded wait; the snapshot stays authoritative.
+            stepDeadlines.schedule(sagaId, stepIdempotencyKey, deadline.get());
+            return false;
+        }
+        String correlationId = sagas.findCorrelationId(sagaId).orElse(null);
+        String causationId = "cmd-" + UUID.randomUUID();
+        List<BookingSagaStep> expired = saga.steps().stream().filter(step -> step.waitExpired(now)).toList();
+        boolean releasesCapacity = false;
+        for (BookingSagaStep timedOut : expired) {
+            saga.recordStepFailed(timedOut.idempotencyKey(), STEP_TIMED_OUT);
+            releasesCapacity |= RELEASE_CAPACITY_COMPENSATION.equals(timedOut.compensationAction());
+        }
+        saga.fail(STEP_TIMED_OUT);
+        sagas.save(saga, correlationId);
+        for (BookingSagaStep timedOut : expired) {
+            stepDeadlines.clear(sagaId, timedOut.idempotencyKey());
+        }
+        if (releasesCapacity) {
+            releaseCapacityOfTimedOutStep(sagaId, correlationId, causationId);
+        }
+        publishEvents(saga.pullEvents(), correlationId, causationId);
+        return true;
+    }
+
+    private static boolean sweepSkipsSaga(BookingSaga saga) {
+        return switch (saga.status()) {
+            case COMPLETED, FAILED, MANUAL_REVIEW -> true;
+            default -> false;
+        };
+    }
+
+    private static BookingSagaStep waitingStep(BookingSaga saga, String stepIdempotencyKey) {
+        return saga.steps().stream()
+            .filter(step -> step.idempotencyKey().equals(stepIdempotencyKey))
+            .filter(step -> step.status() == BookingStepStatus.PENDING)
+            .findFirst()
+            .orElse(null);
+    }
+
+    /**
+     * A reservation that still waits for its provider confirmation holds capacity without a
+     * confirmed booking. Cancelling it publishes SegmentBookingCancelled, the event capacity
+     * releases the hold on, exactly like the existing unpaid change cancellation.
+     * A change replacement stays with the post sales case that owns it, because cancelling the
+     * booking here would fail the execution the case itself is about to terminate.
+     */
+    private void releaseCapacityOfTimedOutStep(String sagaId, String correlationId, String causationId) {
+        for (SegmentBooking booking : segmentBookingsForSaga(sagaId)) {
+            if (!holdsUnconfirmedCapacity(booking) || isChangeReservation(booking)) {
+                continue;
+            }
+            int recorded = booking.peekEvents().size();
+            booking.requestCancellation(STEP_TIMED_OUT);
+            booking.markCancelled(STEP_TIMED_OUT);
+            List<DomainEvent> events = booking.pullEvents();
+            segmentBookings.save(booking, sagaId);
+            publishEvents(events.subList(recorded, events.size()), correlationId, causationId);
+        }
+    }
+
+    private static boolean holdsUnconfirmedCapacity(SegmentBooking booking) {
+        return switch (booking.status()) {
+            case REQUESTED, HOLDING, CANCEL_REQUESTED -> true;
+            default -> false;
+        };
+    }
+
+    private static boolean isChangeReservation(SegmentBooking booking) {
+        return booking.bookingPurpose().startsWith("change:");
+    }
+
     private void markSagaStepSucceeded(String eventType, String segmentBookingId, String correlationId, String causationId) {
         SegmentBookingRepository.SegmentBookingRecord record = segmentBookings.findById(segmentBookingId).orElse(null);
         SegmentBooking booking = record == null ? null : record.booking();
         String sagaId = record == null ? null : record.sagaId();
         BookingSaga saga = sagaId == null ? null : sagas.findById(sagaId).orElse(null);
         if (booking == null || saga == null) {
+            return;
+        }
+        if (saga.status() == BookingSagaStatus.CONFIRMING && isChangeReservation(booking)) {
+            markChangeReservationsSucceeded(saga, correlationId, causationId);
             return;
         }
         if (saga.status() != BookingSagaStatus.RESERVING) {
@@ -733,6 +878,7 @@ public class BookingOrchestrationService {
         String stepKey = sagaId + ":" + booking.segmentRef();
         try {
             saga.recordStepSucceeded(stepKey);
+            stepDeadlines.clear(sagaId, stepKey);
             if (allReserveStepsSucceeded(saga)) {
                 saga.advanceTo(BookingSagaStatus.AWAITING_PAYMENT);
                 sagas.save(saga, correlationId);
@@ -744,6 +890,31 @@ public class BookingOrchestrationService {
         } catch (IllegalArgumentException ignored) {
             // The saga plan may have been started from upstream order data with a different step layout.
         }
+    }
+
+    /**
+     * The change saga waits on one step for every replacement reservation of the case. The step
+     * succeeds once they are all confirmed, so the deadline sweep leaves a finished wait alone.
+     */
+    private void markChangeReservationsSucceeded(BookingSaga saga, String correlationId, String causationId) {
+        boolean allConfirmed = segmentBookingsForSaga(saga.sagaId()).stream()
+            .allMatch(booking -> switch (booking.status()) {
+                case CONFIRMED, TICKETED, IN_FULFILLMENT, COMPLETED, CHANGED -> true;
+                default -> false;
+            });
+        if (!allConfirmed) {
+            return;
+        }
+        String stepKey = saga.sagaId() + ":reservations";
+        try {
+            saga.recordStepSucceeded(stepKey);
+        } catch (IllegalArgumentException ignored) {
+            // A change saga from another plan layout keeps its own step keys.
+            return;
+        }
+        stepDeadlines.clear(saga.sagaId(), stepKey);
+        sagas.save(saga, correlationId);
+        publishEvents(saga.pullEvents(), correlationId, causationId);
     }
 
     private boolean allReserveStepsSucceeded(BookingSaga saga) {

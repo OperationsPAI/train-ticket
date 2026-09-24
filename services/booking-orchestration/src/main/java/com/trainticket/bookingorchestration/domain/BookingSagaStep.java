@@ -1,6 +1,7 @@
 package com.trainticket.bookingorchestration.domain;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -12,6 +13,7 @@ public final class BookingSagaStep {
     private final String compensationAction;
     private BookingStepStatus status = BookingStepStatus.PENDING;
     private int attemptNumber;
+    private Instant startedAt;
     private String failureReason;
 
     public BookingSagaStep(String name, String idempotencyKey, Duration timeout, int retryLimit,
@@ -31,13 +33,14 @@ public final class BookingSagaStep {
 
     public static BookingSagaStep rehydrate(String name, String idempotencyKey, Duration timeout, int retryLimit,
                                              String compensationAction, BookingStepStatus status, int attemptNumber,
-                                             String failureReason) {
+                                             Instant startedAt, String failureReason) {
         BookingSagaStep step = new BookingSagaStep(name, idempotencyKey, timeout, retryLimit, compensationAction);
         if (attemptNumber < 0) {
             throw new IllegalArgumentException("attemptNumber must be zero or greater");
         }
         step.status = Objects.requireNonNull(status, "status is required");
         step.attemptNumber = attemptNumber;
+        step.startedAt = startedAt == null ? null : truncateToMillis(startedAt);
         step.failureReason = failureReason;
         return step;
     }
@@ -70,8 +73,37 @@ public final class BookingSagaStep {
         return attemptNumber;
     }
 
+    public Optional<Instant> startedAt() {
+        return Optional.ofNullable(startedAt);
+    }
+
+    /**
+     * The moment the step stops waiting for its response. A step with no recorded wait start has
+     * no deadline, so a deadline sweep cannot fail it.
+     */
+    public Optional<Instant> waitDeadline() {
+        return startedAt == null ? Optional.empty() : Optional.of(startedAt.plus(timeout));
+    }
+
+    public boolean waitExpired(Instant now) {
+        Objects.requireNonNull(now, "now is required");
+        return waitDeadline().map(deadline -> !deadline.isAfter(now)).orElse(false);
+    }
+
     public Optional<String> failureReason() {
         return Optional.ofNullable(failureReason);
+    }
+
+    /**
+     * Records when this attempt began waiting. The first recorded start stays, so a repeated
+     * dispatch cannot move a deadline further out. Milliseconds keep the deadline equal to the
+     * value stored in the wait index.
+     */
+    void beginWaiting(Instant at) {
+        if (startedAt != null) {
+            return;
+        }
+        startedAt = truncateToMillis(Objects.requireNonNull(at, "at is required"));
     }
 
     void succeed() {
@@ -94,7 +126,12 @@ public final class BookingSagaStep {
         }
         attemptNumber++;
         status = BookingStepStatus.PENDING;
+        startedAt = null;
         failureReason = null;
+    }
+
+    private static Instant truncateToMillis(Instant instant) {
+        return Instant.ofEpochMilli(instant.toEpochMilli());
     }
 
     private static String requireText(String value, String field) {
