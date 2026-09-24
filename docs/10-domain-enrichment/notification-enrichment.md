@@ -5,8 +5,9 @@
 服务位于 `services/notification`，使用 TypeScript、Fastify、PostgreSQL、Redis Streams 和 Nodemailer。
 线上 revision 279 具备事件映射、模板渲染、渠道选择、频控、合并、延期记录和发送回执，但 SMTP 仍位于 PostgreSQL 消费事务内。
 该路径等待 SMTP 时占用数据库连接和收件人事务锁。
-工作区 durable queue 为未提交 WIP，尚未部署，新设计在线上未生效。
-本文的 claim、事务外 SMTP、稳定 MessageID、`Unknown` 以及 API 追加字段均属于工作区未发布能力。
+durable queue 已在提交 `41917b85` 中实现，尚未部署，新设计在线上未生效。
+本文其余处提到的工作区行为均来自该提交。
+本文的 claim、事务外 SMTP、稳定 MessageID、`Unknown` 以及 API 追加字段均属于尚未发布的仓库能力。
 
 ## 模板与渠道
 

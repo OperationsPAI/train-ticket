@@ -22,4 +22,4 @@
 
 这些文件路径供 catalog、project index 和领域文档持续引用。
 设计约束表达职责要求，功能是否完成以 TODO 和对应发布证据为准。
-Capacity 新联合供给仍未提交、未部署；Notification durable 发送队列为 WIP、未部署，具体工作见 [TODO](../TODO.md)。
+Capacity 新联合供给已在提交 `caafa668` 中实现、尚未部署；Notification durable 发送队列已在提交 `41917b85` 中实现、尚未部署，具体工作见 [TODO](../TODO.md)。
