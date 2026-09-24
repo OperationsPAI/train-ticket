@@ -646,6 +646,11 @@ services:
           command: ["sleep", "10"]
     env:
       MIGRATIONS_DIR: /app/migrations
+      # The pool is the search path's ceiling: searches waited over two seconds
+      # to acquire a connection at the peak and answered 503 while the database
+      # itself had spare capacity. One statement per search still needs a
+      # connection per in-flight search.
+      PG_MAX_POOL_SIZE: "32"
     # The in-memory plan index holds every published segment, about 1.4KB per
     # row with the three lookup maps: 533818 segments sat at 750Mi of resident
     # memory and the one GiB ceiling killed the pod with exit code 137 during a
