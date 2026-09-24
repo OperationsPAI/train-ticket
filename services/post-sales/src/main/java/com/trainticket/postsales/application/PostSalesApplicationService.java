@@ -236,6 +236,21 @@ public class PostSalesApplicationService {
         repository.save(current);publishNewEvents(current);return current;
     }
 
+    /**
+     * The replacement reservation never confirmed within the deadline its own saga records. The
+     * original tickets are untouched, so the case reaches a terminal outcome instead of letting
+     * every later attempt repeat the same wait.
+     */
+    public PostSalesCase failReservationTimeout(String caseId,String correlation) {
+        PostSalesCase initial=get(caseId);repository.lockOrder(initial.journeyOrderId());PostSalesCase current=get(caseId);
+        if(current.status()==PostSalesCaseStatus.FAILED)return current;
+        if(current.caseType()!=PostSalesCaseType.CHANGE || current.status()!=PostSalesCaseStatus.EXECUTING) {
+            throw new com.trainticket.postsales.domain.DomainRuleViolation("executing change case is required");
+        }
+        current.failCase("CHANGE_RESERVATION_TIMED_OUT","replacement-reservation",clock.instant(),"cmd-change-failed","cmd-change-failed",correlation);
+        repository.save(current);publishNewEvents(current);return current;
+    }
+
     public PostSalesCase approve(String caseId, String sourceCommandId, String correlationId) {
         PostSalesCase postSalesCase = get(caseId);
         if (isTerminalNonRefundable(postSalesCase)) {
