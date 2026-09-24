@@ -44,6 +44,34 @@ impl AppState {
         Ok(())
     }
 
+    /// Saves every snapshot of one search in a single statement. A search returns up to ten
+    /// itineraries, and one round trip per itinerary put ten statements on the database for
+    /// every search, which is what made the search path slow under a burst.
+    pub async fn save_itineraries(&self, snapshots: &[(String, Value)]) -> Result<(), StorageError> {
+        if snapshots.is_empty() {
+            return Ok(());
+        }
+        if let Some(pool) = &self.pool {
+            let ids: Vec<String> = snapshots.iter().map(|(reference, _)| reference.clone()).collect();
+            let data: Vec<Value> = snapshots.iter().map(|(_, value)| value.clone()).collect();
+            sqlx::query(
+                "INSERT INTO itinerary_snapshots (id, version, data) \
+                 SELECT id, 1, data FROM UNNEST($1::text[], $2::jsonb[]) AS rows(id, data) \
+                 ON CONFLICT (id) DO NOTHING",
+            )
+            .bind(ids)
+            .bind(data)
+            .execute(pool)
+            .await?;
+        } else {
+            let mut stored = self.mem_snapshots.write().await;
+            for (reference, value) in snapshots {
+                stored.insert(reference.clone(), value.clone());
+            }
+        }
+        Ok(())
+    }
+
     pub async fn get_itinerary(&self, itinerary_ref: &str) -> Result<Option<Value>, StorageError> {
         if let (Some(pool), Some(repo)) = (&self.pool, &self.snapshots) {
             let snap = repo.get::<Value>(pool, itinerary_ref).await?;
