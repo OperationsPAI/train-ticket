@@ -13,6 +13,7 @@ import {
   newNotificationTaskId,
   newReceiptId,
   type ScheduleNotification,
+  type NotificationTaskSnapshot,
 } from "../domain.js";
 import { type EventEnvelope, type EventPublisher, toEventEnvelope } from "./messaging.js";
 
@@ -24,7 +25,7 @@ export type ExternalNotificationTrigger = Readonly<{
   payload: Record<string, unknown>;
 }>;
 
-export type ExternalTriggerResult = "delivered" | "cancelled" | "failed" | "ignored" | "deferred";
+export type ExternalTriggerResult = "delivered" | "cancelled" | "failed" | "ignored" | "deferred" | "queued";
 
 export type UserPreference = Readonly<{
   recipientRef: string;
@@ -58,11 +59,16 @@ export interface RateLimitStore {
 }
 
 export type DeliveryResult =
-  | Readonly<{ ok: true; providerMessageId?: string }>
-  | Readonly<{ ok: false; outcome: "Bounced" | "Rejected" | "Timeout" | "Expired"; providerCode?: string; providerMessage?: string }>;
+  | Readonly<{ ok: true; providerMessageId?: string; providerResponse?: string }>
+  | Readonly<{ ok: false; outcome: "Bounced" | "Rejected" | "Timeout" | "Expired" | "Unknown"; providerCode?: string; providerMessage?: string; retryable?: boolean }>;
+
+export type DeliveryChannel = Readonly<{ channel: ChannelType; variables: Readonly<Record<string, string>> }>;
+export interface NotificationDeliveryScheduler {
+  enqueue(task: NotificationTaskSnapshot, channels: readonly DeliveryChannel[]): Promise<void>;
+}
 
 export interface NotificationChannelGateway {
-  send(task: ReturnType<NotificationTask["toSnapshot"]>): Promise<DeliveryResult> | DeliveryResult;
+  send(task: ReturnType<NotificationTask["toSnapshot"]>, lateResult?: (result: DeliveryResult) => Promise<void>): Promise<DeliveryResult> | DeliveryResult;
 }
 
 export class NonConformantNotificationTrigger extends Error {
@@ -121,6 +127,7 @@ export class NotificationApplicationService {
     private readonly contacts: RecipientContactRepository = new DefaultContactRepository(),
     private readonly rateLimits: RateLimitStore = new InMemoryRateLimitStore(),
     private readonly aggregator: NotificationAggregationStore = new NotificationAggregator(),
+    private readonly scheduler?: NotificationDeliveryScheduler,
   ) {}
 
   async handleExternalTrigger(envelope: EventEnvelope, recipientRef?: string): Promise<ExternalTriggerResult> {
@@ -148,6 +155,7 @@ export class NotificationApplicationService {
     if (results.includes("failed")) {
       return "failed";
     }
+    if (results.includes("queued")) return "queued";
     if (results.includes("cancelled")) {
       return "cancelled";
     }
@@ -173,6 +181,13 @@ export class NotificationApplicationService {
     const { task, event: scheduled } = NotificationTaskAggregate.schedule(scheduledCommand);
     let version = (await this.taskStore?.saveNew(task))?.version;
     await this.publisher.publish(toEventEnvelope(scheduled));
+
+    if (this.scheduler) {
+      await this.scheduler.enqueue(task.toSnapshot(), channels.map(channel => ({
+        channel, variables: renderedVariables(command.variables, templateType, channel, this.renderer),
+      })));
+      return "queued";
+    }
 
     const dispatchedAt = new Date();
     let { task: currentTask, event: dispatched } = task.dispatch({ notificationTaskId: task.id, dispatchedAt });
@@ -209,6 +224,7 @@ export class NotificationApplicationService {
       if (delivery.ok) {
         return "delivered";
       }
+      if (delivery.outcome === "Unknown") return "failed";
     }
 
     return "failed";
