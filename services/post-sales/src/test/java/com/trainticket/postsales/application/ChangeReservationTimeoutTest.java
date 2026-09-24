@@ -59,14 +59,12 @@ class ChangeReservationTimeoutTest {
 
     @Test
     void reservationWaitExpiresOnlyAfterTheSagaDeadline() {
-        Map<String, Object> operation = Map.of("requestedAt", NOW.toString());
-
-        assertFalse(ChangeExecutionService.reservationWaitExpired(operation, NOW.plusSeconds(600)));
-        assertFalse(ChangeExecutionService.reservationWaitExpired(operation, NOW.plusSeconds(900)));
-        assertTrue(ChangeExecutionService.reservationWaitExpired(operation, NOW.plusSeconds(901)));
+        assertFalse(ChangeExecutionService.reservationWaitExpired(NOW.toString(), NOW.plusSeconds(600)));
+        assertFalse(ChangeExecutionService.reservationWaitExpired(NOW.toString(), NOW.plusSeconds(900)));
+        assertTrue(ChangeExecutionService.reservationWaitExpired(NOW.toString(), NOW.plusSeconds(901)));
         assertFalse(
-            ChangeExecutionService.reservationWaitExpired(Map.of("segmentBookingId", "sb-1"), NOW.plusSeconds(86_400)),
-            "an operation without a recorded request time never times out"
+            ChangeExecutionService.reservationWaitExpired(null, NOW.plusSeconds(86_400)),
+            "a reservation without any recorded wait start never times out"
         );
     }
 
