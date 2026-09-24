@@ -66,6 +66,12 @@ The next attempt must first satisfy these performance requirements.
 3. [ ] The Capacity consumer must keep zero lag on the Booking stream at peak before activation.
 4. [ ] Peak reservation latency must stay inside the load generator polling window in a single cluster rehearsal.
 
+Second attempt on revisions 294 to 297: the load generator now presents the accepted class, scheduled service and date with the reservation, and Booking persists them, which removed the repeated upstream reads that overloaded Journey Order in the first attempt.
+Capacity alone still could not keep up: its consumer processed twenty seven to fifty three events per second while the Booking stream produced about one hundred and fifty, and the lag grew from three thousand to twelve thousand five hundred in forty five seconds.
+The cause is the pool snapshot: every Hold and confirmation rewrites the whole document, which carries every capacity unit reference, about one hundred and forty kilobytes for a second class pool of thirteen hundred and seventy five units.
+Revision 297 restored the previous Capacity image; the consumer returned to zero lag and the reservation failures stopped.
+The next attempt must store the composition reference and unit count instead of the full unit list, or move Hold records out of the pool document, before Capacity is activated again.
+
 1. [ ] Resolve accepted class, service, date, original purchase source, interval and composition for every active historical Hold; reject ambiguous source facts.
 2. [ ] Define and enforce the binding between a Hold and its allocated physical unit, including historical references and composition replacement mappings.
 3. [ ] Separate accepted travel class from occupancy class for standing substitution, and atomically reserve standing quota before allocation.
