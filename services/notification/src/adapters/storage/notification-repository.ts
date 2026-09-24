@@ -87,7 +87,14 @@ export class PostgresRecipientContactRepository implements RecipientContactRepos
 export class PostgresRateLimitRepository implements RateLimitStore {
   constructor(private readonly client: PoolClient) {}
 
-  async checkAndRecord(recipientRef: string, channel: ChannelType, at: Date): Promise<{ allowed: true } | { allowed: false; retryAfter: Date }> {
+  async reserve(taskId: string, recipientRef: string, channel: ChannelType, at: Date): Promise<{ allowed: true } | { allowed: false; retryAfter: Date }> {
+    const existing = await this.client.query("SELECT 1 FROM notification_rate_limits WHERE task_id=$1 AND channel=$2", [taskId, channel]);
+    if (existing.rowCount) return { allowed: true };
+    return this.checkAndRecord(recipientRef, channel, at, taskId);
+  }
+
+  async checkAndRecord(recipientRef: string, channel: ChannelType, at: Date, taskId?: string): Promise<{ allowed: true } | { allowed: false; retryAfter: Date }> {
+    if (channel === "SMS") await this.client.query("SELECT pg_advisory_xact_lock(hashtextextended('notification:sms:quota',0))");
     const limit = channelLimit(channel);
     const userResult = await this.client.query(
       `SELECT occurred_at
@@ -114,8 +121,8 @@ export class PostgresRateLimitRepository implements RateLimitStore {
     }
 
     await this.client.query(
-      `INSERT INTO notification_rate_limits (recipient_ref, channel, occurred_at) VALUES ($1, $2, $3)`,
-      [recipientRef, channel, at.toISOString()],
+      `INSERT INTO notification_rate_limits (recipient_ref, channel, occurred_at, task_id) VALUES ($1, $2, $3, $4)`,
+      [recipientRef, channel, at.toISOString(), taskId ?? null],
     );
     return { allowed: true };
   }
