@@ -4,12 +4,12 @@ Last verified: 2026-09-24, Asia/Beijing.
 
 ## Runtime
 
-The resident Helm release is `train-ticket` in namespace `train-ticket`, revision **300**.
+The resident Helm release is `train-ticket` in namespace `train-ticket`, revision **306**.
 PostgreSQL stores business snapshots, idempotency records, processed event records and transactional outboxes.
 Redis Streams carries events; the current chart has no Redis persistent volume or AOF.
 Database persistence alone does not prove recovery of every event after transport data is lost.
 
-The resident Go load generator uses the `loadgen-resident-state` claim, a 600 second diurnal period, `target_rps: 20` and a 10 second HTTP request timeout.
+The resident Go load generator uses the `loadgen-resident-state` claim, a 1800 second diurnal period, `target_rps: 20`, bursts between three and eight times the mean rate and a 10 second HTTP request timeout.
 Its configuration and persistent state remain unchanged by this documentation handoff.
 No additional business deployment is part of this handoff.
 
@@ -50,6 +50,7 @@ See the [standing policy](08-contracts/standing-capacity-policy.md), [APIs](08-c
 | Payment connection pool on revision 282 | `POST /api/v1/payment-intents` P99 fell from 5419 to 283 milliseconds; no request above four seconds | `.scratch/runtime-fixes/goal-rev281-payment-routes.json`, `goal-rev282-payment-pool-window.json` |
 | Ten minute resident cycle at revision 283 | 384661 requests, 44212 journeys, P99 241 milliseconds, 4 failed journeys and 2 unexpected HTTP errors, all seat or standing rejections | `.scratch/runtime-fixes/goal-rev283-ten-minute-window.json` |
 | Ten minute resident cycle at revision 300 | 362212 requests, 41567 journeys, P99 226 milliseconds, 14 failed journeys, all seat or standing rejections | `.scratch/runtime-fixes/goal-rev300-ten-minute.json` |
+| Ten minute resident cycle at revision 306 | 451150 requests, 49821 journeys, P99 2888 milliseconds, 7143 failed journeys, 5634 reservation confirmations and 1331 post sales case status checks | `.scratch/runtime-fixes/goal-rev306-ten-minute.json` |
 | Stable full peak acceptance | Not established | [TODO](TODO.md#acceptance) |
 
 The revision 278 ten minute recording ending at 2026-09-23 15:49:14 UTC contains 601683 requests and 9163 failed journeys, with request P99 of 9744.922 milliseconds.
@@ -66,7 +67,7 @@ Scratch logs and module build outputs are local evidence and are not versioned r
 
 | Component | Workspace state | Deployment state |
 |---|---|---|
-| Capacity supply integration | Implementation, migration and recorded tests are committed as `caafa668`; a second activation attempt could not consume the Booking stream fast enough because every Hold rewrites the pool document. | Not activated; revision 297 restored the previous image. |
+| Capacity supply integration | Pool snapshots store unit counts, and the published supply is split into a cached composition and a per admission occupancy. | Activated in revisions 301 to 305. |
 | Booking accepted supply | Main branch contains accepted source changes. | Running image remains based on `c5bb352d` plus compensation commit `1e62d420`; do not deploy main Booking independently. |
 | Notification delivery queue | Tasks, attempts and evidence are committed before sending; SMTP runs outside the recipient transaction with stable message ids and `Unknown` for uncertain outcomes. | Deployed in revision 280 from `41917b85`. |
 | Booking consumer recovery | Consumer groups are created once per stream and a failed pending-entry recovery no longer stops new reads; all subscribed streams are at zero lag. | Deployed in revision 281 from the pinned Booking source plus the java-kit fix. |
@@ -80,14 +81,14 @@ Scratch logs and module build outputs are local evidence and are not versioned r
 | Notification verification | Ten focused subtests and their parent pass; full module tests and quota deferral recovery acceptance are incomplete. | Existing notification delay remains an active issue. |
 | Online retention indexes | Verified in the owning databases and represented by migration files. | Some service images do not yet include their new migration file; online index creation did not modify migration version records. |
 
-## Supply integration attempt and rollback
+## Coordinated supply integration
 
-Revisions 284 to 286 activated the coordinated Capacity and Booking supply integration.
-The live result was worse than the state it replaced: reservations failed between fifteen and thirty four percent of journeys, Journey Order exhausted its connection pool and heap, and the Capacity consumer fell twenty four to thirty thousand entries behind on the Booking stream.
-Every Hold rewrote a pool snapshot holding about 1400 seat references, and each reservation resolved facts through several upstream calls, which together exceeded the load generator reservation window.
-Revision 287 restored the revision 283 Capacity and revision 281 Booking images.
-After the rollback the reservation path is healthy again: the last measured cycle had no reservation failures and P99 of 215 milliseconds.
-The integration stays unactivated until it meets the performance requirements recorded in [TODO](TODO.md#t03-complete-coordinated-supply-integration).
+The integration runs on revisions 294 to 305.
+The load generator presents the accepted class, scheduled service and date with each reservation and Booking persists them, so reservation admission reuses the accepted record instead of repeating upstream reads.
+A Hold rewrite stores unit counts, about five kilobytes instead of about one hundred and forty kilobytes.
+Capacity reads a composition view that is cached until its version changes and an occupancy view for the admission interval; the second class admission payload fell from 383324 bytes to 13988 bytes, measured with `.scratch/runtime-fixes/verify-capacity-facts-views.py`.
+The remaining peak limit is the consumer backlog on the identity verification and Booking streams, which still exceeds the reservation polling window during the load generator's bursts.
+The open requirements are recorded in [TODO](TODO.md#t03-complete-coordinated-supply-integration).
 
 All remaining work, evidence and acceptance conditions are maintained only in [TODO](TODO.md).
 This documentation handoff does not mark the full loadgen goal complete.
