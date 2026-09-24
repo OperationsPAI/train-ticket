@@ -29,6 +29,9 @@ Reducing peak load, extending polling or raising timeouts is not an acceptable r
 Revision 291 repeats the pattern: a peak window failed 489 purchase and 25 transfer reservations while the following window had none, and the consumer lag fell back to 1502 and 3916 afterwards.
 The next investigation must attribute the Booking saga confirmation latency at peak, because the reservation deadline depends on it.
 
+Revision 292 attributed a worse burst to Traveler Profile: ten pooled connections with eight hundred waiting threads produced `Connection is not available, request timed out after 15000ms` and three thousand timed out traveler creations in four minutes.
+After the pool increase the same route reports P99 of 164 milliseconds with no request above four seconds, and the following three minute window had eight failed journeys instead of five thousand.
+
 ## Notification
 
 ### T02: Finish and release durable notification delivery
