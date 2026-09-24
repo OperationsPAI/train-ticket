@@ -220,12 +220,14 @@ Each image needs a rebuild from its own deployed baseline so that unrelated unde
 
 ### T16: Retire consumer groups whose subscriber no longer reads them
 
-Status: confirmed stale state in Redis, no live consumer.
-`events:capacity-availability` still holds a `trip-planning` group and `events:journey-order` and `events:payment` still hold `travel-insurance` groups.
-Neither service subscribes to those streams any more, so each group shows lag pinned to the stream retention limit with no live consumer.
+Status: complete.
+`events:capacity-availability` held a `trip-planning` group and `events:journey-order` and `events:payment` held `travel-insurance` groups.
+Trip Planning subscribes to `events:place-network` and `events:service-plan`, and Travel Insurance handles refund, delay and ancillary refund events, so neither group had a reader and each showed lag pinned to the stream retention limit.
 
-1. [ ] Confirm the owning service and configuration for each stale group, then delete the group or the abandoned pending entries.
-2. [ ] Record the decision so future log or lag reviews do not read these groups as stalled consumers.
+1. [x] Confirm the owning service and configuration for each stale group, then delete the group or the abandoned pending entries.
+2. [x] Record the decision so future log or lag reviews do not read these groups as stalled consumers.
+
+Evidence: the three groups were deleted and a fresh `XINFO GROUPS` listing on the three streams no longer contains them (`.scratch/runtime-fixes/goal-stale-groups-cleanup.log`).
 
 ### T17: Enforce Booking saga step timeouts
 
