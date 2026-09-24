@@ -21,12 +21,37 @@ type SeatCapacityFacts struct {
 	Allocations         []domain.ContractSeatAllocation `json:"allocations"`
 }
 
+// SeatCapacityComposition is the part of the published supply that only changes when a new
+// composition version is published. Capacity caches it until the occupancy reports another
+// version, so admission does not refetch every physical unit for every Hold.
+type SeatCapacityComposition struct {
+	StandingPolicy      *domain.StandingPolicy `json:"standingPolicy,omitempty"`
+	ScheduledServiceRef string                 `json:"scheduledServiceRef"`
+	ServiceDate         string                 `json:"serviceDate"`
+	ClassRef            string                 `json:"classRef"`
+	SeatMapID           string                 `json:"seatMapId"`
+	SeatMapVersion      int                    `json:"seatMapVersion"`
+	CompositionVersion  string                 `json:"compositionVersion"`
+	CapturedAt          time.Time              `json:"capturedAt"`
+	Units               []domain.SeatUnit      `json:"units"`
+}
+
+// SeatCapacityOccupancy carries the active allocations of one class together with the
+// composition identity they were resolved against.
+type SeatCapacityOccupancy struct {
+	ScheduledServiceRef string                          `json:"scheduledServiceRef"`
+	ServiceDate         string                          `json:"serviceDate"`
+	ClassRef            string                          `json:"classRef"`
+	SeatMapID           string                          `json:"seatMapId"`
+	SeatMapVersion      int                             `json:"seatMapVersion"`
+	CompositionVersion  string                          `json:"compositionVersion"`
+	CapturedAt          time.Time                       `json:"capturedAt"`
+	Allocations         []domain.ContractSeatAllocation `json:"allocations"`
+}
+
 func (s *Service) CapacityFacts(ctx context.Context, service, date, class string) (*SeatCapacityFacts, error) {
-	if strings.TrimSpace(service) == "" || strings.TrimSpace(class) == "" {
-		return nil, derr("VALIDATION_FAILED", "scheduledServiceRef and classRef are required")
-	}
-	if _, err := time.Parse("2006-01-02", date); err != nil {
-		return nil, derr("VALIDATION_FAILED", "serviceDate must be a calendar date")
+	if err := validateCapacityQuery(service, date, class); err != nil {
+		return nil, err
 	}
 	var result *SeatCapacityFacts
 	err := s.tx(ctx, func(tx context.Context) error {
@@ -34,71 +59,153 @@ func (s *Service) CapacityFacts(ctx context.Context, service, date, class string
 		if err != nil {
 			return err
 		}
-		maps, total, err := s.repo.FindSeatMaps(tx, service, date, domain.SeatMapStatusPublished, 100, 0)
+		selected, err := s.publishedClassMap(tx, service, date, class)
 		if err != nil {
 			return err
 		}
-		if total > 100 {
-			return derr("CONFLICT", "published seat map count exceeds the allocation selection limit")
-		}
-		var selected *domain.ContractSeatMap
-		for index := range maps {
-			if len(maps[index].AssignableUnits(class)) > 0 {
-				selected = &maps[index]
-				break
-			}
-		}
-		if class == "STANDING" {
-			selected = domain.StandingPolicyMap(maps)
-		}
-		if selected == nil {
-			return derr("PRECONDITION_FAILED", "no published SeatMap matches scheduled service, date and class")
+		allocations, err := s.classAllocations(tx, service, date, class, selected, active)
+		if err != nil {
+			return err
 		}
 		result = &SeatCapacityFacts{ScheduledServiceRef: service, ServiceDate: date, ClassRef: class,
 			SeatMapID: selected.SeatMapID, SeatMapVersion: selected.SeatMapVersion, CompositionVersion: selected.CompositionVersion,
-			CapturedAt: time.Now().UTC(), Units: selected.AssignableUnits(class), Allocations: []domain.ContractSeatAllocation{}}
+			CapturedAt: time.Now().UTC(), Units: selected.AssignableUnits(class), Allocations: allocations}
 		if class == "STANDING" {
 			policy := selected.StandingPolicy()
 			result.StandingPolicy = &policy
 		}
-		loaded := map[string]*domain.ContractSeatMap{selected.SeatMapID: selected}
-		for _, allocation := range active {
-			if allocation.SeatRef.AllocationType == domain.AllocationTypeStanding {
-				if class == "STANDING" {
-					result.Allocations = append(result.Allocations, allocation)
-				}
-				continue
-			}
-			seatMap := loaded[allocation.SeatRef.SeatMapID]
-			if seatMap == nil {
-				seatMap, _, err = s.repo.GetSeatMap(tx, allocation.SeatRef.SeatMapID)
-				if err != nil {
-					return err
-				}
-				if seatMap == nil {
-					return derr("CONFLICT", "active allocation references a missing seat map")
-				}
-				loaded[seatMap.SeatMapID] = seatMap
-			}
-			if seatMap.ScheduledServiceRef != service || seatMap.ServiceDate != date {
-				return derr("CONFLICT", "active allocation references a different service or date")
-			}
-			found := false
-			for _, coach := range seatMap.Coaches {
-				for _, unit := range coach.SeatUnits {
-					if unit.SeatUnitRef == allocation.SeatRef.SeatUnitRef {
-						found = true
-						if coach.ClassRef == class {
-							result.Allocations = append(result.Allocations, allocation)
-						}
-					}
-				}
-			}
-			if !found {
-				return derr("CONFLICT", "active allocation references a missing seat unit")
-			}
+		return nil
+	})
+	return result, err
+}
+
+func (s *Service) CapacityComposition(ctx context.Context, service, date, class string) (*SeatCapacityComposition, error) {
+	if err := validateCapacityQuery(service, date, class); err != nil {
+		return nil, err
+	}
+	var result *SeatCapacityComposition
+	err := s.tx(ctx, func(tx context.Context) error {
+		selected, err := s.publishedClassMap(tx, service, date, class)
+		if err != nil {
+			return err
+		}
+		result = &SeatCapacityComposition{ScheduledServiceRef: service, ServiceDate: date, ClassRef: class,
+			SeatMapID: selected.SeatMapID, SeatMapVersion: selected.SeatMapVersion, CompositionVersion: selected.CompositionVersion,
+			CapturedAt: time.Now().UTC(), Units: selected.AssignableUnits(class)}
+		if class == "STANDING" {
+			policy := selected.StandingPolicy()
+			result.StandingPolicy = &policy
 		}
 		return nil
 	})
 	return result, err
+}
+
+func (s *Service) CapacityOccupancy(ctx context.Context, service, date, class string) (*SeatCapacityOccupancy, error) {
+	if err := validateCapacityQuery(service, date, class); err != nil {
+		return nil, err
+	}
+	var result *SeatCapacityOccupancy
+	err := s.tx(ctx, func(tx context.Context) error {
+		active, err := s.repo.FindActiveSeatAllocations(tx, service, date)
+		if err != nil {
+			return err
+		}
+		selected, err := s.publishedClassMap(tx, service, date, class)
+		if err != nil {
+			return err
+		}
+		allocations, err := s.classAllocations(tx, service, date, class, selected, active)
+		if err != nil {
+			return err
+		}
+		result = &SeatCapacityOccupancy{ScheduledServiceRef: service, ServiceDate: date, ClassRef: class,
+			SeatMapID: selected.SeatMapID, SeatMapVersion: selected.SeatMapVersion, CompositionVersion: selected.CompositionVersion,
+			CapturedAt: time.Now().UTC(), Allocations: allocations}
+		return nil
+	})
+	return result, err
+}
+
+func validateCapacityQuery(service, date, class string) error {
+	if strings.TrimSpace(service) == "" || strings.TrimSpace(class) == "" {
+		return derr("VALIDATION_FAILED", "scheduledServiceRef and classRef are required")
+	}
+	if _, err := time.Parse("2006-01-02", date); err != nil {
+		return derr("VALIDATION_FAILED", "serviceDate must be a calendar date")
+	}
+	return nil
+}
+
+// publishedClassMap selects the published map that carries the requested class.
+func (s *Service) publishedClassMap(ctx context.Context, service, date, class string) (*domain.ContractSeatMap, error) {
+	maps, total, err := s.repo.FindSeatMaps(ctx, service, date, domain.SeatMapStatusPublished, 100, 0)
+	if err != nil {
+		return nil, err
+	}
+	if total > 100 {
+		return nil, derr("CONFLICT", "published seat map count exceeds the allocation selection limit")
+	}
+	if class == "STANDING" {
+		selected := domain.StandingPolicyMap(maps)
+		if selected == nil {
+			return nil, derr("PRECONDITION_FAILED", "no published SeatMap matches scheduled service, date and class")
+		}
+		return selected, nil
+	}
+	for index := range maps {
+		if len(maps[index].AssignableUnits(class)) > 0 {
+			return &maps[index], nil
+		}
+	}
+	return nil, derr("PRECONDITION_FAILED", "no published SeatMap matches scheduled service, date and class")
+}
+
+// classAllocations keeps the active allocations whose unit belongs to the requested class. The
+// unit to class index is built once per loaded map, so classification does not rescan every unit
+// of every map for every allocation.
+func (s *Service) classAllocations(ctx context.Context, service, date, class string, selected *domain.ContractSeatMap, active []domain.ContractSeatAllocation) ([]domain.ContractSeatAllocation, error) {
+	loaded := map[string]map[string]string{selected.SeatMapID: unitClassIndex(selected)}
+	out := []domain.ContractSeatAllocation{}
+	for _, allocation := range active {
+		if allocation.SeatRef.AllocationType == domain.AllocationTypeStanding {
+			if class == "STANDING" {
+				out = append(out, allocation)
+			}
+			continue
+		}
+		index, ok := loaded[allocation.SeatRef.SeatMapID]
+		if !ok {
+			seatMap, _, err := s.repo.GetSeatMap(ctx, allocation.SeatRef.SeatMapID)
+			if err != nil {
+				return nil, err
+			}
+			if seatMap == nil {
+				return nil, derr("CONFLICT", "active allocation references a missing seat map")
+			}
+			if seatMap.ScheduledServiceRef != service || seatMap.ServiceDate != date {
+				return nil, derr("CONFLICT", "active allocation references a different service or date")
+			}
+			index = unitClassIndex(seatMap)
+			loaded[seatMap.SeatMapID] = index
+		}
+		owner, found := index[allocation.SeatRef.SeatUnitRef]
+		if !found {
+			return nil, derr("CONFLICT", "active allocation references a missing seat unit")
+		}
+		if owner == class {
+			out = append(out, allocation)
+		}
+	}
+	return out, nil
+}
+
+func unitClassIndex(seatMap *domain.ContractSeatMap) map[string]string {
+	index := map[string]string{}
+	for _, coach := range seatMap.Coaches {
+		for _, unit := range coach.SeatUnits {
+			index[unit.SeatUnitRef] = coach.ClassRef
+		}
+	}
+	return index
 }
