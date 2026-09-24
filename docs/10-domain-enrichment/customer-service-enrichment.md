@@ -20,5 +20,5 @@ SLA targets and simulated resolution percentages are configured behavior and do 
 Compensation issuance updates the local offer and publishes `CompensationIssued`; this method contains no Payment or Wallet execution call.
 Amount limits check the supplied authorization level and do not by themselves establish operator identity or finance approval.
 Manual action requests and case context do not directly change the owning order, payment, identity or transfer aggregates.
-Deployment and verification evidence, including differences from workspace code, are recorded in [current status](../00-current-status.md) for Helm revision 279.
+Deployment and verification evidence, including differences from workspace code, are recorded in [current status](../00-current-status.md).
 Remaining work is maintained only in [TODO](../TODO.md).

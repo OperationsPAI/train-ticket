@@ -3,7 +3,7 @@
 ## 当前常驻环境
 
 常驻 Helm release 为 `train-ticket`，命名空间为 `train-ticket`。
-当前 revision 279 的运行证据与既有测试结果统一见[当前状态](00-current-status.md)。
+当前 revision 283 的运行证据与既有测试结果统一见[当前状态](00-current-status.md)。
 全部待办统一见 [TODO](TODO.md)。
 本文中的构建、部署和测试入口仅供新环境使用，或者在后续明确开展更新并验证前提后使用。
 本次文档收尾不执行构建、部署或新增测试。

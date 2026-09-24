@@ -19,5 +19,5 @@ The automatic rebooking path selects from supplied suggestions within a four hou
 Reaccommodation and automatic rebooking here update connection records and emit events; these operations contain no ticket purchase or capacity reservation call.
 Automatic selection depends on supplied suggestions and does not perform a general alternative inventory search.
 `SELF_TRANSFER` missed connections do not receive the protected recovery case behavior.
-Deployment and verification evidence, including differences from workspace code, are recorded in [current status](../00-current-status.md) for Helm revision 279.
+Deployment and verification evidence, including differences from workspace code, are recorded in [current status](../00-current-status.md).
 Remaining work is maintained only in [TODO](../TODO.md).

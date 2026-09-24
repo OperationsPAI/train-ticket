@@ -18,26 +18,25 @@ Status: incomplete acceptance with recorded failures.
 3. [ ] Revalidate after Traveler Profile virtual threads and retention indexes; HTTP concurrency does not increase JDBC throughput by itself.
 4. [ ] Require no unexpected HTTP errors, no failed expected business journeys and correct ticket, payment, capacity and wallet outcomes without reducing workload or extending timeouts.
 
-Evidence: revision 278 has 9163 failed journeys in a ten minute window; revision 279 passes all six purchase classes but has no stable full peak certification.
+Evidence: revision 278 has 9163 failed journeys in a ten minute window; revision 283 has 4 failed journeys in a complete ten minute cycle, all seat or standing rejections, so acceptance is close but not complete.
 Sources: `.scratch/runtime-fixes/goal-rev278-ten-minute-window.json`, `goal-rev277-case-publication-diagnosis.json` and `goal-rev279-six-classes-live.log` under the same directory.
 
 ## Notification
 
 ### T02: Finish and release durable notification delivery
 
-Status: confirmed notification delay; implementation is committed as `41917b85` and undeployed in `services/notification/`.
-The deployed path holds a database connection and recipient lock during SMTP.
-Recorded order and post sales events remain without notification tasks after one minute; compensation credit notification samples have reached SMTP acceptance.
+Status: complete on revision 280.
+Tasks, attempts and evidence commit before SMTP; SMTP runs outside the recipient transaction; quota exhaustion defers the task in the delivery queue with `QuotaDeferred` evidence; uncertain outcomes stay `Unknown` without automatic resend.
 
-1. [ ] Review migration `006_durable_delivery.sql`, queue ownership, claim expiry, retry limits, recipient and channel quota reservation, and shutdown behavior.
-2. [ ] Run the full notification suite and verify quota exhaustion followed by deferred recovery.
-3. [ ] Verify SMTP uncertainty remains `Unknown`/`resultUnknown`, with no automatic resend or false success; verify late receipt reconciliation and stable Message-ID.
-4. [ ] Verify task creation commits before SMTP, duplicate events create one task, and competing workers send only the claimed attempt.
-5. [ ] Commit, migrate and deploy the completed implementation, then verify actual notification creation, receipt latency and backlog under resident load.
+1. [x] Review migration `006_durable_delivery.sql`, queue ownership, claim expiry, retry limits, recipient and channel quota reservation, and shutdown behavior.
+2. [x] Run the full notification suite and verify quota exhaustion followed by deferred recovery.
+3. [x] Verify SMTP uncertainty remains `Unknown`/`resultUnknown`, with no automatic resend or false success; verify late receipt reconciliation and stable Message-ID.
+4. [x] Verify task creation commits before SMTP, duplicate events create one task, and competing workers send only the claimed attempt.
+5. [x] Commit, migrate and deploy the completed implementation, then verify actual notification creation, receipt latency and backlog under resident load.
 
-Existing evidence: TypeScript compilation and focused PostgreSQL/Mailpit tests pass, ten subtests plus parent, about 20.8 seconds.
-The focused run includes 32 recorded tasks, delayed SMTP, refusal, result loss, late results and database lock release during sending.
-It does not establish full module or deployed acceptance.
+Evidence: the full module suite is 109 tests with no failures and no skips, about 21 seconds (`.scratch/runtime-fixes/goal-notification-durable-full-tests.log`).
+Migration `006_durable_delivery` was applied step by step to the resident database because the single transaction deadlocked with live traffic; the log is `.scratch/runtime-fixes/goal-notification-durable-migration-online.log`.
+After deployment every subscribed stream reports zero lag and zero pending, the newest task age is zero seconds, and 13646 tasks were scheduled in five minutes.
 
 ## Capacity and Booking
 
@@ -138,8 +137,64 @@ Status: stored policy is not full external business validation.
 
 Approved complaint compensation issuance itself is deployed and verified; these checks concern subsequent use of the benefit.
 
+### T12: Move payment channel calls out of database transactions
+
+Status: mitigated on revision 282; the underlying transaction shape remains.
+`captureIntent` and `requestRefund` call the payment channel over HTTP inside `@Transactional` methods.
+Those calls hold a pooled connection in `idle in transaction` for seconds, and the default pool of ten connections then queues unrelated reads and writes.
+
+1. [ ] Persist the channel handoff keys in a short transaction, call the channel outside any transaction, and apply the result in a second short transaction.
+2. [ ] Preserve single channel submission per intent through the recorded order and submit keys, and verify concurrent capture and refund attempts.
+3. [ ] Re-measure payment tail latency and connection occupancy after the change; the pool increase to 32 is a mitigation, not the design fix.
+
+Evidence: with the default pool, `POST /api/v1/payment-intents` and `GET /api/v1/refunds` reached P99 of about five seconds and post sales and entitlement calls timed out; after revision 282 the same routes report P99 of 283 and 38 milliseconds.
+The window is `.scratch/runtime-fixes/goal-rev281-payment-routes.json` and `.scratch/runtime-fixes/goal-rev282-payment-pool-window.json`.
+
+### T14: Verify change saga completion inside the load generator polling window
+
+Status: confirmed tail latency; about one percent of change cases finish after the ten poll budget.
+Change execution is asynchronous: the load generator triggers execute-change once per second and stops after ten attempts.
+Measured polls per case over five minutes: median three, ninety percent within eight, and twenty three cases needing all ten.
+
+1. [ ] Attribute the gap between the capacity hold request and the difference payment creation, which reached nine seconds on the slowest sampled case.
+2. [ ] Reduce that gap below the polling budget without lengthening the load generator polling.
+3. [ ] Re-measure the change journey duration distribution after the change.
+
+Evidence: `.scratch/runtime-fixes/goal-rev283-invoice-window.json` and case `psc-01a0d10a-6222-7fa8-b447-8a85283d859d`, whose hold was requested at 01:31:54.587 and whose difference payment was created at 01:32:03.846.
+
+### T15: Reconcile standing acceptance with ticket issue
+
+Status: confirmed rejection path; about one purchase in two hundred ends in a 422.
+Entitlement ticketing answers 422 `no compatible seat exists and standing is not accepted` when the confirmed capacity hold has no matching physical seat and the issue command does not accept standing.
+
+1. [ ] Determine whether the confirmed hold, the seat map composition and the issue command disagree about the occupancy class for that interval.
+2. [ ] Make the accepted class, the reserved unit and the issued allocation agree, or reject the purchase before the payment is captured.
+
+Evidence: `.scratch/runtime-fixes/goal-rev283-invoice-window.json` failure at 01:30:45.
+The sampled case confirms the hold is `CONFIRMED` with capacity unit `24B` while Seat Assignment reports 123 units already taken for that service, date and interval, so the two domains disagree about remaining supply.
+Seat Assignment only answers 422 when its own candidate list is empty; a preference that cannot be met degrades to an adjacent seat instead.
+
+### T13: Apply the consumer recovery fix to the remaining Java images
+
+Status: fix committed as `1f47d082`; only Booking carries it in production.
+The same poll loop runs in journey order, payment, post sales, traveler profile, finance settlement, wallet promotion, group booking, admin audit and marketing campaign images.
+Each image needs a rebuild from its own deployed baseline so that unrelated undeployed changes are not pulled in.
+
+1. [ ] Rebuild each Java service from the commit its running image was built from, with only the java-kit recovery commit added.
+2. [ ] Deploy them together during a maintenance window and confirm all consumer groups stay at zero lag with no poll failures.
+
+### T16: Retire consumer groups whose subscriber no longer reads them
+
+Status: confirmed stale state in Redis, no live consumer.
+`events:capacity-availability` still holds a `trip-planning` group and `events:journey-order` and `events:payment` still hold `travel-insurance` groups.
+Neither service subscribes to those streams any more, so each group shows lag pinned to the stream retention limit with no live consumer.
+
+1. [ ] Confirm the owning service and configuration for each stale group, then delete the group or the abandoned pending entries.
+2. [ ] Record the decision so future log or lag reviews do not read these groups as stalled consumers.
+
 ## Handoff rules
 
 No additional implementation or deployment is requested by this documentation closeout.
-Capacity and Notification changes are committed as `caafa668` and `41917b85` and remain unpublished; do not deploy them implicitly.
+Capacity changes are committed as `caafa668` and remain unpublished; do not deploy them implicitly.
+Notification is deployed on revision 280 and Booking recovery on revision 281.
 On completion, attach code, deployment and business verification evidence, update the owning design and API documentation, and mark the checkbox here.
