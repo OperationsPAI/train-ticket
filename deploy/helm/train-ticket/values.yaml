@@ -632,6 +632,13 @@ services:
       preStop:
         exec:
           command: ["sleep", "10"]
+    env:
+      # The TypeScript kit reads CONSUMER_BATCH_CONCURRENCY, so one handler per
+      # read batch was the effective concurrency. This consumer fell 2944 events
+      # behind on the Journey Order stream during a burst while using 169m of a
+      # six core limit.
+      CONSUMER_BATCH_CONCURRENCY: "8"
+      PG_MAX_POOL_SIZE: "24"
   offer-management:
     db: offer_management
     strategy:
@@ -841,7 +848,12 @@ services:
       # Twelve rather than four: change and refund cases must finish inside the
       # load generator polling window, and during a peak the case backlog grew
       # until the window expired.
-      CONSUMER_THREADS: "12"
+      # Twenty four: a burst still left this consumer, which reads the Journey
+      # Order stream for case context, ten thousand events behind, and the case
+      # operations that wait for that context then missed the poll window.
+      CONSUMER_THREADS: "24"
+      # Leave database connections for HTTP requests and the outbox relay.
+      HIKARI_MAX_POOL_SIZE: "32"
     # CPU headroom covers concurrent post-sales requests and event processing.
     resources:
       requests: { cpu: 500m, memory: 256Mi }
@@ -993,7 +1005,10 @@ services:
   reporting:
     db: reporting
     env:
-      REPORTING_CONSUMERS_PER_STREAM: "4"
+      # Twelve rather than four: the projection consumer still reached ten
+      # thousand events of lag on the Journey Order stream at a burst, and its
+      # CPU sat at 2.6 of the four core limit while it did.
+      REPORTING_CONSUMERS_PER_STREAM: "12"
       WEB_CONCURRENCY: "2"
       # Eight rather than four: the projection consumer fell 3.6 thousand events
       # behind on the journey order stream during a peak.
@@ -1001,7 +1016,7 @@ services:
     # Event ingestion and background projection refresh share this CPU budget.
     resources:
       requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: '4', memory: 4Gi }
+      limits: { cpu: '6', memory: 4Gi }
   supplier-catalog:
     db: supplier_catalog
   waitlist:
@@ -1019,6 +1034,11 @@ services:
       FARE_PRICING_BASE_URL: http://fare-pricing:8080
       OFFER_MANAGEMENT_BASE_URL: http://offer-management:8080
       JOURNEY_ORDER_BASE_URL: http://journey-order:8080
+      # Same TypeScript kit as ancillary service: the parallel handler count per
+      # read batch is the effective consumer concurrency. This consumer fell
+      # 2619 events behind on the Journey Order stream at a burst.
+      CONSUMER_BATCH_CONCURRENCY: "8"
+      PG_MAX_POOL_SIZE: "24"
   wallet-promotion:
     db: wallet_promotion
     # JVM event consumer, low traffic -- see the note on defaults.resources.
