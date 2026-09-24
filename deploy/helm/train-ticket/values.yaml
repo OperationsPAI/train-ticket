@@ -610,9 +610,14 @@ services:
           command: ["sleep", "10"]
     env:
       MIGRATIONS_DIR: /app/migrations
+    # The in-memory plan index holds every published segment, about 1.4KB per
+    # row with the three lookup maps: 533818 segments sat at 750Mi of resident
+    # memory and the one GiB ceiling killed the pod with exit code 137 during a
+    # peak search burst. Its searches then failed with connection refused and
+    # the callers that read itineraries failed with 10 second timeouts.
     resources:
-      requests: { cpu: 250m, memory: 256Mi }
-      limits: { cpu: '2', memory: 1Gi }
+      requests: { cpu: 250m, memory: 1Gi }
+      limits: { cpu: '2', memory: 3Gi }
   ancillary-service:
     db: ancillary_service
     strategy:
