@@ -691,9 +691,12 @@ services:
       OFFER_MANAGEMENT_URL: http://offer-management:8080
       # Concurrent handlers cover database and identity HTTP waits across eleven streams.
       # Order row locks and event locks serialize updates to the same business state.
-      CONSUMER_THREADS: "16"
+      # An identity burst produced five hundred to seven hundred events per second
+      # and sixteen threads plateaued near five hundred, so the same consumer group
+      # ran one hundred and forty seconds behind and trimmed entries before delivery.
+      CONSUMER_THREADS: "32"
       # Leave database connections for HTTP requests and the outbox relay.
-      HIKARI_MAX_POOL_SIZE: "40"
+      HIKARI_MAX_POOL_SIZE: "60"
     resources:
       requests: { cpu: 100m, memory: 256Mi }
       limits: { cpu: '3', memory: 2Gi }
@@ -710,7 +713,12 @@ services:
         exec:
           command: ["sleep", "10"]
     env:
-      CONSUMER_THREADS: "4"   # 4 streams
+      # Eight streams share this handler pool, and the capacity stream alone
+      # carried up to one hundred and forty events per second during a peak.
+      # Four threads let the poll loop run handlers on the reading thread, and
+      # the capacity group oscillated between zero and eight seconds of lag,
+      # which is the confirmation delay the reservation poll waits through.
+      CONSUMER_THREADS: "12"
     # CPU headroom covers concurrent HTTP requests and event processing.
     resources:
       requests: { cpu: 500m, memory: 256Mi }
@@ -940,11 +948,16 @@ services:
         exec:
           command: ["sleep", "10"]
     env:
-      # Eight rather than four: this consumer fell twenty nine thousand events
-      # behind on the identity verification stream during a peak, and the
-      # identity checks its callers wait for then missed their client deadlines.
-      CONSUMER_THREADS: "8"   # 5 streams
-      CONSUMER_BATCH_CONCURRENCY: "4"
+      # The TypeScript kit has no CONSUMER_THREADS support: the effective knob
+      # is the parallel handler count per read batch. Four handlers kept up at
+      # troughs only, and this consumer fell thirteen seconds behind on the
+      # identity verification stream while a peak held near one hundred and
+      # sixty events per second.
+      # A burst then produced five hundred to seven hundred identity events per
+      # second and this consumer plateaued near five hundred.
+      CONSUMER_BATCH_CONCURRENCY: "32"
+      # Sixteen handlers need a pool that can serve them.
+      PG_MAX_POOL_SIZE: "48"
     # 4 consumer threads do not fit in the default 500m CPU limit. Raising
     # CONSUMER_THREADS without raising this caused a CrashLoopBackOff: the
     # threads saturated half a core working through the backlog, the HTTP thread
