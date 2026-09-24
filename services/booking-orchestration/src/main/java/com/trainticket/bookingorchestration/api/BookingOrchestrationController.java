@@ -54,7 +54,8 @@ public class BookingOrchestrationController {
     ) {}
 
     public record RequestReservationRequest(
-        String segmentRef, String travelerRef, String segmentBookingId
+        String segmentRef, String travelerRef, String segmentBookingId,
+        String classRef, String scheduledServiceRef, String serviceDate
     ) {}
 
     public record RequestReservationResponse(
@@ -128,11 +129,25 @@ public class BookingOrchestrationController {
 
         String correlation = getCorrelationId(httpRequest);
         var saga = service.getSaga(sagaId).orElseThrow(() -> new NotFoundException("Booking saga not found: " + sagaId));
-        var accepted = facts.resolve(saga.journeyOrderId(), request.segmentRef(), request.travelerRef(), correlation);
+        var accepted = suppliesAcceptedFacts(request)
+            ? new com.trainticket.bookingorchestration.application.ReservationFactsResolver.Facts(saga.journeyOrderId(), request.segmentRef(), request.travelerRef(),
+                request.segmentRef(), request.classRef().trim(), request.scheduledServiceRef().trim(), request.serviceDate().trim())
+            : facts.resolve(saga.journeyOrderId(), request.segmentRef(), request.travelerRef(), correlation);
         var result = service.requestReservation(sagaId,
             new RequestReservationCommand(request.segmentRef(), request.travelerRef(), request.segmentBookingId()),
             accepted, correlation);
         return ResponseEntity.ok(new RequestReservationResponse(result.segmentBookingId(), result.status()));
+    }
+
+    /**
+     * The caller that already read the accepted offer may present its facts, which avoids repeating
+     * the same four upstream reads per reservation. A request without the complete fact set still
+     * goes through the resolver.
+     */
+    private static boolean suppliesAcceptedFacts(RequestReservationRequest request) {
+        return request.classRef() != null && !request.classRef().isBlank()
+            && request.scheduledServiceRef() != null && !request.scheduledServiceRef().isBlank()
+            && request.serviceDate() != null && !request.serviceDate().isBlank();
     }
 
     @PostMapping(value = "/booking-sagas/{sagaId}/mark-ticketed",
@@ -250,6 +265,17 @@ public class BookingOrchestrationController {
         }
         if (request.segmentBookingId() == null || request.segmentBookingId().isBlank()) {
             errors.add("segmentBookingId is required");
+        }
+        boolean anyFact = request.classRef() != null || request.scheduledServiceRef() != null || request.serviceDate() != null;
+        if (anyFact && !suppliesAcceptedFacts(request)) {
+            errors.add("classRef, scheduledServiceRef and serviceDate must be supplied together");
+        }
+        if (request.serviceDate() != null && !request.serviceDate().isBlank()) {
+            try {
+                java.time.LocalDate.parse(request.serviceDate().trim());
+            } catch (java.time.format.DateTimeParseException error) {
+                errors.add("serviceDate must be an ISO date");
+            }
         }
         return errors;
     }
