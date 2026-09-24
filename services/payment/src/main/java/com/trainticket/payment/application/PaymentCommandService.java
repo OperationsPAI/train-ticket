@@ -23,8 +23,12 @@ import com.trainticket.payment.domain.ports.LatePaymentCaseRepository;
 import com.trainticket.payment.domain.ports.RefundRepository;
 import com.trainticket.payment.domain.ports.ReservationPaymentRequestRepository;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.function.Supplier;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 @Service
 public class PaymentCommandService {
@@ -38,6 +42,7 @@ public class PaymentCommandService {
     private final LatePaymentCaseRepository latePaymentCaseRepository;
     private final PaymentChannelClient paymentChannelClient;
     private final ChannelRouter channelRouter;
+    private final TransactionTemplate transactionTemplate;
 
     @org.springframework.beans.factory.annotation.Autowired
     public PaymentCommandService(
@@ -47,9 +52,32 @@ public class PaymentCommandService {
         RefundRepository refundRepository,
         ReservationPaymentRequestRepository reservationPaymentRequestRepository,
         LatePaymentCaseRepository latePaymentCaseRepository,
-        PaymentChannelClient paymentChannelClient
+        PaymentChannelClient paymentChannelClient,
+        Optional<PlatformTransactionManager> transactionManager
     ) {
-        this(clock, eventPublisher, paymentIntentRepository, refundRepository, reservationPaymentRequestRepository, latePaymentCaseRepository, paymentChannelClient, ChannelRouter.defaults());
+        this(clock, eventPublisher, paymentIntentRepository, refundRepository, reservationPaymentRequestRepository, latePaymentCaseRepository, paymentChannelClient, ChannelRouter.defaults(), transactionManager);
+    }
+
+    public PaymentCommandService(
+        Clock clock,
+        EventPublisher eventPublisher,
+        PaymentIntentRepository paymentIntentRepository,
+        RefundRepository refundRepository,
+        ReservationPaymentRequestRepository reservationPaymentRequestRepository,
+        LatePaymentCaseRepository latePaymentCaseRepository,
+        PaymentChannelClient paymentChannelClient,
+        ChannelRouter channelRouter,
+        Optional<PlatformTransactionManager> transactionManager
+    ) {
+        this.clock = Objects.requireNonNull(clock, "clock is required");
+        this.eventPublisher = Objects.requireNonNull(eventPublisher, "eventPublisher is required");
+        this.paymentIntentRepository = Objects.requireNonNull(paymentIntentRepository, "paymentIntentRepository is required");
+        this.refundRepository = Objects.requireNonNull(refundRepository, "refundRepository is required");
+        this.reservationPaymentRequestRepository = Objects.requireNonNull(reservationPaymentRequestRepository, "reservationPaymentRequestRepository is required");
+        this.latePaymentCaseRepository = Objects.requireNonNull(latePaymentCaseRepository, "latePaymentCaseRepository is required");
+        this.paymentChannelClient = Objects.requireNonNull(paymentChannelClient, "paymentChannelClient is required");
+        this.channelRouter = Objects.requireNonNull(channelRouter, "channelRouter is required");
+        this.transactionTemplate = transactionManager.map(TransactionTemplate::new).orElse(null);
     }
 
     public PaymentCommandService(
@@ -62,14 +90,19 @@ public class PaymentCommandService {
         PaymentChannelClient paymentChannelClient,
         ChannelRouter channelRouter
     ) {
-        this.clock = Objects.requireNonNull(clock, "clock is required");
-        this.eventPublisher = Objects.requireNonNull(eventPublisher, "eventPublisher is required");
-        this.paymentIntentRepository = Objects.requireNonNull(paymentIntentRepository, "paymentIntentRepository is required");
-        this.refundRepository = Objects.requireNonNull(refundRepository, "refundRepository is required");
-        this.reservationPaymentRequestRepository = Objects.requireNonNull(reservationPaymentRequestRepository, "reservationPaymentRequestRepository is required");
-        this.latePaymentCaseRepository = Objects.requireNonNull(latePaymentCaseRepository, "latePaymentCaseRepository is required");
-        this.paymentChannelClient = Objects.requireNonNull(paymentChannelClient, "paymentChannelClient is required");
-        this.channelRouter = Objects.requireNonNull(channelRouter, "channelRouter is required");
+        this(clock, eventPublisher, paymentIntentRepository, refundRepository, reservationPaymentRequestRepository, latePaymentCaseRepository, paymentChannelClient, channelRouter, Optional.empty());
+    }
+
+    public PaymentCommandService(
+        Clock clock,
+        EventPublisher eventPublisher,
+        PaymentIntentRepository paymentIntentRepository,
+        RefundRepository refundRepository,
+        ReservationPaymentRequestRepository reservationPaymentRequestRepository,
+        LatePaymentCaseRepository latePaymentCaseRepository,
+        PaymentChannelClient paymentChannelClient
+    ) {
+        this(clock, eventPublisher, paymentIntentRepository, refundRepository, reservationPaymentRequestRepository, latePaymentCaseRepository, paymentChannelClient, ChannelRouter.defaults());
     }
 
     public PaymentCommandService(
@@ -144,30 +177,67 @@ public class PaymentCommandService {
         return intent;
     }
 
-    @Transactional
     public PaymentIntent captureIntent(String paymentIntentId, String idempotencyKey, String correlationId) {
         return captureIntent(paymentIntentId, idempotencyKey, correlationId, (String) null);
     }
 
-    @Transactional
     public PaymentIntent captureIntent(String paymentIntentId, String idempotencyKey, String correlationId, String requestedChannel) {
-        PaymentIntent intent = getIntent(paymentIntentId);
-        String channel = requestedChannel == null || requestedChannel.isBlank()
-            ? (intent.channelRef() == null || intent.channelRef().channel() == null ? DEFAULT_CHANNEL : intent.channelRef().channel())
-            : requestedChannel;
-        PaymentChannel selectedChannel = channelRouter.requireAvailable(channel, intent.amount());
-        channel = selectedChannel.channelId();
-        ChannelRef requestedRef = new ChannelRef(channel, null, null, null, null, null, null);
-        if (isCapturedReplay(intent, requestedRef)) return intent;
+        PreparedCapture prepared = inTransaction(() -> {
+            PaymentIntent intent = getIntent(paymentIntentId);
+            String channel = requestedChannel == null || requestedChannel.isBlank()
+                ? (intent.channelRef() == null || intent.channelRef().channel() == null ? DEFAULT_CHANNEL : intent.channelRef().channel())
+                : requestedChannel;
+            ChannelRef requestedRef = new ChannelRef(channelRouter.requireAvailable(channel, intent.amount()).channelId(), null, null, null, null, null, null);
+            return prepareCaptureSubmission(intent, requestedRef, idempotencyKey);
+        });
+        if (prepared.replay()) return prepared.intent();
+        PaymentChannelClient.HandoffOrder handoff = paymentChannelClient.handoffCapture(prepared.intent(), prepared.orderKey(), prepared.submitKey(), correlationId, prepared.requestedRef());
+        return inTransaction(() -> applyRemainingCaptureHandoff(paymentIntentId, idempotencyKey, correlationId, prepared, handoff));
+    }
+
+    public PaymentIntent captureIntent(String paymentIntentId, String idempotencyKey, String correlationId, ChannelRef requestedRef) {
+        if (requestedRef == null) {
+            return captureIntent(paymentIntentId, idempotencyKey, correlationId, (String) null);
+        }
+        PreparedCapture prepared = inTransaction(() -> {
+            PaymentIntent intent = getIntent(paymentIntentId);
+            ChannelRef effectiveRef = new ChannelRef(
+                channelRouter.requireAvailable(requestedRef.channel(), intent.amount()).channelId(),
+                requestedRef.channelOrderId(), requestedRef.channelRefundId(), requestedRef.channelTransactionId(),
+                requestedRef.channelRefundTransactionId(), requestedRef.channelStatementId(), requestedRef.faultSeedRef());
+            return prepareCaptureSubmission(intent, effectiveRef, idempotencyKey);
+        });
+        if (prepared.replay()) return prepared.intent();
+        PaymentChannelClient.HandoffOrder handoff = paymentChannelClient.handoffCapture(prepared.intent(), prepared.orderKey(), prepared.submitKey(), correlationId, prepared.requestedRef());
+        return inTransaction(() -> applyChannelRouteCaptureHandoff(paymentIntentId, idempotencyKey, correlationId, prepared, handoff));
+    }
+
+    private PreparedCapture prepareCaptureSubmission(PaymentIntent intent, ChannelRef requestedRef, String idempotencyKey) {
+        if (isCapturedReplay(intent, requestedRef)) {
+            return new PreparedCapture(intent, requestedRef, null, null, true);
+        }
         String orderKey = keyOrFold(intent.channelOrderIdempotencyKey(), intent.paymentIntentId() + ":1", idempotencyKey);
         String submitKey = keyOrFold(intent.channelOrderSubmitIdempotencyKey(), intent.paymentIntentId() + ":1:submit", idempotencyKey);
+        // The channel sees the keys that are already committed, so a retry or a
+        // concurrent attempt reuses the same channel order and submit keys.
         intent.rememberChannelOrderKeys(orderKey, submitKey);
         paymentIntentRepository.save(intent);
-        PaymentChannelClient.HandoffOrder handoff = paymentChannelClient.handoffCapture(intent, orderKey, submitKey, correlationId, requestedRef);
+        return new PreparedCapture(intent, requestedRef, orderKey, submitKey, false);
+    }
+
+    private PaymentIntent applyRemainingCaptureHandoff(
+        String paymentIntentId,
+        String idempotencyKey,
+        String correlationId,
+        PreparedCapture prepared,
+        PaymentChannelClient.HandoffOrder handoff
+    ) {
+        PaymentIntent intent = getIntent(paymentIntentId);
+        if (isCapturedReplay(intent, prepared.requestedRef())) return intent;
         intent.recordChannelHandoff(handoff.channelRef());
         if ("SUCCEEDED".equals(handoff.status()) && handoff.channelTransactionId() != null) {
             int before = intent.domainEvents().size();
-            intent.capture(intent.amount().subtract(intent.capturedAmount()), channel, handoff.channelTransactionId(), Instant.now(clock), commandId(idempotencyKey), commandId(idempotencyKey), correlationId);
+            intent.capture(intent.amount().subtract(intent.capturedAmount()), prepared.requestedRef().channel(), handoff.channelTransactionId(), Instant.now(clock), commandId(idempotencyKey), commandId(idempotencyKey), correlationId);
             paymentIntentRepository.save(intent);
             publishNewEvents(intent.domainEvents(), before);
         } else {
@@ -176,24 +246,19 @@ public class PaymentCommandService {
         return intent;
     }
 
-    @Transactional
-    public PaymentIntent captureIntent(String paymentIntentId, String idempotencyKey, String correlationId, ChannelRef requestedRef) {
-        if (requestedRef == null) {
-            return captureIntent(paymentIntentId, idempotencyKey, correlationId, (String) null);
-        }
+    private PaymentIntent applyChannelRouteCaptureHandoff(
+        String paymentIntentId,
+        String idempotencyKey,
+        String correlationId,
+        PreparedCapture prepared,
+        PaymentChannelClient.HandoffOrder handoff
+    ) {
         PaymentIntent intent = getIntent(paymentIntentId);
-        PaymentChannel selectedChannel = channelRouter.requireAvailable(requestedRef.channel(), intent.amount());
-        requestedRef = new ChannelRef(selectedChannel.channelId(), requestedRef.channelOrderId(), requestedRef.channelRefundId(), requestedRef.channelTransactionId(), requestedRef.channelRefundTransactionId(), requestedRef.channelStatementId(), requestedRef.faultSeedRef());
-        if (isCapturedReplay(intent, requestedRef)) return intent;
-        String orderKey = keyOrFold(intent.channelOrderIdempotencyKey(), intent.paymentIntentId() + ":1", idempotencyKey);
-        String submitKey = keyOrFold(intent.channelOrderSubmitIdempotencyKey(), intent.paymentIntentId() + ":1:submit", idempotencyKey);
-        intent.rememberChannelOrderKeys(orderKey, submitKey);
-        paymentIntentRepository.save(intent);
-        PaymentChannelClient.HandoffOrder handoff = paymentChannelClient.handoffCapture(intent, orderKey, submitKey, correlationId, requestedRef);
+        if (isCapturedReplay(intent, prepared.requestedRef())) return intent;
         intent.recordChannelHandoff(handoff.channelRef());
         paymentIntentRepository.save(intent);
         if ("SUCCEEDED".equals(handoff.status())) {
-            return captureIntentFromChannel(paymentIntentId, intent.amount(), handoff.channelRef().channel(),
+            return applyChannelCapture(paymentIntentId, intent.amount(), handoff.channelRef().channel(),
                 handoff.channelTransactionId(), handoff.channelOrderId(), commandId(idempotencyKey), correlationId);
         }
         return intent;
@@ -222,6 +287,27 @@ public class PaymentCommandService {
         return true;
     }
 
+    // A submitted channel order is identified by the keys persisted in the
+    // first transaction; a replay of an already captured intent skips the call.
+    private record PreparedCapture(PaymentIntent intent, ChannelRef requestedRef, String orderKey, String submitKey, boolean replay) {
+    }
+
+    // The refund and its channel keys are committed before the channel sees them.
+    // A null refundKey means the request was settled without a channel call, so
+    // the caller returns the refund instead of handing it to the channel.
+    record RefundHandoff(PaymentIntent intent, Refund refund, ChannelRef originalRoute, String refundKey, String submitKey) {
+        boolean needsChannel() {
+            return refundKey != null;
+        }
+    }
+
+    private <T> T inTransaction(Supplier<T> work) {
+        if (transactionTemplate == null) {
+            return work.get();
+        }
+        return transactionTemplate.execute(status -> work.get());
+    }
+
     /** Latest captured (or created) intent for a business reference, used
      * when post-sales approvals reference the order rather than the intent. */
     public java.util.Optional<String> findIntentIdByBusinessRef(String businessRef) {
@@ -247,12 +333,24 @@ public class PaymentCommandService {
     }
 
 
-    @Transactional
     public Refund requestRefund(String paymentIntentId, Money amount, String reason, String businessCaseRef, String idempotencyKey, String correlationId, ChannelRef originalRoute) {
-        Instant now = Instant.now(clock);
         if (originalRoute == null) {
             return requestRefund(paymentIntentId, amount, reason, businessCaseRef, idempotencyKey, correlationId);
         }
+        RefundHandoff handoff = inTransaction(() -> prepareRefundSubmission(paymentIntentId, amount, reason, businessCaseRef, idempotencyKey, correlationId, originalRoute));
+        if (!handoff.needsChannel()) return handoff.refund();
+        PaymentChannelClient.HandoffRefund channelHandoff = handoffRefund(handoff, correlationId);
+        return inTransaction(() -> applyRefundHandoff(handoff, channelHandoff));
+    }
+
+    /**
+     * First phase of a routed refund. Creates or loads the refund and records its channel
+     * keys, so the caller can commit both before the channel sees them. The caller supplies
+     * the transaction, which lets an event handler commit its deduplication record with
+     * this write while the channel call stays outside.
+     */
+    RefundHandoff prepareRefundSubmission(String paymentIntentId, Money amount, String reason, String businessCaseRef, String idempotencyKey, String correlationId, ChannelRef originalRoute) {
+        Instant now = Instant.now(clock);
         PaymentIntent intent = getIntent(paymentIntentId);
         ChannelRef capturedRoute = intent.channelRef();
         if (capturedRoute == null || capturedRoute.channel() == null
@@ -268,21 +366,41 @@ public class PaymentCommandService {
         if (refund.status() == com.trainticket.payment.domain.RefundStatus.SETTLED
             || refund.status() == com.trainticket.payment.domain.RefundStatus.SUBMITTED
             || refund.status() == com.trainticket.payment.domain.RefundStatus.MANUAL_REVIEW_REQUIRED) {
-            return refund;
+            return new RefundHandoff(intent, refund, originalRoute, null, null);
         }
         if (!channelRouter.isEnabled(originalRoute.channel())) {
             int before = refund.domainEvents().size();
             refund.fail("ORIGINAL_CHANNEL_UNAVAILABLE", false, now, commandId(idempotencyKey), commandId(idempotencyKey), correlationId);
             refundRepository.save(refund);
             publishNewEvents(refund.domainEvents(), before);
-            return refund;
+            return new RefundHandoff(intent, refund, originalRoute, null, null);
         }
         String refundKey = keyOrFold(refund.channelRefundIdempotencyKey(), refund.refundId() + ":" + originalRoute.channelOrderId() + ":" + originalRoute.channelTransactionId(), idempotencyKey);
         String submitKey = keyOrFold(refund.channelRefundSubmitIdempotencyKey(), refund.refundId() + ":" + originalRoute.channelOrderId() + ":submit", idempotencyKey);
+        // The refund and its submit keys commit before the channel sees them, so
+        // a retry or a concurrent attempt reuses the same refund and submit keys.
         refund.rememberChannelRefundKeys(refundKey, submitKey);
         refundRepository.save(refund);
-        PaymentChannelClient.HandoffRefund handoff = paymentChannelClient.handoffRefund(intent, refund, refundKey, submitKey, correlationId, originalRoute);
-        refund.recordChannelHandoff(handoff.channelRef());
+        return new RefundHandoff(intent, refund, originalRoute, refundKey, submitKey);
+    }
+
+    /** The channel call itself. Runs outside every transaction, on committed keys only. */
+    PaymentChannelClient.HandoffRefund handoffRefund(RefundHandoff handoff, String correlationId) {
+        return paymentChannelClient.handoffRefund(handoff.intent(), handoff.refund(), handoff.refundKey(), handoff.submitKey(), correlationId, handoff.originalRoute());
+    }
+
+    /**
+     * Second phase of a routed refund. Runs in the caller's transaction so the channel
+     * result and the caller's own records commit together.
+     */
+    Refund applyRefundHandoff(RefundHandoff handoff, PaymentChannelClient.HandoffRefund channelHandoff) {
+        Refund refund = getRefund(handoff.refund().refundId());
+        if (refund.status() == com.trainticket.payment.domain.RefundStatus.SETTLED
+            || refund.status() == com.trainticket.payment.domain.RefundStatus.SUBMITTED
+            || refund.status() == com.trainticket.payment.domain.RefundStatus.MANUAL_REVIEW_REQUIRED) {
+            return refund;
+        }
+        refund.recordChannelHandoff(channelHandoff.channelRef());
         refundRepository.save(refund);
         return refund;
     }
@@ -290,6 +408,10 @@ public class PaymentCommandService {
 
     @Transactional
     public PaymentIntent captureIntentFromChannel(String paymentIntentId, Money amount, String channel, String channelTransactionId, String channelOrderId, String causationId, String correlationId) {
+        return applyChannelCapture(paymentIntentId, amount, channel, channelTransactionId, channelOrderId, causationId, correlationId);
+    }
+
+    private PaymentIntent applyChannelCapture(String paymentIntentId, Money amount, String channel, String channelTransactionId, String channelOrderId, String causationId, String correlationId) {
         PaymentIntent intent = getIntent(paymentIntentId);
         PaymentChannel selectedChannel = channelRouter.requireAvailable(channel, amount);
         channel = selectedChannel.channelId();
@@ -354,25 +476,46 @@ public class PaymentCommandService {
         return refund;
     }
 
-    @Transactional
     public Refund submitLatePaymentRefund(String paymentIntentId, String correlation) {
+        LateRefundHandoff prepared = inTransaction(() -> prepareLateRefundSubmission(paymentIntentId));
+        if (prepared.submitKey() == null) return prepared.refund();
+        PaymentChannelClient.HandoffRefund channelHandoff = paymentChannelClient.handoffRefund(
+            prepared.intent(), prepared.refund(), prepared.refundKey(), prepared.submitKey(), prepared.channelCorrelation(), prepared.route());
+        return inTransaction(() -> applyLateRefundHandoff(paymentIntentId, correlation, prepared, channelHandoff));
+    }
+
+    private LateRefundHandoff prepareLateRefundSubmission(String paymentIntentId) {
         PaymentIntent intent = getIntent(paymentIntentId);
         LatePaymentCase lateCase = latePaymentForIntent(paymentIntentId);
         Refund refund = getRefund(requireText(lateCase.refundId(), "late refundId"));
-        if (refund.status() == com.trainticket.payment.domain.RefundStatus.SETTLED) return refund;
         ChannelRef route = refund.channelRef();
+        if (refund.status() == com.trainticket.payment.domain.RefundStatus.SETTLED) {
+            return new LateRefundHandoff(intent, refund, route, null, null, null);
+        }
         String refundKey = foldedUuidV7("late-refund:" + refund.refundId());
         String submitKey = foldedUuidV7("late-refund-submit:" + refund.refundId());
+        // The refund and its channel keys commit before the channel sees them.
         refund.rememberChannelRefundKeys(refundKey, submitKey);
         String channelCorrelation = "corr-" + foldedUuidV7("late-refund-correlation:" + refund.refundId());
-        PaymentChannelClient.HandoffRefund handoff = paymentChannelClient.handoffRefund(intent, refund, refundKey, submitKey, channelCorrelation, route);
-        if (refund.status() != com.trainticket.payment.domain.RefundStatus.SUBMITTED) refund.recordChannelHandoff(handoff.channelRef());
         refundRepository.save(refund);
-        if ("SUCCEEDED".equals(handoff.status())) {
-            return settleRefundFromChannel(refund.refundId(), paymentIntentId, refund.amount(), handoff.channelRefundId(), route.channelOrderId(),
-                route.channel(), route.channelTransactionId(), handoff.channelRefundTransactionId(), commandId(submitKey), correlation);
+        return new LateRefundHandoff(intent, refund, route, refundKey, submitKey, channelCorrelation);
+    }
+
+    private Refund applyLateRefundHandoff(String paymentIntentId, String correlation, LateRefundHandoff prepared, PaymentChannelClient.HandoffRefund channelHandoff) {
+        Refund refund = getRefund(prepared.refund().refundId());
+        if (refund.status() != com.trainticket.payment.domain.RefundStatus.SUBMITTED) {
+            refund.recordChannelHandoff(channelHandoff.channelRef());
+        }
+        refundRepository.save(refund);
+        if ("SUCCEEDED".equals(channelHandoff.status())) {
+            return settleRefundFromChannel(refund.refundId(), paymentIntentId, refund.amount(), channelHandoff.channelRefundId(), prepared.route().channelOrderId(),
+                prepared.route().channel(), prepared.route().channelTransactionId(), channelHandoff.channelRefundTransactionId(), commandId(prepared.submitKey()), correlation);
         }
         return refund;
+    }
+
+    // A null submitKey means the refund settled before any channel submission.
+    private record LateRefundHandoff(PaymentIntent intent, Refund refund, ChannelRef route, String refundKey, String submitKey, String channelCorrelation) {
     }
 
     private void recordLateCapture(
