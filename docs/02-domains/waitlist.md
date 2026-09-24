@@ -57,7 +57,7 @@ Capacity 拥有库存和 Hold，Journey Order 拥有商业订单，Payment 拥�
 `WaitlistCapacityFreed` 必须包含 segment、日期和释放名额。
 `CapacityReleased` 只在具有匹配字段时触发候补；缺少日期会被确认消费并跳过。
 当前普通 Capacity 释放事实缺少 `departureDate`，自动从这些释放兑现候补尚未得到完整验证。
-Capacity 的联合 supply 计算仍未提交、未部署，Booking coordinated 未启用。
+Capacity 的联合 supply 计算已在提交 `caafa668` 中实现，尚未部署，Booking coordinated 未启用。
 
 订单确认和取消通过 `journeyOrderRef` 的数据库表达式索引定位请求。
 事件去重、请求保存和 outbox 追加通过存储事务执行。
