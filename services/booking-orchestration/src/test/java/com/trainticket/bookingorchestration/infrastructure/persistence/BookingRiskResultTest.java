@@ -40,11 +40,13 @@ class BookingRiskResultTest {
             try (var dataSource = new HikariDataSource(config)) {
                 var jdbc = new JdbcTemplate(dataSource);
                 jdbc.execute(Files.readString(Path.of("migrations/001_booking_orchestration_persistence.sql")));
+                jdbc.execute(Files.readString(Path.of("migrations/005_booking_saga_step_deadlines.sql")));
                 var sagas = new PostgresBookingSagaRepository(dataSource,mapper);
                 var publisher = new TransactionalOutboxEventPublisher(new OutboxAppender(dataSource,mapper),mapper);
                 var service = new BookingOrchestrationService(Clock.systemUTC(), publisher, sagas,
                     new PostgresSegmentBookingRepository(dataSource,mapper),
-                    new PostgresPaymentIntentSagaReferenceRepository(dataSource),new PostgresConsumedEventRepository(dataSource));
+                    new PostgresPaymentIntentSagaReferenceRepository(dataSource),new PostgresConsumedEventRepository(dataSource),
+                    new PostgresBookingSagaStepDeadlineRepository(dataSource));
                 var transaction = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
                 for (String decision : List.of("ALLOW", "DENY")) {
                     var event = mapper.readValue(Files.readString(Path.of(System.getenv("TEST_RISK_COMPLETION_DIRECTORY"), "risk-completion-" + decision + ".json")),EventEnvelope.class);
