@@ -1,17 +1,20 @@
 global:
-  imageRegistry: ""  # e.g. "pair-cn-guangzhou.cr.volces.com" for mirror
-  imageOrg: "opspai"
+  # The resident cluster pulls every service image from this registry, and its
+  # nodes accept no side-loaded image, so imagePullPolicy is Always: a moving
+  # `local` tag is only picked up by a pull.
+  imageRegistry: mirrors.tencent.com
+  imageOrg: microservice
   # Single repository for every service image, with the service name folded
   # into the tag (`<repo>:<service>-<tag>`) instead of one repository per
   # service. Empty keeps the per-service layout. See `train-ticket.image`.
   imageRepo: ""
-  imageTag: "latest"
-  imagePullPolicy: IfNotPresent
+  imageTag: "local"
+  imagePullPolicy: Always
   # Registry for the upstream infra images (postgres, redis, busybox, jaeger,
   # otel, mailpit). Defaults to `imageRegistry`, which is only correct when
   # that registry is a docker.io pull-through mirror. Set it to "" on a plain
   # registry so those images come from docker.io. See `train-ticket.infraImage`.
-  # infraRegistry: ""
+  infraRegistry: ""
 
 # -- Infrastructure ----------------------------------------------------------
 
@@ -23,7 +26,9 @@ postgres:
     tag: "16-alpine"
   storage:
     size: 20Gi
-    storageClass: ""  # empty = default StorageClass
+    # This cluster's provisioner. It is hostPath-backed, so a PVC request is a
+    # declaration of intent rather than a cap.
+    storageClass: local-path
   credentials:
     username: trainticket
     password: trainticket-dev
@@ -34,7 +39,10 @@ postgres:
   # Postgres shards. The default profile is a single shard (`core`) holding all
   # 38 databases, which is what a local kind node wants: one Deployment, one
   # PVC, one connection ceiling to reason about.
-  # values-prod.yaml splits these across 6 shards.
+  # A cluster that wants the sharded layout lists more entries here and sets
+  # `pgInstance` per service; this repository keeps one file, so the sharded
+  # topology lives in that cluster's own values file rather than in a second
+  # committed profile.
   #
   # The union of all shards' `databases` MUST cover every `services.<name>.db`
   # below -- a missing entry means the service starts, connects, and fails on
@@ -159,7 +167,10 @@ postgres:
       # outages.
       resources:
         requests: { cpu: '1', memory: 4Gi }
-        limits: { cpu: '32', memory: 56Gi }
+        # 80Gi rather than 56Gi: the working set reached 53999Mi against the 56Gi
+        # bound while operating at 1200 connections, which is one burst away
+        # from an OOMKill of the shared store. The node carries 251Gi.
+        limits: { cpu: '32', memory: 80Gi }
 
 redis:
   enabled: true
@@ -181,13 +192,19 @@ redis:
   maxmemoryPolicy: noeviction
   resources:
     requests: { cpu: 250m, memory: 1Gi }
-    limits: { cpu: '2', memory: 4Gi }
+    # 6Gi against a 3gb dataset bound: the event bus is the one component every
+    # service waits on, and its output buffers and fragmentation are what the
+    # cgroup bound has to cover.
+    limits: { cpu: '4', memory: 6Gi }
 
 # Durable telemetry store for all three signals. See templates/clickhouse.yaml
 # for why this is a StatefulSet with a real volume, and
 # docs/07-observability/README.md for the retention and capacity arithmetic.
 clickhouse:
-  enabled: true
+  # Signals go to the store outside this release: the resident namespace is
+  # deleted when the environment is torn down, and an in-namespace store takes
+  # the measured window with it.
+  enabled: false
   # Where the collectors send. Empty means this release's own store, which is
   # the right answer for a deployment that outlives its data.
   #
@@ -197,7 +214,7 @@ clickhouse:
   # writes to. A fault case is exactly that: its namespace is deleted when the
   # case is over, and the PVC is in the namespace, so an in-namespace store
   # takes the measured window with it.
-  host: ""
+  host: clickhouse.telemetry.svc.cluster.local
   image:
     repository: clickhouse/clickhouse-server
     tag: "24.8-alpine"
@@ -221,7 +238,7 @@ clickhouse:
   fsGroup: 101
   storage:
     size: 50Gi
-    storageClass: ""  # empty = default StorageClass ("standard" on kind)
+    storageClass: local-path
   resources:
     requests: { cpu: 250m, memory: 1Gi }
     limits: { cpu: '4', memory: 8Gi }
@@ -290,7 +307,7 @@ otelCollector:
       # every node and each one tails every pod: measured with two up, each
       # store held 363751 of 1581766 log rows from the OTHER namespace over
       # five minutes, and both agents sat at 100% of their 1-core limit.
-      ownNamespaceOnly: false
+      ownNamespaceOnly: true
     kubeletstats:
       collectionInterval: 15s
     hostmetrics:
@@ -355,10 +372,10 @@ prometheus:
   clusterLabel: train-ticket-kind
   storage:
     size: 20Gi
-    storageClass: ""
+    storageClass: local-path
   resources:
     requests: { cpu: 250m, memory: 1Gi }
-    limits: { cpu: '2', memory: 4Gi }
+    limits: { cpu: '4', memory: 6Gi }
 
 kubeStateMetrics:
   enabled: true
@@ -408,7 +425,7 @@ loadgen:
   # is an emptyDir and goes with it, and client outcomes are the one signal
   # the server side cannot reconstruct -- a request that never got a status
   # leaves no server span at all.
-  recordToStdout: false
+  recordToStdout: true
   # Compress the arrival envelope, in seconds. Empty keeps what
   # loadgen-config.yaml says (1800), which is chosen so a person watching the
   # cluster can see the shape go round.
@@ -420,19 +437,24 @@ loadgen:
   #
   # Not below the burst schedule (~7 min mean gap): a period shorter than that
   # leaves a window with no bursts, and queues form from variance.
-  diurnalPeriodSeconds: ""
+  diurnalPeriodSeconds: 600
   resources:
     requests: { cpu: '1', memory: 512Mi }
-    limits: { cpu: '6', memory: 2Gi }
+    # The generator must never be the bottleneck it measures: GOMAXPROCS is 6,
+    # so the ceiling stays above that and the memory covers the entity registry
+    # and the outcome record buffer.
+    limits: { cpu: '8', memory: 3Gi }
   # emptyDir cap for /data, which holds the entity registry (run.state_file) and
   # the per-request record file (recording.path). A guard against a
   # misconfigured recording.max_file_megabytes becoming node disk pressure, not
   # a reservation.
   stateSizeLimit: 2Gi
   statePersistence:
-    enabled: false
-    storageClass: ""
-    claimName: loadgen-state
+    # The entity registry outlives the pod, so a restart continues the same
+    # travelers and orders rather than starting a fresh population.
+    enabled: true
+    storageClass: local-path
+    claimName: loadgen-resident-state
 
 # -- Defaults applied to every service ---------------------------------------
 
@@ -522,8 +544,11 @@ defaults:
   # no resources of its own. Every inheriting service gets the headroom, which
   # costs nothing -- the binding number is the request, and that is unchanged.
   resources:
-    requests: { cpu: 100m, memory: 256Mi }
-    limits: { cpu: '6', memory: 3Gi }
+    # Requests that cover an idle service; limits with room for a burst. The
+    # cluster has two nodes of 72 cores and 251Gi, so the ceiling is the number
+    # that decides whether a burst is served rather than a scarce resource.
+    requests: { cpu: 250m, memory: 512Mi }
+    limits: { cpu: '8', memory: 4Gi }
   probes:
     # A startupProbe on /healthz holds liveness off during a slow start, so
     # liveness can stay on /healthz (process liveness) instead of being pointed
@@ -628,7 +653,7 @@ services:
     # the callers that read itineraries failed with 10 second timeouts.
     resources:
       requests: { cpu: 250m, memory: 1Gi }
-      limits: { cpu: '2', memory: 3Gi }
+      limits: { cpu: '4', memory: 4Gi }
   ancillary-service:
     db: ancillary_service
     strategy:
@@ -684,7 +709,7 @@ services:
     # alongside that HTTP load do not fit in one core.
     resources:
       requests: { cpu: 200m, memory: 256Mi }
-      limits: { cpu: '4', memory: 2Gi }
+      limits: { cpu: '6', memory: 4Gi }
   journey-order:
     db: journey_order
     # Two replicas for the same reason as Booking Orchestration: eleven streams
@@ -723,7 +748,7 @@ services:
       HIKARI_MAX_POOL_SIZE: "52"
     resources:
       requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: '3', memory: 2Gi }
+      limits: { cpu: '6', memory: 4Gi }
   booking-orchestration:
     db: booking_orchestration
     # Two replicas: the saga confirms a reservation through several hops, and a
@@ -756,7 +781,7 @@ services:
     # CPU headroom covers concurrent HTTP requests and event processing.
     resources:
       requests: { cpu: 500m, memory: 256Mi }
-      limits: { cpu: '4', memory: 2Gi }
+      limits: { cpu: '6', memory: 4Gi }
   identity-verification:
     db: identity_verification
     strategy:
@@ -821,7 +846,7 @@ services:
     # starving them makes the HTTP thread miss its probe timeout.
     resources:
       requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: '2', memory: 2Gi }
+      limits: { cpu: '4', memory: 4Gi }
   provider-integration:
     db: provider_integration
     # Two replicas: the provider reservation is a saga step whose confirmation
@@ -897,7 +922,7 @@ services:
     # CPU headroom covers concurrent post-sales requests and event processing.
     resources:
       requests: { cpu: 500m, memory: 256Mi }
-      limits: { cpu: '4', memory: 3Gi }
+      limits: { cpu: '6', memory: 4Gi }
   notification:
     db: notification
     strategy:
@@ -924,7 +949,7 @@ services:
     # the pod every 64 seconds. Threads and CPU must be raised together.
     resources:
       requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: '1', memory: 2Gi }
+      limits: { cpu: '2', memory: 3Gi }
   traveler-profile:
     db: traveler_profile
     strategy:
@@ -950,7 +975,7 @@ services:
     # reading was the ceiling rather than the demand.
     resources:
       requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: '4', memory: 2Gi }
+      limits: { cpu: '6', memory: 3Gi }
   risk-compliance:
     db: risk_compliance
     strategy:
@@ -985,7 +1010,7 @@ services:
     # JVM event consumer, low traffic -- see the note on defaults.resources.
     resources:
       requests: { cpu: 50m, memory: 192Mi }
-      limits: { cpu: 500m, memory: 1Gi }
+      limits: { cpu: '1', memory: 2Gi }
   customer-service:
     db: customer_service
     strategy:
@@ -1018,7 +1043,7 @@ services:
     # of 808ms on timeline projections that do no real work.
     resources:
       requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: '2', memory: 2Gi }
+      limits: { cpu: '4', memory: 3Gi }
   finance-settlement:
     db: finance_settlement
     strategy:
@@ -1045,7 +1070,7 @@ services:
     # the pod every 64 seconds. Threads and CPU must be raised together.
     resources:
       requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: '4', memory: 3Gi }
+      limits: { cpu: '6', memory: 4Gi }
   reporting:
     db: reporting
     env:
@@ -1060,7 +1085,7 @@ services:
     # Event ingestion and background projection refresh share this CPU budget.
     resources:
       requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: '6', memory: 4Gi }
+      limits: { cpu: '8', memory: 6Gi }
   supplier-catalog:
     db: supplier_catalog
   waitlist:
@@ -1088,7 +1113,7 @@ services:
     # JVM event consumer, low traffic -- see the note on defaults.resources.
     resources:
       requests: { cpu: 50m, memory: 192Mi }
-      limits: { cpu: 500m, memory: 1Gi }
+      limits: { cpu: '1', memory: 2Gi }
   disruption-recovery:
     db: disruption_recovery
     strategy:
@@ -1139,7 +1164,7 @@ services:
     # Growth and reconciliation acceptance are tracked in docs/TODO.md, T08.
     resources:
       requests: { cpu: 50m, memory: 256Mi }
-      limits: { cpu: 500m, memory: 2Gi }
+      limits: { cpu: '2', memory: 3Gi }
   invoicing:
     db: invoicing
     strategy:
@@ -1168,19 +1193,19 @@ services:
     # the pod every 64 seconds. Threads and CPU must be raised together.
     resources:
       requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: '1', memory: 2Gi }
+      limits: { cpu: '2', memory: 3Gi }
   marketing-campaign:
     db: marketing_campaign
     # JVM event consumer, low traffic -- see the note on defaults.resources.
     resources:
       requests: { cpu: 50m, memory: 192Mi }
-      limits: { cpu: 500m, memory: 1Gi }
+      limits: { cpu: '1', memory: 2Gi }
   group-booking:
     db: group_booking
     # JVM event consumer, low traffic -- see the note on defaults.resources.
     resources:
       requests: { cpu: 50m, memory: 192Mi }
-      limits: { cpu: 500m, memory: 1Gi }
+      limits: { cpu: '1', memory: 2Gi }
   travel-insurance:
     db: travel_insurance
     # Go, not JVM, so MaxRAMPercentage in defaults.env does nothing here.
@@ -1201,7 +1226,7 @@ services:
       GOMEMLIMIT: "1740MiB"
     resources:
       requests: { cpu: 50m, memory: 128Mi }
-      limits: { cpu: '4', memory: 2Gi }
+      limits: { cpu: '4', memory: 3Gi }
 
 # -- Per-service overrides ---------------------------------------------------
 # Example:

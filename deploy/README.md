@@ -10,15 +10,12 @@ All pending work is maintained in [TODO](../docs/TODO.md).
 The resident release is `train-ticket` in namespace `train-ticket`.
 The revision 279 environment must retain its deployed image references, workload configuration and persistent data.
 Do not apply `make deploy`, `make deploy-fast`, their dependent deployment targets, or a bare Helm upgrade to that release.
-The Makefile defaults to `IMAGE_TAG=local` and `values-cluster.yaml`; those defaults do not preserve the resident release's individual image references or its complete values layers.
+The Makefile defaults to `IMAGE_TAG=local`; those defaults do not preserve the resident release's individual image references.
 The current documentation task performs no build, deployment or new test run.
 Existing broad and purchase class results are linked only through [current status](../docs/00-current-status.md).
 
-The resident Skaffold profile layers these files in order:
-
-1. [values-cluster.yaml](helm/values-cluster.yaml) supplies registry and storage settings.
-2. [values-case.yaml](helm/values-case.yaml) selects central telemetry, stdout outcome records and a 600 second arrival period.
-3. [values-resident.yaml](helm/values-resident.yaml) enables the resident exporters and the `loadgen-resident-state` persistent claim.
+The chart's own [values.yaml](train-ticket/values.yaml) is the single values file.
+It carries the registry, the StorageClass, the central telemetry wiring, the resident exporters and the `loadgen-resident-state` persistent claim.
 
 Skaffold supplies `services.<name>.image` and `loadgen.image` through `setValueTemplates`.
 Those complete references take precedence over `global.imageTag` in the chart's image helper.
@@ -51,7 +48,7 @@ They are not instructions to update the resident release.
 
 Requirements are Docker, an already created kind cluster, kubectl, Helm 3, Bash and Python 3 with PyYAML.
 The build script produces `train-ticket/<service>:<tag>` images and loads them into the explicitly selected kind cluster.
-The default `values-cluster.yaml` instead names registry images, so a new kind deployment needs a values file that matches the loaded image names.
+The chart's default values name the registry images the resident cluster pulls, so a new kind deployment needs a values file that matches the loaded image names.
 For example, an operator supplied `deploy/helm/values-test.local.yaml` can contain:
 
 ```yaml
@@ -93,9 +90,9 @@ A later stage invokes its prerequisites; it is not an isolated operation.
 
 ### Registry based test release
 
-The Skaffold `case` profile deploys a separate namespace using `values-cluster.yaml` and `values-case.yaml`.
+The Skaffold `case` profile deploys a separate namespace using the same single values file.
 It requires access to the chosen registry, the configured StorageClasses and `clickhouse.telemetry.svc.cluster.local`.
-It disables its own ClickHouse and the resident exporters, and uses an emptyDir for loadgen data.
+It turns off the two node-scoped exporters, which only the resident release may run, and uses an emptyDir for loadgen data.
 
 ```bash
 # New test namespace only; verify context, registry, storage and telemetry first.
@@ -119,8 +116,8 @@ See [deployment guide](../docs/deployment.md) for their scope and prerequisites.
 | `NAMESPACE` | `train-ticket` | Target namespace; set it explicitly for new test environments. |
 | `HELM_RELEASE` | `train-ticket` | Helm release name. |
 | `HELM_CHART` | `deploy/helm/train-ticket` | Chart directory. |
-| `HELM_VALUES` | `deploy/helm/values-cluster.yaml` | Values used by the local deployment path and rendering scripts. |
-| `HELM_VALUES_ACR` | Production values followed by ACR values | Ordered values list used by `deploy-acr`. |
+| `HELM_VALUES` | `deploy/helm/train-ticket/values.yaml` | Values used by the deployment path and rendering scripts. |
+| `HELM_VALUES_ACR` | `deploy/helm/train-ticket/values.yaml` | Values used by `deploy-acr`. |
 | `HELM_TIMEOUT` | `15m` | Helm readiness timeout. |
 | `ROLLOUT_TIMEOUT` | `300s` | Deployment rollout timeout. |
 

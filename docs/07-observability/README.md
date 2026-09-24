@@ -241,7 +241,6 @@ Apply the stack from the repository root:
 
 ```bash
 helm upgrade --install train-ticket deploy/helm/train-ticket \
-  -f deploy/helm/values-cluster.yaml \
   --namespace train-ticket --create-namespace --wait
 kubectl -n train-ticket rollout status deploy/otel-collector
 ```
@@ -553,7 +552,7 @@ the disk, is the binding limit for all three together at the default rate.
 |---------:|--------:|----------------:|-----------:|-------|
 | 35 (default) | 105 | 0.05 GiB/h | 3.5 GiB | TTL binds at 50Gi |
 | 103 | 309 | 0.14 GiB/h | 10.4 GiB | TTL binds at 50Gi |
-| 220 (peak) | 660 | 0.31 GiB/h | 22.3 GiB | add headroom for logs; see `values-prod.yaml` (200Gi) |
+| 220 (peak) | 660 | 0.31 GiB/h | 22.3 GiB | add headroom for logs; see `clickhouse.storage.size` |
 
 If the disk rather than the TTL becomes the binding limit, either grow
 `clickhouse.storage.size` or shorten `clickhouse.ttl` — but note the TTL caveat

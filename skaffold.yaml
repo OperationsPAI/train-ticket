@@ -239,12 +239,11 @@ profiles:
   # builds only what changed, pushes it, upgrades the release and waits. No
   # rollout restart: the image tag moved, so the pod spec moved.
   #
-  # The three valuesFiles are the same three, in the same order, that install
-  # this release today. setValueTemplates carries image references and nothing
-  # else -- deploy/helm/values-case.yaml argues that a deployer adding flags on
-  # top of the branch puts half the desired state where a reader of the branch
-  # cannot see it, and that holds for configuration. A content digest of a build
-  # is the one fact a branch structurally cannot contain.
+  # deploy/helm/train-ticket/values.yaml is the single values file: the chart
+  # ships the registry, storage, telemetry and load generator settings the
+  # resident cluster runs, so no overlay is layered on top. setValueTemplates
+  # carries image references and nothing else -- a content digest of a build is
+  # the one fact a branch structurally cannot contain.
   - name: resident
     deploy:
       helm:
@@ -254,10 +253,6 @@ profiles:
             namespace: train-ticket
             createNamespace: true
             wait: true
-            valuesFiles:
-              - deploy/helm/values-cluster.yaml
-              - deploy/helm/values-case.yaml
-              - deploy/helm/values-resident.yaml
             setValueTemplates: &images
               services.account.image: "{{.IMAGE_FULLY_QUALIFIED_account}}"
               services.admin-audit.image: "{{.IMAGE_FULLY_QUALIFIED_admin_audit}}"
@@ -304,16 +299,11 @@ profiles:
   #   skaffold run -p case -n tt-case-<id> -d mirrors.tencent.com/microservice
   #
   # The namespace comes from the flag and the release name does not, because the
-  # namespace is what tells two concurrent cases apart. Nothing else differs
-  # from a release installed by hand: same chart, same two values files, in the
-  # same order.
-  #
-  # values-resident.yaml is the one file left out, and that is the whole
-  # difference between the two profiles. It puts back nodeExporter and
-  # kubeStateMetrics, which are hostNetwork on a fixed port, so exactly one
-  # release per node may run them -- and that release is the resident one,
-  # which is always there. A case that started them would CrashLoop on the
-  # port.
+  # namespace is what tells two concurrent cases apart. It uses the same single
+  # values file and turns off the two node-scoped exporters, which are
+  # hostNetwork on a fixed port: exactly one release per node may run them, and
+  # that release is the resident one. A case that started them would CrashLoop
+  # on the port.
   #
   # This profile exists so that a case deploys through the same builder the
   # resident one does. inputDigest tags each artifact by its own inputs, so a
@@ -330,7 +320,7 @@ profiles:
             chartPath: deploy/helm/train-ticket
             createNamespace: true
             wait: true
-            valuesFiles:
-              - deploy/helm/values-cluster.yaml
-              - deploy/helm/values-case.yaml
+            setValues:
+              nodeExporter.enabled: false
+              kubeStateMetrics.enabled: false
             setValueTemplates: *images

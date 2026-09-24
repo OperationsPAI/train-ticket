@@ -35,12 +35,11 @@ NAMESPACE ?= train-ticket
 # --- Helm (the single deployment path; kustomize was retired) ---------------
 HELM_RELEASE ?= train-ticket
 HELM_CHART ?= deploy/helm/train-ticket
-# values-cluster.yaml carries what the CLUSTER decides and nothing else: the
-# registry the images come from, and the name of its StorageClass. Everything
-# the workload decides -- resource limits, pool sizes, retention -- is in the
-# chart's own values.yaml, so a profile can never shadow a line a fault case
-# would edit. Override HELM_VALUES for a different cluster (values-prod.yaml).
-HELM_VALUES ?= deploy/helm/values-cluster.yaml
+# One values file: the chart's own values.yaml carries the registry, the
+# StorageClass, the telemetry wiring and the load generator settings, so a
+# deploy and a reader of the branch cannot disagree about the desired state.
+# Override HELM_VALUES only when deploying to a cluster that must differ.
+HELM_VALUES ?= deploy/helm/train-ticket/values.yaml
 HELM_TIMEOUT ?= 15m
 ROLLOUT_TIMEOUT ?= 300s
 # An empty context means "whatever kubeconfig selects"; --context "" is an error.
@@ -273,16 +272,16 @@ deploy-check: deploy-seed
 # on this host. This path pushes to a registry instead, and is what a remote
 # cluster needs.
 #
-# The values files are the profile, not flags: values-acr.yaml carries the
-# registry, the single-repository image layout, the StorageClass and the
-# loadgen sizing, and every derived list (verify-databases, seed, smoke) renders
-# through the same HELM_VALUES, so the deployed and verified definitions cannot
-# drift.
+# The values file is the profile, not flags: it carries the registry, the
+# StorageClass and the load generator settings, and every derived list
+# (verify-databases, seed, smoke) renders through the same HELM_VALUES, so the
+# deployed and verified definitions cannot drift. Set GLOBAL_IMAGE_REGISTRY and
+# HELM_VALUES for a cluster that needs its own registry.
 #
 # Pushing is a separate target rather than a prerequisite, deliberately: the
 # images are 9 GB and are unchanged by a manifest or values edit, which is the
 # same reasoning that gave `deploy` a `deploy-fast` escape hatch.
-HELM_VALUES_ACR ?= deploy/helm/values-prod.yaml deploy/helm/values-acr.yaml
+HELM_VALUES_ACR ?= deploy/helm/train-ticket/values.yaml
 # The probe pod's image. Upstream is curlimages/curl:8.10.1, which a cluster
 # without a route to auth.docker.io cannot pull; it is mirrored into the same
 # repository as the services by push-images.sh's infra handling.
@@ -324,10 +323,10 @@ smoke:
 #
 # HELM_VALUES decides WHERE they go -- the chart renders the full reference, so
 # the registry, the organization and the repository layout are all chart
-# configuration, not flags here. A real-cluster deploy therefore names its
-# values files on both this target and the helm call:
+# configuration, not flags here. A cluster with its own registry therefore
+# names its values file on both this target and the helm call:
 #
-#   make push-images HELM_VALUES="deploy/helm/values-prod.yaml deploy/helm/values-acr.yaml" \
+#   make push-images HELM_VALUES=/path/to/that-cluster.yaml \
 #     LOCAL_TAG=local IMAGE_TAG=20260913 NAMESPACE=train-ticket-prod
 #
 # DRY_RUN=1 resolves the whole list and prints the mapping without pushing.
