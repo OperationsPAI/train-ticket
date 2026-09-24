@@ -8,6 +8,7 @@ import io.lettuce.core.api.StatefulRedisConnection;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -220,15 +221,23 @@ public class RedisEventSubscriber implements EventSubscriber {
         // 0 so the first iteration prunes immediately: this subsumes the startup
         // sweep this loop used to do once, before entering the while.
         long nextPruneAtMillis = 0L;
+        // Create each group once. Repeating XGROUP CREATE on every iteration is
+        // the one command that answers BUSYGROUP, and a recovery pass must never
+        // be able to stop new entries from being read; the group is re-created
+        // only when Redis reports it missing.
+        Set<String> createdGroups = ConcurrentHashMap.newKeySet();
         while (running.get()) {
             boolean pruneDue = System.currentTimeMillis() >= nextPruneAtMillis;
             for (String stream : streamNames) {
                 try {
-                    streams.createGroup(stream, group);
+                    if (!createdGroups.contains(stream)) {
+                        streams.createGroup(stream, group);
+                        createdGroups.add(stream);
+                    }
                     if (pruneDue) {
                         pruneDeadConsumersQuietly(stream, group, consumerName);
                     }
-                    recover(stream, group, consumerName, handler);
+                    recoverQuietly(stream, group, consumerName, handler);
                     List<RedisStreamOperations.StreamEntry> messages = streams.readGroup(stream, group, consumerName);
                     for (RedisStreamOperations.StreamEntry message : messages) {
                         submitHandle(stream, group, consumerName, message, handler);
@@ -238,6 +247,9 @@ public class RedisEventSubscriber implements EventSubscriber {
                 } catch (RuntimeException exception) {
                     if (Thread.currentThread().isInterrupted()) {
                         return;
+                    }
+                    if (missingGroup(exception)) {
+                        createdGroups.remove(stream);
                     }
                     LOGGER.warn("service={} stream={} poll iteration failed; reconnecting in {}s", group, stream, backoffSeconds, exception);
                     sleepQuietly(backoffSeconds * 1_000L);
@@ -274,6 +286,30 @@ public class RedisEventSubscriber implements EventSubscriber {
         for (RedisStreamOperations.StreamEntry message : streams.autoClaim(stream, group, consumerName)) {
             submitHandle(stream, group, consumerName, message, handler);
         }
+    }
+
+    /**
+     * Reclaims pending entries without letting a broken recovery pass stop the delivery of new
+     * ones.
+     *
+     * Recovery is maintenance for entries another consumer left behind; reading is the job. A
+     * group that no longer exists still has to surface, because that is the signal to create it
+     * again.
+     */
+    private void recoverQuietly(String stream, String group, String consumerName, EventHandler handler) {
+        try {
+            recover(stream, group, consumerName, handler);
+        } catch (RuntimeException exception) {
+            if (missingGroup(exception)) {
+                throw exception;
+            }
+            LOGGER.warn("service={} stream={} pending entry recovery failed; continuing with new entries", group, stream, exception);
+        }
+    }
+
+    private static boolean missingGroup(RuntimeException exception) {
+        String message = exception.getMessage();
+        return message != null && message.toUpperCase(Locale.ROOT).contains("NOGROUP");
     }
 
     private void submitHandle(String stream, String group, String consumerName, RedisStreamOperations.StreamEntry message, EventHandler handler) {
