@@ -71,6 +71,7 @@ function domainEventPayload(event: NotificationDomainEvent): Record<string, unkn
         outcome: event.outcome,
         deliveredAt: event.deliveredAt.toISOString(),
       };
+    case "NotificationDeliveryUnknown":
     case "NotificationFailed": {
       const payload: Record<string, unknown> = {
         notificationTaskId: event.notificationTaskId,
