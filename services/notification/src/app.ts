@@ -125,13 +125,43 @@ export type AppStorage = Readonly<{
 export type NotificationTrailResponse = Readonly<{
   notificationId: string;
   status: string;
+  resultUnknown?: boolean;
   attempts: readonly Readonly<{
     channelUsed: string;
     attemptedAt: string;
     status: string;
     reason?: string;
+    attemptId?: string;
+    messageId?: string;
+    retryAt?: Date;
   }>[];
+  delivery?: Readonly<{
+    state: string;
+    messageId: string;
+    availableAt: Date;
+    attempts: readonly unknown[];
+    evidence: readonly unknown[];
+  }>;
 }>;
+
+export const notificationTrailSchema = {
+  type: "object", required: ["notificationId", "status", "resultUnknown", "attempts"],
+  properties: {
+    notificationId: { type: "string" },
+    status: { type: "string", enum: ["Planned", "Authorized", "Delivering", "Unknown", "Delivered", "Failed", "Cancelled"] },
+    resultUnknown: { type: "boolean" },
+    attempts: { type: "array", items: { type: "object", additionalProperties: true, required: ["channelUsed", "attemptedAt", "status"], properties: {
+      channelUsed: { type: "string", enum: ["EMAIL", "SMS", "PUSH", "IN_APP"] },
+      attemptedAt: { type: "string" },
+      status: { type: "string", enum: ["DELIVERED", "FAILED", "BOUNCED", "UNKNOWN"] },
+    } } },
+    delivery: { type: "object", additionalProperties: true, required: ["state", "messageId", "attempts", "evidence"], properties: {
+      state: { type: "string", enum: ["Ready", "Claimed", "Sending", "Unknown", "Delivered", "Failed"] },
+      messageId: { type: "string" }, attempts: { type: "array", items: { type: "object", additionalProperties: true } },
+      evidence: { type: "array", items: { type: "object", additionalProperties: true } },
+    } },
+  },
+} as const;
 
 export function createApp(instrumentation: InstrumentationHooks = {}, storage?: AppStorage): FastifyInstance {
   const app: FastifyInstance = Fastify({ logger: false });
@@ -164,14 +194,14 @@ export function createApp(instrumentation: InstrumentationHooks = {}, storage?: 
   app.get("/ready", async (_request, reply) => readyBody(reply, storage));
   app.get("/readyz", async (_request, reply) => readyBody(reply, storage));
 
-  app.get("/api/v1/notifications/:id/trail", async (request, reply) => {
+  app.get("/api/v1/notifications/:id/trail", { schema: { response: { 200: notificationTrailSchema, default: { type: "object", additionalProperties: true } } } }, async (request, reply) => {
     const id = (request.params as { id: string }).id;
     const trail = await storage?.getNotificationTrail?.(id);
     if (trail === undefined) {
       sendError(reply, 404, "NOT_FOUND", `Notification ${id} was not found`, requestContext(request));
       return;
     }
-    return trail;
+    return { ...trail, resultUnknown: trail.status === "Unknown" || trail.delivery?.state === "Unknown" };
   });
 
   app.setNotFoundHandler((request, reply) => {
