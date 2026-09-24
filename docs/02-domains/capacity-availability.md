@@ -10,8 +10,8 @@ Capacity 管理库存池、临时 Hold、确认占用、释放和可用性查询
 可用性查询提供查询时刻的供给证据，成功创建 Hold 才表示容量预留成立。
 
 当前联合 supply 计算读取 Booking 接受的预订信息、Service Plan 的日期与区间，以及 Seat Assignment 的已发布编组和有效分配。
-这部分实现已在提交 `caafa668` 中完成，尚未部署。
-Booking coordinated 行为尚未启用，不能把联合计算描述为生产预订已经采用的规则。
+联合计算已经部署：Booking 随接受的预订传递席别、服务引用和日期，Capacity 用 Seat Assignment 的已发布编组和有效占用完成准入。
+编组组成按已发布版本缓存，准入路径读取有效占用，不再为每次 Hold 传输全部物理单元。
 Seat Assignment 的 standing 10% 政策及预订前 SeatMap 准备已发布，其状态与 Capacity 联合计算分别记录。
 剩余工作统一见 [docs/TODO.md](../TODO.md)。
 
@@ -36,7 +36,7 @@ Seat Assignment 的 standing 10% 政策及预订前 SeatMap 准备已发布，�
 |---|---|
 | Booking Orchestration | `segmentBookingId`、`journeyOrderId`、`travelerRef`、接受的 `segmentRef`、`classRef`、`scheduledServiceRef` 和 `serviceDate`。 |
 | Service Plan | 内部 segment supply 接口返回有序站点、服务日期、区间、到发时间和 `stopSequenceVersion`。 |
-| Seat Assignment | 内部 capacity facts 接口返回已发布 SeatMap、可分配单元、standing 政策及有效分配。 |
+| Seat Assignment | 内部 capacity facts 接口按视图返回已发布 SeatMap 编组、可分配单元、standing 政策及有效分配。 |
 | Journey Order | 初次购买的历史来源通过 `purchase-source` 读取创建事实中的 Offer；改签通过 change case 的目标 Offer 解析。 |
 
 联合路径要求一次旅客预订的 `quantity=1`，请求的 segment、旅客和席别必须与接受的预订一致。
