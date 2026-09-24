@@ -21,6 +21,11 @@ Status: incomplete acceptance with recorded failures.
 Evidence: revision 278 has 9163 failed journeys in a ten minute window; revision 283 has 4 failed journeys in a complete ten minute cycle, all seat or standing rejections, so acceptance is close but not complete.
 Sources: `.scratch/runtime-fixes/goal-rev278-ten-minute-window.json`, `goal-rev277-case-publication-diagnosis.json` and `goal-rev279-six-classes-live.log` under the same directory.
 
+The peak phase on revision 290 shows the remaining systemic limit: several consumer groups fall behind while the load generator is at peak.
+Measured lag at peak: customer service 15019, traveler profile 13551, journey order 11242 on the identity verification stream, and post sales 5178, reporting 3636 and identity verification 3536 on the journey order stream.
+Reservation confirmations then exceed the load generator window, and the failures disappear once the peak passes.
+Reducing peak load, extending polling or raising timeouts is not an acceptable remedy, so the consumer throughput itself has to improve.
+
 ## Notification
 
 ### T02: Finish and release durable notification delivery
@@ -205,14 +210,16 @@ Neither service subscribes to those streams any more, so each group shows lag pi
 
 ### T17: Enforce Booking saga step timeouts
 
-Status: confirmed gap; recorded deadlines are never evaluated.
+Status: the post sales side is deployed; the Booking sweep is still missing.
 Each saga step persists `timeoutMillis`, but nothing sweeps overdue steps, so a reservation whose events never arrive stays `PENDING` forever.
 Case `psc-01a0d125-f1a7-7f93-884a-d626125a411f` keeps its saga `CONFIRMING` with a `change-reservations` step whose fifteen minute deadline expired more than ten minutes earlier.
 The change case stays `APPROVED`, so every retry by the load generator repeats the same failure instead of reaching a terminal outcome.
 
-1. [ ] Add a scheduled sweep that fails steps past their deadline and runs the recorded compensation action.
-2. [ ] Make the owning change or post sales case terminal when its reservation saga ends.
-3. [ ] Re-run the recorded change flow against a saga whose events never arrive.
+1. [ ] Add a scheduled sweep in Booking Orchestration that fails steps past their deadline and runs the recorded compensation action.
+2. [x] Make the owning change case terminal when its replacement reservation waits past the recorded deadline.
+3. [ ] Re-run the recorded change flow against a saga whose events never arrive, including the Booking sweep once it exists.
+
+Evidence: revision 290 records `waiting:booking:...` for a reservation that carries no request time and fails the case with `CHANGE_RESERVATION_TIMED_OUT` once fifteen minutes have passed.
 
 ## Handoff rules
 
