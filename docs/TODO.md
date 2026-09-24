@@ -46,6 +46,12 @@ The burst at 07:00 then exposed the next limit: Trip Planning's one GiB memory l
 Revision 306 raised that memory limit to 3Gi.
 The next peak measurement must confirm that the Trip Planning restarts stop and that the identity verification consumers keep the backlog inside the reservation polling window.
 
+Revision 315 to 318 attributes the next limit: the outbox relay of every service reads unpublished rows with `published_at IS NULL ORDER BY seq LIMIT 100`, and on the tables that carry the purchase funnel the planner stopped using the partial index `idx_outbox_unpublished_seq` once the tables had grown their dead tuples.
+The query then read tens of thousands of heap blocks per batch: Booking Orchestration recorded batches with `queryMs` between 500 and 1142 and an oldest unpublished event age of 2.3 seconds, and Post Sales reached 7.2 seconds.
+Each saga hop pays that delay, and a reservation spans several hops.
+`ANALYZE` and `VACUUM` on the outbox tables restored the index plan: the same query is 11 to 15 milliseconds in Booking Orchestration, and no slow batch has been logged since.
+The condition is operational rather than a code defect, so the open question is whether autovacuum keeps these tables analysed under the resident write rate.
+
 ## Notification
 
 ### T02: Finish and release durable notification delivery
