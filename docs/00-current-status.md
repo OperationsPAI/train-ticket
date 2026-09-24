@@ -4,7 +4,7 @@ Last verified: 2026-09-24, Asia/Beijing.
 
 ## Runtime
 
-The resident Helm release is `train-ticket` in namespace `train-ticket`, revision **279**.
+The resident Helm release is `train-ticket` in namespace `train-ticket`, revision **283**.
 PostgreSQL stores business snapshots, idempotency records, processed event records and transactional outboxes.
 Redis Streams carries events; the current chart has no Redis persistent volume or AOF.
 Database persistence alone does not prove recovery of every event after transport data is lost.
@@ -44,11 +44,20 @@ See the [standing policy](08-contracts/standing-capacity-policy.md), [APIs](08-c
 | Recorded invoice request | PASS after revision 276; issued invoice retained | `.scratch/runtime-fixes/goal-rev276-recorded-invoice-live.log` |
 | Traveler local module suite | 59 passed, no skips, including 220 concurrent HTTP requests | `services/traveler-profile/target/surefire-reports/` |
 | Reporting production migration | Three populated views committed in 10.359 seconds; source events preserved | `.scratch/runtime-fixes/goal-reporting-revenue-migration-online.log` |
+| Notification module suite | 109 tests, no failures, no skips, about 21 seconds | `.scratch/runtime-fixes/goal-notification-durable-full-tests.log` |
+| Notification durable delivery on revision 280 | Every subscribed stream at zero lag and zero pending; newest task age 0 seconds; 13646 tasks in five minutes | `.scratch/runtime-fixes/goal-rev280-first-window.json` and the resident notification database |
+| Booking consumer recovery on revision 281 | Lag fell from 30000 to 0 with no poll failures after deployment | `.scratch/runtime-fixes/goal-java-kit-recovery-tests.log` |
+| Payment connection pool on revision 282 | `POST /api/v1/payment-intents` P99 fell from 5419 to 283 milliseconds; no request above four seconds | `.scratch/runtime-fixes/goal-rev281-payment-routes.json`, `goal-rev282-payment-pool-window.json` |
+| Ten minute resident cycle at revision 283 | 384661 requests, 44212 journeys, P99 241 milliseconds, 4 failed journeys and 2 unexpected HTTP errors, all seat or standing rejections | `.scratch/runtime-fixes/goal-rev283-ten-minute-window.json` |
 | Stable full peak acceptance | Not established | [TODO](TODO.md#acceptance) |
 
 The revision 278 ten minute recording ending at 2026-09-23 15:49:14 UTC contains 601683 requests and 9163 failed journeys, with request P99 of 9744.922 milliseconds.
 The measured failures include traveler and identity timeouts and downstream waits.
 The revision 279 two minute sample ending at 15:59:48 UTC contains 63364 requests, no unexpected HTTP errors or failed journeys, and P99 of 180.621 milliseconds.
+Revision 280 kept every notification consumer at zero lag, and revision 281 restored the Booking reservation consumer after a BUSYGROUP recovery failure had stopped it for hours.
+Revision 282 raised the payment connection pool after ten connections were observed fully busy with transactions waiting in `idle in transaction` during channel calls.
+Revision 283 kept revenue recognition inside the invoice polling window, which removed the invoice amount basis failures that this cycle still shows at revision 282.
+The remaining four failures in the ten minute cycle are `no compatible seat exists and standing is not accepted` rejections, tracked as T15 because Capacity and Seat Assignment disagree about remaining supply.
 These windows cover different releases and durations; the shorter result does not certify a complete peak cycle.
 Scratch logs and module build outputs are local evidence and are not versioned repository artifacts.
 
@@ -58,7 +67,10 @@ Scratch logs and module build outputs are local evidence and are not versioned r
 |---|---|---|
 | Capacity supply integration | Implementation, migration and recorded tests are committed as `caafa668`. | Not activated. |
 | Booking accepted supply | Main branch contains accepted source changes. | Running image remains based on `c5bb352d` plus compensation commit `1e62d420`; do not deploy main Booking independently. |
-| Notification delivery queue | Queue, claim, SMTP and receipt changes are committed as `41917b85`; compile and focused PostgreSQL/Mailpit tests pass. | Not deployed; revision 279 still uses the transaction held sending path. |
+| Notification delivery queue | Tasks, attempts and evidence are committed before sending; SMTP runs outside the recipient transaction with stable message ids and `Unknown` for uncertain outcomes. | Deployed in revision 280 from `41917b85`. |
+| Booking consumer recovery | Consumer groups are created once per stream and a failed pending-entry recovery no longer stops new reads; all subscribed streams are at zero lag. | Deployed in revision 281 from the pinned Booking source plus the java-kit fix. |
+| Payment connection pool | The pool size is 32 instead of the default 10, which removes the multi-second waits that timed out post sales and entitlement calls. | Deployed in revision 282. |
+| Finance settlement consumers | Eight consumer threads, a 32 connection pool and a two core limit keep revenue recognition inside the load generator polling window. | Deployed in revision 283. |
 | Notification verification | Ten focused subtests and their parent pass; full module tests and quota deferral recovery acceptance are incomplete. | Existing notification delay remains an active issue. |
 | Online retention indexes | Verified in the owning databases and represented by migration files. | Some service images do not yet include their new migration file; online index creation did not modify migration version records. |
 

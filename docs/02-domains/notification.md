@@ -3,9 +3,9 @@
 ## 实现与发布状态
 
 本域实现位于 `services/notification`，使用 TypeScript、Fastify、PostgreSQL、Redis Streams 和 Nodemailer。
-本文根据仓库当前实现描述模型及运行机制，该实现已提交、尚未部署。
-线上 revision 279 仍在 PostgreSQL 消费事务内调用 SMTP，发送期间占用数据库连接及收件人事务锁。
-durable queue 已在提交 `41917b85` 中实现，尚未部署，事务外发送、claim、`Unknown` 和 API 追加字段均未在线上生效。
+本文根据仓库当前实现描述模型及运行机制，该实现已在 revision 280 部署。
+线上发送在数据库事务之外完成，发送期间不占用数据库连接及收件人事务锁。
+durable queue 来自提交 `41917b85`，事务外发送、claim、`Unknown` 和 API 追加字段已在线上生效。
 
 ## 领域边界
 
