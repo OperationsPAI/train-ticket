@@ -16,6 +16,7 @@ import (
 	kitmsg "github.com/trainticket/greenfield/platform/go-kit/messaging"
 	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
 
+	"github.com/trainticket/greenfield/services/fulfillment/config"
 	"github.com/trainticket/greenfield/services/fulfillment/internal/domain"
 )
 
@@ -1000,13 +1001,14 @@ func validateReferences(entitlementID domain.EntitlementRef, segmentBookingID do
 	return segmentRef.Validate()
 }
 
+// validSource reports whether a boarding fact may arrive under this name.
+//
+// Which readers a boarding is handed through is the release's own estate rather
+// than something this branch decides, so the register is read from the service's
+// settings and this check only asks it. A source it does not state was never a
+// reader this release boards through.
 func validSource(source domain.FulfillmentSource) bool {
-	switch source {
-	case domain.FulfillmentSourceGate, domain.FulfillmentSourceStation, domain.FulfillmentSourceProvider, domain.FulfillmentSourceConductor, domain.FulfillmentSourceAdmin:
-		return true
-	default:
-		return false
-	}
+	return config.TrustedBoardingSource(string(source))
 }
 
 func validNoShowReason(reason domain.NoShowReason) bool {
