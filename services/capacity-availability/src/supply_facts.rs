@@ -9,10 +9,11 @@ use std::time::{Duration, Instant};
 /// admission from repeating the same upstream reads for every Hold.
 const ROUTE_CACHE_TTL: Duration = Duration::from_secs(30);
 const SERVICE_SEGMENTS_CACHE_TTL: Duration = Duration::from_secs(30);
-/// Published seat supply is invalidated quickly because it carries allocations. Two seconds is
-/// shorter than the load generator polling interval and every Capacity Hold in the same pool is
-/// still counted from the database.
-const SEAT_SUPPLY_CACHE_TTL: Duration = Duration::from_secs(2);
+/// Published seat supply carries allocations, which change while the composition stays fixed.
+/// Every Capacity Hold in the same pool is still counted from the database, so the published
+/// supply only has to be fresh enough to notice seats that another channel allocated. Thirty
+/// seconds keeps that window while avoiding a three hundred kilobyte fetch per reservation.
+const SEAT_SUPPLY_CACHE_TTL: Duration = Duration::from_secs(30);
 const SUPPLY_CACHE_CAPACITY: usize = 4096;
 
 struct CacheEntry<T> {
