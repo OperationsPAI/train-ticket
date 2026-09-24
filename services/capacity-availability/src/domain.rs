@@ -715,6 +715,11 @@ pub struct InventoryPool {
     pub identity: InventoryPoolIdentity,
     pub(crate) capacity_units: HashSet<CapacityUnitRef>,
     pub(crate) physical_units: Option<HashSet<CapacityUnitRef>>,
+    /// 持久化文档只保留单元数量，具体引用在准入路径上由已发布的 Seat Assignment
+    /// 供给补全。这两个字段保存文档里的数量，使重新加载的池在补全之前也能正确
+    /// 计算容量与可用性。
+    capacity_unit_count: Option<usize>,
+    physical_unit_count: Option<usize>,
     holds: HashMap<HoldId, CapacityHold>,
     idempotency_index: HashMap<IdempotencyKey, HoldId>,
     /// 已退出 aggregate 的终态 hold 留下的 idempotency key。保留这些 key 才能
@@ -741,6 +746,8 @@ impl InventoryPool {
             identity,
             capacity_units: unique,
             physical_units: None,
+            capacity_unit_count: None,
+            physical_unit_count: None,
             holds: HashMap::new(),
             idempotency_index: HashMap::new(),
             retired_idempotency_keys: HashMap::new(),
@@ -774,11 +781,11 @@ impl InventoryPool {
     }
 
     pub fn physical_capacity(&self) -> u32 {
-        if self.identity.sellable_unit_type_ref == "STANDING_QUOTA" { 0 } else { self.physical_unit_refs().len() as u32 }
+        if self.identity.sellable_unit_type_ref == "STANDING_QUOTA" { 0 } else { self.physical_unit_count() as u32 }
     }
 
     pub fn effective_capacity(&self) -> u32 {
-        if self.identity.sellable_unit_type_ref == "STANDING_QUOTA" { return self.physical_unit_refs().len() as u32; }
+        if self.identity.sellable_unit_type_ref == "STANDING_QUOTA" { return self.physical_unit_count() as u32; }
         let physical = self.physical_capacity() as f64;
         (physical * (1.0 + self.overbooking_policy.max_overbooking_pct.max(0.0) / 100.0)).floor()
             as u32
@@ -789,7 +796,32 @@ impl InventoryPool {
     }
 
     pub fn total_units(&self) -> usize {
-        self.physical_unit_refs().len()
+        self.physical_unit_count()
+    }
+
+    /// 文档记录的总单元数量，即使具体引用尚未从供给补全。
+    pub fn capacity_unit_count(&self) -> usize {
+        if self.capacity_units.is_empty() {
+            self.capacity_unit_count.unwrap_or(0)
+        } else {
+            self.capacity_units.len()
+        }
+    }
+
+    /// 文档记录的可用物理单元数量，即使具体引用尚未从供给补全。
+    pub fn physical_unit_count(&self) -> usize {
+        match &self.physical_units {
+            Some(units) if !units.is_empty() => units.len(),
+            Some(_) => self.physical_unit_count.unwrap_or(0),
+            None => self.capacity_unit_count(),
+        }
+    }
+
+    /// 重新加载文档时记录单元数量，供供给补全之前的计数使用。
+    pub fn with_stored_unit_counts(mut self, capacity: Option<usize>, physical: Option<usize>) -> Self {
+        self.capacity_unit_count = capacity;
+        self.physical_unit_count = physical;
+        self
     }
 
     pub fn physical_unit_refs(&self) -> &HashSet<CapacityUnitRef> {
@@ -799,6 +831,8 @@ impl InventoryPool {
     pub fn apply_physical_supply(&mut self, service: String, date: String, units: HashSet<CapacityUnitRef>) {
         self.capacity_units.extend(units.iter().cloned());
         self.physical_units = Some(units);
+        self.capacity_unit_count = None;
+        self.physical_unit_count = None;
         self.identity.scheduled_service_ref = service;
         self.identity.service_date = date;
         self.overbooking_policy = OverbookingPolicy::none();
@@ -817,7 +851,11 @@ impl InventoryPool {
     }
 
     pub fn restore_hold(&mut self, hold: CapacityHold) -> DomainResult<()> {
-        self.ensure_unit_known(&hold.scope.capacity_unit_ref)?;
+        // 压缩后的文档只保留单元数量，具体引用在准入路径上由已发布供给补全。
+        // 在补全之前无法校验 hold 引用的单元是否属于本池，补全时会重新校验。
+        if !self.physical_unit_refs().is_empty() {
+            self.ensure_unit_known(&hold.scope.capacity_unit_ref)?;
+        }
         self.idempotency_index
             .insert(hold.idempotency_key.clone(), hold.hold_id.clone());
         self.holds.insert(hold.hold_id.clone(), hold);
@@ -1101,8 +1139,14 @@ impl InventoryPool {
             .collect::<Vec<_>>();
         available_units.sort_by(|a, b| a.as_str().cmp(b.as_str()));
 
-        let available_count = available_units.len();
-        let total_units = self.physical_unit_refs().len();
+        // 文档可能只保留单元数量，此时可用数量按总数减去占用计算，具体引用列表
+        // 会在供给补全后恢复。
+        let total_units = self.physical_unit_count();
+        let available_count = if available_units.is_empty() {
+            total_units.saturating_sub(occupied.len())
+        } else {
+            available_units.len()
+        };
         let sellable = available_count > 0;
         let status = if total_units == 0 || available_count == 0 {
             AvailabilityStatus::Unavailable
