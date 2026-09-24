@@ -36,6 +36,10 @@ Revision 297 measures the remaining limit with the consumers healthy: the reside
 Measured peaks: a clean five minute window carried 142326 requests with zero failures, while the two minute burst at 04:53 failed 911 journeys, mostly post sales case completion and reservation confirmation.
 The failure window shows no single stalled consumer afterwards, so the next step is throughput per consumer at peak rather than a specific broken service.
 
+Revision 300 attributes that limit: Customer Service fell twenty nine thousand events behind on the identity verification stream, Journey Order twenty seven thousand on the same stream, Entitlement Ticketing six thousand on the booking stream, and Traveler Profile's single subscriber thread could not follow either stream.
+Raising those consumer threads, the service pools and the Identity Verification worker count moved the ten minute cycle to 14 failed journeys out of 41567, all of them the seat or standing rejection that T15 covers.
+The tuning lives in the chart now, so a redeploy keeps it.
+
 ## Notification
 
 ### T02: Finish and release durable notification delivery
