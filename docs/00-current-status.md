@@ -4,7 +4,7 @@ Last verified: 2026-09-24, Asia/Beijing.
 
 ## Runtime
 
-The resident Helm release is `train-ticket` in namespace `train-ticket`, revision **293**.
+The resident Helm release is `train-ticket` in namespace `train-ticket`, revision **297**.
 PostgreSQL stores business snapshots, idempotency records, processed event records and transactional outboxes.
 Redis Streams carries events; the current chart has no Redis persistent volume or AOF.
 Database persistence alone does not prove recovery of every event after transport data is lost.
@@ -65,7 +65,7 @@ Scratch logs and module build outputs are local evidence and are not versioned r
 
 | Component | Workspace state | Deployment state |
 |---|---|---|
-| Capacity supply integration | Implementation, migration and recorded tests are committed as `caafa668`. | Not activated. |
+| Capacity supply integration | Implementation, migration and recorded tests are committed as `caafa668`; a second activation attempt could not consume the Booking stream fast enough because every Hold rewrites the pool document. | Not activated; revision 297 restored the previous image. |
 | Booking accepted supply | Main branch contains accepted source changes. | Running image remains based on `c5bb352d` plus compensation commit `1e62d420`; do not deploy main Booking independently. |
 | Notification delivery queue | Tasks, attempts and evidence are committed before sending; SMTP runs outside the recipient transaction with stable message ids and `Unknown` for uncertain outcomes. | Deployed in revision 280 from `41917b85`. |
 | Booking consumer recovery | Consumer groups are created once per stream and a failed pending-entry recovery no longer stops new reads; all subscribed streams are at zero lag. | Deployed in revision 281 from the pinned Booking source plus the java-kit fix. |
@@ -74,6 +74,7 @@ Scratch logs and module build outputs are local evidence and are not versioned r
 | Change reservation deadline | A change case whose replacement reservation never confirms now reaches `CHANGE_RESERVATION_TIMED_OUT` after fifteen minutes and the original tickets stay valid. | Deployed in revision 290. |
 | Traveler Profile connection pool | The pool size is 40 instead of the default 10, which removes the burst wait that timed out traveler creation. | Deployed in revision 292. |
 | Unpaid change Hold release | Compensation requests the release of a cancelled replacement whose Hold survived a transport loss. | Deployed in revision 293. |
+| Reservation supply facts | The load generator presents the accepted class, scheduled service and date and Booking persists them. | Deployed in revisions 294 and 295. |
 | Notification verification | Ten focused subtests and their parent pass; full module tests and quota deferral recovery acceptance are incomplete. | Existing notification delay remains an active issue. |
 | Online retention indexes | Verified in the owning databases and represented by migration files. | Some service images do not yet include their new migration file; online index creation did not modify migration version records. |
 
