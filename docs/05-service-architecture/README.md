@@ -23,6 +23,6 @@ PostgreSQL stores business data and transactional messaging records; Redis Strea
 
 Payment Channel and Invoicing are independent services.
 Seat Assignment uses Go, Trip Planning uses Rust, and Identity Verification and Risk & Compliance use Python.
-Capacity's new combined supply implementation is uncommitted and undeployed.
-Notification's durable delivery queue is WIP and undeployed.
+Capacity's new combined supply implementation is committed as `caafa668` and undeployed.
+Notification's durable delivery queue is committed as `41917b85` and undeployed.
 Their completion and deployment work is tracked in [TODO](../TODO.md).

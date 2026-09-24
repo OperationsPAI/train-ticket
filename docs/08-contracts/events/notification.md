@@ -7,11 +7,11 @@ consumer group 为 `notification`，consumer name 为 `notification-<HOSTNAME �
 持久化运行时，任务及 outbox 在 PostgreSQL 事务内提交，relay 再发布事件。
 
 线上 revision 279 仍在消费事务内调用 SMTP。
-当前工作区 durable queue 为未提交 WIP，尚未部署，新设计在线上未生效。
-`NotificationDeliveryUnknown`、`Unknown` 结果以及 attempt 关联字段属于工作区未发布内容。
-`NotificationScheduled` 表示任务已经创建，工作区可发送任务的队列记录与该事件在同一事务中提交。
+durable queue 已在提交 `41917b85` 中实现，尚未部署，新设计在线上未生效。
+`NotificationDeliveryUnknown`、`Unknown` 结果以及 attempt 关联字段属于该提交中尚未发布的内容。
+`NotificationScheduled` 表示任务已经创建，该提交中可发送任务的队列记录与该事件在同一事务中提交。
 普通 Preference 抑制的任务会记录 scheduled 和 cancelled 事件，不进入发送队列。
-工作区的 `NotificationDispatched` 在 worker 开始发送的事务中生成。
+未发布实现的 `NotificationDispatched` 在 worker 开始发送的事务中生成。
 
 ## 发布事件
 
@@ -44,7 +44,7 @@ consumer group 为 `notification`，consumer name 为 `notification-<HOSTNAME �
 | `dispatchedAt` | RFC3339 UTC | 是 | 开始 dispatch 的记录时间。 |
 
 此事件表示开始发送处理，不证明渠道已经接受。
-后续重试及渠道切换通过回执和工作区队列 attempt 记录。
+后续重试及渠道切换通过回执和未发布队列 attempt 记录。
 
 ### NotificationDelivered
 
@@ -68,14 +68,14 @@ PUSH、SMS 和 IN_APP 当前使用 `DirectSuccessGateway` 返回成功。
 | `receiptId` | string | 是 | 回执 ID。 |
 | `outcome` | enum | 是 | `Bounced`、`Rejected`、`Timeout`、`Expired`。 |
 | `providerCode` | string | 否 | provider 错误代码。 |
-| `providerMessage` | string | 否 | provider 结果说明；工作区 SMTP 错误使用经过处理的原因及 fingerprint。 |
+| `providerMessage` | string | 否 | provider 结果说明；未发布实现 SMTP 错误使用经过处理的原因及 fingerprint。 |
 | `failedAt` | RFC3339 UTC | 是 | 失败结果记录时间。 |
 
 一次确定失败的回执可以发布此事件，即使任务仍有重试或后续渠道。
 该 payload 不包含 `finalFailure`，不能仅凭事件类型判定任务已经进入最终 `Failed`。
-工作区最终状态可通过发送记录 API 查询。
+未发布实现的最终状态可通过发送记录 API 查询。
 
-### NotificationDeliveryUnknown，工作区未发布
+### NotificationDeliveryUnknown，未发布
 
 | payload 字段 | 类型 | 必须 | 说明 |
 |---|---|---|---|
@@ -135,20 +135,20 @@ SMTP 等待期限结束、发送开始后租约到期或其他无法确认发送
 |---|---|---|
 | `ScheduleNotification` | `notificationTaskId`、`triggerEventId`、`triggerEventType`、`correlationId`、`recipientRef`、`templateCode`、`channel`、`intent`、`transactionRequired`、`variables`、`scheduledAt`。 | `causationId`、`triggerBusinessRef`。 |
 | `DispatchNotification` | `notificationTaskId`、`dispatchedAt`。 | 无。 |
-| `RecordDeliveryReceipt` | `receiptId`、`notificationTaskId`、`channel`、`outcome`、`recordedAt`。 | `providerCode`、`providerMessage`、`finalFailure`；工作区未发布追加 `attemptId`、`messageId`、`retryAt`。 |
+| `RecordDeliveryReceipt` | `receiptId`、`notificationTaskId`、`channel`、`outcome`、`recordedAt`。 | `providerCode`、`providerMessage`、`finalFailure`；未发布追加 `attemptId`、`messageId`、`retryAt`。 |
 | `CancelNotification` | `notificationTaskId`、`reason`、`cancelledAt`。 | 无。 |
 
 `variables` 是 string 到 string 的映射，内部命令时间使用 `Date`。
 `finalFailure=false` 允许确定失败后的任务保持 `Delivering`。
-`attemptId`、`messageId` 和 `retryAt` 保存在回执及工作区 trail API 中，当前发布事件 payload 不携带这些字段。
+`attemptId`、`messageId` 和 `retryAt` 保存在回执及未发布 trail API 中，当前发布事件 payload 不携带这些字段。
 
 ## 幂等与验证记录
 
 发送幂等键格式为 `idem-<triggerEventId>:<recipientRef>:<templateCode>`。
 PostgreSQL 另有按 `triggerBusinessRef`、`recipientRef`、`templateCode` 的唯一索引，以及 `processed_events` 消费记录。
-重试引用同一个任务，工作区队列为每次领取创建新的 claim token。
+重试引用同一个任务，未发布队列为每次领取创建新的 claim token。
 稳定 MessageID 关联同一任务的邮件与证据，不保证 SMTP 端去重。
 
-工作区最新 compile PASS，PostgreSQL/Mailpit durable delivery 为 10 个子项及父项共 11 PASS，20.8 秒。
+未发布实现最新 compile PASS，PostgreSQL/Mailpit durable delivery 为 10 个子项及父项共 11 PASS，20.8 秒。
 完整 `npm test` 未运行，quota 延期恢复未专项验收。
 待办统一见 [docs/TODO.md](../../TODO.md)。

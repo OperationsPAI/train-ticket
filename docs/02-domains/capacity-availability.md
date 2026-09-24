@@ -10,7 +10,7 @@ Capacity 管理库存池、临时 Hold、确认占用、释放和可用性查询
 可用性查询提供查询时刻的供给证据，成功创建 Hold 才表示容量预留成立。
 
 当前联合 supply 计算读取 Booking 接受的预订信息、Service Plan 的日期与区间，以及 Seat Assignment 的已发布编组和有效分配。
-这部分实现仍是工作区中未提交、未部署的改动。
+这部分实现已在提交 `caafa668` 中完成，尚未部署。
 Booking coordinated 行为尚未启用，不能把联合计算描述为生产预订已经采用的规则。
 Seat Assignment 的 standing 10% 政策及预订前 SeatMap 准备已发布，其状态与 Capacity 联合计算分别记录。
 剩余工作统一见 [docs/TODO.md](../TODO.md)。
@@ -116,7 +116,7 @@ HTTP 创建路径使用五分钟 Hold 到期时间。
 接口字段见 [Capacity HTTP API](../08-contracts/api/capacity-availability.md)。
 库存池、Hold、幂等响应和 outbox 使用 PostgreSQL 持久化。
 
-未提交的 `009_reservation_supply.sql` 增加 `reservation_supply_facts` 和 `capacity_supply_observations`。
+提交 `caafa668` 中的 `009_reservation_supply.sql` 增加 `reservation_supply_facts` 和 `capacity_supply_observations`。
 前者保存不可变的接受来源，后者保存准入使用的 SeatMap 和容量证据。
 `InventoryPool.physical_units` 区分当前可分配供给与历史容量引用。
 历史预订来源在库存事务之前解析，每个服务实例最多并发处理八个上游预订查询。

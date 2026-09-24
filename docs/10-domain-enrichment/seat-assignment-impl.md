@@ -66,7 +66,7 @@ Its `seatRef` has `allocationType=STANDING` and `displayLabel=STANDING`, with no
 `requestedClassRef`, `issuePurpose` and accepted preferences preserve the original purchase intent when a substitution is replayed.
 
 Seat Assignment currently counts its own active allocations.
-Capacity's combined calculation of allocations and pending Holds is an uncommitted, undeployed workspace change.
+Capacity's combined calculation of allocations and pending Holds is committed as `caafa668` and remains undeployed.
 Booking coordinated behavior is not enabled.
 Published standing enforcement does not establish completed combined supply admission.
 

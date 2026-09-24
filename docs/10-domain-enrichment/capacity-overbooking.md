@@ -2,7 +2,7 @@
 
 Last updated: 2026-09-24.
 
-The combined Capacity supply calculation is an uncommitted workspace implementation and is not deployed.
+The combined Capacity supply calculation is committed as `caafa668` and is not deployed.
 Booking coordinated behavior is not enabled.
 Seat Assignment's standing quota enforcement and pre-reservation SeatMap preparation are published and deployed.
 Remaining work is tracked in [docs/TODO.md](../TODO.md).

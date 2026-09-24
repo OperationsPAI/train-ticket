@@ -79,7 +79,7 @@ Service reconstruction restores these operational records.
 
 `GET /api/v1/service-segments` supports pagination by scheduled service.
 The internal `GET /api/v1/internal/service-segments/{segmentRef}/supply` validates endpoints and timestamps against that service and returns its date, ordered stops and stop sequence digest.
-Capacity's consumer of these supply facts is still uncommitted and undeployed; Booking coordinated behavior is not enabled.
+Capacity's consumer of these supply facts is committed as `caafa668` and undeployed; Booking coordinated behavior is not enabled.
 
 Existing domain, application and HTTP tests cover their corresponding operations.
 `internal/http/segment_live_test.go` uses recorded service facts with PostgreSQL to exercise the segment reads and supply response.

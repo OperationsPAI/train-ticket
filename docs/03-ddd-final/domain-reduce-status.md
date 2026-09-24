@@ -21,7 +21,7 @@
 | Supplier Catalog | Supplier、Carrier、供货合同和供应商查询。 | `POST /api/v1/suppliers`；`POST /api/v1/contracts`。 | [router.go](../../services/supplier-catalog/internal/http/router.go) |
 | Provider Integration | 供应商预留模型、供应商证据和外部状态归一职责。 | 当前 router 注册健康检查与 metadata 运行端点；供应商业务接入见 [TODO](../TODO.md)。 | [router.go](../../services/provider-integration/internal/http/router.go) |
 
-Capacity 新联合供给仍未提交、未部署，工作状态见 [TODO](../TODO.md)。
+Capacity 新联合供给已在提交 `caafa668` 中实现，尚未部署，工作状态见 [TODO](../TODO.md)。
 Service Plan supply 与 Seat Assignment capacity facts 分别提供运行区间和编组供给依据。
 Hold 的业务所有权归 Capacity，座位与无座分配事实归 Seat Assignment。
 
@@ -55,7 +55,7 @@ Post Sales 的[改签执行接口](../../services/post-sales/src/main/java/com/t
 | Admin & Audit | 操作员、审批、ManualAction 与审计记录。 | `POST /api/v1/admin/manual-actions`；`GET /api/v1/admin/audit-trail`。 | [AdminAuditController.java](../../services/admin-audit/src/main/java/com/trainticket/adminaudit/adapters/http/AdminAuditController.java) |
 
 Identity Verification 和 Risk & Compliance 使用 Python。
-Notification durable 发送队列为 WIP、未部署，工作状态见 [TODO](../TODO.md)。
+Notification durable 发送队列已在提交 `41917b85` 中实现、尚未部署，工作状态见 [TODO](../TODO.md)。
 
 ## 财务、恢复与商业服务
 

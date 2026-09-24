@@ -65,5 +65,5 @@ The ordinary `CapacityReleased` handler only promotes when the matching fields a
 The deployed ordinary release event lacks that date, so automatic promotion from those releases is not established.
 The public request and response use the leading traveler; internal traveler arrays do not establish complete preservation of all companions through the public flow.
 The required `paymentGuaranteeRef` is recorded, but it does not currently establish or settle a payment authorization.
-Capacity's combined supply calculation is uncommitted and undeployed, and Booking coordinated behavior is not enabled.
+Capacity's combined supply calculation is committed as `caafa668` and undeployed, and Booking coordinated behavior is not enabled.
 Successful request creation and the recorded order confirmation regression do not establish complete automatic waitlist fulfillment.
