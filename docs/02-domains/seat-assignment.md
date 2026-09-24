@@ -50,7 +50,7 @@ SeatMap 标识和单元标识由编组材料确定，同材料重放保留身份
 准入检查统计区间内最大同时 standing 占用，并包括缺少政策元数据的历史有效站票。
 释放或过期后可重新使用名额。
 编组限额减少到已有占用以下时拒绝新增分配，已有票证保持其记录。
-当前 Seat Assignment 检查自身有效分配；合并尚未分配座位的 Capacity Hold 属于未提交、未部署的 Capacity 联合 supply 实现。
+当前 Seat Assignment 检查自身有效分配；合并尚未分配座位的 Capacity Hold 属于提交 `caafa668` 中的 Capacity 联合 supply 实现，该实现尚未部署。
 Booking coordinated 行为尚未启用。
 
 ## 内部分配与重放

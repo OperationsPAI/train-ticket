@@ -18,7 +18,7 @@ Fulfillment 保存进站、完成和未乘车事实。
 
 Service Plan 已提供带有停站顺序、区间和版本的 segment supply 接口。
 Seat Assignment 的供给事实和无座配额执行已有部署证据。
-Capacity 新联合供给仍未提交、未部署，完整接入工作见 [TODO](../TODO.md)。
+Capacity 新联合供给已在提交 `caafa668` 中实现，尚未部署，完整接入工作见 [TODO](../TODO.md)。
 
 ## 资金、售后与发票
 
@@ -49,7 +49,7 @@ Ancillary Service、Travel Insurance、Loyalty Membership、Marketing Campaign�
 接口存在说明该入口可在源码中定位，能力覆盖与未完成项见 [TODO](../TODO.md)。
 
 Notification 消费业务事实并保存触达记录，发送结果不改变源业务的成功状态。
-Notification durable 发送队列为 WIP、未部署，相关工作见 [TODO](../TODO.md)。
+Notification durable 发送队列已在提交 `41917b85` 中实现、尚未部署，相关工作见 [TODO](../TODO.md)。
 Customer Service 与 Admin & Audit 通过受控命令协作，目标服务保有状态转换和业务校验责任。
 
 ## 目录与引用

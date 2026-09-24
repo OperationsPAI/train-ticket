@@ -68,9 +68,9 @@ Finance 根据 `BenefitIssued` 记录补偿成本，Journey Order 和 Invoicing 
 ## 供给与通知
 
 Service Plan 负责运行区间，Seat Assignment 负责编组供给和分配，Capacity 负责占用与可用性计算。
-Capacity 新联合供给仍未提交、未部署，工作状态见 [TODO](../TODO.md)。
+Capacity 新联合供给已在提交 `caafa668` 中实现，尚未部署，工作状态见 [TODO](../TODO.md)。
 Notification 负责消息触达与发送记录。
-Notification durable 发送队列为 WIP、未部署，工作状态见 [TODO](../TODO.md)。
+Notification durable 发送队列已在提交 `41917b85` 中实现、尚未部署，工作状态见 [TODO](../TODO.md)。
 
 ## 文档维护
 

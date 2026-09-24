@@ -21,7 +21,7 @@ Makefile 默认使用 `IMAGE_TAG=local` 和单独的 `values-cluster.yaml`，无
 [skaffold.yaml](../skaffold.yaml) 使用 `inputDigest` 生成镜像标签，通过 `setValueTemplates` 传入 `services.<name>.image` 和 `loadgen.image`。
 chart 的镜像函数优先使用这些完整镜像引用。
 后续更新常驻环境时，需要根据已部署的 Helm values、manifest 和镜像 digest 验证更新内容，并保留不属于该次更新的镜像引用。
-仓库当前代码、未提交改动与运行中镜像的对应关系见[当前状态](00-current-status.md)。
+仓库当前代码与运行中镜像的对应关系见[当前状态](00-current-status.md)。
 
 ## 新测试环境的部署入口
 

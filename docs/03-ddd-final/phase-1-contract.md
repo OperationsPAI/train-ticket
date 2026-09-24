@@ -54,7 +54,7 @@ Seat Assignment 的 capacity facts 提供已发布编组与可分配供给。
 Capacity 管理 Hold 的区间占用和状态。
 Seat Assignment 管理物理座位分配、无座配额和分配重放证据。
 Entitlement 保存分配结果并形成可使用票证。
-Capacity 新联合供给仍未提交、未部署，接入工作见 [TODO](../TODO.md)。
+Capacity 新联合供给已在提交 `caafa668` 中实现，尚未部署，接入工作见 [TODO](../TODO.md)。
 
 ## 退票与取消
 
@@ -127,4 +127,4 @@ Fulfillment 的 boarding、completions 和 no-show 接口形成使用事实。
 Transfer Management 根据接续规则与运行信息形成接续判断。
 Disruption Recovery 保存受影响旅程的选项及选择，售后动作由 Post Sales 执行。
 Notification 保存业务通知与触达记录，`GET /api/v1/notifications/:id/trail` 提供发送尝试查询。
-Notification durable 发送队列为 WIP、未部署，工作状态见 [TODO](../TODO.md)。
+Notification durable 发送队列已在提交 `41917b85` 中实现、尚未部署，工作状态见 [TODO](../TODO.md)。

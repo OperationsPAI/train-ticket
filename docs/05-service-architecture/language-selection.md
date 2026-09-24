@@ -98,6 +98,6 @@ The selected implementation language does not transfer business ownership betwee
 
 Shared modules provide runtime, messaging, storage and common value support.
 Domain event payloads and business state remain owned by the producing service.
-Capacity's new combined supply implementation is uncommitted and undeployed.
-Notification's durable delivery queue is WIP and undeployed.
+Capacity's new combined supply implementation is committed as `caafa668` and undeployed.
+Notification's durable delivery queue is committed as `41917b85` and undeployed.
 Work required for these capabilities is tracked in [TODO](../TODO.md).
