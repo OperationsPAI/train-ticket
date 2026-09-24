@@ -32,6 +32,10 @@ The next investigation must attribute the Booking saga confirmation latency at p
 Revision 292 attributed a worse burst to Traveler Profile: ten pooled connections with eight hundred waiting threads produced `Connection is not available, request timed out after 15000ms` and three thousand timed out traveler creations in four minutes.
 After the pool increase the same route reports P99 of 164 milliseconds with no request above four seconds, and the following three minute window had eight failed journeys instead of five thousand.
 
+Revision 297 measures the remaining limit with the consumers healthy: the resident cycle stays clean around thirty thousand requests per minute and starts failing near forty to one hundred thousand requests per minute, where the same services fall behind for one or two minutes.
+Measured peaks: a clean five minute window carried 142326 requests with zero failures, while the two minute burst at 04:53 failed 911 journeys, mostly post sales case completion and reservation confirmation.
+The failure window shows no single stalled consumer afterwards, so the next step is throughput per consumer at peak rather than a specific broken service.
+
 ## Notification
 
 ### T02: Finish and release durable notification delivery
