@@ -4,7 +4,7 @@ Last verified: 2026-09-24, Asia/Beijing.
 
 ## Runtime
 
-The resident Helm release is `train-ticket` in namespace `train-ticket`, revision **327**.
+The resident Helm release is `train-ticket` in namespace `train-ticket`, revision **330**.
 Its values come from one file, `deploy/helm/train-ticket/values.yaml`: the registry, the `local-path` storage class, the central telemetry store, the resident exporters, the 600 second load generator period and the `loadgen-resident-state` claim all live there, and the former cluster, case, resident, production and ACR overlays are deleted.
 PostgreSQL stores business snapshots, idempotency records, processed event records and transactional outboxes.
 Redis Streams carries events; the current chart has no Redis persistent volume or AOF.
