@@ -27,6 +27,17 @@ type payoutExecutorStub struct {
 	advices []domain.PayoutAdvice
 }
 
+type journeyCoverageResolverStub struct {
+	coverage JourneyCoverage
+	err      error
+	calls    int
+}
+
+func (s *journeyCoverageResolverStub) ResolveJourneyCoverage(context.Context, string, string) (JourneyCoverage, error) {
+	s.calls++
+	return s.coverage, s.err
+}
+
 func (s *payoutExecutorStub) Disburse(_ context.Context, _ domain.Policy, _ domain.Claim, advice domain.PayoutAdvice, _ string) (PayoutReceipt, error) {
 	s.calls++
 	s.advices = append(s.advices, advice)
@@ -243,5 +254,53 @@ func TestPayoutReceiptMustMatchApprovedClaim(t *testing.T) {
 	after, _ := svc.GetClaim(context.Background(), claim.ID)
 	if after.Status != domain.ClaimApproved {
 		t.Fatalf("claim status=%s", after.Status)
+	}
+}
+
+func TestChangedJourneyUpdatesOnlyAffectedTravelerPolicyAndIsIdempotent(t *testing.T) {
+	now := time.Date(2026, 9, 25, 4, 0, 0, 0, time.UTC)
+	newStart := now.Add(72 * time.Hour)
+	newEnd := newStart.Add(3 * time.Hour)
+	resolver := &journeyCoverageResolverStub{coverage: JourneyCoverage{
+		OrderID: "jo-change", AccountID: "acct-change", Status: "CONFIRMED",
+		TravelerRefs: []string{"trav-a"}, ReplacedSegmentRefs: []string{"seg-old"},
+		SegmentRefs: []string{"seg-new"}, StartsAt: newStart, EndsAt: newEnd,
+	}}
+	pub := &capturePublisher{}
+	svc := NewInsuranceService(ServiceConfig{Publisher: pub, Clock: fixedClock{now}, IDGenerator: sequentialIDs(), JourneyCoverageResolver: resolver})
+	first, err := svc.IssuePolicy(context.Background(), IssuePolicyCommand{ProductCode: string(domain.ProductDelayInsurance), ProductVersion: "v1", JourneyOrderID: "jo-change", AncillaryOrderItemID: "anc-a", AccountID: "acct-change", TravelerRef: "trav-a", SegmentRefs: []string{"seg-old"}, PaymentIntentID: "pi-a", CoverageStartAt: now.Add(time.Hour), CoverageEndAt: now.Add(2 * time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := svc.IssuePolicy(context.Background(), IssuePolicyCommand{ProductCode: string(domain.ProductDelayInsurance), ProductVersion: "v1", JourneyOrderID: "jo-change", AncillaryOrderItemID: "anc-b", AccountID: "acct-change", TravelerRef: "trav-b", SegmentRefs: []string{"seg-old"}, PaymentIntentID: "pi-b", CoverageStartAt: now.Add(time.Hour), CoverageEndAt: now.Add(2 * time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeEvents := len(pub.events)
+	command := JourneyAdjustedCommand{JourneyOrderID: "jo-change", AccountID: "acct-change", CaseID: "psc-change", SegmentRefs: []string{"seg-new", "seg-unaffected"}}
+	updated, err := svc.AdjustPoliciesForChangedJourney(context.Background(), command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updated) != 1 || updated[0].ID != first.ID || !updated[0].CoverageStartAt.Equal(newStart) || !updated[0].CoverageEndAt.Equal(newEnd) || len(updated[0].SegmentRefs) != 1 || updated[0].SegmentRefs[0] != "seg-new" {
+		t.Fatalf("unexpected adjusted policies: %#v", updated)
+	}
+	unaffected, err := svc.GetPolicy(context.Background(), second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unaffected.SegmentRefs) != 1 || unaffected.SegmentRefs[0] != "seg-old" {
+		t.Fatalf("unaffected traveler changed: %#v", unaffected)
+	}
+	if len(pub.events) != beforeEvents+1 || pub.events[len(pub.events)-1].EventType != "InsurancePolicyCoverageAdjusted" {
+		t.Fatalf("unexpected events: %#v", pub.events)
+	}
+	version := updated[0].AggregateVersion
+	if _, err := svc.AdjustPoliciesForChangedJourney(context.Background(), command); err != nil {
+		t.Fatal(err)
+	}
+	replayed, _ := svc.GetPolicy(context.Background(), first.ID)
+	if replayed.AggregateVersion != version || len(pub.events) != beforeEvents+1 {
+		t.Fatal("duplicate change must not mutate or publish")
 	}
 }

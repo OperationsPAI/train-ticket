@@ -138,3 +138,78 @@ func (v PurchaseVerifier) VerifyRefund(ctx context.Context, policy domain.Policy
 	}
 	return nil
 }
+
+func (v PurchaseVerifier) ResolveJourneyCoverage(ctx context.Context, journeyOrderID, caseID string) (JourneyCoverage, error) {
+	var change struct {
+		CaseID         string `json:"caseId"`
+		JourneyOrderID string `json:"journeyOrderId"`
+		CaseType       string `json:"caseType"`
+		Status         string `json:"status"`
+		Scope          struct {
+			SegmentRefs  []string `json:"segmentRefs"`
+			TravelerRefs []string `json:"travelerRefs"`
+		} `json:"scope"`
+		ChangeOperations map[string]struct {
+			Itinerary struct {
+				Legs []struct {
+					SegmentRef string    `json:"serviceSegmentRef"`
+					Departure  time.Time `json:"departureTime"`
+					Arrival    time.Time `json:"arrivalTime"`
+				} `json:"legs"`
+			} `json:"itinerary"`
+		} `json:"changeOperations"`
+	}
+	if err := v.read(ctx, "post-sales", "/api/v1/post-sales-cases/"+url.PathEscape(caseID), "", &change); err != nil {
+		return JourneyCoverage{}, err
+	}
+	if change.CaseID != caseID || change.JourneyOrderID != journeyOrderID || change.CaseType != "CHANGE" || (change.Status != "EXECUTING" && change.Status != "APPLIED") || len(change.Scope.SegmentRefs) == 0 || len(change.Scope.TravelerRefs) == 0 {
+		return JourneyCoverage{}, fmt.Errorf("%w: applied change scope is required", ErrDomainRule)
+	}
+	target, ok := change.ChangeOperations["target"]
+	if !ok || len(target.Itinerary.Legs) == 0 {
+		return JourneyCoverage{}, fmt.Errorf("%w: applied change target itinerary is required", ErrDomainRule)
+	}
+
+	var order struct {
+		OrderID     string   `json:"orderId"`
+		AccountID   string   `json:"accountId"`
+		Status      string   `json:"status"`
+		SegmentRefs []string `json:"segmentRefs"`
+		Segments    []struct {
+			SegmentRef string    `json:"segmentRef"`
+			Departure  time.Time `json:"departureTime"`
+			Arrival    time.Time `json:"arrivalTime"`
+		} `json:"segments"`
+	}
+	if err := v.read(ctx, "journey-order", "/api/v1/journey-orders/"+url.PathEscape(journeyOrderID), "", &order); err != nil {
+		return JourneyCoverage{}, err
+	}
+	if order.OrderID != journeyOrderID || order.AccountID == "" || order.Status != "CONFIRMED" || len(order.SegmentRefs) == 0 || len(order.Segments) != len(order.SegmentRefs) {
+		return JourneyCoverage{}, fmt.Errorf("%w: confirmed changed order with complete segments is required", ErrDomainRule)
+	}
+	current := make(map[string]struct{ start, end time.Time }, len(order.Segments))
+	for _, segment := range order.Segments {
+		if segment.SegmentRef == "" || segment.Departure.IsZero() || !segment.Arrival.After(segment.Departure) {
+			return JourneyCoverage{}, fmt.Errorf("%w: changed order segment timing is incomplete", ErrDomainRule)
+		}
+		current[segment.SegmentRef] = struct{ start, end time.Time }{segment.Departure, segment.Arrival}
+	}
+	refs := make([]string, 0, len(target.Itinerary.Legs))
+	var start, end time.Time
+	for _, leg := range target.Itinerary.Legs {
+		currentLeg, present := current[leg.SegmentRef]
+		if !present || !currentLeg.start.Equal(leg.Departure) || !currentLeg.end.Equal(leg.Arrival) {
+			return JourneyCoverage{}, fmt.Errorf("%w: target itinerary differs from current order", ErrDomainRule)
+		}
+		refs = append(refs, leg.SegmentRef)
+		if start.IsZero() || leg.Departure.Before(start) {
+			start = leg.Departure
+		}
+		if end.IsZero() || leg.Arrival.After(end) {
+			end = leg.Arrival
+		}
+	}
+	return JourneyCoverage{OrderID: order.OrderID, AccountID: order.AccountID, Status: order.Status,
+		TravelerRefs: change.Scope.TravelerRefs, ReplacedSegmentRefs: change.Scope.SegmentRefs,
+		SegmentRefs: refs, StartsAt: start, EndsAt: end}, nil
+}
