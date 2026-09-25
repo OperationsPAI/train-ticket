@@ -28,7 +28,7 @@ event bus for 联调 (integration testing) and phase-1 production deployment.
 | Data structure | Redis Streams (not Pub/Sub) |
 | Consumer model | Consumer groups with XREADGROUP |
 | Acknowledgement | XACK after successful local processing |
-| Recovery | XAUTOCLAIM with min-idle 60s |
+| Recovery | Cursor-paginated XAUTOCLAIM with a 5-minute default min-idle |
 | Poison handling | Dead-letter stream after 5 delivery attempts |
 | Retention | MAXLEN ~ 100000 per stream |
 | Replay | XRANGE |
@@ -69,9 +69,13 @@ guarantee business process completion.
    (persisted by eventId); finance-settlement and reporting already model this,
    and all other contexts follow the same pattern.
 
-6. **Pending-list recovery.** XAUTOCLAIM with 60s min-idle re-assigns messages
-   whose consumer crashed before XACK. Poison messages (exceeding 5 delivery
-   attempts) are moved to a dedicated dead-letter stream.
+6. **Pending-list recovery.** XAUTOCLAIM re-assigns messages whose consumer
+   crashed before XACK. Each consumer advances Redis' returned cursor across the
+   whole PEL and starts a new round only after Redis returns `0-0`, preventing a
+   large pending list from starving entries beyond the first page. The default
+   min-idle is five minutes. Genuine handler failures move an event to the
+   dead-letter stream after five attempts; a separate, higher redelivery
+   backstop handles crash loops.
 
 7. **No code changes in this ADR.** Implementation tasks will produce the actual
    adapter code per language.
