@@ -524,11 +524,15 @@ public class BookingOrchestrationService {
             warnProviderAckSkip("ProviderReservationConfirmed", booking);
             return;
         }
-        booking.confirmFromProvider(new ProviderReservationConfirmed(
+        boolean confirmed = booking.confirmFromProvider(new ProviderReservationConfirmed(
             booking.segmentBookingId(), reference, evidence, Map.of()));
         saveAndPublish(booking, correlationId, causationId);
-        funnel(OrderFunnelMetrics.Stage.RESERVATION, OrderFunnelMetrics.Outcome.ACCEPTED);
-        markSagaStepSucceeded("ProviderReservationConfirmed", booking.segmentBookingId(), correlationId, causationId);
+        if (confirmed) {
+            funnel(OrderFunnelMetrics.Stage.RESERVATION, OrderFunnelMetrics.Outcome.ACCEPTED);
+            markSagaStepSucceeded("ProviderReservationConfirmed", booking.segmentBookingId(), correlationId, causationId);
+        }
+        // When the provider outruns capacity the confirmation waits for the
+        // Hold, so the reservation step is completed by CapacityHeld instead.
     }
 
     private void handleProviderReservationFailed(String eventType, Map<String, Object> payload, String correlationId, String causationId) {
