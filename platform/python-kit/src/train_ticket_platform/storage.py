@@ -131,6 +131,16 @@ def run_migrations(pool: ConnectionPool, migrations_dir: str | Path, readiness: 
     try:
         with pool.connection() as conn:
             with conn.transaction():
+                # Uvicorn starts several worker processes at once.  They all
+                # import the application and therefore all enter migration
+                # startup concurrently.  Serialise that work per database so
+                # a later worker observes the version row committed by the
+                # first instead of applying the same DDL and racing the final
+                # schema_migrations insert.
+                conn.execute(
+                    "SELECT pg_advisory_xact_lock("
+                    "hashtextextended(current_database() || ':schema-migrations', 0))"
+                )
                 conn.execute(
                     "CREATE TABLE IF NOT EXISTS schema_migrations ("
                     "version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())"
