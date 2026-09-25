@@ -43,6 +43,9 @@ type Repository interface {
 	FindSeatAllocations(context.Context, string, string, int, int) ([]domain.ContractSeatAllocation, int, error)
 	FindActiveSeatAllocations(context.Context, string, string) ([]domain.ContractSeatAllocation, error)
 	FindSeatAllocationsByCapacityRecovery(context.Context, string, string, domain.StationInterval) ([]domain.ContractSeatAllocation, error)
+	LockCapacityHold(context.Context, string) error
+	CapacityHoldFence(context.Context, string) (*domain.CapacityHoldFence, error)
+	RecordCapacityHoldFence(context.Context, domain.CapacityHoldFence) (*domain.CapacityHoldFence, error)
 }
 
 type Service struct {
