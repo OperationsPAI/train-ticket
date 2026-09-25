@@ -922,6 +922,10 @@ services:
       limits: { cpu: '6', memory: 4Gi }
   booking-orchestration:
     db: booking_orchestration
+    # The booking saga and segment-booking snapshots are the hottest write
+    # workload. Keep them on the dedicated hot shard so application replicas
+    # and future HPA changes do not concentrate every connection on core.
+    pgInstance: hot
     # Two replicas: the saga confirms a reservation through several hops, and a
     # burst of three to eight times the mean rate queued events behind the single
     # consumer group long enough for the load generator's ten second poll to
