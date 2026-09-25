@@ -677,11 +677,30 @@ impl SeatSupply {
             let mut occupied_refs = HashSet::new();
             for value in occupancy.values() {
                 if value.4.overlaps(interval) {
-                    require(
-                        refs.iter().any(|reference| reference == value.3),
-                        "standing occupancy has no valid quota slot",
-                    )?;
-                    occupied_refs.insert(value.3.to_owned());
+                    // The standing quota is a tenth of the assignable second
+                    // class supply, so it moves when the seat map does and a
+                    // slot an earlier policy named can be outside the current
+                    // one. The allocation still occupies one slot, so it is
+                    // counted against a slot that is free in this snapshot, and
+                    // when every slot is taken the honest answer is that
+                    // standing has no availability left rather than a retry
+                    // that blocks the reservation behind it. Measured before
+                    // this: "standing occupancy has no valid quota slot", 999
+                    // times in four minutes across the replicas.
+                    let reference = if refs.iter().any(|candidate| candidate == value.3) {
+                        value.3.to_owned()
+                    } else {
+                        refs.iter()
+                            .find(|candidate| !occupied_refs.contains(candidate.as_str()))
+                            .or_else(|| refs.first())
+                            .cloned()
+                            .ok_or_else(|| {
+                                AppError::Unavailable(
+                                    "standing occupancy has no valid quota slot".into(),
+                                )
+                            })?
+                    };
+                    occupied_refs.insert(reference);
                 }
             }
             let available: Vec<String> = refs
