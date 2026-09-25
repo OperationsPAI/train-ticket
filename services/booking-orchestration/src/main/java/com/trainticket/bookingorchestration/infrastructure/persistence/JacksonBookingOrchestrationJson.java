@@ -102,6 +102,17 @@ final class JacksonBookingOrchestrationJson {
             provider.put("reservationId", ref.reservationId());
             provider.put("displayReference", ref.displayReference());
         });
+        booking.pendingProviderReference().ifPresent(ref -> {
+            // Durable because a restart between the provider's confirmation and
+            // the capacity Hold would otherwise lose the confirmation, and the
+            // reservation would wait for a hold that has no one left to
+            // complete it.
+            ObjectNode provider = node.putObject("pendingProviderReference");
+            provider.put("providerId", ref.providerId());
+            provider.put("reservationId", ref.reservationId());
+            provider.put("displayReference", ref.displayReference());
+            booking.pendingProviderEvidence().ifPresent(value -> node.put("pendingProviderEvidence", value));
+        });
         return new SegmentBookingSnapshot(node);
     }
 
@@ -119,7 +130,17 @@ final class JacksonBookingOrchestrationJson {
             textOrNull(node, "entitlementId"), textOrNull(node, "failureReason"), textOrNull(node, "cancellationReason"),
             textOrNull(node, "seatAllocationRef"), Clock.systemUTC()).withClassRef(textOrNull(node,"classRef"))
                 .withStandingAcceptance(node.path("standingAccepted").asBoolean(false))
-                .withSupplyReference(textOrNull(node,"scheduledServiceRef"), textOrNull(node,"serviceDate"));
+                .withSupplyReference(textOrNull(node,"scheduledServiceRef"), textOrNull(node,"serviceDate"))
+                .withPendingProviderConfirmation(pendingProviderReference(node), textOrNull(node, "pendingProviderEvidence"));
+    }
+
+    private static ProviderReference pendingProviderReference(ObjectNode node) {
+        if (!node.has("pendingProviderReference") || node.get("pendingProviderReference").isNull()) {
+            return null;
+        }
+        ObjectNode provider = (ObjectNode) node.get("pendingProviderReference");
+        return new ProviderReference(provider.path("providerId").asText(), provider.path("reservationId").asText(),
+            provider.path("displayReference").asText());
     }
 
     private static String textOrNull(ObjectNode node, String field) { return node.has(field) && !node.get(field).isNull() ? node.get(field).asText() : null; }
