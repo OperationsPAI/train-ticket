@@ -2,6 +2,7 @@ package domain
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -158,6 +159,51 @@ type StatementLine struct {
 	FaultSeedRef               string    `json:"faultSeedRef,omitempty"`
 	EvidenceHash               string    `json:"evidenceHash"`
 }
+
+func StatementIdentityKey(channel, date, currency, seed string) string {
+	return strings.Join([]string{strings.TrimSpace(channel), strings.TrimSpace(date), strings.TrimSpace(currency), strings.TrimSpace(seed)}, "\x1f")
+}
+
+// FinalizeStatementLine gives a generated line a stable identity and evidence
+// hash. The hash excludes its own identity so that evidence remains a pure
+// statement fact; duplicateOrdinal distinguishes an explicitly duplicated line.
+func FinalizeStatementLine(statementIdentity string, duplicateOrdinal int, line StatementLine) StatementLine {
+	line.StatementLineID = ""
+	line.EvidenceHash = ""
+	line.EvidenceHash = Hash("channel-statement-line-v2", line)
+	line.StatementLineID = DeterministicTimeID("csl", line.OccurredAt, statementIdentity, line.LineType, line.ChannelOrderID, line.ChannelRefundID, line.EvidenceHash, duplicateOrdinal)
+	return line
+}
+
+func canonicalStatementLines(lines []StatementLine) []StatementLine {
+	canonical := append([]StatementLine(nil), lines...)
+	sort.Slice(canonical, func(i, j int) bool {
+		left, right := canonical[i], canonical[j]
+		if left.LineType != right.LineType {
+			return left.LineType < right.LineType
+		}
+		if left.ChannelOrderID != right.ChannelOrderID {
+			return left.ChannelOrderID < right.ChannelOrderID
+		}
+		if left.ChannelRefundID != right.ChannelRefundID {
+			return left.ChannelRefundID < right.ChannelRefundID
+		}
+		if left.EvidenceHash != right.EvidenceHash {
+			return left.EvidenceHash < right.EvidenceHash
+		}
+		return left.StatementLineID < right.StatementLineID
+	})
+	return canonical
+}
+
+func StatementContentHash(channel, date, currency, seed string, lines []StatementLine) string {
+	evidence := make([]string, 0, len(lines))
+	for _, line := range canonicalStatementLines(lines) {
+		evidence = append(evidence, line.EvidenceHash)
+	}
+	return Hash("channel-statement-v2", channel, date, currency, seed, evidence)
+}
+
 type ChannelStatement struct {
 	ChannelStatementID string          `json:"channelStatementId"`
 	Channel            string          `json:"channel"`
@@ -195,6 +241,7 @@ func NewStatement(id, channel, date, currency, seed string, lines []StatementLin
 	if err != nil {
 		return nil, fmt.Errorf("statementDate must be YYYY-MM-DD")
 	}
+	lines = canonicalStatementLines(lines)
 	var gp, gr int64
 	for _, l := range lines {
 		if l.LineType == "PAYMENT" {
@@ -205,12 +252,15 @@ func NewStatement(id, channel, date, currency, seed string, lines []StatementLin
 		}
 	}
 	st := &ChannelStatement{ChannelStatementID: id, Channel: channel, StatementDate: date, Currency: currency, SeedVersion: seed, Status: "GENERATED", PeriodStartAt: start.UTC(), PeriodEndAt: start.Add(24 * time.Hour).UTC(), GeneratedAt: now.UTC(), LineCount: len(lines), GrossPaymentAmount: Money{currency, gp}, GrossRefundAmount: Money{currency, gr}, FeeAmount: Money{currency, 0}, Lines: lines, CreatedAt: now.UTC(), UpdatedAt: now.UTC(), Version: 1}
-	st.StatementHash = Hash(channel, date, currency, seed, lines)
+	st.StatementHash = StatementContentHash(channel, date, currency, seed, lines)
 	st.addEvent("ChannelStatementGenerated", map[string]any{"channelStatementId": id, "channel": channel, "statementDate": date, "currency": currency, "seedVersion": seed, "periodStartAt": st.PeriodStartAt, "periodEndAt": st.PeriodEndAt, "lineCount": st.LineCount, "grossPaymentAmount": st.GrossPaymentAmount, "grossRefundAmount": st.GrossRefundAmount, "feeAmount": st.FeeAmount, "statementHash": st.StatementHash, "status": st.Status, "generatedAt": now.UTC(), "aggregateVersion": st.Version}, now, cause, corr)
 	return st, nil
 }
 func (s *ChannelStatement) Freeze(hash string, expected int64, now time.Time, operator, reason, corr, cause string) error {
 	if s.Status == "FROZEN" {
+		if hash != s.StatementHash {
+			return fmt.Errorf("statement hash mismatch")
+		}
 		return nil
 	}
 	if s.Version != expected {
