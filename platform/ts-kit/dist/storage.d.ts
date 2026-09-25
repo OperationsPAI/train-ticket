@@ -2,7 +2,7 @@ import type { Redis } from "ioredis";
 import type { Pool, PoolClient, PoolConfig } from "pg";
 import { type IdempotencyRecord, type IdempotencyStore } from "./http.js";
 import { type Clock } from "./liveness.js";
-import { type EventEnvelope } from "./messaging.js";
+import { type DeadLetterEvidence, type DeadLetterEvidenceSink, type EventEnvelope } from "./messaging.js";
 export type Database = Pool | PoolClient;
 export declare class OptimisticConcurrencyConflict extends Error {
     constructor(message?: string);
@@ -234,6 +234,12 @@ export declare class ProcessedEventsGuard {
     tryStart(eventId: string, stream?: string): Promise<boolean>;
     tryStartMany(events: readonly ProcessedEventInput[]): Promise<string[]>;
     runOnce<T>(eventId: string, stream: string | undefined, handler: () => Promise<T>): Promise<T | undefined>;
+}
+/** PostgreSQL evidence sink used before a Redis DLQ write and XACK. */
+export declare class PostgresDeadLetterEvidenceStore implements DeadLetterEvidenceSink {
+    private readonly db;
+    constructor(db: Database);
+    recordDeadLetter(evidence: DeadLetterEvidence): Promise<void>;
 }
 export declare class PostgresIdempotencyStore implements IdempotencyStore {
     private readonly db;

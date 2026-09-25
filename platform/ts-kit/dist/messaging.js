@@ -710,16 +710,30 @@ export class RedisEventSubscriber {
         const failureReason = truncateFailureReason(reason);
         const safeAttempts = Math.max(1, attempts);
         const deadLetteredAt = new Date().toISOString();
+        const identity = deadLetterIdentity(envelopeJson);
+        const failureKind = deadLetterFailureKind(reason, safeAttempts);
         console.warn({
             service: group,
             stream,
-            eventId: eventIdForLog(envelopeJson),
+            eventId: identity.eventId ?? "unknown",
             deliveries: safeAttempts,
             consumerGroup: group,
             failureReason,
             attempts: safeAttempts,
             deadLetteredAt,
             message: "moving message to DLQ",
+        });
+        await this.options.deadLetterEvidenceSink?.recordDeadLetter({
+            sourceStream: stream,
+            sourceMessageId: entry[0],
+            consumerGroup: group,
+            consumerName,
+            ...identity,
+            originalEnvelope: fieldValue(entry[1], "envelope"),
+            failureKind,
+            failureReason,
+            attempts: safeAttempts,
+            deadLetteredAt,
         });
         await this.redis.xadd(dlqForStream(stream), "MAXLEN", "~", STREAM_MAXLEN, "*", "envelope", envelopeJson, "consumerGroup", group, "consumerName", consumerName, "failureReason", failureReason, "attempts", String(safeAttempts), "deadLetteredAt", deadLetteredAt);
         await this.redis.xack(stream, group, entry[0]);
@@ -779,6 +793,29 @@ export class RedisEventSubscriber {
             await this.redis.connect();
         }
     }
+}
+function deadLetterIdentity(envelopeJson) {
+    try {
+        const parsed = JSON.parse(envelopeJson);
+        return {
+            ...(typeof parsed.eventId === "string" && parsed.eventId.length > 0 ? { eventId: parsed.eventId } : {}),
+            ...(typeof parsed.eventType === "string" && parsed.eventType.length > 0 ? { eventType: parsed.eventType } : {}),
+            ...(typeof parsed.producer === "string" && parsed.producer.length > 0 ? { producer: parsed.producer } : {}),
+        };
+    }
+    catch {
+        return {};
+    }
+}
+function deadLetterFailureKind(reason, attempts) {
+    const text = truncateFailureReason(reason);
+    if (text.includes("MissingEnvelope") || text.includes("could not be deserialized") || text.includes("JSON")) {
+        return "INVALID_ENVELOPE";
+    }
+    if (attempts >= MAX_HANDLER_FAILURES && !(reason instanceof HandlerError && reason.kind === "fatal")) {
+        return "RETRY_EXHAUSTED";
+    }
+    return "FATAL_HANDLER";
 }
 export class RedisStreamEventSubscriber extends RedisEventSubscriber {
 }
