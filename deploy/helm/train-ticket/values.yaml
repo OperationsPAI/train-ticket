@@ -759,12 +759,17 @@ services:
     # that moves it.
     replicas: 6
     env:
-      # The Booking stream peaks near two hundred events per second while a Hold
-      # needs several database writes. Four threads fell behind during a peak
-      # window, so the reservation confirmation missed the load generator
-      # window. Twenty four holds the ramped peak at zero lag; a burst still
-      # moves faster than this consumer.
-      CONSUMER_THREADS: "24"
+      # The Booking stream carries every event the saga publishes -- starts,
+      # risk requests, confirmations, failures, snapshots -- and this consumer
+      # reads all of them and acts on six types. Measured with twenty four
+      # threads across six replicas: 237 entries a second consumed against 295
+      # produced, so the consumer is permanently a little behind at the peak and
+      # the hold confirmation lands a median of 44 seconds after the hold.
+      # Forty eight is the next measurement: the pods sit under a tenth of a
+      # core, so if the limit is per-thread work this doubles the rate, and if
+      # it does not the limit is the shared Redis connection rather than the
+      # threads.
+      CONSUMER_THREADS: "48"
       # Twenty four consumer threads share this pool, and each reservation needs
       # a connection for several statements while it holds the supply lock. At
       # the platform default of ten the pool timed out waiting for a connection
