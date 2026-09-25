@@ -79,6 +79,21 @@ class SegmentBookingTest {
     }
 
     @Test
+    void exposesImmutablePurchaseAndChangeSources() {
+        SegmentBooking purchase = SegmentBooking.requestReservation("booking-purchase", "order-1", "offer-item-1",
+            "rail-segment-1", "traveler-1", "purchase", clock).withStandingAcceptance(true);
+        SegmentBooking change = SegmentBooking.requestReservation("booking-change", "order-1", "offer-item-2",
+            "rail-segment-1", "traveler-1", "change:case-42", clock);
+
+        assertEquals("PURCHASE_ORDER", purchase.purchaseSourceType());
+        assertEquals("order-1", purchase.purchaseSourceRef());
+        assertTrue(purchase.standingAccepted());
+        assertEquals("CHANGE_CASE", change.purchaseSourceType());
+        assertEquals("case-42", change.purchaseSourceRef());
+        assertFalse(change.standingAccepted());
+    }
+
+    @Test
     void failedReservationDoesNotProgressToTicketed() {
         SegmentBooking booking = SegmentBooking.requestReservation("booking-1", "order-1", "offer-item-1",
             "rail-segment-1", "traveler-1", "initial", clock);
