@@ -26,7 +26,7 @@ from .adapters.messaging.publisher import RedisEventPublisher
 from train_ticket_platform.messaging import default_consumer_name
 from .adapters.messaging.subscriber import RedisEventSubscriber
 from .ports.messaging import EventPublisher
-from .handlers import CAPACITY_STREAM, IDENTITY_VERIFICATION_STREAM, handle_capacity_snapshot_updated, handle_identity_verification_event
+from .adapters.messaging.handlers import CAPACITY_STREAM, IDENTITY_VERIFICATION_STREAM, handle_capacity_snapshot_updated, handle_identity_verification_event
 from .web.errors import register_exception_handlers
 from .web.handlers import router as fare_pricing_router
 from .web.middleware import FareUnitOfWorkMiddleware, RequestContextMiddleware, RuntimeTracer, TraceHook
