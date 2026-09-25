@@ -30,6 +30,16 @@ import { PostgresNotificationAggregator, PostgresNotificationTaskRepository, Pos
 import { PostgresDeliveryScheduler, startDeliveryWorker } from "./delivery-queue.js";
 import type { NotificationTrailResponse } from "../../app.js";
 
+export const NOTIFICATION_OUTBOX_RELAY_OPTIONS = Object.freeze({
+  // The previous 100 rows / 250 ms ceiling matched the observed ~380 events/s
+  // and could not drain the notification backlog. Keep each Redis/SQL batch
+  // bounded, but poll fast enough that the shared retention sweeper (5,000
+  // rows every 20 polls) can remove published rows faster than this relay can
+  // create them at its 4,000 events/s theoretical ceiling.
+  batchSize: 200,
+  pollIntervalMs: 50,
+});
+
 export type NotificationStorageRuntime = Readonly<{
   ready: () => Promise<boolean>;
   failure: () => unknown;
@@ -58,7 +68,7 @@ export async function startNotificationStorage(channelGateway: NotificationChann
   const redis = createRedisClient(redisUrl(), {}, "notification-outbox");
   await connectRedisWithRetry(redis, "notification-outbox");
   const relay = new OutboxRelay(pool, redis, {
-    pollIntervalMs: 250,
+    ...NOTIFICATION_OUTBOX_RELAY_OPTIONS,
     processedEventRetentionMs: eventReplayRetentionMs(),
     name: "notification-outbox-relay",
     onFailure: (error) => console.error(sanitizedErrorForLog(error)),
