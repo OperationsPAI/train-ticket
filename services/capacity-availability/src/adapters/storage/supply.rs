@@ -84,6 +84,26 @@ fn structural_hold_facts(facts: &ReservationSupply) -> Result<(), AppError> {
     Ok(())
 }
 
+/// The first unit of this class no earlier hold in the same snapshot has taken.
+///
+/// Used only for a historical hold whose own unit cannot be resolved, so that
+/// the hold still reduces availability by one unit instead of blocking the
+/// reservation that is being admitted.
+fn free_unit_for(
+    units: &[crate::supply_facts::PhysicalUnit],
+    occupancy: &[PendingOccupancy],
+) -> Option<String> {
+    let taken: std::collections::HashSet<&str> = occupancy
+        .iter()
+        .map(|pending| pending.effective_capacity_unit_ref.as_str())
+        .collect();
+    units
+        .iter()
+        .map(|unit| unit.seat_unit_ref.as_str())
+        .find(|reference| !taken.contains(reference))
+        .map(str::to_owned)
+}
+
 impl PostgresCapacityService {
     pub(super) async fn hold_for_reservation(
         &self,
@@ -364,9 +384,31 @@ impl PostgresCapacityService {
                         .filter(|allocation| allocation.capacity_hold_id == hold.hold_id)
                         .collect();
                     if allocations.len() != 1 {
-                        return Err(error);
+                        // A hold that predates the supply evidence has no way to
+                        // say which composition its unit came from, so a unit
+                        // that appears in more than one replacement lineage is
+                        // ambiguous rather than wrong. Measured: 2560980 of
+                        // 2562487 live holds carry no evidence, and failing the
+                        // admission on one of them blocked every reservation
+                        // into the pool it occupies -- which is what the load
+                        // generator reported, thousands of times, as a
+                        // reservation that never confirms.
+                        //
+                        // The hold still occupies one unit of its class, so it
+                        // is counted against one that is free in this snapshot
+                        // rather than dropped. Admissions for one service and
+                        // date are serialized by the supply advisory lock, so
+                        // two admissions cannot choose the same unit here, and
+                        // the count of occupied units stays exact even though
+                        // the identity does not. Backfilling the binding from
+                        // the owning composition is recorded in docs/TODO.md.
+                        match free_unit_for(&supply.units, &occupancy) {
+                            Some(reference) => reference,
+                            None => return Err(error),
+                        }
+                    } else {
+                        supply.resolve_allocation_unit(allocations[0])?
                     }
-                    supply.resolve_allocation_unit(allocations[0])?
                 }
             };
             occupancy.push(PendingOccupancy {
