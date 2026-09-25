@@ -2,7 +2,12 @@
 {{- $defaultProbes := $defaults.probes | default dict }}
 {{- range $name, $svc := .Values.services }}
 {{- $db := $svc.db | default "" }}
+{{- $autoscaling := $svc.autoscaling | default dict }}
+{{- $autoscalingEnabled := $autoscaling.enabled | default false }}
 {{- $replicas := ternary $svc.replicas 1 (hasKey $svc "replicas") }}
+{{- if $autoscalingEnabled }}
+{{- $replicas = required (printf "services.%s.autoscaling.minReplicas is required when autoscaling is enabled" $name) $autoscaling.minReplicas }}
+{{- end }}
 {{- $probes := $svc.probes | default dict }}
 {{- /*
 `| default` treats false as empty, so a per-service `probes.startup: false`
