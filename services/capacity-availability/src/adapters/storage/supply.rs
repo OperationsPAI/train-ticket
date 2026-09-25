@@ -89,15 +89,6 @@ fn structural_hold_facts(facts: &ReservationSupply) -> Result<(), AppError> {
 /// Used only for a historical hold whose own unit cannot be resolved, so that
 /// the hold still reduces availability by one unit instead of blocking the
 /// reservation that is being admitted.
-fn free_unit_for(refs: &[String], occupancy: &[PendingOccupancy]) -> Option<String> {
-    let taken: std::collections::HashSet<&str> = occupancy
-        .iter()
-        .map(|pending| pending.effective_capacity_unit_ref.as_str())
-        .collect();
-    refs.iter()
-        .find(|reference| !taken.contains(reference.as_str()))
-        .cloned()
-}
 
 impl PostgresCapacityService {
     /// Which physical unit a hold that is already occupying a pool stands for.
@@ -128,7 +119,7 @@ impl PostgresCapacityService {
         evidence: Option<&HoldSupplyEvidence>,
         occupancy: &[PendingOccupancy],
         interval: &crate::supply_facts::Interval,
-    ) -> Result<String, AppError> {
+    ) -> Result<Option<String>, AppError> {
         let overlapping: Vec<&crate::supply_facts::Allocation> = supply
             .allocations
             .iter()
@@ -136,45 +127,34 @@ impl PostgresCapacityService {
                 allocation.capacity_hold_id == hold_id && allocation.interval.overlaps(interval)
             })
             .collect();
+        // Seat Assignment owns the physical units, so its allocation is the
+        // authoritative answer when one exists for the interval being admitted:
+        // a change allocates a replacement seat and the hold keeps the unit it
+        // was originally admitted against.
         if let [allocation] = overlapping.as_slice()
             && let Ok(reference) = supply.resolve_allocation_unit(allocation)
         {
-            return Ok(reference);
+            return Ok(Some(reference));
         }
-        match supply.resolve_capacity_unit(capacity_unit_ref, evidence) {
-            Ok(reference) => Ok(reference),
-            Err(error) => {
-                // `capacity_refs` is the physical units for a concrete class and
-                // the quota slots for standing, which is the same list the
-                // availability fold subtracts from.
-                let refs = supply.capacity_refs();
-                // A standing hold whose slot the current quota no longer names
-                // still occupies one slot, and when every slot is already taken
-                // the honest answer is that standing has no availability left --
-                // the ordinary no-capacity outcome -- rather than a retry that
-                // blocks the reservation behind it.
-                let chosen = free_unit_for(&refs, occupancy).or_else(|| refs.first().cloned());
-                match chosen {
-                    Some(reference) => {
-                        log::warn!(
-                            "unresolved historical hold {hold_id} counted against {reference} instead of {requested}: {error}",
-                            hold_id = hold_id,
-                            reference = reference,
-                            requested = capacity_unit_ref,
-                            error = format!("{error:?}")
-                        );
-                        Ok(reference)
-                    }
-                    // A class with no units at all -- a standing policy whose
-                    // basis supply is gone, for one -- leaves nothing to count
-                    // the hold against. Keeping the recorded reference makes the
-                    // hold occupy nothing, which is the same answer as having no
-                    // availability, and it keeps the reservation out of a retry
-                    // loop it can never leave.
-                    None => Ok(capacity_unit_ref.to_owned()),
-                }
-            }
+        if let Ok(reference) = supply.resolve_capacity_unit(capacity_unit_ref, evidence) {
+            return Ok(Some(reference));
         }
+        // A hold whose unit is in neither the current composition nor a
+        // replacement lineage cannot be placed in this one: the composition it
+        // was admitted against is gone. Counting it against an arbitrary unit
+        // would put an unrelated seat under it, and refusing the admission puts
+        // every reservation that touches the pool into a retry loop it can never
+        // leave -- measured at thousands of failures per window. It is left out
+        // of the occupancy fold instead, on both sides of the check that
+        // compares the fold with the admission, so the two stay equal. What that
+        // costs is the one unit the hold used to stand for, and backfilling the
+        // binding from the owning composition is recorded in docs/TODO.md.
+        log::warn!(
+            "historical hold {hold_id} has no unit in the current composition and is left out of occupancy: {requested}",
+            hold_id = hold_id,
+            requested = capacity_unit_ref
+        );
+        Ok(None)
     }
 
     pub(super) async fn hold_for_reservation(
@@ -445,14 +425,17 @@ impl PostgresCapacityService {
                     ));
                 }
             }
-            let effective_capacity_unit_ref = Self::effective_hold_unit(
+            let Some(effective_capacity_unit_ref) = Self::effective_hold_unit(
                 &supply,
                 &hold.hold_id,
                 &hold.capacity_unit_ref,
                 hold.supply_evidence.as_ref(),
                 &occupancy,
                 &route.interval,
-            )?;
+            )?
+            else {
+                continue;
+            };
             occupancy.push(PendingOccupancy {
                 hold_id: hold.hold_id,
                 segment_booking_id: hold_facts.segment_booking_id,
