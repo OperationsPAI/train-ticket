@@ -8,11 +8,12 @@ All pending work is maintained in [TODO](../docs/TODO.md).
 ## Existing resident release
 
 The resident release is `train-ticket` in namespace `train-ticket`.
-The revision 279 environment must retain its deployed image references, workload configuration and persistent data.
-Do not apply `make deploy`, `make deploy-fast`, their dependent deployment targets, or a bare Helm upgrade to that release.
-The Makefile defaults to `IMAGE_TAG=local`; those defaults do not preserve the resident release's individual image references.
-The current documentation task performs no build, deployment or new test run.
-Existing broad and purchase class results are linked only through [current status](../docs/00-current-status.md).
+It is the continuously exercised environment and may be upgraded only while
+preserving its deployed per-service image references and persistent data.
+The Makefile defaults to `IMAGE_TAG=local`; those defaults do not preserve the
+resident release's individual immutable image references. Capture `helm get
+values`, change only the intended service image or configuration, and use Helm
+for the update so the release remains the source of truth.
 
 The chart's own [values.yaml](train-ticket/values.yaml) is the single values file.
 It carries the registry, the StorageClass, the central telemetry wiring, the resident exporters and the `loadgen-resident-state` persistent claim.
@@ -128,16 +129,57 @@ The local `deploy-apply` recipe supplies one `-f $(HELM_VALUES)` expression, so 
 ## Database initialization
 
 [db-bootstrap.yaml](helm/train-ticket/templates/db-bootstrap.yaml) creates one Job per PostgreSQL shard from `postgres.instances.<shard>.databases`.
-The hooks are `pre-upgrade,post-install`, with `before-hook-creation`, `backoffLimit: 3` and `activeDeadlineSeconds: 300`.
+The hooks are `post-install,post-upgrade`, with `before-hook-creation`, `backoffLimit: 3` and `activeDeadlineSeconds: 300`.
 Each Job waits for PostgreSQL, creates missing databases and grants privileges.
 Schema migrations belong to the services.
 
 The initdb ConfigMap runs only when PostgreSQL initializes an empty data directory.
-On upgrade, the bootstrap hook can create added databases before dependent services start.
-The default configuration uses `postgres-core`; a service's `pgInstance` can select a different shard.
+On upgrade, Helm first creates any newly declared PostgreSQL instance and then
+runs the bootstrap Job. A service must not be switched to a new shard in the
+same release that first creates that shard: create and verify the target first,
+then copy the database and switch the service in a later release.
+The default instance remains `postgres-core`; a service's `pgInstance` selects
+its assigned shard.
 The `postgres` Service is an ExternalName alias for `postgres.defaultInstance` and has no pod of its own.
 [verify-databases.sh](verify-databases.sh) reads database references from the rendered service DSNs and checks them against each shard.
 Database initialization and readiness checks do not establish business acceptance.
+
+### Online database moves between shards
+
+[migrate-postgres-database.sh](migrate-postgres-database.sh) moves an existing
+database without stopping its service for the full initial copy. The source
+must run with `walLevel: logical`, and the chart must already have created an
+empty database on the target shard.
+
+```bash
+deploy/migrate-postgres-database.sh prepare account core user
+deploy/migrate-postgres-database.sh status account core user
+deploy/migrate-postgres-database.sh verify account core user
+```
+
+`prepare` copies the schema, creates a publication and subscription, and waits
+for every table to reach ready state. `verify` compares exact per-table row
+counts after the subscriber catches the source WAL position.
+
+For the cutover, stop every writer of that database and then run:
+
+```bash
+deploy/migrate-postgres-database.sh quiesce account core user
+```
+
+`quiesce` waits for zero effective lag, repeats the exact row-count check,
+copies sequence positions and disables the subscription. Set the owning
+service's `pgInstance` in the single chart values file and deploy it. Once the
+new pod is healthy and its read/write behavior is verified, remove the
+replication objects:
+
+```bash
+deploy/migrate-postgres-database.sh finish account core user
+```
+
+The source database is intentionally retained as a rollback snapshot. Its
+later deletion is a separate storage cleanup and must not be combined with the
+traffic cutover.
 
 ## Seeding and verification
 
