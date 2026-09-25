@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from train_ticket_platform.events import EventEnvelope
-from train_ticket_platform.storage import OptimisticConcurrencyError, OutboxAppender, SnapshotRepository
+from train_ticket_platform.storage import OptimisticConcurrencyError, OutboxAppender, ReadinessGate, SnapshotRepository, run_migrations
 
 
 class FakeCursor:
@@ -27,6 +27,44 @@ class FakeConn:
         if self.rows:
             return FakeCursor(self.rows.pop(0))
         return FakeCursor(None)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    class _Transaction:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    def transaction(self):
+        return self._Transaction()
+
+
+class FakeMigrationPool:
+    def __init__(self, conn: FakeConn) -> None:
+        self.conn = conn
+
+    def connection(self) -> FakeConn:
+        return self.conn
+
+
+def test_migrations_lock_before_reading_version_rows(tmp_path) -> None:
+    migration = tmp_path / "001_create_probe.sql"
+    migration.write_text("CREATE TABLE probe(id text PRIMARY KEY);", encoding="utf-8")
+    conn = FakeConn([None])
+
+    run_migrations(FakeMigrationPool(conn), tmp_path, ReadinessGate())
+
+    statements = [sql for sql, _ in conn.commands]
+    assert "pg_advisory_xact_lock" in statements[0]
+    assert "current_database() || ':schema-migrations'" in statements[0]
+    assert "CREATE TABLE IF NOT EXISTS schema_migrations" in statements[1]
+    assert "SELECT 1 FROM schema_migrations" in statements[2]
 
 
 def test_snapshot_save_raises_on_zero_row_optimistic_update() -> None:
