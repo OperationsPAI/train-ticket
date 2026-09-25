@@ -162,6 +162,7 @@ public class PostgresPostSalesRepository implements PostSalesRepository {
         root.set("changeOperations",objectMapper.valueToTree(c.changeOperations()));
         root.set("compensationOperations",objectMapper.valueToTree(c.compensationOperations()));
         root.set("refundPayments",objectMapper.valueToTree(c.refundPayments()));
+        if(c.executionRedrive()==null)root.putNull("executionRedrive");else root.set("executionRedrive",objectMapper.valueToTree(c.executionRedrive()));
         if (c.createdAt() == null) root.putNull("createdAt"); else root.put("createdAt", c.createdAt().toString());
         root.set("scope", objectMapper.valueToTree(c.scope())); root.put("reasonCode", c.reasonCode()); root.put("actorRef", c.actorRef()); root.put("idempotencyKey", c.idempotencyKey());
         root.set("releasedOrderItems", objectMapper.valueToTree(c.releasedOrderItems()));
@@ -177,6 +178,7 @@ public class PostgresPostSalesRepository implements PostSalesRepository {
         java.util.Set<String> released = new java.util.LinkedHashSet<>();
         r.path("releasedOrderItems").forEach(value -> released.add(value.asText()));
         var result=PostSalesCase.rehydrate(text(r,"caseId"), text(r,"journeyOrderId"), PostSalesCaseType.valueOf(text(r,"caseType")), objectMapper.convertValue(r.path("scope"), PostSalesScope.class), text(r,"reasonCode"), text(r,"actorRef"), text(r,"idempotencyKey"), PostSalesCaseStatus.valueOf(text(r,"status")), r.path("decision").isNull()?null:decision(r.path("decision")), steps(r.path("executionPlan")), r.path("executionPlanAggregate").isNull()?null:plan(r.path("executionPlanAggregate")), r.path("terminalReason").asText(null), List.of(), r.path("createdAt").isTextual() ? Instant.parse(r.path("createdAt").asText()) : null).withReleasedOrderItems(released).withTargetOfferId(r.path("targetOfferId").asText(null));
+        if(r.path("executionRedrive").isObject())result.withExecutionRedrive(objectMapper.convertValue(r.get("executionRedrive"),PostSalesExecutionRedrive.class));
         if(r.path("changeOperations").isObject()) result.withChangeOperations(objectMapper.convertValue(r.get("changeOperations"),new com.fasterxml.jackson.core.type.TypeReference<Map<String,Map<String,Object>>>(){}));
         if(r.path("compensationOperations").isObject()) result.withCompensationOperations(objectMapper.convertValue(r.get("compensationOperations"),new com.fasterxml.jackson.core.type.TypeReference<Map<String,Map<String,Object>>>(){}));
         if(r.path("refundPayments").isArray())result.withRefundPayments(objectMapper.convertValue(r.get("refundPayments"),new com.fasterxml.jackson.core.type.TypeReference<List<Map<String,Object>>>(){}));
