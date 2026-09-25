@@ -69,6 +69,13 @@ class DecisionSnapshotTest {
                 source.recordDecision(decision, false, false, now, "cmd-quote", "cmd-evaluate", "corr");
                 repository.save(source);
                 assertEquals(decision, new PostgresPostSalesRepository(dataSource, mapper).findById(source.caseId()).orElseThrow().decision());
+                source.approve("http-approval", now.plusSeconds(1), "cmd-approve", "cmd-approve", "corr");
+                source.startExecution(now.plusSeconds(2), "cmd-execute", "cmd-approve", "corr");
+                source.prepareExecutionRedrive(now.plusSeconds(3), "cmd-redrive", "cmd-redrive", "corr-redrive");
+                repository.save(source);
+                var reloadedRedrive = new PostgresPostSalesRepository(dataSource, mapper).findById(source.caseId()).orElseThrow();
+                assertEquals(source.executionRedrive(), reloadedRedrive.executionRedrive());
+                assertEquals(source.executionRedriveEvents(), reloadedRedrive.executionRedriveEvents());
                 String snapshot = jdbc.queryForObject("SELECT data::text FROM post_sales_case_snapshots", String.class);
                 for (String field : List.of("refundAssessment", "changeAssessment", "componentDecisions")) {
                     var root = (ObjectNode) mapper.readTree(snapshot);
