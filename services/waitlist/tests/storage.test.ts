@@ -73,6 +73,20 @@ test("PostgresWaitlistRepository locks expired promotions before restoring credi
   assert.match(db.calls[0].sql, /FOR UPDATE SKIP LOCKED/u);
 });
 
+test("PostgresWaitlistRepository locks due fulfillment and order event recovery rows", async () => {
+  const db = new FakeDb();
+  const repository = new PostgresWaitlistRepository(db as never);
+
+  await repository.findRecoverableFulfillment(new Date("2026-09-25T00:00:00Z"));
+  await repository.findByJourneyOrderRef("ord-1");
+
+  assert.match(db.calls[0].sql, /status='MATCHING'/u);
+  assert.match(db.calls[0].sql, /journeyOrderRef/u);
+  assert.match(db.calls[0].sql, /fulfillment,nextActionAt/u);
+  assert.match(db.calls[0].sql, /FOR UPDATE SKIP LOCKED/u);
+  assert.match(db.calls[1].sql, /FOR UPDATE/u);
+});
+
 test("PostgresWaitlistRepository queue queries exclude CLOSED archival rows", async () => {
   const db = new FakeDb();
   const repository = new PostgresWaitlistRepository(db as never);
@@ -173,4 +187,12 @@ test("capacity release credits use event identity and atomic row locks", async (
   const migration = await readFile(join(process.cwd(), "migrations/008_capacity_credit_ledger.sql"), "utf8");
   assert.match(migration, /capacity_release_ref text PRIMARY KEY/u);
   assert.match(migration, /remaining_slots integer NOT NULL/u);
+});
+
+test("fulfillment recovery has a partial matching-order index", async () => {
+  const migration = await readFile(join(process.cwd(), "migrations/009_fulfillment_recovery_index.sql"), "utf8");
+  assert.match(migration, /waitlist_fulfillment_recovery_idx/u);
+  assert.match(migration, /updated_at, entry_id/u);
+  assert.match(migration, /status = 'MATCHING'/u);
+  assert.match(migration, /journeyOrderRef/u);
 });
