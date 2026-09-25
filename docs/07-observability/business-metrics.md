@@ -60,6 +60,19 @@ across currencies.
 | Event transport | `train_ticket.event.consumer.oldest_age` | Gauge, seconds | `event_stream`, `consumer_group` | Age of the oldest undelivered or pending entry. |
 | Event transport | `train_ticket.event.dlq.entries` | Gauge | `event_stream`, `consumer_group`, `event_type` | Current dead-letter population. |
 
+The Java shared platform already emits a smaller process-level transport set:
+
+- `train_ticket.event.consumer.messages` by `outcome`;
+- `train_ticket.event.consumer.failures` and `.dead_letters`, whose closed
+  `failure.type`/`reason` enums are normalized to `reason_code` in the
+  Prometheus branch;
+- `train_ticket.outbox.unpublished.sample`, `.oldest_unpublished.age`,
+  `.published` and `.failures`.
+
+The `train-ticket-transport` rules consume those series immediately. They are
+not substitutes for Redis state: a dead-letter counter says messages were moved
+over time, while `train_ticket.event.dlq.entries` is the current population.
+
 The Collector converts dots to underscores and adds Prometheus unit/type
 suffixes. For example, `train_ticket.payment.operations` becomes
 `train_ticket_payment_operations_total`, while
@@ -68,13 +81,18 @@ suffixes. For example, `train_ticket.payment.operations` becomes
 
 ## Recording rules
 
-`templates/_prometheus-rules.tpl` installs two groups. Runtime rules are
+`templates/_prometheus-rules.tpl` installs three groups. Runtime rules are
 immediately backed by existing instrumentation:
 
 - request rate and 5xx ratio by service;
 - p95 and p99 HTTP duration by service and route template;
 - database pool utilization and pending callers across Java and non-Java
   runtimes.
+
+Transport rules are immediately backed by Java services rebuilt with the shared
+event/outbox instrumentation. They expose handler outcomes, bounded failure
+classes, dead-letter handoffs, relay throughput, relay failures and oldest
+unpublished outbox age.
 
 Business rules aggregate the contract above without identifiers. Until an
 owning service publishes a source metric, its rule returns no series. This is
@@ -100,10 +118,12 @@ train_ticket:event_consumer_oldest_age:max_seconds
 train_ticket:event_dlq_entries:max
 ```
 
-## Implementation backlog
+## Implementation ownership
 
 The pipeline and names are committed first so service implementations cannot
-diverge. The following instrumentation remains service-owned work:
+diverge. The active checklist is maintained only in
+[the repository TODO](../TODO.md#t18-complete-low-cardinality-business-telemetry).
+Ownership is split as follows:
 
 - Journey Order and Booking Orchestration: order funnel and saga instruments.
 - Payment and Payment Channel: operation counters, amount counters and
@@ -114,8 +134,10 @@ diverge. The following instrumentation remains service-owned work:
 - Waitlist: intent age, population and promotion outcomes.
 - Wallet Promotion: balance conservation and operation outcomes.
 - Notification: durable queue depth, oldest task age and bounded retry outcomes.
-- Shared Redis transport: consumer lag, pending age and DLQ population. This
+- Shared Redis transport: current consumer lag, pending age and DLQ population. This
   belongs in one collector/exporter component, not one copy per subscriber.
+- Non-Java platform kits: adopt the existing Java event-consumer and outbox
+  metric contract so transport rules cover all services consistently.
 
 Each implementation must add a cardinality test that records two different
 business identifiers and proves they produce the same label set. It must also

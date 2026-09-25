@@ -78,6 +78,11 @@ processors:
           # Normalize older HTTP SDK attributes before applying the allowlist.
           - 'set(attributes["http.request.method"], attributes["http.method"]) where attributes["http.request.method"] == nil and attributes["http.method"] != nil'
           - 'set(attributes["http.response.status_code"], attributes["http.status_code"]) where attributes["http.response.status_code"] == nil and attributes["http.status_code"] != nil'
+          # The first shared Java transport instruments predate the common
+          # reason_code spelling. Both source attributes are closed enums, so
+          # normalize them here rather than dropping useful failure context.
+          - 'set(attributes["reason_code"], attributes["failure.type"]) where attributes["reason_code"] == nil and attributes["failure.type"] != nil'
+          - 'set(attributes["reason_code"], attributes["reason"]) where attributes["reason_code"] == nil and attributes["reason"] != nil'
           # Keep only bounded enums, route templates and infrastructure names.
           # error.type is intentionally absent: some runtimes record the full
           # exception text, which can contain request-specific values.
