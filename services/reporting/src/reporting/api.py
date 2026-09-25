@@ -158,6 +158,10 @@ def context_count_report_to_revenue_json(report: ContextCountReport) -> dict[str
         "generatedAt": rfc3339_utc(report.generated_at),
         "groupBy": report.group_by,
         "totalRevenue": [],
+        "total": report.total_items,
+        "eventCount": report.total_count,
+        "limit": report.limit,
+        "offset": report.offset,
         "items": [
             {
                 "dimension": item.dimension,
@@ -178,6 +182,9 @@ def revenue_report_to_json(report: RevenueReport) -> dict[str, object]:
         "generatedAt": rfc3339_utc(report.generated_at),
         "groupBy": report.group_by,
         "totalRevenue": money_totals_to_json(report.total_revenue),
+        "total": report.total_items,
+        "limit": report.limit,
+        "offset": report.offset,
         "items": [
             {
                 "dimension": item.dimension,
@@ -351,11 +358,11 @@ def configure_reporting_endpoints(app: FastAPI, service: ReportingApplicationSer
         return _paginated(routes[offset : offset + limit], len(routes), limit, offset)
 
     @app.get("/api/v1/metrics/revenue")
-    def get_revenue_report(groupBy: str = "route", limit: int = Query(20)) -> dict[str, object]:
-        _validate_pagination(limit, 0)
+    def get_revenue_report(groupBy: str = "route", limit: int = Query(20), offset: int = Query(0)) -> dict[str, object]:
+        _validate_pagination(limit, offset)
         if groupBy in {"source_context", "event_type"}:
-            return context_count_report_to_revenue_json(service.context_count_report(group_by=groupBy, limit=limit))
-        return revenue_report_to_json(service.revenue_report(group_by=groupBy, limit=limit))
+            return context_count_report_to_revenue_json(service.context_count_report(group_by=groupBy, limit=limit, offset=offset))
+        return revenue_report_to_json(service.revenue_report(group_by=groupBy, limit=limit, offset=offset))
 
     @app.get("/api/v1/metrics/anomalies")
     def get_anomalies() -> dict[str, object]:
