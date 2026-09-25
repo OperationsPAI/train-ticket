@@ -176,7 +176,7 @@ impl PostgresCapacityService {
         segments: &PreparedSupply,
         correlation: &str,
         now: u64,
-    ) -> Result<(SeatSupply, Vec<String>), AppError> {
+    ) -> Result<(SeatSupply, Vec<String>, Vec<PendingOccupancy>), AppError> {
         let route = segments.route(&facts.segment_ref)?;
         if route.service_date != facts.service_date {
             return Err(AppError::PreconditionFailed(
@@ -272,7 +272,7 @@ impl PostgresCapacityService {
             .bind(pool_id_for(&facts.segment_ref,&facts.class_ref)).bind(&supply.seat_map_id).bind(supply.seat_map_version as i64)
             .bind(supply.capacity() as i32).bind(serde_json::to_value(&supply).map_err(|e| AppError::Internal(e.to_string()))?)
             .execute(&mut **tx).await.map_err(to_app_storage)?;
-        Ok((supply, available))
+        Ok((supply, available, occupancy))
     }
 
     pub(super) async fn admission_supply(
@@ -282,15 +282,15 @@ impl PostgresCapacityService {
         segments: &PreparedSupply,
         correlation: &str,
         now: u64,
-    ) -> Result<(ReservationSupply, SeatSupply, Vec<String>), AppError> {
-        let (supply, available) = self.available_supply(tx, accepted, segments, correlation, now).await?;
+    ) -> Result<(ReservationSupply, SeatSupply, Vec<String>, Vec<PendingOccupancy>), AppError> {
+        let (supply, available, occupancy) = self.available_supply(tx, accepted, segments, correlation, now).await?;
         if !available.is_empty() || accepted.class_ref == "STANDING" || !accepted.standing_accepted {
-            return Ok((accepted.clone(), supply, available));
+            return Ok((accepted.clone(), supply, available, occupancy));
         }
         let mut standing = accepted.clone();
         standing.class_ref = "STANDING".into();
-        let (supply, available) = self.available_supply(tx, &standing, segments, correlation, now).await?;
-        Ok((standing, supply, available))
+        let (supply, available, occupancy) = self.available_supply(tx, &standing, segments, correlation, now).await?;
+        Ok((standing, supply, available, occupancy))
     }
 }
 
