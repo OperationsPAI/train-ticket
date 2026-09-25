@@ -1142,10 +1142,10 @@ services:
       enabled: true
       minReplicas: 2
       maxReplicas: 3
-      # Scale above roughly 500m CPU per pod. The request is calibrated to the
+      # Scale above roughly 375m CPU per pod. The request is calibrated to the
       # observed backlog-drain footprint so normal recovery does not scale to
       # the maximum immediately.
-      targetCPUUtilizationPercentage: 200
+      targetCPUUtilizationPercentage: 150
       behavior:
         scaleUp:
           stabilizationWindowSeconds: 60
