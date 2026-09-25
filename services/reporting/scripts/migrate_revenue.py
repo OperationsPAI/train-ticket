@@ -9,7 +9,7 @@ from psycopg_pool import ConnectionPool
 from train_ticket_platform.storage import run_migrations
 
 
-VERSION = "005_gross_captured_revenue.sql"
+VERSION = "006_exclude_incomplete_captures.sql"
 
 
 def migrate_revenue(url: str, schema: str = "public", timeout_seconds: int = 600) -> dict:
