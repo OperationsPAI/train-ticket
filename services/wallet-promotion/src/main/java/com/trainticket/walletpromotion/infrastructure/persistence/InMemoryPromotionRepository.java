@@ -5,6 +5,9 @@ import com.trainticket.platformkit.messaging.EventPublisher;
 import com.trainticket.walletpromotion.application.MutationArtifacts;
 import com.trainticket.walletpromotion.application.PromotionRepository;
 import com.trainticket.walletpromotion.domain.*;
+import com.trainticket.walletpromotion.metrics.WalletBalanceAccumulator;
+import com.trainticket.walletpromotion.metrics.WalletBalanceSample;
+import com.trainticket.walletpromotion.metrics.WalletBalanceState;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -50,6 +53,31 @@ public class InMemoryPromotionRepository implements PromotionRepository {
     public Optional<BenefitRedemption> findRedemption(String redemptionId) { return Optional.ofNullable(redemptions.get(redemptionId)); }
     public Optional<ReservationRelease> findReleaseByReference(String benefitId,String releaseRef) { return Optional.ofNullable(releaseReasonIndex.get(benefitId+"|"+releaseRef)).map(releases::get); }
     public Optional<ReversalRecord> findReversalByReference(String redemptionId,String reversalRef) { return Optional.ofNullable(reversalReasonIndex.get(redemptionId+"|"+reversalRef)).map(reversals::get); }
+    /**
+     * Reconstructs the gauges from the same durable maps a real deployment reads
+     * from PostgreSQL, so a fresh recorder over this repository reports the same
+     * levels a restart would.
+     */
+    public List<WalletBalanceSample> walletBalanceSnapshot() {
+        WalletBalanceAccumulator accumulator = new WalletBalanceAccumulator();
+        for (WalletAccount wallet : wallets.values()) {
+            for (WalletBalance balance : wallet.balances()) {
+                accumulator.add(WalletBalanceState.AVAILABLE, balance.currency(), balance.availableBalance().minorUnits());
+                accumulator.add(WalletBalanceState.RESERVED, balance.currency(), balance.reservedBalance().minorUnits());
+                accumulator.add(WalletBalanceState.REDEEMED, balance.currency(), balance.redeemedBalance().minorUnits());
+            }
+        }
+        for (PromotionInstrument benefit : benefits.values()) {
+            if (benefit.status() != PromotionStatus.EXPIRED) continue;
+            // Amount that left the wallet at expiry: whatever was issued and never redeemed.
+            long expired = benefit.issuedAmount().minorUnits() - benefit.redeemedAmount().minorUnits();
+            accumulator.add(WalletBalanceState.EXPIRED, benefit.issuedAmount().currency(), expired);
+        }
+        for (ReversalRecord reversal : reversals.values()) {
+            accumulator.add(WalletBalanceState.REVERSED, reversal.amount().currency(), reversal.amount().minorUnits());
+        }
+        return accumulator.samples();
+    }
     public synchronized void saveMutation(PromotionInstrument benefit, WalletAccount wallet, WalletPromotionEvent event, MutationArtifacts artifacts) {
         benefits.put(benefit.benefitId(), benefit); wallets.put(wallet.walletAccountId(), wallet);
         for (BenefitReservation reservation : artifacts.reservations()) {
