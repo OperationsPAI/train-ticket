@@ -7,6 +7,7 @@ import type { WaitlistCapacityFreed } from "./promotion.js";
 import { superviseWaitlistSubscribe, subscribeWaitlistOnce, type WaitlistSubscribeSupervisor } from "./subscriber-retry.js";
 import { HttpWaitlistIntentResolver } from "./intent.js";
 import { HttpCapacityReleaseResolver } from "./capacity-release.js";
+import { configureWaitlistMetricsFromEnvironment, type WaitlistIntentMetricSample, type WaitlistIntentMetricSource } from "./metrics.js";
 
 export type BootstrapOptions = Readonly<{ host?: string; port?: number; redisUrl?: string; instanceId?: string }>;
 
@@ -21,6 +22,13 @@ function consumedStream(envelope: EventEnvelope): string {
 export async function bootstrap(options: BootstrapOptions = {}) {
   const messaging = await createRedisMessagingAdapters(runtimeRedisUrl(options));
   const storage = process.env.DATABASE_URL ? await startWaitlistStorage(runtimeRedisUrl(options)) : undefined;
+  // The gauges are reconstructed from durable rows on every scrape. Without a
+  // database there is no durable population to report, so the source stays
+  // empty and those series are simply absent rather than reported as zero.
+  const intentMetricSource: WaitlistIntentMetricSource = storage
+    ? { intentMetricSamples: () => storage.intentMetricSamples() }
+    : { intentMetricSamples: (): readonly WaitlistIntentMetricSample[] => [] };
+  configureWaitlistMetricsFromEnvironment(intentMetricSource);
   const intentResolver = new HttpWaitlistIntentResolver();
   const applicationService = storage ? undefined : new WaitlistApplicationService(undefined, messaging.publisher, undefined, undefined, undefined, undefined, undefined, intentResolver);
   // Assigned just below, once `app.log` exists for the supervisor's logger.
