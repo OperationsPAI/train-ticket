@@ -32,6 +32,7 @@ func (h *Handler) RegisterRoutes(r gin.IRouter) {
 	v.POST("/channel-statements/generate", m, h.generateStatement)
 	v.POST("/channel-statements/:id/freeze", m, h.freezeStatement)
 	v.GET("/channel-statements/:id", h.getStatement)
+	v.GET("/channel-statements/:id/lines", h.listStatementLines)
 	v.GET("/channel-statements", h.listStatements)
 	v.POST("/channel-discrepancies", m, h.openDiscrepancy)
 	v.POST("/channel-discrepancies/:id/resolve", m, h.resolveDiscrepancy)
@@ -149,6 +150,10 @@ func (h *Handler) getStatement(c *gin.Context) {
 	out, err := h.svc.GetStatement(c.Request.Context(), c.Param("id"))
 	h.write(c, http.StatusOK, out, err)
 }
+func (h *Handler) listStatementLines(c *gin.Context) {
+	page, err := h.svc.ListStatementLines(c.Request.Context(), c.Param("id"), int64q(c, "after", 0), intq(c, "limit", 100))
+	h.write(c, http.StatusOK, page, err)
+}
 func (h *Handler) listStatements(c *gin.Context) {
 	f := application.StatementFilter{Channel: c.Query("channel"), StatementDate: c.Query("statementDate"), Currency: c.Query("currency"), Status: c.Query("status"), Limit: intq(c, "limit", 20), Offset: intq(c, "offset", 0)}
 	items, total, err := h.svc.ListStatements(c.Request.Context(), f)
@@ -198,6 +203,17 @@ func intq(c *gin.Context, n string, d int) int {
 		return d
 	}
 	i, err := strconv.Atoi(v)
+	if err != nil {
+		return d
+	}
+	return i
+}
+func int64q(c *gin.Context, n string, d int64) int64 {
+	v := strings.TrimSpace(c.Query(n))
+	if v == "" {
+		return d
+	}
+	i, err := strconv.ParseInt(v, 10, 64)
 	if err != nil {
 		return d
 	}
