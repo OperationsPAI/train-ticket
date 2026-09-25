@@ -357,7 +357,9 @@ export class WaitlistEntry {
 
   confirmJourneyOrder(journeyOrderRef: string): void {
     if (this._journeyOrderRef !== journeyOrderRef) throw new DomainError("PRECONDITION_FAILED", "Confirmed order differs from the matching order");
-    this.assertStatus("MATCHING", "Only matching waitlist entries can be fulfilled");
+    if (this._status !== "MATCHING" && this._status !== "SUSPENDED") {
+      throw new DomainError("INVALID_TRANSITION", "Only matching or suspended waitlist entries can be fulfilled");
+    }
     this._status = "FULFILLED";
   }
 

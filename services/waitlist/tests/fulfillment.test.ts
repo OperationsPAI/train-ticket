@@ -74,6 +74,7 @@ class DurableFulfillmentClient implements WaitlistFulfillmentClient {
   public readonly entitlementCalls: Array<{ travelerRef: string; key: string }> = [];
   public readonly releaseCalls: Array<{ holdId: string; key: string }> = [];
   public readonly orderCancelCalls: string[] = [];
+  public readonly paymentCancelCalls: string[] = [];
   public reservationEffects = 0;
   public paymentCreateEffects = 0;
   public paymentCaptureEffects = 0;
@@ -137,7 +138,10 @@ class DurableFulfillmentClient implements WaitlistFulfillmentClient {
     return this.payment!;
   }
 
-  async cancelPayment() {}
+  async cancelPayment(entry: WaitlistEntry) {
+    this.paymentCancelCalls.push(entry.fulfillment.paymentCancelIdempotencyKey);
+    if (this.payment) this.payment = { ...this.payment, status: "CANCELLED" };
+  }
 
   async releaseCapacity(traveler: FulfillmentTraveler, capacityHoldId: string) {
     this.releaseCalls.push({ holdId: capacityHoldId, key: traveler.capacityReleaseIdempotencyKey });
@@ -292,4 +296,42 @@ test("external fulfillment effects remain exactly once when every local checkpoi
   assert.equal(new Set(client.paymentCaptureCalls).size, 1);
   assert.equal(new Set(client.entitlementCalls.filter((call) => call.travelerRef === "tvl-1").map((call) => call.key)).size, 1);
   assert.equal(new Set(client.entitlementCalls.filter((call) => call.travelerRef === "tvl-2").map((call) => call.key)).size, 1);
+});
+
+test("payment is not created after the waitlist authorization deadline", async () => {
+  const entry = matchingEntry(["tvl-1"]);
+  const repository = new SnapshotRepository(entry);
+  const publisher = new InMemoryEventPublisher();
+  const client = new DurableFulfillmentClient(["tvl-1"], false);
+  client.seedReservation(entry, entry.fulfillment.travelers[0]!, "CONFIRMED", "hold-tvl-1");
+  const afterDeadline = new Date("2026-10-19T00:00:00.000Z");
+  const service = new WaitlistApplicationService(repository, publisher, undefined, undefined, undefined, () => afterDeadline, undefined, undefined, client);
+
+  await service.advanceNextWork(); // Persist saga reference.
+  await service.advanceNextWork(); // Recover reservation fact.
+  await service.advanceNextWork(); // Abort instead of creating payment.
+
+  assert.equal(client.paymentCreateEffects, 0);
+  assert.equal(client.orderStatus, "CANCELLED");
+  assert.deepEqual(client.releaseCalls.map((call) => call.holdId), ["hold-tvl-1"]);
+});
+
+test("captured payment continues to ticketing after the authorization deadline", async () => {
+  const entry = matchingEntry(["tvl-1"]);
+  const traveler = entry.fulfillment.travelers[0]!;
+  entry.recordBookingSaga("saga-1");
+  entry.recordReservation(traveler.travelerRef, "CONFIRMED", "hold-tvl-1");
+  entry.recordPayment("pi-fulfillment", "CAPTURED");
+  const repository = new SnapshotRepository(entry);
+  const client = new DurableFulfillmentClient(["tvl-1"]);
+  client.seedReservation(entry, traveler, "CONFIRMED", "hold-tvl-1");
+  await client.createPayment(entry);
+  await client.capturePayment(entry);
+  const service = new WaitlistApplicationService(repository, new InMemoryEventPublisher(), undefined, undefined, undefined,
+    () => new Date("2026-10-19T00:00:00.000Z"), undefined, undefined, client);
+
+  await service.advanceNextWork();
+
+  assert.equal(client.entitlementEffects, 1);
+  assert.equal(client.orderCancelCalls.length, 0);
 });
