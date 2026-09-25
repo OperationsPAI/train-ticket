@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+from train_ticket_platform.storage import ReadinessGate
 
 from risk_compliance import (
     EventEnvelope,
@@ -880,3 +881,83 @@ def test_readiness_probes_stay_in_the_thread_pool_because_they_query_postgres() 
             f"synchronously, so as a coroutine it would block the event loop"
         )
     assert seen == readiness, f"readiness routes missing from the app: {readiness - seen}"
+
+
+class SequencedReadinessPool:
+    def __init__(self, outcomes: list[bool]) -> None:
+        self._outcomes = iter(outcomes)
+        self.probe_count = 0
+
+    def connection(self):
+        pool = self
+
+        class ConnectionContext:
+            def __enter__(self):
+                pool.probe_count += 1
+                if not next(pool._outcomes):
+                    raise RuntimeError("database unavailable")
+                return self
+
+            def __exit__(self, exc_type, exc, traceback) -> None:
+                return None
+
+            def execute(self, statement: str):
+                assert statement == "SELECT 1"
+                return self
+
+            def fetchone(self) -> tuple[int]:
+                return (1,)
+
+        return ConnectionContext()
+
+    def close(self) -> None:
+        return None
+
+
+def app_with_readiness_pool(pool: SequencedReadinessPool):
+    app = fake_app()
+    gate = ReadinessGate()
+    gate.mark_ready()
+    app.state.database_pool = pool
+    app.state.readiness = gate
+    return app, gate
+
+
+def test_readiness_recovers_after_a_successful_database_probe() -> None:
+    pool = SequencedReadinessPool([False, True])
+    app, gate = app_with_readiness_pool(pool)
+    client = TestClient(app)
+
+    failed = client.get("/readyz")
+    recovered = client.get("/readyz")
+
+    assert failed.status_code == 503
+    assert failed.json() == {"status": "not-ready"}
+    assert recovered.status_code == 200
+    assert recovered.json() == {"status": "ok"}
+    assert gate.ready
+    assert gate.failure is None
+    assert pool.probe_count == 2
+
+
+def test_readiness_gates_are_independent_between_worker_instances() -> None:
+    failing_pool = SequencedReadinessPool([False, True])
+    healthy_pool = SequencedReadinessPool([True, True])
+    failing_worker, failing_gate = app_with_readiness_pool(failing_pool)
+    healthy_worker, healthy_gate = app_with_readiness_pool(healthy_pool)
+    failing_client = TestClient(failing_worker)
+    healthy_client = TestClient(healthy_worker)
+
+    assert failing_client.get("/ready").status_code == 503
+    assert not failing_gate.ready
+    assert failing_gate.failure == "database readiness check failed"
+
+    assert healthy_client.get("/ready").status_code == 200
+    assert healthy_gate.ready
+    assert healthy_gate.failure is None
+    assert not failing_gate.ready
+
+    assert failing_client.get("/ready").status_code == 200
+    assert failing_gate.ready
+    assert healthy_gate.ready
+    assert healthy_client.get("/ready").status_code == 200
