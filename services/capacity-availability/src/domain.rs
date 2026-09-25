@@ -1056,6 +1056,7 @@ impl InventoryPool {
                 &hold.hold_id,
                 &hold.scope.capacity_unit_ref,
                 &hold.scope.station_interval,
+                hold.scope.references.traveler_ref.as_deref(),
                 now,
             ) {
                 let event = CapacityHoldFailed {
@@ -1440,6 +1441,7 @@ impl InventoryPool {
         requested_hold_id: &HoldId,
         unit: &CapacityUnitRef,
         interval: &StationInterval,
+        traveler_ref: Option<&str>,
         now: u64,
     ) -> Option<&CapacityHold> {
         self.holds.values().find(|existing| {
@@ -1447,6 +1449,14 @@ impl InventoryPool {
                 && existing.scope.capacity_unit_ref == *unit
                 && existing.is_blocking_at(now)
                 && existing.scope.station_interval.overlaps(interval)
+                // The same traveler taking the same unit for the same interval
+                // is a replacement, not a double booking: a change reserves the
+                // seat it is changing to while the ticket it replaces still
+                // holds one, and that reservation was refused with
+                // `OVERLAPPING_HOLD` -- thousands of changes in a burst.
+                && traveler_ref.is_none_or(|traveler| {
+                    existing.scope.references.traveler_ref.as_deref() != Some(traveler)
+                })
         })
     }
 }
@@ -1693,13 +1703,45 @@ mod tests {
         requested_at: u64,
         expires_at: u64,
     ) -> CapacityHold {
+        request_by(
+            id,
+            unit_ref,
+            from,
+            to,
+            key,
+            "traveler-1",
+            requested_at,
+            expires_at,
+        )
+    }
+
+    /// The same, for a named traveler: two holds on one unit only conflict when
+    /// they belong to different travelers.
+    #[allow(clippy::too_many_arguments)]
+    fn request_by(
+        id: &str,
+        unit_ref: &str,
+        from: u32,
+        to: u32,
+        key: &str,
+        traveler: &str,
+        requested_at: u64,
+        expires_at: u64,
+    ) -> CapacityHold {
         CapacityHold::request(
             hold_id(id),
             HoldScope::new(
                 InventoryPoolId::new("pool-G123-2026-07-03-first-class").unwrap(),
                 unit(unit_ref),
                 StationInterval::new(from, to).unwrap(),
-                metadata(),
+                ReferenceMetadata::new(
+                    "booking-orchestration",
+                    "purchase-hold",
+                    Some("order-1"),
+                    Some("segment-booking-1"),
+                    Some(traveler),
+                )
+                .unwrap(),
             ),
             idempotency(key),
             requested_at,
@@ -1726,7 +1768,7 @@ mod tests {
         let events = pool.request_hold(first, 10).unwrap();
         assert!(matches!(events.first(), Some(DomainEvent::CapacityHeld(_))));
 
-        let overlap = request("hold-2", "01A", 2, 4, "idem-2", 11, 71);
+        let overlap = request_by("hold-2", "01A", 2, 4, "idem-2", "traveler-2", 11, 71);
         let failed = pool.request_hold(overlap, 11).unwrap();
         match failed.first() {
             Some(DomainEvent::CapacityHoldFailed(event)) => assert!(matches!(
@@ -1735,6 +1777,23 @@ mod tests {
             )),
             _ => panic!("expected capacity hold failure event"),
         }
+    }
+
+    #[test]
+    fn the_same_traveler_may_re_take_the_same_unit() {
+        // A change reserves the seat it is changing to while the ticket it
+        // replaces still holds one, for the same traveler. Counting that as a
+        // double booking refused thousands of changes in a burst.
+        let mut pool = pool();
+        let first = request("hold-1", "01A", 1, 3, "idem-1", 10, 70);
+        assert!(matches!(
+            pool.request_hold(first, 10).unwrap().first(),
+            Some(DomainEvent::CapacityHeld(_))
+        ));
+
+        let replacement = request("hold-2", "01A", 2, 4, "idem-2", 11, 71);
+        let events = pool.request_hold(replacement, 11).unwrap();
+        assert!(matches!(events.first(), Some(DomainEvent::CapacityHeld(_))));
     }
 
     #[test]
@@ -1999,10 +2058,20 @@ mod tests {
             10,
         );
         pool.expire_hold(&hold_id("hold-expired"), 40).unwrap();
-        // 与 hold-held 在同一 unit 和区间上重叠，判定为 Failed。
+        // Overlaps hold-held on the same unit and interval, from another
+        // traveler, so it is judged Failed.
         place(
             &mut pool,
-            request("hold-failed", "000", 1, 2, "idem-failed", 50, 60),
+            request_by(
+                "hold-failed",
+                "000",
+                1,
+                2,
+                "idem-failed",
+                "traveler-2",
+                50,
+                60,
+            ),
             50,
         );
         // 仍在保留期内的 Released，不得被移除。
@@ -2139,10 +2208,11 @@ mod tests {
             durable("hold-blocker", "000", 1, 2, "idem-blocker", 10),
             10,
         );
-        // 与 hold-blocker 冲突，进入 Failed，从未登记 idempotency key。
+        // Conflicts with hold-blocker for another traveler, so it reaches Failed
+        // without its idempotency key ever being registered.
         place(
             &mut pool,
-            request("hold-lost", "000", 1, 2, "idem-retry", 20, 30),
+            request_by("hold-lost", "000", 1, 2, "idem-retry", "traveler-2", 20, 30),
             20,
         );
         assert_eq!(
