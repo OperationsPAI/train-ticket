@@ -187,7 +187,7 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
 
   async findExpiredOffers(now: Date): Promise<readonly WaitlistEntry[]> {
     return [...this.entries.values()].filter((entry) => {
-      if (entry.status === "QUEUED" || entry.status === "SUSPENDED") return hasDeadlinePassed(entry, now);
+      if (entry.status === "QUEUED" || (entry.status === "SUSPENDED" && !entry.journeyOrderRef)) return hasDeadlinePassed(entry, now);
       return entry.status === "MATCHING" && !entry.journeyOrderRef && ((entry.offerExpiresAt !== null && entry.offerExpiresAt <= now) || hasDeadlinePassed(entry, now));
     });
   }

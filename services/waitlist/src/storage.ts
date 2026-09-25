@@ -189,7 +189,8 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
     const result = await this.db.query(
       `SELECT * FROM waitlist_entries
        WHERE (status = 'MATCHING' AND data->>'journeyOrderRef' IS NULL AND offer_expires_at <= $1)
-          OR (status IN ('QUEUED','SUSPENDED') AND (data->>'deadline')::timestamptz <= $1)
+          OR (status = 'QUEUED' AND (data->>'deadline')::timestamptz <= $1)
+          OR (status = 'SUSPENDED' AND data->>'journeyOrderRef' IS NULL AND (data->>'deadline')::timestamptz <= $1)
           OR (status = 'MATCHING' AND data->>'journeyOrderRef' IS NULL AND (data->>'deadline')::timestamptz <= $1)
        ORDER BY COALESCE(offer_expires_at, (data->>'deadline')::timestamptz) ASC, entry_id ASC
        FOR UPDATE SKIP LOCKED`,

@@ -71,6 +71,8 @@ test("PostgresWaitlistRepository locks expired promotions before restoring credi
   const db = new FakeDb();
   await new PostgresWaitlistRepository(db as never).findExpiredOffers(new Date("2026-07-20T00:00:00Z"));
   assert.match(db.calls[0].sql, /FOR UPDATE SKIP LOCKED/u);
+  assert.match(db.calls[0].sql, /status = 'SUSPENDED' AND data->>'journeyOrderRef' IS NULL/u);
+  assert.doesNotMatch(db.calls[0].sql, /status IN \('QUEUED','SUSPENDED'\)/u);
 });
 
 test("PostgresWaitlistRepository locks due fulfillment and order event recovery rows", async () => {
