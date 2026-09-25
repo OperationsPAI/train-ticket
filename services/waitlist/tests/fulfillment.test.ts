@@ -51,6 +51,20 @@ class SnapshotRepository implements WaitlistRepository {
   }
 }
 
+class SaveFailureRepository extends SnapshotRepository {
+  private failures = 0;
+
+  failNextSave() { this.failures++; }
+
+  override async save(entry: WaitlistEntry) {
+    if (this.failures > 0) {
+      this.failures--;
+      throw new Error("simulated crash before waitlist checkpoint commit");
+    }
+    return super.save(entry);
+  }
+}
+
 class DurableFulfillmentClient implements WaitlistFulfillmentClient {
   public orderStatus = "CREATED";
   public sagaStatusOverride?: string;
@@ -233,4 +247,49 @@ test("terminal order cleanup releases held seats and restores only traveler slot
   assert.equal(repository.restoredSlots, 1);
   assert.deepEqual(client.releaseCalls.map((call) => call.holdId), ["hold-tvl-1"]);
   assert.equal(new Set(client.releaseCalls.map((call) => call.key)).size, 1);
+});
+
+test("external fulfillment effects remain exactly once when every local checkpoint save fails once", async () => {
+  const repository = new SaveFailureRepository(matchingEntry());
+  const publisher = new InMemoryEventPublisher();
+  const client = new DurableFulfillmentClient(["tvl-1", "tvl-2"], false);
+  let now = NOW;
+  const restart = () => new WaitlistApplicationService(repository, publisher, undefined, undefined, undefined, () => now, undefined, undefined, client);
+  const advance = async () => {
+    const result = await restart().advanceNextWork("corr-0194f2e0-7b3e-7610-8284-5c26e8b0c204");
+    now = new Date(now.getTime() + 1_001);
+    return result;
+  };
+  const crashAfterEffect = async (effectCount: () => number) => {
+    const before = effectCount();
+    repository.failNextSave();
+    await assert.rejects(advance, /simulated crash/u);
+    assert.equal(effectCount(), before + 1);
+    await advance();
+    assert.equal(effectCount(), before + 1);
+  };
+
+  await advance(); // Persist the saga identity before injecting effect failures.
+  await crashAfterEffect(() => client.reservationEffects);
+  await crashAfterEffect(() => client.reservationEffects);
+  await crashAfterEffect(() => client.paymentCreateEffects);
+  await crashAfterEffect(() => client.paymentCaptureEffects);
+  await crashAfterEffect(() => client.entitlementEffects);
+  await crashAfterEffect(() => client.entitlementEffects);
+
+  client.orderStatus = "CONFIRMED";
+  await advance();
+
+  assert.equal(repository.current().status, "FULFILLED");
+  assert.equal(client.reservationEffects, 2);
+  assert.equal(client.paymentCreateEffects, 1);
+  assert.equal(client.paymentCaptureEffects, 1);
+  assert.equal(client.entitlementEffects, 2);
+  assert.equal(publisher.findByEventType("WaitlistFulfilled").length, 1);
+  assert.equal(new Set(client.reservationCalls.filter((call) => call.travelerRef === "tvl-1").map((call) => call.key)).size, 1);
+  assert.equal(new Set(client.reservationCalls.filter((call) => call.travelerRef === "tvl-2").map((call) => call.key)).size, 1);
+  assert.equal(new Set(client.paymentCreateCalls).size, 1);
+  assert.equal(new Set(client.paymentCaptureCalls).size, 1);
+  assert.equal(new Set(client.entitlementCalls.filter((call) => call.travelerRef === "tvl-1").map((call) => call.key)).size, 1);
+  assert.equal(new Set(client.entitlementCalls.filter((call) => call.travelerRef === "tvl-2").map((call) => call.key)).size, 1);
 });
