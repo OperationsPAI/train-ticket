@@ -472,7 +472,7 @@ out of `ACCEPTED`.
 | `grossPaymentAmount` | Money | yes | Sum of payment lines. |
 | `grossRefundAmount` | Money | yes | Sum of refund lines as positive Money. |
 | `feeAmount` | Money | yes | Sum of fee lines. |
-| `statementHash` | string | yes | Hash of canonical statement content. |
+| `statementHash` | string | yes | Streaming hash of canonical line evidence in stable statement order. Lines are not embedded in this event. |
 | `status` | enum | yes | `GENERATED`. |
 | `generatedAt` | RFC3339 UTC | yes | Generation timestamp. |
 | `aggregateVersion` | integer | yes | Version after generation. |
@@ -495,7 +495,7 @@ out of `ACCEPTED`.
 | `currency` | string | yes | ISO-4217 currency. |
 | `seedVersion` | string | yes | Statement seed version. |
 | `lineCount` | integer | yes | Number of lines. |
-| `statementHash` | string | yes | Frozen statement hash. |
+| `statementHash` | string | yes | Frozen statement hash; line rows are immutable and are not embedded in this event. |
 | `status` | enum | yes | `FROZEN`. |
 | `frozenAt` | RFC3339 UTC | yes | Freeze timestamp. |
 | `aggregateVersion` | integer | yes | Version after freeze. |
@@ -539,14 +539,14 @@ out of `ACCEPTED`.
 |---|---|---|---|
 | `discrepancyId` | string | yes | Discrepancy ID (`pcd-<uuid-v7>`). |
 | `channelStatementId` | string | yes | Statement ID. |
-| `statementLineId` | string | no | Statement line ID, if line-bound. |
+| `statementLineId` | string | no | Statement line ID, if line-bound; it must resolve inside `channelStatementId`. |
 | `channelOrderId` | string | no | Related channel order, if known. |
 | `channelRefundId` | string | no | Related channel refund, if known. |
 | `paymentIntentId` | string | no | Payment intent, if known. |
 | `refundId` | string | no | Payment refund, if known. |
 | `differenceType` | enum | yes | Difference classification. |
-| `expectedAmount` | Money | yes | Expected amount. |
-| `actualAmount` | Money | yes | Actual amount. |
+| `expectedAmount` | Money | yes | Expected amount; for a line-bound discrepancy it must equal the immutable statement line. |
+| `actualAmount` | Money | yes | Actual amount; for a line-bound discrepancy it must equal the immutable statement line. |
 | `evidenceRef` | string | yes | Evidence reference/hash; no raw PII/documents. |
 | `status` | enum | yes | `OPENED`. |
 | `openedAt` | RFC3339 UTC | yes | Opening timestamp. |

@@ -90,7 +90,7 @@ Payment Channel 负责平台与模拟支付渠道之间的渠道侧资金交互�
 |---|---|---|
 | `ChannelOrder` | 维护一次渠道付款/授权/扣款意图、SIM 提交尝试、渠道流水、状态、金额和审计证据。 | 同一 `paymentIntentId` + `captureRef`/purpose + `channel` + command material 在幂等窗口内只能有一个语义等价订单；提交后金额和币种不可改；`SUCCEEDED`、`FAILED`、`MISSED` 为本域结局态，普通提交命令不可回退；`MISSED` 只能通过查询/账单发现生成恢复事件或差异，不允许静默改成未提交；渠道成功金额必须等于请求金额，除非故障种子显式生成对账差异而非改变本地请求金额。 |
 | `ChannelRefund` | 维护一次原路退款请求、部分退款金额、原渠道交易引用、提交/查询尝试和退款状态。 | 必须引用已成功或可查询成功的 `ChannelOrder`；退款渠道必须等于原订单渠道；同一 `refundId`/business refund ref + original `channelTransactionId` + amount 幂等；同一原订单累计成功退款金额不得超过可退成功金额；终态 `SUCCEEDED`、`FAILED`、`MISSED` 不可由普通重试逆转。 |
-| `ChannelStatement` | 生成和冻结 SIM 日账单，记录账单行、生成种子、文件摘要和匹配状态。 | 同一 `channel` + `statementDate` + `currency` + `seedVersion` 唯一；账单冻结后行项目不可改写，只能追加匹配/差异状态；生成必须确定性，同一输入事件流和种子得到同一摘要；账单日期使用 UTC 自然日边界。 |
+| `ChannelStatement` | 生成和冻结 SIM 日账单，记录账单行、生成种子、文件摘要和匹配状态。 | 同一 `channel` + `statementDate` + `currency` + `seedVersion` 唯一；账单冻结后行项目不可改写，只能追加匹配/差异状态；生成必须确定性，同一数据库快照、同一 UTC 日切和同一 seedVersion 得到相同的行 ID 与摘要；账单归属使用成功事实的 `completedAt`，后续状态查询不能移动账单日。 |
 | `ReconciliationDiscrepancy` | 表达渠道订单/退款/账单与 Finance case 之间的差异，跟踪调查、解决和审计引用。 | 每个差异必须绑定 statement line、channel order/refund 或 finance case 中至少一个可追踪引用；差异类型不可在无新证据时改写；人工解决必须有 operatorRef、reasonCode、evidenceRef；`RESOLVED`、`REJECTED` 为终态，可查询安息。 |
 
 ### 5.1 `ChannelOrder` 关键字段
@@ -121,7 +121,9 @@ Payment Channel 负责平台与模拟支付渠道之间的渠道侧资金交互�
 - `generatedAt`、`periodStartAt`、`periodEndAt`（RFC3339 UTC）。
 - `lineCount`、`grossPaymentAmount`、`grossRefundAmount`、`feeAmount`。
 - `statementHash`、`status`：`GENERATED`、`FROZEN`、`MATCHING`、`MATCHED`、`DISCREPANCY_FOUND`、`CLOSED`。
-- `lines[]`：支付、退款、手续费和种子化差异行。
+- `generationFingerprint`：生成场景集合的规范化摘要，用于拒绝同一账单业务键被不同场景参数重放。
+- `lineStorage`：当前为 `NORMALIZED_V1`；聚合快照只保留账单摘要，支付、退款、手续费和种子化差异行保存在不可变的 `channel_statement_lines`。
+- `lines[]` 不再嵌入 statement 查询结果；调用方通过游标分页接口读取，单页最多 500 行。
 
 ### 5.4 `ReconciliationDiscrepancy` 关键字段
 
@@ -174,6 +176,17 @@ Payment Channel 负责平台与模拟支付渠道之间的渠道侧资金交互�
 | `MATCHED` | 所有账单行与平台事实匹配。 | `CLOSED` |
 | `DISCREPANCY_FOUND` | 至少一个差异已打开。 | `MATCHING`, `CLOSED` |
 | `CLOSED` | 对账周期关闭。 | 终态，可查询安息 |
+
+账单生成以 `REPEATABLE READ` 事务读取一个一致的 PostgreSQL 快照，并按
+业务 ID 游标分批扫描。statement 摘要、规范化 line、identity claim 和 outbox
+事实在同一事务中提交；失败时不会留下孤儿 line。相同业务键的并发生成只会
+产生一个 statement 和一个 `ChannelStatementGenerated` 事实。冻结使用行锁，
+相同结果的并发重放不会重复更新版本或重复发事件。
+
+历史 JSON `lines` 由 Payment Channel 自带的 `backfill-statement-lines` 命令
+逐 statement 短事务迁移。每条记录先复制并核对有序 JSON 摘要与行数，再原子
+移除旧数组；statement/line ID、`statementHash`、聚合版本和已有 discrepancy
+引用均保持不变。命令可中断后重跑，坏数据会回滚并明确失败。
 
 ## 7. 命令和领域事件（含幂等键）
 
@@ -273,7 +286,7 @@ Payment Channel 的外部方一律模拟，SIM 网关实现位于本域 ACL 内�
 
 - 无真实网络：SIM gateway 是本进程或测试夹具内的确定性适配器，不打开外部 HTTP/TCP 连接，不读取真实渠道凭据。
 - 可种子化：`FaultSeed(channel, businessRef, statementDate, scenarioCode, seedVersion)` 决定同步响应、异步结果、查询结果和账单行差异。
-- 可复现：相同事件流、相同 UTC 日切、相同 seedVersion 必须生成相同 `statementHash`。
+- 可复现：相同数据库快照、相同 UTC 日切、相同 seedVersion 和相同场景集合必须生成相同 line ID 与 `statementHash`；同一业务键的重放返回原 statement。
 - 掉单：SIM 对提交返回 accepted 或 timeout，但查询在故障窗口内返回 `NOT_FOUND`，日账单可缺失该行或迟到生成差异。
 - 金额差异：SIM 日账单对指定行注入 `actualAmount != expectedAmount`，本域保持原 `ChannelOrder.amount` 不变并打开 `AMOUNT_MISMATCH` 差异。
 - 退款状态：SIM 的 `REFUNDED` 只证明渠道退款完成；Payment 是否发布 `RefundSettled` 由 Payment 自己决定。
