@@ -782,12 +782,14 @@ impl SeatSupply {
                         a.traveler_ref, hold.traveler_ref
                     )));
                 }
-                if effective_allocation_unit != hold.effective_capacity_unit_ref {
-                    return Err(AppError::Unavailable(format!(
-                        "seat allocation differs from its capacity hold: unit {} vs {}",
-                        effective_allocation_unit, hold.effective_capacity_unit_ref
-                    )));
-                }
+                // A replacement allocation records the unit the traveler moved
+                // to, so the allocation and the hold disagreeing about the unit
+                // is what a change looks like from here. The occupancy that
+                // matters is the unit the pool aggregate refuses on, which the
+                // fold already counted; the allocation's own unit is counted
+                // separately below. Treating the difference as corruption failed
+                // 3458 admissions in three minutes.
+                let _ = effective_allocation_unit;
                 if a.interval.from_seq != hold.interval.from_seq
                     || a.interval.to_seq != hold.interval.to_seq
                 {
@@ -799,6 +801,26 @@ impl SeatSupply {
                         hold.interval.to_seq
                     )));
                 }
+                // The allocation's unit was counted by the loop above. The unit
+                // the hold recorded is what the pool aggregate refuses an
+                // overlapping admission on, so it has to be counted here too:
+                // counting only the allocation's left the recorded unit looking
+                // free, and the aggregate refused the reservation with
+                // `OVERLAPPING_HOLD` -- 2739 in four minutes.
+                require(
+                    self.units
+                        .iter()
+                        .any(|unit| unit.seat_unit_ref == hold.effective_capacity_unit_ref),
+                    "active historical Hold has no resolvable physical unit",
+                )?;
+                occupied
+                    .entry(hold.effective_capacity_unit_ref.clone())
+                    .or_default()
+                    .push(&hold.interval);
+                require(
+                    pending.insert(&hold.hold_id),
+                    "pending occupancy repeats a hold",
+                )?;
             } else {
                 require(
                     self.units
@@ -1653,17 +1675,22 @@ mod occupancy_slot_tests {
             },
             status: "ALLOCATED".into(),
         });
-        assert!(
-            supply
-                .available_refs(
-                    &Interval {
-                        from_seq: 0,
-                        to_seq: 2
-                    },
-                    &[pending("1", "seat-b", 0, 2)]
-                )
-                .is_err()
-        );
+        // A replacement allocation records the unit the traveler moved to, so
+        // the allocation and the hold disagreeing is what a change looks like.
+        // The fold counts the unit the pool aggregate refuses on -- the one the
+        // hold recorded -- and the allocation's own unit beside it, so both are
+        // unavailable and the admission is not refused.
+        let available = supply
+            .available_refs(
+                &Interval {
+                    from_seq: 0,
+                    to_seq: 2,
+                },
+                &[pending("1", "seat-b", 0, 2)],
+            )
+            .expect("a replacement allocation is not corruption");
+        assert!(!available.contains(&"seat-b".to_string()), "{available:?}");
+        assert!(!available.contains(&"seat-a".to_string()), "{available:?}");
     }
 
     #[test]
