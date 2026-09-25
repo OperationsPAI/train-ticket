@@ -71,6 +71,10 @@ export async function deliveryPolicyDecision(
   task: NotificationTaskSnapshot,
   now = new Date(),
 ): Promise<DeliveryPolicyDecision | undefined> {
+  // Expiry is cheaper to decide and stronger than supersession: once a message
+  // is no longer timely, querying for a newer state cannot make it sendable.
+  const expired = expiryDecision(task, now);
+  if (expired) return expired;
   const signatures = supersedingSignatures(task);
   if (signatures.length > 0) {
     const result = await client.query(
@@ -90,5 +94,5 @@ export async function deliveryPolicyDecision(
     );
     if ((result.rowCount ?? 0) > 0) return { action: "supersede", reasonCode: "newer_terminal_state" };
   }
-  return expiryDecision(task, now);
+  return undefined;
 }
