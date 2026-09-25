@@ -36,6 +36,8 @@ from fare_pricing.domain import (
 from fare_pricing.application.service import (
     AdjustmentQuoteNotFoundError,
     ConsumedEventConflictError,
+    ProjectionConflictError,
+    ProjectionNotReadyError,
     QuoteNotFoundError,
     RuleSetNotFoundError,
 )
@@ -572,19 +574,52 @@ class PostgresFarePricingStore:
 
     def upsert_capacity_snapshot(self, snapshot: CapacitySnapshot) -> None:
         def write(conn: Any) -> None:
+            identity = f"fare-pricing:capacity:{snapshot.segment_ref}:{snapshot.departure_date.isoformat()}"
+            conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", (identity,))
+            row = conn.execute(
+                "SELECT total_capacity,remaining_capacity,snapshot_version FROM capacity_snapshot_cache "
+                "WHERE segment_ref=%s AND departure_date=%s",
+                (snapshot.segment_ref, snapshot.departure_date),
+            ).fetchone()
+            if row is None:
+                conn.execute(
+                    "INSERT INTO capacity_snapshot_cache(segment_ref,departure_date,total_capacity,remaining_capacity,snapshot_version) "
+                    "VALUES (%s,%s,%s,%s,%s)",
+                    (
+                        snapshot.segment_ref,
+                        snapshot.departure_date,
+                        snapshot.total_capacity,
+                        snapshot.remaining_capacity,
+                        snapshot.snapshot_version,
+                    ),
+                )
+                return
+
+            current = CapacitySnapshot(
+                snapshot.segment_ref,
+                snapshot.departure_date,
+                int(row[0]),
+                int(row[1]),
+                int(row[2]),
+            )
+            if snapshot.snapshot_version < current.snapshot_version:
+                return
+            if snapshot.snapshot_version == current.snapshot_version:
+                if snapshot != current:
+                    raise ProjectionConflictError(
+                        f"capacity snapshot {snapshot.segment_ref}/{snapshot.departure_date.isoformat()} "
+                        f"has conflicting content at version {snapshot.snapshot_version}"
+                    )
+                return
             conn.execute(
-                "INSERT INTO capacity_snapshot_cache(segment_ref, departure_date, total_capacity, remaining_capacity, snapshot_version) "
-                "VALUES (%s, %s, %s, %s, %s) "
-                "ON CONFLICT (segment_ref, departure_date) DO UPDATE SET "
-                "total_capacity = EXCLUDED.total_capacity, remaining_capacity = EXCLUDED.remaining_capacity, "
-                "snapshot_version = EXCLUDED.snapshot_version, updated_at = now() "
-                "WHERE capacity_snapshot_cache.snapshot_version <= EXCLUDED.snapshot_version",
+                "UPDATE capacity_snapshot_cache SET total_capacity=%s,remaining_capacity=%s,snapshot_version=%s,updated_at=now() "
+                "WHERE segment_ref=%s AND departure_date=%s",
                 (
-                    snapshot.segment_ref,
-                    snapshot.departure_date,
                     snapshot.total_capacity,
                     snapshot.remaining_capacity,
                     snapshot.snapshot_version,
+                    snapshot.segment_ref,
+                    snapshot.departure_date,
                 ),
             )
 
@@ -650,26 +685,54 @@ class PostgresFarePricingStore:
 
     def upsert_eligibility_certificate(self, certificate: EligibilityCertificateSummary) -> None:
         def write(conn: Any) -> None:
+            identity = f"fare-pricing:eligibility:{certificate.eligibility_certificate_id}"
+            conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", (identity,))
             current = self._eligibility_certificates.get(conn, certificate.eligibility_certificate_id)
-            if current is not None:
-                existing = _certificate_from_json(current[1])
-                if certificate.aggregate_version < existing.aggregate_version:
-                    return
+            if current is None:
+                self._eligibility_certificates.save(
+                    conn,
+                    certificate.eligibility_certificate_id,
+                    _certificate_to_json(certificate),
+                    None,
+                )
+                return
+
+            existing = _certificate_from_json(current[1])
+            if certificate.aggregate_version < existing.aggregate_version:
+                return
+            if certificate.aggregate_version == existing.aggregate_version:
+                if certificate != existing:
+                    raise ProjectionConflictError(
+                        f"eligibility certificate {certificate.eligibility_certificate_id} "
+                        f"has conflicting content at version {certificate.aggregate_version}"
+                    )
+                return
             self._eligibility_certificates.save(
                 conn,
                 certificate.eligibility_certificate_id,
                 _certificate_to_json(certificate),
-                None if current is None else int(current[0]),
+                int(current[0]),
             )
 
         self._with_conn(write)
 
     def update_eligibility_usage_counts(self, certificate_id: str, reserved: int, confirmed: int, aggregate_version: int) -> None:
         def write(conn: Any) -> None:
+            identity = f"fare-pricing:eligibility:{certificate_id}"
+            conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", (identity,))
             current = self._eligibility_certificates.get(conn, certificate_id)
             if current is None:
+                raise ProjectionNotReadyError(f"eligibility certificate projection is not ready: {certificate_id}")
+            existing = _certificate_from_json(current[1])
+            if aggregate_version < existing.aggregate_version:
                 return
-            certificate = _certificate_from_json(current[1]).with_usage_counts(reserved, confirmed, aggregate_version)
+            certificate = existing.with_usage_counts(reserved, confirmed, aggregate_version)
+            if aggregate_version == existing.aggregate_version:
+                if certificate != existing:
+                    raise ProjectionConflictError(
+                        f"eligibility certificate {certificate_id} has conflicting usage at version {aggregate_version}"
+                    )
+                return
             self._eligibility_certificates.save(conn, certificate_id, _certificate_to_json(certificate), int(current[0]))
 
         self._with_conn(write)
