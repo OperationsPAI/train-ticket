@@ -14,6 +14,8 @@ const confirmedOrder = {
   sourceEventId: "evt-order-001",
   confirmedAt: new Date("2026-07-10T10:00:00.000Z"),
   correlationId: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222",
+  sourceStream: "events:payment",
+  sourceEventType: "PAYMENT_CAPTURED",
 };
 
 describe("points calculation", () => {
@@ -187,7 +189,7 @@ describe("Member aggregate", () => {
     assert.equal(redeemed.redeemablePoints, 0);
     expectDomainError(() => redeemed.redeem({ memberId: redeemed.id, points: 5 }), "INSUFFICIENT_POINTS");
 
-    const { member: restored, events } = redeemed.restoreRedeemedTicketPoints({ orderId: "ord-ticket", sourceEventId: "evt-cancel", cancelledAt: new Date("2026-07-10T10:05:00.000Z") });
+    const { member: restored, events } = redeemed.restoreRedeemedTicketPoints({ orderId: "ord-ticket", sourceEventId: "evt-cancel", cancelledAt: new Date("2026-07-10T10:05:00.000Z"), sourceStream: "events:journey-order", sourceEventType: "JOURNEY_ORDER_CANCELLED" });
 
     assert.equal(restored.redeemablePoints, 1_000);
     assert.equal(events[0]?.type, "PointsRestored");
