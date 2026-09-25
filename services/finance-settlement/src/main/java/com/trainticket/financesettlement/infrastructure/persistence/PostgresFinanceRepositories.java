@@ -84,6 +84,25 @@ final class PostgresFinanceRepositories {
         }
 
         @Override
+        public List<String> findSupplierIdsForPeriod(LocalDate startDate, LocalDate endDate) {
+            return jdbc.query(
+                """
+                    SELECT DISTINCT data->>'orderItemId' AS supplier_id
+                    FROM revenue_recognition_snapshots
+                    WHERE (data->>'recognizedAt')::timestamptz >= ?::timestamptz
+                      AND (data->>'recognizedAt')::timestamptz < ?::timestamptz
+                      AND data->>'componentCode' = 'fare'
+                      AND COALESCE(data->>'orderItemId','') <> ''
+                      AND data->>'orderItemId' <> data->>'orderId'
+                    ORDER BY supplier_id
+                    """,
+                (rs, rowNum) -> rs.getString("supplier_id"),
+                startDate.atStartOfDay().toInstant(ZoneOffset.UTC).toString(),
+                endDate.plusDays(1).atStartOfDay().toInstant(ZoneOffset.UTC).toString()
+            );
+        }
+
+        @Override
         public void save(RevenueRecognition recognition) {
             long newVersion = snapshots.save(
                 recognition.revenueRecognitionId(),
