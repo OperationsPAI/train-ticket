@@ -652,12 +652,19 @@ class ContextCountReport:
     group_by: str
     items: tuple[ContextCountItem, ...]
     total_count: int
+    total_items: int
+    limit: int
+    offset: int
 
     def __post_init__(self) -> None:
         if self.group_by not in {"source_context", "event_type"}:
             raise ReportingError("context count report dimension is invalid")
         if self.total_count < 0:
             raise ReportingError("context count report total_count cannot be negative")
+        if self.total_items < 0:
+            raise ReportingError("context count report total_items cannot be negative")
+        if self.limit < 1 or self.offset < 0:
+            raise ReportingError("context count report pagination is invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -691,6 +698,15 @@ class RevenueReport:
     group_by: str
     items: tuple[RevenueItem, ...]
     total_revenue: tuple[Money, ...]
+    total_items: int
+    limit: int
+    offset: int
+
+    def __post_init__(self) -> None:
+        if self.total_items < 0:
+            raise ReportingError("revenue report total_items cannot be negative")
+        if self.limit < 1 or self.offset < 0:
+            raise ReportingError("revenue report pagination is invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -810,9 +826,11 @@ class MetricAggregator:
             for (context, event_type), bucket in sorted(grouped.items())
         )
 
-    def context_count_report(self, group_by: str = "source_context", limit: int = 20, at: datetime | None = None) -> ContextCountReport:
+    def context_count_report(self, group_by: str = "source_context", limit: int = 20, offset: int = 0, at: datetime | None = None) -> ContextCountReport:
         if limit < 1:
             raise ReportingError("context count report limit must be positive")
+        if offset < 0:
+            raise ReportingError("context count report offset cannot be negative")
         dimensions = {
             "source_context": lambda event: event.source_context,
             "event_type": lambda event: event.event_type,
@@ -823,15 +841,25 @@ class MetricAggregator:
         for event in self.events:
             value = dimensions[group_by](event) or "unknown"
             grouped[value] = grouped.get(value, 0) + 1
-        items = tuple(
+        all_items = tuple(
             ContextCountItem(group_by, value, count)
-            for value, count in sorted(grouped.items(), key=lambda item: (-item[1], item[0]))[:limit]
+            for value, count in sorted(grouped.items(), key=lambda item: (-item[1], item[0]))
         )
-        return ContextCountReport(at or datetime.now(UTC), group_by, items, sum(grouped.values()))
+        return ContextCountReport(
+            at or datetime.now(UTC),
+            group_by,
+            all_items[offset : offset + limit],
+            sum(grouped.values()),
+            len(all_items),
+            limit,
+            offset,
+        )
 
-    def revenue_report(self, group_by: str = "route", limit: int = 20, at: datetime | None = None) -> RevenueReport:
+    def revenue_report(self, group_by: str = "route", limit: int = 20, offset: int = 0, at: datetime | None = None) -> RevenueReport:
         if limit < 1:
             raise ReportingError("revenue report limit must be positive")
+        if offset < 0:
+            raise ReportingError("revenue report offset cannot be negative")
         now = at or datetime.now(UTC)
         dimensions = {
             "route": lambda event: event.route_id,
@@ -848,13 +876,22 @@ class MetricAggregator:
                 continue
             value = dimensions[group_by](event) or "unknown"
             grouped.setdefault((value, event.amount.currency), []).append(event)
-        items = tuple(
+        all_items = tuple(
             sorted(
                 (self._revenue_item(group_by, value, currency, events) for (value, currency), events in grouped.items()),
                 key=lambda item: (item.revenue.currency, -item.revenue.amount, item.value),
-            )[:limit]
+            )
         )
-        return RevenueReport(now, group_by, items, self._money_totals_from_money(item.revenue for item in items))
+        items = all_items[offset : offset + limit]
+        return RevenueReport(
+            now,
+            group_by,
+            items,
+            self._money_totals_from_money(item.revenue for item in all_items),
+            len(all_items),
+            limit,
+            offset,
+        )
 
     def _since(self, now: datetime, window: timedelta) -> list[OperationalEvent]:
         start = now - window

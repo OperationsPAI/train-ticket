@@ -40,7 +40,8 @@ PostgreSQL 的操作聚合最多加载最新10000条符合条件的事件。
 
 PostgreSQL 包含缺失金额的 captured 行，金额按零计算且数量增加一次。
 内存金额报表排除缺失金额事件。
-`totalRevenue` 返回按 ISO 币种代码排序的 Money 数组，不执行汇率换算；空结果返回空数组。
+`totalRevenue` 返回分页前完整筛选结果、按 ISO 币种代码排序的 Money 数组，不执行汇率换算；空结果返回空数组。
+`items` 使用 `limit`/`offset` 分页，`total` 表示分页前分组行数；越界页不改变完整总额。
 
 ## 异常规则
 

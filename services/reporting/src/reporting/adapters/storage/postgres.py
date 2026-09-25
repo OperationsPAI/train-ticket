@@ -539,29 +539,57 @@ class PostgresReportingApplicationService:
         with self._pool.connection() as conn:
             return self._load_aggregator(conn).route_metrics(at)
 
-    def context_count_report(self, group_by: str = "source_context", limit: int = 20, at: datetime | None = None) -> ContextCountReport:
+    def context_count_report(self, group_by: str = "source_context", limit: int = 20, offset: int = 0, at: datetime | None = None) -> ContextCountReport:
         with self._pool.connection() as conn:
-            return self._load_aggregator(conn).context_count_report(group_by=group_by, limit=limit, at=at)
+            return self._load_aggregator(conn).context_count_report(group_by=group_by, limit=limit, offset=offset, at=at)
 
-    def revenue_report(self, group_by: str = "route", limit: int = 20, at: datetime | None = None) -> RevenueReport:
+    def revenue_report(self, group_by: str = "route", limit: int = 20, offset: int = 0, at: datetime | None = None) -> RevenueReport:
         if group_by not in {"route", "seat_class", "channel", "passenger_type", "time_period"}:
             with self._pool.connection() as conn:
-                return self._load_aggregator(conn).revenue_report(group_by=group_by, limit=limit, at=at)
+                return self._load_aggregator(conn).revenue_report(group_by=group_by, limit=limit, offset=offset, at=at)
         with self._pool.connection() as conn:
             rows = conn.execute(
                 """
-                SELECT dimension_value, currency, revenue, payment_count, distance_km,
-                       ancillary_count, insurance_count
-                FROM reporting_revenue_breakdowns
-                WHERE dimension = %s
-                ORDER BY revenue DESC, dimension_value
-                LIMIT %s
+                WITH filtered AS MATERIALIZED (
+                  SELECT dimension_value, currency, revenue, payment_count, distance_km,
+                         ancillary_count, insurance_count
+                  FROM reporting_revenue_breakdowns
+                  WHERE dimension = %s
+                ),
+                currency_totals AS (
+                  SELECT currency, SUM(revenue) AS revenue
+                  FROM filtered
+                  GROUP BY currency
+                ),
+                summary AS (
+                  SELECT
+                    (SELECT COUNT(*) FROM filtered) AS total_items,
+                    COALESCE(array_agg(currency ORDER BY currency), ARRAY[]::text[]) AS currencies,
+                    COALESCE(array_agg(revenue ORDER BY currency), ARRAY[]::numeric[]) AS revenues
+                  FROM currency_totals
+                ),
+                page AS (
+                  SELECT *
+                  FROM filtered
+                  ORDER BY currency, revenue DESC, dimension_value
+                  LIMIT %s OFFSET %s
+                )
+                SELECT page.dimension_value, page.currency, page.revenue, page.payment_count,
+                       page.distance_km, page.ancillary_count, page.insurance_count,
+                       summary.total_items, summary.currencies, summary.revenues
+                FROM summary
+                LEFT JOIN page ON true
+                ORDER BY page.currency, page.revenue DESC, page.dimension_value
                 """,
-                (group_by, limit),
+                (group_by, limit, offset),
             ).fetchall()
-        items = tuple(self._revenue_item_from_view(group_by, row) for row in rows)
-        totals = MetricAggregator._money_totals_from_money(item.revenue for item in items)
-        return RevenueReport(at or utc_now(), group_by, items, totals)
+        summary = rows[0]
+        items = tuple(self._revenue_item_from_view(group_by, row) for row in rows if row[0] is not None)
+        totals = tuple(
+            Money(amount, currency)
+            for currency, amount in zip(summary[8], summary[9], strict=True)
+        )
+        return RevenueReport(at or utc_now(), group_by, items, totals, int(summary[7]), limit, offset)
 
     @staticmethod
     def _revenue_item_from_view(group_by: str, row: Sequence[Any]) -> RevenueItem:
