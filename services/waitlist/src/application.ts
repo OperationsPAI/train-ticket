@@ -1,6 +1,7 @@
 import { tracedFetch, type EventPublisher } from "@trainticket/ts-kit";
 import { DomainError, WaitlistEntry, WaitlistQueue, normalizeFareClass, type CreateWaitlistEntry, type FareClass, type FareClassInput, type PriorityInput, type TravelInterval, type WaitlistEntrySnapshot } from "./domain.js";
 import { SuppliedWaitlistIntentResolver, type WaitlistIntentResolver } from "./intent.js";
+import { HttpWaitlistFulfillmentClient, WaitlistFulfillmentOrchestrator, type WaitlistFulfillmentClient } from "./fulfillment.js";
 import { HttpCapacityAvailabilityClient, HttpFarePricingClient, HttpOfferManagementClient, PromotionOrchestrator, type CapacityAvailabilityClient, type FarePricingClient, type JourneyOrderClient, type OfferManagementClient, type WaitlistCapacityFreed, type WaitlistMatchCriteria, type WaitlistRepository } from "./promotion.js";
 import { publishAll, waitlistCancelled, waitlistExpired, waitlistFulfilled, waitlistPaymentAuthorizationRequested, waitlistQueued, waitlistRequestCreated } from "./publisher.js";
 
@@ -27,7 +28,7 @@ export type JoinWaitlistRequest = Readonly<{
 
 export type AcceptPromotionRequest = Readonly<Record<string, unknown>>;
 export type CancelWaitlistRequest = Readonly<{ reason?: string }>;
-export type AcceptPromotionResponse = Readonly<{ orderId: string; seatAssignment: unknown }>;
+export type AcceptPromotionResponse = Readonly<{ orderId: string; amount?: Readonly<{ currency: string; minorUnits: number }>; seatAssignment: unknown }>;
 export type QueueInfo = Readonly<{ totalQueued: number; myPosition: number | null; estimatedPromotionRate: number }>;
 export type WaitlistRequestList = Readonly<{
   items: readonly WaitlistRequestResource[];
@@ -75,7 +76,10 @@ export class HttpJourneyOrderClient implements JourneyOrderClient {
     if (typeof body.orderId !== "string" || body.orderId.trim().length === 0) {
       throw new Error("Journey order response did not include orderId");
     }
-    return { orderId: body.orderId, seatAssignment: null };
+    const monetarySummary = body.monetarySummary;
+    const amount = monetarySummary && typeof monetarySummary === "object" && !Array.isArray(monetarySummary)
+      ? moneyField((monetarySummary as Record<string, unknown>).payableTotal) : undefined;
+    return { orderId: body.orderId, amount, seatAssignment: null };
   }
 }
 
@@ -150,14 +154,29 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
       .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime() || left.entryId.localeCompare(right.entryId))[0];
   }
 
-  async restoreCapacityCredits(entry: WaitlistEntry): Promise<void> {
+  async findRecoverableFulfillment(now: Date): Promise<WaitlistEntry | undefined> {
+    return [...this.entries.values()]
+      .filter((entry) => entry.status === "MATCHING" && !!entry.journeyOrderRef
+        && (!entry.fulfillment.nextActionAt || new Date(entry.fulfillment.nextActionAt) <= now))
+      .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime() || left.entryId.localeCompare(right.entryId))[0];
+  }
+
+  async restoreCapacityCredits(entry: WaitlistEntry, slots = entry.travelerRefs.length): Promise<void> {
+    if (!Number.isSafeInteger(slots) || slots < 0 || slots > entry.travelerRefs.length) {
+      throw new DomainError("VALIDATION_FAILED", "restored capacity slots are outside the matched traveler group");
+    }
+    let remaining = slots;
     for (const allocation of entry.matchedCapacityCredits) {
+      if (remaining === 0) break;
       const credit = this.capacityCredits.get(allocation.capacityReleaseRef);
-      if (!credit || credit.remainingSlots + allocation.slots > credit.freedSlots) {
+      const restored = Math.min(allocation.slots, remaining);
+      if (!credit || credit.remainingSlots + restored > credit.freedSlots) {
         throw new DomainError("CONFLICT", "Capacity credit cannot be restored");
       }
-      credit.remainingSlots += allocation.slots;
+      credit.remainingSlots += restored;
+      remaining -= restored;
     }
+    if (remaining !== 0) throw new DomainError("CONFLICT", "Matched capacity credits do not cover the restored slots");
   }
 
   async findTopQueued(criteria: WaitlistMatchCriteria): Promise<WaitlistEntry | undefined> {
@@ -168,7 +187,7 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
 
   async findExpiredOffers(now: Date): Promise<readonly WaitlistEntry[]> {
     return [...this.entries.values()].filter((entry) => {
-      if (entry.status === "QUEUED") return hasDeadlinePassed(entry, now);
+      if (entry.status === "QUEUED" || entry.status === "SUSPENDED") return hasDeadlinePassed(entry, now);
       return entry.status === "MATCHING" && !entry.journeyOrderRef && ((entry.offerExpiresAt !== null && entry.offerExpiresAt <= now) || hasDeadlinePassed(entry, now));
     });
   }
@@ -217,6 +236,7 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
 
 export class WaitlistApplicationService {
   private readonly promotion: PromotionOrchestrator;
+  private readonly fulfillment: WaitlistFulfillmentOrchestrator;
 
   constructor(
     private readonly repository: WaitlistRepository = new InMemoryWaitlistRepository(),
@@ -227,8 +247,10 @@ export class WaitlistApplicationService {
     private readonly now: () => Date = () => new Date(),
     offerManagement: OfferManagementClient = new HttpOfferManagementClient(),
     private readonly intentResolver: WaitlistIntentResolver = new SuppliedWaitlistIntentResolver(),
+    fulfillmentClient: WaitlistFulfillmentClient = new HttpWaitlistFulfillmentClient(),
   ) {
     this.promotion = new PromotionOrchestrator(repository, farePricing, capacityAvailability, publisher ?? { publish: async () => undefined }, offerManagement, now);
+    this.fulfillment = new WaitlistFulfillmentOrchestrator(repository, publisher ?? { publish: async () => undefined }, fulfillmentClient, now);
   }
 
   async join(request: JoinWaitlistRequest, correlationId?: string): Promise<WaitlistRequestResource> {
@@ -272,9 +294,9 @@ export class WaitlistApplicationService {
     const requestedAt = this.now();
     entry.ensureOfferAcceptable(requestedAt);
     const order = await this.journeyOrder.createOrder(entry);
-    entry.linkJourneyOrder(requestedAt, order.orderId);
+    entry.linkJourneyOrder(requestedAt, order.orderId, order.amount);
     await this.repository.save(entry);
-    return { orderId: order.orderId, seatAssignment: order.seatAssignment ?? null };
+    return { orderId: order.orderId, amount: order.amount, seatAssignment: order.seatAssignment ?? null };
   }
 
   async queueInfo(segmentRef: string, departureDate: string, seatClass?: string, entryId?: string): Promise<QueueInfo> {
@@ -295,6 +317,10 @@ export class WaitlistApplicationService {
     return this.promotion.advanceNextPromotion(this.journeyOrder, correlationId);
   }
 
+  async advanceNextWork(correlationId?: string): Promise<WaitlistEntrySnapshot | undefined> {
+    return await this.fulfillment.advanceNext(correlationId) ?? this.advanceNextPromotion(correlationId);
+  }
+
   async handleJourneyOrderConfirmed(orderId: string, correlationId?: string): Promise<WaitlistRequestResource | undefined> {
     const entry = await this.repository.findByJourneyOrderRef?.(orderId);
     if (!entry) return undefined;
@@ -307,16 +333,8 @@ export class WaitlistApplicationService {
   }
 
   async handleJourneyOrderCancelled(orderId: string, correlationId?: string): Promise<WaitlistRequestResource | undefined> {
-    const entry = await this.repository.findByJourneyOrderRef?.(orderId);
-    if (!entry || entry.status !== "MATCHING") return undefined;
-    const queuedAt = this.now().toISOString();
-    entry.returnToQueue();
-    if (hasDeadlinePassed(entry, this.now())) entry.expire();
-    const snapshot = await this.repository.save(entry);
-    if (this.publisher) await publishAll(this.publisher, [snapshot.status === "EXPIRED"
-      ? waitlistExpired(snapshot, entry.loadedVersion, correlationId, queuedAt)
-      : waitlistQueued(snapshot, entry.loadedVersion, correlationId, queuedAt, { journeyOrderRef: orderId })]);
-    return toWaitlistRequestResource(snapshot);
+    const snapshot = await this.fulfillment.handleOrderCancelled(orderId, correlationId);
+    return snapshot ? toWaitlistRequestResource(snapshot) : undefined;
   }
 
   async expireDueOffers(correlationId?: string) {
@@ -449,6 +467,14 @@ function compareForPromotion(left: WaitlistEntry, right: WaitlistEntry): number 
   return right.priorityScore - left.priorityScore
     || left.createdAt.getTime() - right.createdAt.getTime()
     || left.entryId.localeCompare(right.entryId);
+}
+
+function moneyField(value: unknown): { currency: string; minorUnits: number } | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const money = value as Record<string, unknown>;
+  const minorUnits = Number(money.minorUnits);
+  return typeof money.currency === "string" && money.currency.trim() && Number.isSafeInteger(minorUnits) && minorUnits > 0
+    ? { currency: money.currency, minorUnits } : undefined;
 }
 
 function sameCapacityCredit(left: WaitlistCapacityFreed, right: WaitlistCapacityFreed): boolean {
