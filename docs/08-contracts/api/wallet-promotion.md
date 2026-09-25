@@ -159,14 +159,20 @@ facts fail closed; request fields alone are not accepted as proof of scope.
 Replays with the same key and request return the stored response.
 Reusing a stored key with a different request returns HTTP 422 `IDEMPOTENCY_KEY_REUSED`.
 
-For `issuanceSource=POST_SALES_COMP`, the service also deduplicates by `caseId` independently of the HTTP idempotency key.
-The same case and an equal `IssueBenefitCommand` return the existing benefit with HTTP 201, including when a new HTTP key is supplied.
+The service deduplicates issuance independently of the HTTP idempotency key.
+Compensation issuance uses its canonical `caseId`; other callers can supply an
+explicit `issuanceRef`; legacy manual issuance derives an identity from account
+and complete business reason. The same identity and an equal
+`IssueBenefitCommand` return the existing benefit with HTTP 201, including when
+a new HTTP key is supplied.
 Equality covers account, amount and currency, benefit and balance types, issuance source, case reference, applicable scope, redemption and revocation rules, validity timestamps and the complete business reason.
-A different command for an already recorded case returns HTTP 409 `CONFLICT` with message `compensation case already has another issuance request`.
+A different command for an already recorded identity returns HTTP 409 `CONFLICT`.
 An accepted case replay adds no benefit, wallet credit, ledger entry or issuance event.
 
-The PostgreSQL implementation locks the case and receiving account with transaction advisory locks and records the original command in `compensation_issuances`.
-Its `case_id` primary key and unique `benefit_id` bind one benefit to the case.
+The PostgreSQL implementation locks the receiving account and issuance identity
+with transaction advisory locks and records the original command in
+`benefit_issuances`. Its `issuance_key` primary key and unique `benefit_id` bind
+one benefit to one business issuance.
 The issuance record, benefit, wallet ledger and event outbox are written within the issuance transaction.
 
 **Request:**
@@ -179,6 +185,7 @@ The issuance record, benefit, wallet ledger and event outbox are written within 
 | `amount` | Money | yes | Issued amount. `minorUnits` must be positive. |
 | `issuanceSource` | enum | yes | `MANUAL_OPS`, `POST_SALES_COMP`, or `DISRUPTION_COMP`. |
 | `caseId` | string | conditional | Required and retained for `POST_SALES_COMP`; other sources do not retain this field in the issued benefit. Recovery references can be carried in `businessReason`. |
+| `issuanceRef` | string | no | Explicit stable business identity for non-Post-Sales issuance. Compensation uses `caseId`. |
 | `applicableScope` | object | yes | Eligibility scope. |
 | `redemptionRule` | object | yes | Redemption rule. |
 | `revocationRule` | object | yes | Revocation rule. |
@@ -189,6 +196,12 @@ The issuance record, benefit, wallet ledger and event outbox are written within 
 **Response (201):** `PromotionInstrument` resource.
 
 **Domain effects:** An initial issuance creates or updates the account's `WalletAccount`, credits the matching available balance and emits `BenefitIssued`.
+
+All balance-changing operations serialize on the owning wallet account and
+reread state after acquiring the lock. This includes distinct benefits that
+share one account. Business-key replays return the persisted result without a
+second ledger or event effect; optimistic snapshot conflicts are not a normal
+client-visible retry mechanism.
 
 **Error codes:** `VALIDATION_FAILED`, `DOMAIN_RULE_VIOLATION`, `CONFLICT`, `IDEMPOTENCY_KEY_REUSED`, `UNAVAILABLE`.
 
