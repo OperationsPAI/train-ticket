@@ -96,7 +96,7 @@ class BookingSagaStepDeadlineLiveTest {
                 new BookingOrchestrationService.RequestReservationCommand(segment, traveler,
                     "sb-live-" + PrefixedIds.newEventId()),
                 new ReservationFactsResolver.Facts(order, segment, traveler, "ofi-live", "SECOND_CLASS",
-                    "ss-live-1", "2026-10-24"), correlation));
+                    "ss-live-1", "2026-10-24", false), correlation));
 
             // The wait of this reservation began long before the sweep ran, so both the recorded
             // wait start and the wait index carry a past deadline.
