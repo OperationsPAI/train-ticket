@@ -567,7 +567,7 @@ class OperationalEvent:
 class RouteMetrics:
     route_id: str
     service_date: date
-    route_revenue: Money
+    route_revenue: tuple[Money, ...]
     route_demand: int
     bookings: int
     searches: int
@@ -622,7 +622,7 @@ class ContextEventRollup:
 class MetricSnapshot:
     generated_at: datetime
     orders_per_second: int
-    revenue_per_hour: Money
+    revenue_per_hour: tuple[Money, ...]
     fill_rate_by_route: Mapping[str, float]
     avg_booking_latency: Mapping[str, float]
     refund_rate: float
@@ -690,7 +690,7 @@ class RevenueReport:
     generated_at: datetime
     group_by: str
     items: tuple[RevenueItem, ...]
-    total_revenue: Money
+    total_revenue: tuple[Money, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -721,7 +721,6 @@ class AnomalyDetected:
 class MetricAggregator:
     """Production-realistic in-memory projection for real-time dashboards."""
 
-    currency: str = "USD"
     events: list[OperationalEvent] = field(default_factory=list)
     # Index of the event ids in `events`, so recording is O(1) rather than a scan
     # of everything recorded so far. `events` stays a list because its order is
@@ -732,8 +731,6 @@ class MetricAggregator:
         self._event_ids = {event.event_id for event in self.events}
 
     def record(self, event: OperationalEvent) -> None:
-        if event.amount is not None and event.amount.currency != self.currency:
-            raise ReportingError(f"metric aggregator currency mismatch: {event.amount.currency} != {self.currency}")
         if event.event_id in self._event_ids:
             return
         self._event_ids.add(event.event_id)
@@ -742,7 +739,9 @@ class MetricAggregator:
     def snapshot(self, at: datetime | None = None) -> MetricSnapshot:
         now = at or datetime.now(UTC)
         orders_60s = [event for event in self._since(now, timedelta(seconds=60)) if event.is_order]
-        revenue_1h = sum((event.amount.amount for event in self._since(now, timedelta(hours=1)) if event.is_payment_captured and event.amount is not None), Decimal("0.00"))
+        revenue_1h = self._money_totals(
+            event for event in self._since(now, timedelta(hours=1)) if event.is_payment_captured
+        )
         latencies = [event.booking_latency_ms for event in self.events if event.booking_latency_ms is not None]
         refund_events = [event for event in self._since(now, timedelta(hours=24)) if event.is_refund]
         order_events_24h = [event for event in self._since(now, timedelta(hours=24)) if event.is_order]
@@ -752,7 +751,7 @@ class MetricAggregator:
         return MetricSnapshot(
             generated_at=now,
             orders_per_second=len(orders_60s),
-            revenue_per_hour=Money(revenue_1h, self.currency),
+            revenue_per_hour=revenue_1h,
             fill_rate_by_route={route.route_id: route.fill_rate for route in routes},
             avg_booking_latency=self._latency_percentiles(latencies),
             refund_rate=self._rate(len(refund_events), len(order_events_24h)),
@@ -771,7 +770,7 @@ class MetricAggregator:
             grouped.setdefault((event.route_id, service_date), []).append(event)
         metrics: list[RouteMetrics] = []
         for (route_id, service_date), events in grouped.items():
-            revenue = sum((event.amount.amount for event in events if event.is_payment_captured and event.amount is not None), Decimal("0.00"))
+            revenue = self._money_totals(event for event in events if event.is_payment_captured)
             searches = sum(1 for event in events if event.is_search)
             bookings = sum(1 for event in events if event.is_order)
             confirmed = self._latest_int(events, "confirmed") or bookings
@@ -781,7 +780,7 @@ class MetricAggregator:
                 RouteMetrics(
                     route_id=route_id,
                     service_date=service_date,
-                    route_revenue=Money(revenue, self.currency),
+                    route_revenue=revenue,
                     route_demand=searches + bookings,
                     bookings=bookings,
                     searches=searches,
@@ -843,20 +842,19 @@ class MetricAggregator:
         }
         if group_by not in dimensions:
             raise ReportingError("unsupported revenue report dimension")
-        grouped: dict[str, list[OperationalEvent]] = {}
+        grouped: dict[tuple[str, str], list[OperationalEvent]] = {}
         for event in self.events:
             if not event.is_payment_captured or event.amount is None:
                 continue
             value = dimensions[group_by](event) or "unknown"
-            grouped.setdefault(value, []).append(event)
+            grouped.setdefault((value, event.amount.currency), []).append(event)
         items = tuple(
             sorted(
-                (self._revenue_item(group_by, value, events) for value, events in grouped.items()),
-                key=lambda item: (-item.revenue.amount, item.value),
+                (self._revenue_item(group_by, value, currency, events) for (value, currency), events in grouped.items()),
+                key=lambda item: (item.revenue.currency, -item.revenue.amount, item.value),
             )[:limit]
         )
-        total = sum((item.revenue.amount for item in items), Decimal("0.00"))
-        return RevenueReport(now, group_by, items, Money(total, self.currency))
+        return RevenueReport(now, group_by, items, self._money_totals_from_money(item.revenue for item in items))
 
     def _since(self, now: datetime, window: timedelta) -> list[OperationalEvent]:
         start = now - window
@@ -906,7 +904,7 @@ class MetricAggregator:
             for seat_class, values in by_class.items()
         }
 
-    def _revenue_item(self, dimension: str, value: str, events: list[OperationalEvent]) -> RevenueItem:
+    def _revenue_item(self, dimension: str, value: str, currency: str, events: list[OperationalEvent]) -> RevenueItem:
         revenue = sum((event.amount.amount for event in events if event.amount is not None), Decimal("0.00"))
         count = sum(1 for event in events if event.amount is not None)
         distance = sum((event.distance_km or Decimal("0")) for event in events)
@@ -914,12 +912,25 @@ class MetricAggregator:
         return RevenueItem(
             dimension=dimension,
             value=value,
-            revenue=Money(revenue, self.currency),
+            revenue=Money(revenue, currency),
             count=count,
             yield_per_km=yield_per_km,
             ancillary_attach_rate=self._rate(sum(1 for event in events if event.ancillary_attached), len(events)),
             insurance_attach_rate=self._rate(sum(1 for event in events if event.insurance_attached), len(events)),
         )
+
+    @staticmethod
+    def _money_totals(events: Any) -> tuple[Money, ...]:
+        return MetricAggregator._money_totals_from_money(
+            event.amount for event in events if event.amount is not None
+        )
+
+    @staticmethod
+    def _money_totals_from_money(values: Any) -> tuple[Money, ...]:
+        totals: dict[str, Decimal] = {}
+        for value in values:
+            totals[value.currency] = totals.get(value.currency, Decimal("0.00")) + value.amount
+        return tuple(Money(amount, currency) for currency, amount in sorted(totals.items()))
 
 
 @dataclass(slots=True)
@@ -967,12 +978,29 @@ class AnomalyDetector:
         return AnomalyDetected(rule.rule_id.value, current, rule.threshold, rule.severity, now, rule.urgent)
 
     def _revenue_drop(self, aggregator: MetricAggregator, now: datetime) -> AnomalyDetected | None:
-        current = sum((event.amount.amount for event in aggregator._since(now, timedelta(hours=1)) if event.is_payment_captured and event.amount), Decimal("0.00"))
         yesterday_end = now - timedelta(days=1)
         yesterday_start = yesterday_end - timedelta(hours=1)
-        yesterday = sum((event.amount.amount for event in aggregator.events if yesterday_start <= event.occurred_at <= yesterday_end and event.is_payment_captured and event.amount), Decimal("0.00"))
-        if yesterday > 0 and current < (yesterday * self._rule(AnomalyRuleId.REVENUE_DROP).threshold):
-            return self._anomaly(AnomalyRuleId.REVENUE_DROP, (current / yesterday).quantize(Decimal("0.01")), now)
+        current = {
+            total.currency: total.amount
+            for total in aggregator._money_totals(
+                event for event in aggregator._since(now, timedelta(hours=1)) if event.is_payment_captured
+            )
+        }
+        yesterday = {
+            total.currency: total.amount
+            for total in aggregator._money_totals(
+                event
+                for event in aggregator.events
+                if yesterday_start <= event.occurred_at <= yesterday_end and event.is_payment_captured
+            )
+        }
+        ratios = [
+            current.get(currency, Decimal("0.00")) / amount
+            for currency, amount in yesterday.items()
+            if amount > 0
+        ]
+        if ratios and min(ratios) < self._rule(AnomalyRuleId.REVENUE_DROP).threshold:
+            return self._anomaly(AnomalyRuleId.REVENUE_DROP, min(ratios).quantize(Decimal("0.01")), now)
         return None
 
     def _order_spike(self, aggregator: MetricAggregator, now: datetime) -> AnomalyDetected | None:

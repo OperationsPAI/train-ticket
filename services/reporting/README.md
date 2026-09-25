@@ -8,6 +8,8 @@ Phase: phase-1-limited
 
 Reporting consumes operational events and maintains metric definitions, dashboard snapshots, and PostgreSQL revenue projections.
 
+Contract baseline: 2026-09-25.
+
 ## Owns
 
 - MetricDefinition
@@ -44,8 +46,9 @@ Currency is part of every grouping key.
 Breakdowns map missing dimensions to `unknown`, default missing currency to USD, and bucket event timestamps by UTC hour.
 The SQL count includes captured event rows with missing amounts, whose amount contribution is zero.
 The in memory aggregator counts captured events with an amount.
-The scalar `totalRevenue` sums the returned items after `limit`; it does not provide currency conversion or a valid total across different currencies.
-The existing single currency API total remains a limitation when multiple currencies appear in one response.
+`totalRevenue`, `routeRevenue`, and `revenue_per_hour` are arrays of Money values ordered by ISO currency code.
+The in-memory aggregator and PostgreSQL reader preserve every currency independently and never add or convert unlike currencies.
+An empty monetary result is represented by an empty array rather than by a synthetic zero in a default currency.
 
 ## Coordinated migration 005
 
