@@ -14,10 +14,27 @@ const MAX_RETRIES: usize = 3;
 
 type PgResult<T> = Result<T, ApiErrorKind>;
 
+/// How often `train_ticket.ticketing.active` is rebuilt from durable rows. The
+/// same cadence the other business levels use.
+const ACTIVE_TICKETING_REFRESH: std::time::Duration = std::time::Duration::from_secs(60);
+
+const ACTIVE_TICKETING_SQL: &str = r#"
+SELECT
+  coalesce(data #>> '{status,kind}', '') AS status_kind,
+  coalesce(data #>> '{status,retryable}', '') AS retryable,
+  coalesce(data #>> '{credentialRef,credentialType}', '') AS credential_type,
+  count(*)::bigint AS tickets
+FROM entitlement_snapshots
+WHERE data #>> '{status,kind}' IN ('REQUESTED', 'ISSUE_FAILED', 'ISSUED', 'SUSPENDED')
+GROUP BY 1, 2, 3
+"#;
+
 #[derive(Clone)]
 pub struct PostgresEntitlementService {
     storage: Storage,
     entitlement_repo: SnapshotRepository,
+    /// Publishes `train_ticket.ticketing.*`. See `metrics.rs`.
+    metrics: crate::metrics::TicketingMetrics,
 }
 
 impl PostgresEntitlementService {
@@ -48,6 +65,7 @@ impl PostgresEntitlementService {
         Ok(Self {
             storage,
             entitlement_repo: SnapshotRepository::new(ENTITLEMENT_TABLE)?,
+            metrics: crate::metrics::TicketingMetrics::register(&rust_kit::metrics::meter(PRODUCER)),
         })
     }
     pub fn pool(&self) -> &PgPool {
@@ -55,6 +73,96 @@ impl PostgresEntitlementService {
     }
     pub async fn is_ready(&self) -> bool {
         self.storage.is_ready().await
+    }
+
+    /// Record the outcome of a whole ticketing call.
+    ///
+    /// `domain_rejection_recorded` says the domain site already published this
+    /// rejection, with the reason it still had in hand. Recording it again from
+    /// the flattened error would count one rejection twice, and the reason would
+    /// have to be guessed from a message.
+    fn record_transport_outcome(
+        &self,
+        stage: crate::metrics::TicketStage,
+        ticket_type: crate::metrics::TicketType,
+        outcome: Result<(), &ApiErrorKind>,
+        domain_rejection_recorded: bool,
+    ) {
+        if domain_rejection_recorded {
+            return;
+        }
+        let transition = match outcome {
+            Ok(()) => crate::metrics::TicketingTransition {
+                stage,
+                outcome: crate::metrics::TicketOutcome::Accepted,
+                ticket_type,
+                reason_code: crate::metrics::TicketReasonCode::None,
+            },
+            Err(error) => crate::metrics::TicketingTransition {
+                stage,
+                outcome: transport_outcome(error),
+                ticket_type,
+                reason_code: transport_reason(error),
+            },
+        };
+        self.metrics.transition(transition);
+    }
+
+    /// Record a rejection the domain decided, with the reason the domain named.
+    fn record_domain_rejection(
+        &self,
+        stage: crate::metrics::TicketStage,
+        ticket_type: crate::metrics::TicketType,
+        error: &EntitlementError,
+    ) {
+        self.metrics.transition(crate::metrics::TicketingTransition {
+            stage,
+            outcome: crate::metrics::TicketOutcome::Rejected,
+            ticket_type,
+            reason_code: domain_reason(error),
+        });
+    }
+
+    /// Rebuild `train_ticket.ticketing.active` from durable entitlement rows.
+    pub async fn refresh_active_ticketing(&self) -> Result<(), sqlx::Error> {
+        let rows: Vec<(String, String, String, i64)> = sqlx::query_as(ACTIVE_TICKETING_SQL)
+            .fetch_all(self.pool())
+            .await?;
+        let buckets: Vec<crate::metrics::DurableEntitlementBucket> = rows
+            .into_iter()
+            .map(
+                |(status_kind, retryable, credential_type, tickets)| {
+                    crate::metrics::DurableEntitlementBucket {
+                        status_kind,
+                        retryable: match retryable.trim() {
+                            "true" => Some(true),
+                            "false" => Some(false),
+                            _ => None,
+                        },
+                        credential_type: (!credential_type.trim().is_empty())
+                            .then_some(credential_type),
+                        tickets,
+                    }
+                },
+            )
+            .collect();
+        self.metrics
+            .publish_active(crate::metrics::build_active_rows(&buckets));
+        Ok(())
+    }
+
+    /// Refresh the active level on a timer. A failed refresh keeps the previous
+    /// level: an unreadable table is unknown, not "no tickets in progress".
+    pub fn spawn_active_ticketing_refresh(self: std::sync::Arc<Self>) {
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(ACTIVE_TICKETING_REFRESH);
+            loop {
+                ticker.tick().await;
+                if let Err(error) = self.refresh_active_ticketing().await {
+                    log::warn!("ticketing active metric refresh failed: {error}");
+                }
+            }
+        });
     }
 
     async fn idempotency_replay<T: for<'de> Deserialize<'de>>(
@@ -336,7 +444,22 @@ impl PostgresEntitlementService {
             tx.commit().await.map_err(inbound_transient)?;
             return Ok(());
         }
-        accepted.map_err(inbound_fatal)?;
+        if let Err(error) = accepted {
+            // A refused boarding, check-in or no-show fact is a real ticketing
+            // transition: the ticket was presented and not accepted.
+            self.record_domain_rejection(
+                crate::metrics::TicketStage::Validation,
+                ticket_type_of(&entitlement),
+                &error,
+            );
+            return Err(inbound_fatal(error));
+        }
+        self.metrics.transition(crate::metrics::TicketingTransition {
+            stage: crate::metrics::TicketStage::Validation,
+            outcome: crate::metrics::TicketOutcome::Accepted,
+            ticket_type: ticket_type_of(&entitlement),
+            reason_code: crate::metrics::TicketReasonCode::None,
+        });
         self.save_entitlement(&mut tx, &entitlement, Some(snapshot.version))
             .await
             .map_err(inbound_from_api_error)?;
@@ -412,8 +535,8 @@ impl PostgresEntitlementService {
                 .clone()
                 .try_into_domain()
                 .map_err(inbound_from_api_error)?;
-            let events = entitlement
-                .void(VoidEntitlement {
+            let ticket_type = ticket_type_of(&entitlement);
+            let events = match entitlement.void(VoidEntitlement {
                     command_id: CommandId::new(format!("cmd-{}", uuid::Uuid::now_v7()))
                         .map_err(inbound_fatal)?,
                     reason: reason.clone(),
@@ -422,11 +545,34 @@ impl PostgresEntitlementService {
                         .map_err(inbound_fatal)?,
                     audit: audit_builder(&envelope.correlation_id, "event bus post-sales approved")
                         .map_err(inbound_fatal)?,
-                })
-                .map_err(inbound_fatal)?;
+                }) {
+                Ok(events) => events,
+                Err(error) => {
+                    self.record_domain_rejection(
+                        crate::metrics::TicketStage::Void,
+                        ticket_type,
+                        &error,
+                    );
+                    return Err(inbound_fatal(error));
+                }
+            };
             if events.is_empty() {
+                // The entitlement was already voided, so this action changed
+                // nothing. That is a no-op, not a second void.
+                self.metrics.transition(crate::metrics::TicketingTransition {
+                    stage: crate::metrics::TicketStage::Void,
+                    outcome: crate::metrics::TicketOutcome::Noop,
+                    ticket_type,
+                    reason_code: crate::metrics::TicketReasonCode::TerminalStatus,
+                });
                 continue;
             }
+            self.metrics.transition(crate::metrics::TicketingTransition {
+                stage: crate::metrics::TicketStage::Void,
+                outcome: crate::metrics::TicketOutcome::Accepted,
+                ticket_type,
+                reason_code: crate::metrics::TicketReasonCode::None,
+            });
             self.save_entitlement(&mut tx, &entitlement, Some(snapshot.version))
                 .await
                 .map_err(inbound_from_api_error)?;
@@ -484,29 +630,58 @@ impl EntitlementApi for PostgresEntitlementService {
         key: String,
         correlation_id: String,
     ) -> PgResult<IssueEntitlementResponse> {
+        // The stage is decided before anything else runs: a replacement is a
+        // different funnel from a first issue even though the code path is
+        // shared, and a rejection has to land in the stage it was attempted in.
+        let stage = crate::metrics::TicketStage::from_issue_purpose(command.issue_purpose.to_contract());
         validate_issue_request(&command)?;
         let fingerprint = serde_json::to_string(&command).unwrap_or_default();
         if let Some(response) = self
             .idempotency_replay::<IssueEntitlementResponse>(&key, &fingerprint)
             .await?
         {
+            self.metrics.transition(crate::metrics::TicketingTransition {
+                stage,
+                outcome: crate::metrics::TicketOutcome::Noop,
+                ticket_type: crate::metrics::TicketType::ETicket,
+                reason_code: crate::metrics::TicketReasonCode::IdempotentReplay,
+            });
             return Ok(response);
         }
+        let mut domain_rejection_recorded = false;
+        let mut result = Err(ApiErrorKind::Conflict(
+            "entitlement write conflict".into(),
+        ));
         for attempt in 0..MAX_RETRIES {
-            let result = self
-                .try_issue(&command, &key, &fingerprint, &correlation_id)
-                .await;
-            match result {
+            match self
+                .try_issue(
+                    &command,
+                    &key,
+                    &fingerprint,
+                    &correlation_id,
+                    &mut domain_rejection_recorded,
+                )
+                .await
+            {
                 Err(ApiErrorKind::Conflict(m))
                     if m.contains("optimistic concurrency conflict")
                         && attempt + 1 < MAX_RETRIES =>
                 {
                     continue;
                 }
-                result => return result,
+                outcome => {
+                    result = outcome;
+                    break;
+                }
             }
         }
-        Err(ApiErrorKind::Conflict("entitlement write conflict".into()))
+        self.record_transport_outcome(
+            stage,
+            crate::metrics::TicketType::ETicket,
+            result.as_ref().map(|_| ()),
+            domain_rejection_recorded,
+        );
+        result
     }
     async fn void(
         &self,
@@ -536,27 +711,46 @@ impl EntitlementApi for PostgresEntitlementService {
         {
             return Ok(response);
         }
+        let mut domain_rejection_recorded = false;
         for attempt in 0..MAX_RETRIES {
-            let result = self
+            let outcome = self
                 .try_void(
                     &entitlement_id,
                     &command,
                     &key,
                     &fingerprint,
                     &correlation_id,
+                    &mut domain_rejection_recorded,
                 )
                 .await;
-            match result {
+            match &outcome {
                 Err(ApiErrorKind::Conflict(m))
                     if m.contains("optimistic concurrency conflict")
                         && attempt + 1 < MAX_RETRIES =>
                 {
                     continue;
                 }
-                result => return result,
+                _ => {
+                    self.record_transport_outcome(
+                        crate::metrics::TicketStage::Void,
+                        crate::metrics::TicketType::Unknown,
+                        outcome.as_ref().map(|_| ()),
+                        domain_rejection_recorded,
+                    );
+                    return outcome;
+                }
             }
         }
-        Err(ApiErrorKind::Conflict("entitlement write conflict".into()))
+        let exhausted = Err(ApiErrorKind::Conflict(
+            "entitlement write conflict".into(),
+        ));
+        self.record_transport_outcome(
+            crate::metrics::TicketStage::Void,
+            crate::metrics::TicketType::Unknown,
+            exhausted.as_ref().map(|_| ()),
+            domain_rejection_recorded,
+        );
+        exhausted
     }
     async fn get(&self, entitlement_id: String) -> PgResult<EntitlementDetails> {
         validate_prefixed_uuid(&entitlement_id, "entitlementId", "ent-")?;
@@ -610,6 +804,7 @@ impl PostgresEntitlementService {
         key: &str,
         fingerprint: &str,
         correlation_id: &str,
+        domain_rejection_recorded: &mut bool,
     ) -> PgResult<IssueEntitlementResponse> {
         let (preconditions, resolved) = crate::issue_facts::resolve(command, correlation_id).await?;
         let command = &resolved;
@@ -685,8 +880,7 @@ impl PostgresEntitlementService {
             seat_ref: seat_ref.clone(),
         };
         let mut registry = CredentialRegistry::new();
-        aggregate
-            .issue(
+        if let Err(error) = aggregate.issue(
                 IssueEntitlement {
                     command_id: CommandId::new(format!("cmd-{}", uuid::Uuid::now_v7()))
                         .map_err(ApiErrorKind::from)?,
@@ -698,8 +892,17 @@ impl PostgresEntitlementService {
                         .map_err(ApiErrorKind::from)?,
                 },
                 &mut registry,
-            )
-            .map_err(ApiErrorKind::from)?;
+        ) {
+            *domain_rejection_recorded = true;
+            self.record_domain_rejection(
+                crate::metrics::TicketStage::from_issue_purpose(
+                    command.issue_purpose.to_contract(),
+                ),
+                crate::metrics::TicketType::ETicket,
+                &error,
+            );
+            return Err(ApiErrorKind::from(error));
+        }
         let mut issued_snapshot = EntitlementSnapshot::from_domain(&aggregate);
         issued_snapshot.seat_ref = seat_ref.clone();
         issued_snapshot.seat_assignment_idempotency_key = seat_key;
@@ -730,6 +933,7 @@ impl PostgresEntitlementService {
         key: &str,
         fingerprint: &str,
         correlation_id: &str,
+        domain_rejection_recorded: &mut bool,
     ) -> PgResult<VoidEntitlementResponse> {
         let mut tx = self.pool().begin().await.map_err(to_api_storage)?;
         if let Some(response) = self
@@ -750,8 +954,8 @@ impl PostgresEntitlementService {
             .unwrap_or_else(|| format!("case-{}", uuid::Uuid::now_v7()));
         let reason: VoidReason = command.reason.clone().into();
         let policy: VoidPolicy = command.policy.clone().into();
-        let events = aggregate
-            .void(VoidEntitlement {
+        let ticket_type = ticket_type_of(&aggregate);
+        let events = match aggregate.void(VoidEntitlement {
                 command_id: CommandId::new(format!("cmd-{}", uuid::Uuid::now_v7()))
                     .map_err(ApiErrorKind::from)?,
                 reason: reason.clone(),
@@ -760,9 +964,22 @@ impl PostgresEntitlementService {
                     .map_err(ApiErrorKind::from)?,
                 audit: audit_builder(correlation_id, "HTTP void entitlement")
                     .map_err(ApiErrorKind::from)?,
-            })
-            .map_err(ApiErrorKind::from)?;
+            }) {
+            Ok(events) => events,
+            Err(error) => {
+                *domain_rejection_recorded = true;
+                self.record_domain_rejection(
+                    crate::metrics::TicketStage::Void,
+                    ticket_type,
+                    &error,
+                );
+                return Err(ApiErrorKind::from(error));
+            }
+        };
         if events.is_empty() {
+            // Already voided. The caller sees a failed precondition; the
+            // transport-level mapping records that once, with
+            // `preconditions_unmet`.
             return Err(ApiErrorKind::PreconditionFailed(
                 "entitlement is already voided".into(),
             ));
@@ -1274,6 +1491,73 @@ fn to_api_storage(error: impl std::fmt::Display) -> ApiErrorKind {
     }
 }
 
+/// The outcome a transport-level failure is published under. A rejected caller
+/// is not the same event as a dependency being unavailable, and a conservation
+/// check reads them differently.
+fn transport_outcome(error: &ApiErrorKind) -> crate::metrics::TicketOutcome {
+    match error {
+        ApiErrorKind::Unavailable(_) | ApiErrorKind::Conflict(_) => {
+            crate::metrics::TicketOutcome::Failed
+        }
+        ApiErrorKind::ValidationFailed(_)
+        | ApiErrorKind::NotFound(_)
+        | ApiErrorKind::IdempotencyKeyReused(_)
+        | ApiErrorKind::PreconditionFailed(_)
+        | ApiErrorKind::DomainRuleViolation(_) => crate::metrics::TicketOutcome::Rejected,
+    }
+}
+
+/// Map a transport-level failure onto the owned reason vocabulary. The message
+/// is never inspected: it is free text, and a reason code has to be a token.
+fn transport_reason(error: &ApiErrorKind) -> crate::metrics::TicketReasonCode {
+    match error {
+        ApiErrorKind::ValidationFailed(_) => crate::metrics::TicketReasonCode::InvalidRequest,
+        ApiErrorKind::NotFound(_) => crate::metrics::TicketReasonCode::NotFound,
+        ApiErrorKind::IdempotencyKeyReused(_) => crate::metrics::TicketReasonCode::DuplicateIssue,
+        ApiErrorKind::PreconditionFailed(_) => crate::metrics::TicketReasonCode::PreconditionsUnmet,
+        ApiErrorKind::Unavailable(_) => crate::metrics::TicketReasonCode::Unavailable,
+        ApiErrorKind::Conflict(_) => crate::metrics::TicketReasonCode::Other,
+        // Recorded at the domain-decision site with the precise reason; reaching
+        // this branch means the reason was not recoverable, which is exactly
+        // what `other` is for.
+        ApiErrorKind::DomainRuleViolation(_) => crate::metrics::TicketReasonCode::Other,
+    }
+}
+
+/// Map a domain rejection onto the owned reason vocabulary.
+fn domain_reason(error: &EntitlementError) -> crate::metrics::TicketReasonCode {
+    use crate::metrics::TicketReasonCode as Reason;
+    match error {
+        EntitlementError::TerminalStatus(_) => Reason::TerminalStatus,
+        EntitlementError::DuplicateIssueAttempt
+        | EntitlementError::DuplicateCredential { .. }
+        | EntitlementError::AlreadyIssued => Reason::DuplicateIssue,
+        EntitlementError::IssueFailureNotRetryable => Reason::IssueFailureNotRetryable,
+        EntitlementError::EntitlementFrozen => Reason::Frozen,
+        EntitlementError::NotSuspended => Reason::NotSuspended,
+        EntitlementError::VoidRequiresCompensation => Reason::VoidBlockedByUse,
+        EntitlementError::ExceptionalVoidRuleRequired => Reason::ExceptionalRuleRequired,
+        EntitlementError::NotIssued | EntitlementError::BoardingRequiredForCompletion => {
+            Reason::PreconditionsUnmet
+        }
+        EntitlementError::BlankReference { .. }
+        | EntitlementError::InvalidValidityWindow
+        | EntitlementError::InvalidDisplayVersion
+        | EntitlementError::MissingAuditReason
+        | EntitlementError::IdempotencyKeyMismatch => Reason::InvalidRequest,
+        EntitlementError::NoShowAfterBoarding => Reason::Other,
+    }
+}
+
+/// The credential type an entitlement already carries, as a bounded ticket
+/// type. An entitlement without a credential has no type yet, not a wrong one.
+fn ticket_type_of(entitlement: &Entitlement) -> crate::metrics::TicketType {
+    entitlement
+        .credential_ref()
+        .map(|credential| crate::metrics::TicketType::from_ref(&format!("{:?}", credential.credential_type)))
+        .unwrap_or(crate::metrics::TicketType::Unknown)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum InboundEventError {
     Transient(String),
@@ -1427,6 +1711,7 @@ fn parse_actor_type(v: &str) -> ActorType {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
 
     fn issue_request() -> IssueEntitlementRequest {
         IssueEntitlementRequest {
@@ -1459,6 +1744,69 @@ mod tests {
         })))
         .unwrap_err();
         assert!(invalid_reason.contains("invalid reason"));
+    }
+
+    /// Every rejection the domain can raise lands on an owned reason token.
+    /// The `Display` text of these errors names entitlements and credentials,
+    /// and none of it may reach a label.
+    #[test]
+    fn every_domain_rejection_maps_to_an_owned_reason_token() {
+        let rejections = [
+            EntitlementError::BlankReference { kind: "entitlement_id" },
+            EntitlementError::InvalidValidityWindow,
+            EntitlementError::InvalidDisplayVersion,
+            EntitlementError::MissingAuditReason,
+            EntitlementError::IdempotencyKeyMismatch,
+            EntitlementError::DuplicateIssueAttempt,
+            EntitlementError::DuplicateCredential {
+                credential_no: "ETK-000000000123".to_string(),
+                existing_entitlement_id: EntitlementId::new("ent-0194f2e0-7b3e-7610-8284-5c26e8b0aa01")
+                    .unwrap(),
+            },
+            EntitlementError::IssueFailureNotRetryable,
+            EntitlementError::AlreadyIssued,
+            EntitlementError::EntitlementFrozen,
+            EntitlementError::NotSuspended,
+            EntitlementError::NotIssued,
+            EntitlementError::TerminalStatus(EntitlementStatus::Voided),
+            EntitlementError::ExceptionalVoidRuleRequired,
+            EntitlementError::VoidRequiresCompensation,
+            EntitlementError::BoardingRequiredForCompletion,
+            EntitlementError::NoShowAfterBoarding,
+        ];
+        for rejection in &rejections {
+            let reason = domain_reason(rejection).as_str();
+            assert!(
+                !reason.is_empty() && !reason.contains(' ') && reason.len() <= 32,
+                "reason_code must be an owned token, got {reason:?} for {rejection}"
+            );
+            assert!(
+                !reason.contains("ent-") && !reason.contains("ETK-"),
+                "a reference reached a reason code: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn transport_rejections_map_to_owned_reason_tokens() {
+        let transport_errors = [
+            ApiErrorKind::ValidationFailed("x".into()),
+            ApiErrorKind::NotFound("x".into()),
+            ApiErrorKind::Conflict("x".into()),
+            ApiErrorKind::IdempotencyKeyReused("x".into()),
+            ApiErrorKind::PreconditionFailed("x".into()),
+            ApiErrorKind::DomainRuleViolation("x".into()),
+            ApiErrorKind::Unavailable("x".into()),
+        ];
+        for error in &transport_errors {
+            let reason = transport_reason(error).as_str();
+            assert!(!reason.is_empty() && !reason.contains(' '), "got {reason:?}");
+            let outcome = transport_outcome(error).as_str();
+            assert!(
+                ["accepted", "rejected", "noop", "failed"].contains(&outcome),
+                "got {outcome:?}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1504,5 +1852,123 @@ mod tests {
             .unwrap_err();
         second_tx.rollback().await.unwrap();
         assert!(matches!(conflict, ApiErrorKind::Conflict(_)));
+    }
+
+    /// The `active` level against the real table. The in-crate metrics test
+    /// proves the fold is a pure function of durable rows; this proves the rows
+    /// really are durable, which is the restart case the contract requires.
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL pointing at a disposable Postgres database"]
+    async fn active_level_is_reconstructed_from_the_durable_snapshot() {
+        let database_url =
+            std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required");
+        let admin = Storage::connect(&database_url).await.unwrap();
+        let schema = format!("entitlement_active_{}", uuid::Uuid::now_v7().simple());
+        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+            .execute(admin.pool())
+            .await
+            .unwrap();
+        // Search path so the service's own migration lands in the scratch schema.
+        let options = sqlx::postgres::PgConnectOptions::from_str(&database_url)
+            .unwrap()
+            .options([("search_path", schema.as_str())]);
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect_with(options)
+            .await
+            .unwrap();
+        let scoped = Storage::new(pool);
+        scoped
+            .migrate_dir("migrations")
+            .await
+            .unwrap();
+        let service = PostgresEntitlementService::from_storage(scoped).unwrap();
+
+        let (issued, _) = Entitlement::request(RequestEntitlement {
+            command_id: CommandId::new("cmd-active-1").unwrap(),
+            entitlement_id: EntitlementId::new("ent-active-issued").unwrap(),
+            journey_order_ref: JourneyOrderRef::new("ord-active-1").unwrap(),
+            segment_booking_ref: SegmentBookingRef::new("sb-active-1").unwrap(),
+            traveler_ref: TravelerRef::new("tvl-active-1").unwrap(),
+            segment_ref: SegmentRef::new("seg-active-1").unwrap(),
+            purpose: IssuePurpose::Initial,
+            validity_window: ValidityWindow::new(UnixMillis::new(1), UnixMillis::new(2)).unwrap(),
+            audit: audit_builder("corr-active-1", "live active level test").unwrap(),
+        })
+        .unwrap();
+        let mut issued = issued;
+        issued
+            .issue(
+                IssueEntitlement {
+                    command_id: CommandId::new("cmd-active-2").unwrap(),
+                    idempotency_key: issued.idempotency_key().clone(),
+                    preconditions: IssuePreconditions::accepted(
+                        AcceptedFact::new(
+                            BookingFactRef::new("bf-active-1").unwrap(),
+                            BookingAcceptance::SegmentReservationConfirmed,
+                            UnixMillis::new(1),
+                        ),
+                        AcceptedFact::new(
+                            CapacityFactRef::new("cf-active-1").unwrap(),
+                            CapacityAcceptance::CapacityCommitted,
+                            UnixMillis::new(1),
+                        ),
+                        AcceptedFact::new(
+                            PaymentFactRef::new("pf-active-1").unwrap(),
+                            PaymentAcceptance::PaymentCaptured,
+                            UnixMillis::new(1),
+                        ),
+                        AcceptedFact::new(
+                            TravelerFactRef::new("tf-active-1").unwrap(),
+                            TravelerAcceptance::TravelerSnapshotAccepted,
+                            UnixMillis::new(1),
+                        ),
+                        AcceptedFact::new(
+                            RiskFactRef::new("rf-active-1").unwrap(),
+                            RiskAcceptance::Allowed,
+                            UnixMillis::new(1),
+                        ),
+                    ),
+                    credential_ref: CredentialRef::new(
+                        CredentialId::new("cred-active-1").unwrap(),
+                        CredentialType::ETicket,
+                        "ETK-ACTIVE-1",
+                        None,
+                        CredentialDisplayReference::new("****1", 1, None).unwrap(),
+                    )
+                    .unwrap(),
+                    refund_request_fact: None,
+                    audit: audit_builder("corr-active-2", "live active level test").unwrap(),
+                },
+                &mut CredentialRegistry::new(),
+            )
+            .unwrap();
+
+        let mut write = service.pool().begin().await.unwrap();
+        service
+            .save_entitlement(&mut write, &issued, None)
+            .await
+            .unwrap();
+        write.commit().await.unwrap();
+
+        service.refresh_active_ticketing().await.unwrap();
+        let first = service.metrics.published_active();
+        // A second instance over the same table is a restart.
+        let restarted = PostgresEntitlementService::new(service.pool().clone()).unwrap();
+        restarted.refresh_active_ticketing().await.unwrap();
+        let second = restarted.metrics.published_active();
+        assert_eq!(first, second, "a restart must republish the same level");
+        assert_eq!(
+            first
+                .iter()
+                .find(|row| row.stage == crate::metrics::TicketingActiveStage::Issued)
+                .map(|row| (row.ticket_type, row.tickets)),
+            Some((crate::metrics::TicketType::ETicket, 1)),
+            "the live ticket was not reconstructed: {first:?}"
+        );
+
+        let _ = sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+            .execute(service.pool())
+            .await;
     }
 }
