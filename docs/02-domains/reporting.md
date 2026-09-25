@@ -42,7 +42,8 @@ SQL 保留源事件表，物化视图是可重新计算的派生结果。
 `totalRevenue` 按币种独立汇总完整筛选结果，不受 `limit` 和 `offset` 影响；只有 `items` 分页。
 响应中的 `total` 是分页前的分组行数，越界页返回空 `items`，但保留相同的完整总额和 `total`。
 按来源或事件类型查询时，`eventCount` 另表示分页前的源事件总数。
-PostgreSQL 对缺少金额的 captured 行计数一次、金额贡献为零；内存聚合器只对有金额的 captured 事件计入金额报表数量。
+缺少 amount 的 `PaymentCaptured` 仍保留在源事件表用于操作审计，但 PostgreSQL 与内存聚合器都不将其计入金额或 payment count。
+2026年9月25日只读核对生产源表时，2,904,448 条 `PaymentCaptured` 均有 amount 和 currency，币种均为 CNY；缺失规则通过录制生产数据追加对照样本验证。
 默认目录说明只用于初始化缺失指标，已有数据库指标描述保留原值。
 
 操作指标、路线指标和异常规则使用 `MetricAggregator`。
@@ -70,4 +71,4 @@ PostgreSQL 加载聚合器时最多读取符合条件的最新10000条事件；�
 通知的实际发送由 Notification 处理。
 查询中的 `generatedAt` 是响应生成时间，不能作为物化结果的最新业务时间。
 
-实现入口见 [服务说明](../../services/reporting/README.md)、[领域模型](../../services/reporting/src/reporting/domain.py)、[PostgreSQL 适配器](../../services/reporting/src/reporting/adapters/storage/postgres.py)、[HTTP API](../08-contracts/api/reporting.md) 和 [收入 SQL](../../services/reporting/migrations/005_gross_captured_revenue.sql)。
+实现入口见 [服务说明](../../services/reporting/README.md)、[领域模型](../../services/reporting/src/reporting/domain.py)、[PostgreSQL 适配器](../../services/reporting/src/reporting/adapters/storage/postgres.py)、[HTTP API](../08-contracts/api/reporting.md)、[gross captured SQL](../../services/reporting/migrations/005_gross_captured_revenue.sql) 和 [缺失金额一致性 SQL](../../services/reporting/migrations/006_exclude_incomplete_captures.sql)。
