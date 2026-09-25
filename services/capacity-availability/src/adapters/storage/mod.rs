@@ -12,7 +12,7 @@ use rust_kit::storage::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::PgPool;
-use crate::supply_facts::{Interval as SupplyInterval, PendingOccupancy, PreparedSupply, ReservationSupply, SeatSupply, SupplyClient};
+use crate::supply_facts::{Interval as SupplyInterval, PendingOccupancy, PreparedSupply, ReservationSupply, SeatSupply, SupplyClient, combine_capacity_snapshots, combined_class_snapshot};
 
 mod supply;
 
@@ -43,6 +43,69 @@ pub struct PostgresCapacityService {
 }
 
 impl PostgresCapacityService {
+    async fn combined_snapshot(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        facts: &ReservationSupply,
+        segments: &PreparedSupply,
+        correlation_id: &str,
+        now: u64,
+    ) -> Result<CapacitySnapshot, AppError> {
+        let route = segments.route(&facts.segment_ref)?;
+        let classes = self.supply_client.published_classes(&facts.scheduled_service_ref, &facts.service_date, correlation_id).await?;
+        let mut snapshots = Vec::with_capacity(classes.len());
+        for class_ref in classes {
+            let class_facts = ReservationSupply { class_ref, ..facts.clone() };
+            let (supply, available, occupancy) = self.available_supply(tx, &class_facts, segments, correlation_id, now).await?;
+            snapshots.push(combined_class_snapshot(&class_facts, &route.interval, &supply, &available, &occupancy, now)?);
+        }
+        combine_capacity_snapshots(&facts.segment_ref, &facts.service_date, snapshots)
+    }
+
+    async fn append_combined_snapshot(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        facts: &ReservationSupply,
+        segments: &PreparedSupply,
+        correlation_id: &str,
+        now: u64,
+    ) -> Result<(), AppError> {
+        let snapshot = self.combined_snapshot(tx, facts, segments, correlation_id, now).await?;
+        let envelope = domain_event_to_wire(&DomainEvent::CapacitySnapshotUpdated(CapacitySnapshotUpdated {
+            envelope: EventEnvelope::new("CapacitySnapshotUpdated", now, &facts.segment_ref, None::<String>, PRODUCER),
+            snapshot,
+        }), correlation_id)?;
+        OutboxAppender::append(tx, &stream_for_producer(PRODUCER), &envelope).await.map_err(to_app_storage)
+    }
+
+    fn reservation_facts_from_hold(hold: &CapacityHoldSnapshot) -> Result<ReservationSupply, AppError> {
+        let evidence = hold.supply_evidence.as_ref().ok_or_else(|| {
+            AppError::PreconditionFailed("capacity Hold has no immutable supply evidence".into())
+        })?;
+        let segment_booking_id = hold.references.segment_booking_ref.clone().ok_or_else(|| {
+            AppError::PreconditionFailed("capacity Hold has no segment booking reference".into())
+        })?;
+        let journey_order_id = hold.references.order_ref.clone().ok_or_else(|| {
+            AppError::PreconditionFailed("capacity Hold has no journey order reference".into())
+        })?;
+        let traveler_ref = hold.references.traveler_ref.clone().ok_or_else(|| {
+            AppError::PreconditionFailed("capacity Hold has no traveler reference".into())
+        })?;
+        let booking_purpose = match evidence.source_type.as_str() {
+            "PURCHASE_ORDER" => "purchase".to_owned(),
+            "CHANGE_CASE" => format!("change:{}", evidence.source_ref),
+            _ => return Err(AppError::PreconditionFailed("capacity Hold has an unsupported source".into())),
+        };
+        let facts = ReservationSupply { segment_booking_id, journey_order_id, traveler_ref,
+            segment_ref:hold.segment_ref(), scheduled_service_ref:evidence.scheduled_service_ref.clone(),
+            service_date:evidence.service_date.clone(), class_ref:evidence.accepted_class_ref.clone(),
+            booking_purpose, offer_item_ref:"capacity-hold".into(),
+            standing_accepted:evidence.accepted_class_ref != evidence.occupancy_class_ref,
+            source_type:evidence.source_type.clone(), source_ref:evidence.source_ref.clone() };
+        facts.validate_source()?;
+        Ok(facts)
+    }
+
     pub async fn from_env() -> Result<Self, StorageError> {
         let storage = Storage::from_env().await?;
         let migrations_dir =
@@ -172,34 +235,23 @@ impl PostgresCapacityService {
             return Err(AppError::PreconditionFailed("segment belongs to another scheduled service".into()));
         }
         let date=segment.service_date;
-        let classes = self.supply_client.published_classes(scheduled_service_ref,&date,&correlation).await?;
         let segments = self.prepare_supply_history(scheduled_service_ref,segment_ref,&correlation).await?;
         let now = now_millis();
-        let mut total_units = 0;
-        let mut available_count = 0;
-        let mut sellable = false;
-        let mut status = "UNAVAILABLE".to_string();
-        let mut remaining_by_class = Vec::new();
-        for class_ref in classes {
-            let facts = ReservationSupply { segment_booking_id: String::new(), journey_order_id: String::new(), traveler_ref: String::new(),
-                segment_ref:segment_ref.to_owned(), scheduled_service_ref:scheduled_service_ref.to_owned(), service_date:date.clone(),class_ref:class_ref.clone(),
-                booking_purpose:"purchase".into(), offer_item_ref:"availability-query".into(), standing_accepted:false,
-                source_type:"PURCHASE_ORDER".into(), source_ref:"availability-query".into() };
-            let mut tx = self.pool().begin().await.map_err(to_app_storage)?;
-            Self::lock_supply(&mut tx,&facts).await?;
-            let (supply,available) = self.available_supply(&mut tx,&facts,&segments,&correlation,now).await?;
-            tx.commit().await.map_err(to_app_storage)?;
-            total_units += supply.capacity();
-            available_count += available.len();
-            sellable |= !available.is_empty();
-            if available.len()>2 && available.len()*4>supply.capacity() { status="AVAILABLE".into(); }
-            else if !available.is_empty() && status!="AVAILABLE" { status="LIMITED".into(); }
-            remaining_by_class.push(crate::application::RemainingByClass {
-                class_ref,
-                total: supply.capacity(),
-                available: available.len(),
-            });
-        }
+        let facts = ReservationSupply { segment_booking_id: String::new(), journey_order_id: String::new(), traveler_ref: String::new(),
+            segment_ref:segment_ref.to_owned(), scheduled_service_ref:scheduled_service_ref.to_owned(), service_date:date.clone(),class_ref:String::new(),
+            booking_purpose:"availability-query".into(), offer_item_ref:"availability-query".into(), standing_accepted:false,
+            source_type:"PURCHASE_ORDER".into(), source_ref:"availability-query".into() };
+        let mut tx = self.pool().begin().await.map_err(to_app_storage)?;
+        Self::lock_supply(&mut tx,&facts).await?;
+        let capacity = self.combined_snapshot(&mut tx,&facts,&segments,&correlation,now).await?;
+        let sellable = capacity.remaining_capacity > 0;
+        let status = if capacity.remaining_capacity == 0 { "UNAVAILABLE" }
+            else if capacity.remaining_capacity > 2 && capacity.remaining_capacity.saturating_mul(4) > capacity.total_capacity { "AVAILABLE" }
+            else { "LIMITED" };
+        let remaining_by_class = capacity.classes.iter().map(|class| crate::application::RemainingByClass {
+            class_ref: class.class_ref.clone(), total: class.effective_capacity as usize,
+            available: class.remaining_capacity as usize,
+        }).collect();
         let response = AvailabilitySnapshotResponse {
             snapshot_id: format!("avs-{}", uuid::Uuid::now_v7()),
             snapshot_version: 1,
@@ -209,17 +261,41 @@ impl PostgresCapacityService {
             valid_until: unix_millis_to_rfc3339(now + 30_000),
             sellable,
             remaining_by_class,
-            total_units,
-            available_count,
-            status,
+            total_units: capacity.total_capacity as usize,
+            available_count: capacity.remaining_capacity as usize,
+            status: status.to_owned(),
         };
-        let mut tx = self.pool().begin().await.map_err(to_app_storage)?;
         self.snapshot_repo
             .save(&mut tx, &response.snapshot_id, None, &response)
             .await
             .map_err(to_app_storage)?;
         tx.commit().await.map_err(to_app_storage)?;
         Ok(response)
+    }
+
+    pub async fn query_capacity_snapshot(
+        &self,
+        segment_ref: &str,
+    ) -> Result<crate::application::CapacitySnapshotResponse, AppError> {
+        if segment_ref.trim().is_empty() {
+            return Err(AppError::ValidationFailed("segmentRef is required".into()));
+        }
+        let correlation = format!("corr-{}",uuid::Uuid::now_v7());
+        let route = self.supply_client.route(segment_ref,&correlation).await?;
+        let facts = ReservationSupply { segment_booking_id: String::new(), journey_order_id: String::new(), traveler_ref: String::new(),
+            segment_ref:segment_ref.to_owned(), scheduled_service_ref:route.scheduled_service_ref.clone(), service_date:route.service_date.clone(),class_ref:String::new(),
+            booking_purpose:"snapshot-query".into(), offer_item_ref:"snapshot-query".into(), standing_accepted:false,
+            source_type:"PURCHASE_ORDER".into(), source_ref:"snapshot-query".into() };
+        let segments = self.prepare_supply_history(&facts.scheduled_service_ref,segment_ref,&correlation).await?;
+        let now = now_millis();
+        let mut tx = self.pool().begin().await.map_err(to_app_storage)?;
+        Self::lock_supply(&mut tx,&facts).await?;
+        let snapshot = self.combined_snapshot(&mut tx,&facts,&segments,&correlation,now).await?;
+        tx.commit().await.map_err(to_app_storage)?;
+        Ok(crate::application::CapacitySnapshotResponse { segment_ref:snapshot.segment_ref, departure_date:snapshot.departure_date,
+            total_capacity:snapshot.total_capacity, remaining_capacity:snapshot.remaining_capacity, physical_capacity:snapshot.physical_capacity,
+            hold_count:snapshot.hold_count, confirmed_count:snapshot.confirmed_count, utilization_pct:snapshot.utilization_pct,
+            snapshot_version:snapshot.snapshot_version, classes:snapshot.classes })
     }
 
     pub async fn hold_capacity(
@@ -295,7 +371,7 @@ impl PostgresCapacityService {
             self.finish_idempotency(&mut tx,idempotency_key,fingerprint,201,serde_json::to_value(&response).map_err(to_internal)?).await?;
             tx.commit().await.map_err(to_app_storage)?;return Ok(response);
         }
-        let (occupancy_facts, supply, available) = self.admission_supply(&mut tx, facts, &segments, correlation_id, now).await?;
+        let (occupancy_facts, supply, available, _occupancy) = self.admission_supply(&mut tx, facts, &segments, correlation_id, now).await?;
         if available.is_empty() { return Err(AppError::DomainRuleViolation("NO_AVAILABLE_CAPACITY".into())); }
         let pool_id = pool_id_for(&req.segment_ref, &occupancy_facts.class_ref);
         Self::lock_inventory(&mut tx, &pool_id).await.map_err(to_app_storage)?;
@@ -380,6 +456,7 @@ impl PostgresCapacityService {
                 .await
                 .map_err(to_app_storage)?;
         }
+        self.append_combined_snapshot(&mut tx, facts, &segments, correlation_id, now).await?;
         let response = HoldCapacityResponse {
             hold_id,
             segment_ref: req.segment_ref.clone(),
@@ -508,6 +585,8 @@ impl PostgresCapacityService {
                     .load_hold(hold_id)
                     .await?
                     .ok_or_else(|| AppError::NotFound("hold not found".into()))?;
+                let facts = Self::reservation_facts_from_hold(&hold_snapshot.data)?;
+                let segments = self.prepare_supply_history(&facts.scheduled_service_ref, &facts.segment_ref, correlation_id).await?;
                 let pool_id = hold_snapshot.data.inventory_pool_id.clone();
                 let mut tx = self.pool().begin().await.map_err(to_app_storage)?;
                 if let Some(booking) = &hold_snapshot.data.references.segment_booking_ref {
@@ -520,6 +599,7 @@ impl PostgresCapacityService {
                     tx.commit().await.map_err(to_app_storage)?;
                     return Ok(resp);
                 }
+                Self::lock_supply(&mut tx, &facts).await?;
                 Self::lock_inventory(&mut tx, &pool_id).await.map_err(to_app_storage)?;
                 let loaded_pool = self
                     .inventory_repo
@@ -551,6 +631,7 @@ impl PostgresCapacityService {
                         .await
                         .map_err(to_app_storage)?;
                 }
+                self.append_combined_snapshot(&mut tx, &facts, &segments, correlation_id, now).await?;
                 let resp = response(&events);
                 self.finish_idempotency(
                     &mut tx,
@@ -901,7 +982,7 @@ impl PostgresCapacityService {
             return Ok(());
         }
         Self::lock_supply(&mut tx, facts).await.map_err(inbound_from_app_error)?;
-        let (occupancy_facts, supply, available) = self.admission_supply(&mut tx, facts, &segments, &envelope.correlation_id, now).await.map_err(inbound_from_app_error)?;
+        let (occupancy_facts, supply, available, _occupancy) = self.admission_supply(&mut tx, facts, &segments, &envelope.correlation_id, now).await.map_err(inbound_from_app_error)?;
         let pool_id = pool_id_for(&req.segment_ref, &occupancy_facts.class_ref);
         Self::lock_inventory(&mut tx, &pool_id).await.map_err(inbound_transient)?;
         let loaded = self
@@ -1056,6 +1137,8 @@ impl PostgresCapacityService {
                 .await
                 .map_err(inbound_transient)?;
         }
+        self.append_combined_snapshot(&mut tx, facts, &segments, &envelope.correlation_id, now)
+            .await.map_err(inbound_from_app_error)?;
         let response = HoldCapacityResponse {
             hold_id,
             segment_ref: req.segment_ref.clone(),
@@ -1255,6 +1338,11 @@ impl PostgresCapacityService {
         }
         let hold_id = hold_snapshot.id.clone();
         let pool_id = hold_snapshot.data.inventory_pool_id.clone();
+        let facts = Self::reservation_facts_from_hold(&hold_snapshot.data)
+            .map_err(inbound_from_app_error)?;
+        let segments = self.prepare_supply_history(&facts.scheduled_service_ref, &facts.segment_ref, &envelope.correlation_id)
+            .await.map_err(inbound_from_app_error)?;
+        Self::lock_supply(&mut tx, &facts).await.map_err(inbound_from_app_error)?;
         Self::lock_inventory(&mut tx, &pool_id).await.map_err(inbound_transient)?;
         let Some(loaded_pool) = self
             .inventory_repo
@@ -1307,6 +1395,8 @@ impl PostgresCapacityService {
                 .await
                 .map_err(inbound_transient)?;
         }
+        self.append_combined_snapshot(&mut tx, &facts, &segments, &envelope.correlation_id, now)
+            .await.map_err(inbound_from_app_error)?;
         let resp = ConfirmHoldResponse {
             hold_id,
             status: if expired { "EXPIRED".to_string() } else { "CONFIRMED".to_string() },
@@ -1512,6 +1602,11 @@ impl PostgresCapacityService {
         }
         let hold_id = hold_snapshot.id.clone();
         let pool_id = hold_snapshot.data.inventory_pool_id.clone();
+        let facts = Self::reservation_facts_from_hold(&hold_snapshot.data)
+            .map_err(inbound_from_app_error)?;
+        let segments = self.prepare_supply_history(&facts.scheduled_service_ref, &facts.segment_ref, &envelope.correlation_id)
+            .await.map_err(inbound_from_app_error)?;
+        Self::lock_supply(&mut tx, &facts).await.map_err(inbound_from_app_error)?;
         Self::lock_inventory(&mut tx, &pool_id).await.map_err(inbound_transient)?;
         let Some(loaded_pool) = self
             .inventory_repo
@@ -1567,6 +1662,8 @@ impl PostgresCapacityService {
                 .await
                 .map_err(inbound_transient)?;
         }
+        self.append_combined_snapshot(&mut tx, &facts, &segments, &envelope.correlation_id, now)
+            .await.map_err(inbound_from_app_error)?;
         let resp = ReleaseHoldResponse {
             hold_id,
             status: "RELEASED".to_string(),
@@ -2092,6 +2189,7 @@ fn domain_events_to_wire(
 ) -> Result<Vec<WireEnvelope>, AppError> {
     events
         .iter()
+        .filter(|event| !matches!(event, DomainEvent::CapacitySnapshotUpdated(_)))
         .map(|event| domain_event_to_wire(event, correlation_id))
         .collect()
 }
