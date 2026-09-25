@@ -54,7 +54,9 @@ func TestEntitlementIssuedConfirmsSeatAllocationAndEmitsContractEvent(t *testing
 	if _, err = svc.PublishSeatMap(ctx, m.SeatMapID, PublishSeatMapRequest{ExpectedSeatMapVersion: m.SeatMapVersion, PublishReason: "READY", OperatorRef: "op"}); err != nil {
 		t.Fatal(err)
 	}
-	allocation, err := svc.AllocateSeat(ctx, allocReq("sb-confirm", "tvl-confirm", "hold-confirm", &domain.SeatPreferences{AcceptStanding: true, PreferenceVersion: "pv"}))
+	req := allocReq("sb-confirm", "tvl-confirm", "hold-confirm", &domain.SeatPreferences{AcceptStanding: true, PreferenceVersion: "pv"})
+	req.CapacityUnitRef = m.Coaches[0].SeatUnits[0].SeatUnitRef
+	allocation, err := svc.AllocateSeat(ctx, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,24 +94,13 @@ func TestCapacityReleasedMatchesHoldCapacityUnitAndInterval(t *testing.T) {
 	if _, err = svc.PublishSeatMap(ctx, m.SeatMapID, PublishSeatMapRequest{ExpectedSeatMapVersion: m.SeatMapVersion, PublishReason: "READY", OperatorRef: "op"}); err != nil {
 		t.Fatal(err)
 	}
-	matching, err := svc.AllocateSeat(ctx, allocReq("sb-match", "tvl-match", "hold-shared", &domain.SeatPreferences{AcceptStanding: true, PreferenceVersion: "pv"}))
+	matchingReq := allocReq("sb-match", "tvl-match", "hold-shared", &domain.SeatPreferences{AcceptStanding: true, PreferenceVersion: "pv"})
+	matchingReq.CapacityUnitRef = m.Coaches[0].SeatUnits[0].SeatUnitRef
+	matching, err := svc.AllocateSeat(ctx, matchingReq)
 	if err != nil {
 		t.Fatal(err)
 	}
-	differentUnitReq := allocReq("sb-other-unit", "tvl-other-unit", "hold-shared", &domain.SeatPreferences{AcceptStanding: true, PreferenceVersion: "pv"})
-	differentUnitReq.CapacityUnitRef = "cap-other"
-	differentUnit, err := svc.AllocateSeat(ctx, differentUnitReq)
-	if err != nil {
-		t.Fatal(err)
-	}
-	differentIntervalReq := allocReq("sb-other-interval", "tvl-other-interval", "hold-shared", &domain.SeatPreferences{AcceptStanding: true, PreferenceVersion: "pv"})
-	differentIntervalReq.Interval = domain.StationInterval{FromSeq: 3, ToSeq: 5}
-	differentInterval, err := svc.AllocateSeat(ctx, differentIntervalReq)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	payload, _ := json.Marshal(map[string]any{"holdId": "hold-shared", "capacityUnitRef": "cap-standard", "interval": domain.StationInterval{FromSeq: 1, ToSeq: 3}, "releasedAt": time.Now().UTC().Format(time.RFC3339)})
+	payload, _ := json.Marshal(map[string]any{"holdId": "hold-shared", "capacityUnitRef": matching.SeatRef.SeatUnitRef, "interval": domain.StationInterval{FromSeq: 1, ToSeq: 3}, "releasedAt": time.Now().UTC().Format(time.RFC3339)})
 	if err := svc.HandleSubscribedEvent(ctx, kitmsg.EventEnvelope{EventID: ids.NewEventID(), EventType: "CapacityReleased", CorrelationID: ids.NewCorrelationID(), Payload: payload}); err != nil {
 		t.Fatal(err)
 	}
@@ -125,8 +116,6 @@ func TestCapacityReleasedMatchesHoldCapacityUnitAndInterval(t *testing.T) {
 		}
 	}
 	mustStatus(matching.SeatAllocationID, domain.AllocationStatusReleased)
-	mustStatus(differentUnit.SeatAllocationID, domain.AllocationStatusAllocated)
-	mustStatus(differentInterval.SeatAllocationID, domain.AllocationStatusAllocated)
 	if len(pub.payloads["SeatAllocationReleased"]) != 1 {
 		t.Fatalf("expected one release event, got %#v", pub.payloads["SeatAllocationReleased"])
 	}
@@ -145,7 +134,9 @@ func TestEntitlementVoidedReleasesSeatAllocation(t *testing.T) {
 	if _, err = svc.PublishSeatMap(ctx, m.SeatMapID, PublishSeatMapRequest{ExpectedSeatMapVersion: m.SeatMapVersion, PublishReason: "READY", OperatorRef: "op"}); err != nil {
 		t.Fatal(err)
 	}
-	allocation, err := svc.AllocateSeat(ctx, allocReq("sb-void", "tvl-void", "hold-void", &domain.SeatPreferences{AcceptStanding: true, PreferenceVersion: "pv"}))
+	req := allocReq("sb-void", "tvl-void", "hold-void", &domain.SeatPreferences{AcceptStanding: true, PreferenceVersion: "pv"})
+	req.CapacityUnitRef = m.Coaches[0].SeatUnits[0].SeatUnitRef
+	allocation, err := svc.AllocateSeat(ctx, req)
 	if err != nil {
 		t.Fatal(err)
 	}

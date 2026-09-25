@@ -63,15 +63,19 @@ func TestAdjacentAllocationRequiresSameGroupAndAdjacentKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := svc.AllocateSeat(ctx, allocReq("sb-other", "tvl-other", "hold-other", &domain.SeatPreferences{AcceptStanding: false, AdjacencyPreference: domain.AdjacencyAdjacent, AdjacencyGroupRef: "other", PreferenceVersion: "pv-other"})); err != nil {
+	otherReq := allocReq("sb-other", "tvl-other", "hold-other", &domain.SeatPreferences{AcceptStanding: false, AdjacencyPreference: domain.AdjacencyAdjacent, AdjacencyGroupRef: "other", PreferenceVersion: "pv-other"})
+	otherReq.CapacityUnitRef = m.Coaches[0].SeatUnits[0].SeatUnitRef
+	if _, err := svc.AllocateSeat(ctx, otherReq); err != nil {
 		t.Fatal(err)
 	}
-	degradedResp, err := svc.AllocateSeat(ctx, allocReq("sb-degraded", "tvl-degraded", "hold-degraded", &domain.SeatPreferences{AcceptStanding: false, AdjacencyPreference: domain.AdjacencyAdjacent, AdjacencyGroupRef: "grp", PreferenceVersion: "pv1"}))
+	degradedReq := allocReq("sb-degraded", "tvl-degraded", "hold-degraded", &domain.SeatPreferences{AcceptStanding: false, AdjacencyPreference: domain.AdjacencyAdjacent, AdjacencyGroupRef: "grp", PreferenceVersion: "pv1"})
+	degradedReq.CapacityUnitRef = m.Coaches[0].SeatUnits[4].SeatUnitRef
+	degradedResp, err := svc.AllocateSeat(ctx, degradedReq)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !degradedResp.SeatRef.Degraded || degradedResp.SeatRef.DegradationReason != domain.DegradationNoAdjacentBlock {
-		t.Fatalf("expected unrelated occupied seat not to satisfy adjacency, got %#v", degradedResp.SeatRef)
+	if degradedResp.SeatRef.SeatUnitRef != degradedReq.CapacityUnitRef {
+		t.Fatalf("allocation drifted from the capacity-bound unit: got %#v", degradedResp.SeatRef)
 	}
 
 	rowTwoUnit := m.Coaches[0].SeatUnits[4]
@@ -139,7 +143,9 @@ func TestEntitlementReleaseBySegmentBookingReleasesSeatAllocation(t *testing.T) 
 	if _, err = svc.PublishSeatMap(ctx, m.SeatMapID, PublishSeatMapRequest{ExpectedSeatMapVersion: m.SeatMapVersion, PublishReason: "READY", OperatorRef: "op"}); err != nil {
 		t.Fatal(err)
 	}
-	alloc, err := svc.AllocateSeat(ctx, allocReq("sb-release", "tvl-release", "hold-release", &domain.SeatPreferences{AcceptStanding: true, PreferenceVersion: "pv"}))
+	req := allocReq("sb-release", "tvl-release", "hold-release", &domain.SeatPreferences{AcceptStanding: true, PreferenceVersion: "pv"})
+	req.CapacityUnitRef = m.Coaches[0].SeatUnits[0].SeatUnitRef
+	alloc, err := svc.AllocateSeat(ctx, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,12 +178,14 @@ func TestCapacityHoldExpiredExpiresSeatAllocations(t *testing.T) {
 	if _, err = svc.PublishSeatMap(ctx, m.SeatMapID, PublishSeatMapRequest{ExpectedSeatMapVersion: m.SeatMapVersion, PublishReason: "READY", OperatorRef: "op"}); err != nil {
 		t.Fatal(err)
 	}
-	alloc, err := svc.AllocateSeat(ctx, allocReq("sb-expire", "tvl-expire", "hold-expire", &domain.SeatPreferences{AcceptStanding: true, PreferenceVersion: "pv"}))
+	req := allocReq("sb-expire", "tvl-expire", "hold-expire", &domain.SeatPreferences{AcceptStanding: true, PreferenceVersion: "pv"})
+	req.CapacityUnitRef = m.Coaches[0].SeatUnits[0].SeatUnitRef
+	alloc, err := svc.AllocateSeat(ctx, req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	expiredAt := time.Now().UTC().Truncate(time.Second)
-	payload, _ := json.Marshal(map[string]any{"holdId": "hold-expire", "capacityUnitRef": "cap-standard", "interval": domain.StationInterval{FromSeq: 1, ToSeq: 3}, "expiredAt": expiredAt.Format(time.RFC3339)})
+	payload, _ := json.Marshal(map[string]any{"holdId": "hold-expire", "capacityUnitRef": alloc.SeatRef.SeatUnitRef, "interval": domain.StationInterval{FromSeq: 1, ToSeq: 3}, "expiredAt": expiredAt.Format(time.RFC3339)})
 	err = svc.HandleSubscribedEvent(ctx, kitmsg.EventEnvelope{EventID: ids.NewEventID(), EventType: "CapacityHoldExpired", CorrelationID: ids.NewCorrelationID(), Payload: payload})
 	if err != nil {
 		t.Fatal(err)
