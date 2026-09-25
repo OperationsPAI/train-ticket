@@ -67,6 +67,12 @@ test("PostgresWaitlistRepository finds archivable terminal rows", async () => {
   assert.match(db.calls[0].sql, /status IN \('FULFILLED', 'EXPIRED', 'CANCELLED'\)/u);
 });
 
+test("PostgresWaitlistRepository locks expired promotions before restoring credits", async () => {
+  const db = new FakeDb();
+  await new PostgresWaitlistRepository(db as never).findExpiredOffers(new Date("2026-07-20T00:00:00Z"));
+  assert.match(db.calls[0].sql, /FOR UPDATE SKIP LOCKED/u);
+});
+
 test("PostgresWaitlistRepository queue queries exclude CLOSED archival rows", async () => {
   const db = new FakeDb();
   const repository = new PostgresWaitlistRepository(db as never);
