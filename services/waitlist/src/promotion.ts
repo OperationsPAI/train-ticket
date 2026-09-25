@@ -230,7 +230,14 @@ export class PromotionOrchestrator {
       const commercialOffer = await this.offerManagement.createOffer(entry, entry.fareQuoteId!);
       const offerNow = this.now();
       const expiresAt = earliestInstant(commercialOffer.expiresAt, entry.paymentGuarantee.authorizedUntil, entry.deadline);
-      if (expiresAt <= offerNow || !guaranteeCovers(entry, commercialOffer.total)) {
+      if (expiresAt <= offerNow) {
+        await this.repository.restoreCapacityCredits(entry);
+        entry.expire();
+        const expired = await this.repository.save(entry);
+        await publishAll(this.publisher, [waitlistExpired(expired, entry.loadedVersion, correlationId, offerNow.toISOString())]);
+        return expired;
+      }
+      if (!guaranteeCovers(entry, commercialOffer.total)) {
         await this.repository.restoreCapacityCredits(entry);
         entry.forgetMatchedCapacityCredits();
         entry.suspend();
