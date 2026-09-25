@@ -17,12 +17,17 @@ pub struct AppState {
     pub plan_index: Arc<PlanIndex>,
     pool: Option<PgPool>,
     snapshots: Option<SnapshotRepository>,
+    outbound_stream: String,
     /// Storage for deployments configured without PostgreSQL.
     mem_snapshots: RwLock<HashMap<String, Value>>,
 }
 
 impl AppState {
-    pub fn new(pool: Option<PgPool>, plan_index: Arc<PlanIndex>) -> Self {
+    pub fn new(
+        pool: Option<PgPool>,
+        plan_index: Arc<PlanIndex>,
+        outbound_stream: impl Into<String>,
+    ) -> Self {
         Self {
             plan_index,
             pool: pool.clone(),
@@ -30,6 +35,7 @@ impl AppState {
                 SnapshotRepository::new("itinerary_snapshots")
                     .expect("valid table name"),
             ),
+            outbound_stream: outbound_stream.into(),
             mem_snapshots: RwLock::new(HashMap::new()),
         }
     }
@@ -118,7 +124,7 @@ impl AppState {
         if let Some(pool) = &self.pool {
             let result: Result<(), StorageError> = async {
                 let mut tx = pool.begin().await?;
-                OutboxAppender::append(&mut tx, "events:trip-planning", &envelope).await?;
+                OutboxAppender::append(&mut tx, &self.outbound_stream, &envelope).await?;
                 tx.commit().await?;
                 Ok(())
             }
@@ -245,6 +251,7 @@ impl AppState {
 #[cfg(all(test, feature = "redis-impl"))]
 mod tests {
     use super::*;
+    use crate::adapters::messaging::ITINERARY_STREAM;
     use crate::plan_index::PlanIndex;
 
     #[tokio::test]
@@ -255,13 +262,21 @@ mod tests {
         rust_kit::storage::Storage::new(pool.clone())
             .migrate_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
             .await.unwrap();
-        let state = AppState::new(Some(pool.clone()), Arc::new(PlanIndex::new()));
+        let state = AppState::new(
+            Some(pool.clone()),
+            Arc::new(PlanIndex::new()),
+            ITINERARY_STREAM,
+        );
         let id = format!("itin-{}", uuid::Uuid::now_v7());
         let data = serde_json::json!({"itineraryRef": id});
         state.save_itinerary(&id, data.clone()).await.unwrap();
         state.save_itinerary(&id, data.clone()).await.unwrap();
         assert!(state.mem_snapshots.read().await.is_empty());
-        let restarted = AppState::new(Some(pool.clone()), Arc::new(PlanIndex::new()));
+        let restarted = AppState::new(
+            Some(pool.clone()),
+            Arc::new(PlanIndex::new()),
+            ITINERARY_STREAM,
+        );
         assert_eq!(restarted.get_itinerary(&id).await.unwrap(), Some(data));
         sqlx::query("DELETE FROM itinerary_snapshots WHERE id = $1")
             .bind(id).execute(&pool).await.unwrap();
@@ -287,7 +302,11 @@ mod tests {
         let node_id = format!("tnd-{}", uuid::Uuid::now_v7());
         let place_id = format!("plc-{}", uuid::Uuid::now_v7());
 
-        let state = AppState::new(Some(pool.clone()), Arc::new(PlanIndex::new()));
+        let state = AppState::new(
+            Some(pool.clone()),
+            Arc::new(PlanIndex::new()),
+            ITINERARY_STREAM,
+        );
         let node_event = EventEnvelope::try_new(
             "TransportNodeRegistered",
             messaging::now_rfc3339_utc(),
@@ -356,7 +375,11 @@ mod tests {
             .unwrap();
 
         let rule_id = format!("mct-{}", uuid::Uuid::now_v7());
-        let state = AppState::new(Some(pool.clone()), Arc::new(PlanIndex::new()));
+        let state = AppState::new(
+            Some(pool.clone()),
+            Arc::new(PlanIndex::new()),
+            ITINERARY_STREAM,
+        );
         let published = EventEnvelope::try_new(
             "MctRulePublished",
             messaging::now_rfc3339_utc(),
