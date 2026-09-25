@@ -51,10 +51,26 @@ impl PostgresCapacityService {
         .await
         .map_err(to_app_storage)?
         {
-            return serde_json::from_value(data)
-                .map_err(|error| AppError::Unavailable(error.to_string()));
+            let saved: ReservationSupply = serde_json::from_value(data)
+                .map_err(|error| AppError::Unavailable(error.to_string()))?;
+            if saved.validate_source().is_ok() {
+                return Ok(saved);
+            }
+            let resolved = self.supply_client.reservation(booking, correlation).await?;
+            resolved.validate_source()?;
+            if !same_core_reservation(&saved, &resolved) {
+                return Err(AppError::PreconditionFailed(
+                    "persisted reservation facts conflict with their authoritative source".into(),
+                ));
+            }
+            sqlx::query("UPDATE reservation_supply_facts SET data=$2 WHERE segment_booking_id=$1")
+                .bind(booking)
+                .bind(serde_json::to_value(&resolved).map_err(|e| AppError::Internal(e.to_string()))?)
+                .execute(self.pool()).await.map_err(to_app_storage)?;
+            return Ok(resolved);
         }
         let facts = self.supply_client.reservation(booking, correlation).await?;
+        facts.validate_source()?;
         let mut tx = self.pool().begin().await.map_err(to_app_storage)?;
         sqlx::query("INSERT INTO reservation_supply_facts(segment_booking_id,scheduled_service_ref,service_date,class_ref,data) VALUES($1,$2,$3::date,$4,$5) ON CONFLICT DO NOTHING")
             .bind(booking).bind(&facts.scheduled_service_ref).bind(&facts.service_date).bind(&facts.class_ref)
@@ -227,4 +243,14 @@ impl PostgresCapacityService {
             .execute(&mut **tx).await.map_err(to_app_storage)?;
         Ok((supply, available))
     }
+}
+
+fn same_core_reservation(left: &ReservationSupply, right: &ReservationSupply) -> bool {
+    left.segment_booking_id == right.segment_booking_id
+        && left.journey_order_id == right.journey_order_id
+        && left.traveler_ref == right.traveler_ref
+        && left.segment_ref == right.segment_ref
+        && left.scheduled_service_ref == right.scheduled_service_ref
+        && left.service_date == right.service_date
+        && left.class_ref == right.class_ref
 }
