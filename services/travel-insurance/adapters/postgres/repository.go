@@ -147,6 +147,10 @@ func (r *Repository) FindClaim(ctx context.Context, id string) (domain.Claim, er
 	var claim domain.Claim
 	return claim, json.Unmarshal(snap.Data, &claim)
 }
+func (r *Repository) LockClaim(ctx context.Context, id string) error {
+	_, err := r.db.DBFor(ctx).Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "insurance-claim:"+strings.TrimSpace(id))
+	return err
+}
 func (r *Repository) FindActiveClaim(ctx context.Context, policyID string, claimType domain.ClaimType, triggerFactKey string) (domain.Claim, error) {
 	rows, err := r.db.DBFor(ctx).Query(ctx, `SELECT data FROM claim_snapshots WHERE data->>'policyId' = $1 AND data->>'claimType' = $2 AND data->>'triggerFactKey' = $3`, strings.TrimSpace(policyID), string(claimType), strings.TrimSpace(triggerFactKey))
 	if err != nil {
@@ -173,6 +177,29 @@ func (r *Repository) FindActiveClaim(ctx context.Context, policyID string, claim
 }
 func (r *Repository) SavePayoutAdvice(ctx context.Context, advice domain.PayoutAdvice) error {
 	return saveJSON(ctx, r.db.DBFor(ctx), "payout_advice_snapshots", advice.ID, advice)
+}
+func (r *Repository) FindPayoutAdvice(ctx context.Context, id string) (domain.PayoutAdvice, error) {
+	snap, ok, err := storage.NewSnapshotRepository(r.db.DBFor(ctx), "payout_advice_snapshots").Get(ctx, strings.TrimSpace(id))
+	if err != nil {
+		return domain.PayoutAdvice{}, err
+	}
+	if !ok {
+		return domain.PayoutAdvice{}, application.ErrNotFound
+	}
+	var advice domain.PayoutAdvice
+	return advice, json.Unmarshal(snap.Data, &advice)
+}
+func (r *Repository) FindPayoutAdviceByClaim(ctx context.Context, claimID string) (domain.PayoutAdvice, error) {
+	row := r.db.DBFor(ctx).QueryRow(ctx, `SELECT data FROM payout_advice_snapshots WHERE data->>'claimId'=$1 ORDER BY updated_at DESC LIMIT 1`, strings.TrimSpace(claimID))
+	var raw json.RawMessage
+	if err := row.Scan(&raw); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.PayoutAdvice{}, application.ErrNotFound
+		}
+		return domain.PayoutAdvice{}, err
+	}
+	var advice domain.PayoutAdvice
+	return advice, json.Unmarshal(raw, &advice)
 }
 
 func saveJSON(ctx context.Context, db storage.DBTX, table, id string, value any) error {

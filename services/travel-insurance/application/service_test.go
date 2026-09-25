@@ -20,10 +20,24 @@ func (p *capturePublisher) Publish(_ context.Context, e kitmsg.EventEnvelope) er
 	return nil
 }
 
+type payoutExecutorStub struct {
+	receipt PayoutReceipt
+	err     error
+	calls   int
+	advices []domain.PayoutAdvice
+}
+
+func (s *payoutExecutorStub) Disburse(_ context.Context, _ domain.Policy, _ domain.Claim, advice domain.PayoutAdvice, _ string) (PayoutReceipt, error) {
+	s.calls++
+	s.advices = append(s.advices, advice)
+	return s.receipt, s.err
+}
+
 func TestIssuePolicyPublishesPolicyIssued(t *testing.T) {
 	now := time.Date(2026, 7, 10, 10, 0, 0, 0, time.UTC)
 	pub := &capturePublisher{}
-	svc := NewInsuranceService(ServiceConfig{Publisher: pub, Clock: fixedClock{now}, IDGenerator: sequentialIDs()})
+	executor := &payoutExecutorStub{receipt: PayoutReceipt{ExecutionRef: "ben-1", AccountID: "acct-1", Amount: domain.Money{Currency: "CNY", MinorUnits: 1000}, Target: domain.PayoutWalletBenefit}}
+	svc := NewInsuranceService(ServiceConfig{Publisher: pub, Clock: fixedClock{now}, IDGenerator: sequentialIDs(), PayoutExecutor: executor})
 	policy, err := svc.IssuePolicy(context.Background(), IssuePolicyCommand{ProductCode: string(domain.ProductDelayInsurance), ProductVersion: "v1", JourneyOrderID: "jo-1", AncillaryOrderItemID: "anc-1", AccountID: "acct-1", TravelerRef: "trav-1", SegmentRefs: []string{"seg-1"}, PaymentIntentID: "pi-1", CoverageStartAt: now.Add(-time.Minute), CoverageEndAt: now.Add(time.Hour)})
 	if err != nil {
 		t.Fatalf("IssuePolicy: %v", err)
@@ -79,7 +93,8 @@ func TestDuplicatePolicyUniquenessIncludesProductCode(t *testing.T) {
 func TestFileAndSettleClaimPublishesEvents(t *testing.T) {
 	now := time.Date(2026, 7, 10, 10, 0, 0, 0, time.UTC)
 	pub := &capturePublisher{}
-	svc := NewInsuranceService(ServiceConfig{Publisher: pub, Clock: fixedClock{now}, IDGenerator: sequentialIDs()})
+	executor := &payoutExecutorStub{receipt: PayoutReceipt{ExecutionRef: "ben-1", AccountID: "acct-1", Amount: domain.Money{Currency: "CNY", MinorUnits: 1000}, Target: domain.PayoutWalletBenefit}}
+	svc := NewInsuranceService(ServiceConfig{Publisher: pub, Clock: fixedClock{now}, IDGenerator: sequentialIDs(), PayoutExecutor: executor})
 	policy, err := svc.IssuePolicy(context.Background(), IssuePolicyCommand{ProductCode: string(domain.ProductDelayInsurance), ProductVersion: "v1", JourneyOrderID: "jo-1", AncillaryOrderItemID: "anc-1", AccountID: "acct-1", TravelerRef: "trav-1", SegmentRefs: []string{"seg-1"}, PaymentIntentID: "pi-1", CoverageStartAt: now.Add(-time.Minute), CoverageEndAt: now.Add(time.Hour)})
 	if err != nil {
 		t.Fatal(err)
@@ -92,11 +107,11 @@ func TestFileAndSettleClaimPublishesEvents(t *testing.T) {
 	if claim.Status != domain.ClaimApproved {
 		t.Fatalf("claim status = %s", claim.Status)
 	}
-	_, err = svc.SettleClaim(context.Background(), SettleClaimCommand{ClaimID: claim.ID, PayoutTarget: string(domain.PayoutPaymentRefund)})
+	_, err = svc.SettleClaim(context.Background(), SettleClaimCommand{ClaimID: claim.ID, PayoutTarget: string(domain.PayoutWalletBenefit)})
 	if err != nil {
 		t.Fatalf("SettleClaim: %v", err)
 	}
-	if len(pub.events) != 5 || pub.events[1].EventType != "InsuranceClaimCreated" || pub.events[4].EventType != "InsurancePayoutCompleted" {
+	if len(pub.events) != 4 || pub.events[1].EventType != "InsuranceClaimCreated" || pub.events[3].EventType != "InsurancePayoutCompleted" || executor.calls != 1 {
 		t.Fatalf("events = %#v", pub.events)
 	}
 }
@@ -112,7 +127,8 @@ func sequentialIDs() func(string) string {
 func TestDelayInsuranceAutoPayoutAndRefundCancellation(t *testing.T) {
 	now := time.Date(2026, 7, 10, 10, 0, 0, 0, time.UTC)
 	pub := &capturePublisher{}
-	svc := NewInsuranceService(ServiceConfig{Publisher: pub, Clock: fixedClock{now}, IDGenerator: sequentialIDs()})
+	executor := &payoutExecutorStub{}
+	svc := NewInsuranceService(ServiceConfig{Publisher: pub, Clock: fixedClock{now}, IDGenerator: sequentialIDs(), PayoutExecutor: executor})
 	policy, err := svc.IssuePolicy(context.Background(), IssuePolicyCommand{ProductCode: string(domain.ProductDelayInsurance), ProductVersion: "v1", JourneyOrderID: "jo-delay", AncillaryOrderItemID: "anc-delay", AccountID: "acct-delay", TravelerRef: "trav-delay", SegmentRefs: []string{"seg-delay"}, PaymentIntentID: "pi-delay", CoverageStartAt: now.Add(-time.Minute), CoverageEndAt: now.Add(time.Hour)})
 	if err != nil {
 		t.Fatal(err)
@@ -120,6 +136,7 @@ func TestDelayInsuranceAutoPayoutAndRefundCancellation(t *testing.T) {
 	if policy.Premium.MinorUnits != 300 || policy.Status != domain.PolicyIssued {
 		t.Fatalf("unexpected issued policy: %#v", policy)
 	}
+	executor.receipt = PayoutReceipt{ExecutionRef: "ben-delay", AccountID: policy.AccountID, Amount: domain.Money{Currency: "CNY", MinorUnits: 3000}, Target: domain.PayoutWalletBenefit}
 	advices, err := svc.ProcessTrainDelayed(context.Background(), TrainDelayedCommand{SegmentRef: "seg-delay", ServiceDate: "2026-07-10", DelayMinutes: 90, OccurredAt: now, SourceEventID: "evt-019f5414-026a-7000-8888-000000000001"})
 	if err != nil {
 		t.Fatal(err)
@@ -150,7 +167,8 @@ func TestDelayInsuranceAutoPayoutAndRefundCancellation(t *testing.T) {
 
 func TestManualClaimPendingThenApproved(t *testing.T) {
 	now := time.Date(2026, 7, 10, 10, 0, 0, 0, time.UTC)
-	svc := NewInsuranceService(ServiceConfig{Clock: fixedClock{now}, IDGenerator: sequentialIDs()})
+	executor := &payoutExecutorStub{receipt: PayoutReceipt{ExecutionRef: "ben-bag", AccountID: "acct-bag", Amount: domain.Money{Currency: "CNY", MinorUnits: 50000}, Target: domain.PayoutWalletBenefit}}
+	svc := NewInsuranceService(ServiceConfig{Clock: fixedClock{now}, IDGenerator: sequentialIDs(), PayoutExecutor: executor})
 	policy, err := svc.IssuePolicy(context.Background(), IssuePolicyCommand{ProductCode: string(domain.ProductBaggageInsurance), ProductVersion: "v1", JourneyOrderID: "jo-bag", AncillaryOrderItemID: "anc-bag", AccountID: "acct-bag", TravelerRef: "trav-bag", SegmentRefs: []string{"seg-bag"}, PaymentIntentID: "pi-bag", CoverageStartAt: now.Add(-time.Minute), CoverageEndAt: now.Add(time.Hour)})
 	if err != nil {
 		t.Fatal(err)
@@ -169,5 +187,61 @@ func TestManualClaimPendingThenApproved(t *testing.T) {
 	}
 	if advice.Amount.MinorUnits != amount.MinorUnits {
 		t.Fatalf("advice amount = %#v", advice.Amount)
+	}
+}
+
+func TestPayoutFailureLeavesClaimApprovedAndReusesDecision(t *testing.T) {
+	now := time.Date(2026, 9, 25, 4, 0, 0, 0, time.UTC)
+	executor := &payoutExecutorStub{err: ErrPayoutUnavailable}
+	svc := NewInsuranceService(ServiceConfig{Clock: fixedClock{now}, IDGenerator: sequentialIDs(), PayoutExecutor: executor})
+	policy, err := svc.IssuePolicy(context.Background(), IssuePolicyCommand{ProductCode: string(domain.ProductDelayInsurance), ProductVersion: "v1", JourneyOrderID: "jo-retry", AncillaryOrderItemID: "anc-retry", AccountID: "acct-retry", TravelerRef: "trav-retry", SegmentRefs: []string{"seg-retry"}, PaymentIntentID: "pi-retry", CoverageStartAt: now.Add(-time.Minute), CoverageEndAt: now.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	amount, _ := domain.NewMoney("CNY", 1000)
+	claim, err := svc.FileClaim(context.Background(), FileClaimCommand{PolicyID: policy.ID, ClaimType: string(domain.ClaimDelayAuto), TriggerFactKey: "fact-retry", DelayFact: &domain.DelayFact{SourceEventType: "SegmentArrived", SourceEventID: "evt-retry", DelayMinutes: 90}, ClaimedAmount: amount})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ApproveClaim(context.Background(), SettleClaimCommand{ClaimID: claim.ID}); err == nil {
+		t.Fatal("expected payout failure")
+	}
+	after, err := svc.GetClaim(context.Background(), claim.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != domain.ClaimApproved {
+		t.Fatalf("claim status=%s", after.Status)
+	}
+	firstKey := executor.advices[0].IdempotencyKey
+	executor.err = nil
+	executor.receipt = PayoutReceipt{ExecutionRef: "ben-retry", AccountID: policy.AccountID, Amount: amount, Target: domain.PayoutWalletBenefit}
+	if _, err := svc.ApproveClaim(context.Background(), SettleClaimCommand{ClaimID: claim.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if executor.calls != 2 || executor.advices[1].IdempotencyKey != firstKey || executor.advices[1].ID != executor.advices[0].ID {
+		t.Fatalf("payout retry changed identity: %#v", executor.advices)
+	}
+}
+
+func TestPayoutReceiptMustMatchApprovedClaim(t *testing.T) {
+	now := time.Date(2026, 9, 25, 4, 0, 0, 0, time.UTC)
+	executor := &payoutExecutorStub{receipt: PayoutReceipt{ExecutionRef: "ben-wrong", AccountID: "acct-other", Amount: domain.Money{Currency: "CNY", MinorUnits: 1000}, Target: domain.PayoutWalletBenefit}}
+	svc := NewInsuranceService(ServiceConfig{Clock: fixedClock{now}, IDGenerator: sequentialIDs(), PayoutExecutor: executor})
+	policy, err := svc.IssuePolicy(context.Background(), IssuePolicyCommand{ProductCode: string(domain.ProductDelayInsurance), ProductVersion: "v1", JourneyOrderID: "jo-mismatch", AncillaryOrderItemID: "anc-mismatch", AccountID: "acct-match", TravelerRef: "trav-match", SegmentRefs: []string{"seg-match"}, PaymentIntentID: "pi-match", CoverageStartAt: now.Add(-time.Minute), CoverageEndAt: now.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	amount, _ := domain.NewMoney("CNY", 1000)
+	claim, err := svc.FileClaim(context.Background(), FileClaimCommand{PolicyID: policy.ID, ClaimType: string(domain.ClaimDelayAuto), TriggerFactKey: "fact-match", DelayFact: &domain.DelayFact{SourceEventType: "SegmentArrived", SourceEventID: "evt-match", DelayMinutes: 90}, ClaimedAmount: amount})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ApproveClaim(context.Background(), SettleClaimCommand{ClaimID: claim.ID}); err == nil {
+		t.Fatal("expected mismatched payout receipt rejection")
+	}
+	after, _ := svc.GetClaim(context.Background(), claim.ID)
+	if after.Status != domain.ClaimApproved {
+		t.Fatalf("claim status=%s", after.Status)
 	}
 }

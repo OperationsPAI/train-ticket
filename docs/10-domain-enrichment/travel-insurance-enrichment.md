@@ -6,7 +6,7 @@ Travel Insurance is a Go service with versioned products, policies, claims and p
 The product catalog contains delay, cancellation, accident and baggage insurance, with fixed premiums or a ticket price percentage.
 Policy issuance verifies purchase references in the configured persistent runtime and records the selected product version and coverage window.
 Claims can be filed, approved or rejected; `TrainDelayed` processing creates automatic delay claims when the delay exceeds 60 minutes and the segment and coverage match.
-Approval records a payout advice, marks the local claim and policy paid out and emits `InsurancePayoutCompleted`.
+Approval records a durable `REQUESTED` payout advice and executes it through Wallet / Promotion's owning benefit API. The claim and policy move to `PAID_OUT`, and `InsurancePayoutCompleted` is emitted, only after the issued Wallet benefit has been read back and verified against the approved account, currency, amount and claim reference.
 Policy cancellation checks the recorded premium refund before publishing cancellation.
 
 ## Interfaces and sources
@@ -16,8 +16,8 @@ Policy cancellation checks the recorded premium refund before publishing cancell
 
 ## Boundaries
 
-`PayoutAdvice`, local `PAID_OUT` status and `InsurancePayoutCompleted` record the insurance decision.
-The approval method contains no Payment refund or Wallet credit call, so those records alone do not establish delivery of funds.
+`PayoutAdvice` records both the insurance decision and the verified Wallet execution reference. A failed or uncertain call leaves the advice retryable and does not claim money was delivered. The stable downstream idempotency key and `insurance-claim:{claimId}:v1` issuance identity prevent duplicate credits after a timeout or process restart.
+Migration `004_payout_execution.sql` reopens legacy local-only `PAID_OUT` records as `APPROVED` / `REQUESTED`; they must obtain and verify a Wallet execution reference before becoming paid again.
 The cancellation path verifies a premium refund and does not initiate that refund.
 Deployment and verification evidence, including differences from workspace code, are recorded in [current status](../00-current-status.md).
 Remaining work is maintained only in [TODO](../TODO.md).
