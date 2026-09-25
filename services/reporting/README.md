@@ -33,7 +33,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests
 ## Captured payment metrics
 
 All monetary revenue metrics use `PaymentCaptured` only.
-The retained API names `revenue`, `totalRevenue`, `routeRevenue`, and `revenue_per_hour` mean gross captured payment amount.
+The retained API names `revenue`, `totalRevenue`, and `revenue_per_hour` mean gross captured payment amount.
 Refunds and revenue recognition events do not increase or decrease this amount.
 These fields do not represent net revenue or accounting recognized revenue.
 Other consumed event types can still affect event counts, dashboard rebuilds, and anomaly rules.
@@ -44,7 +44,7 @@ The route and seat class materialized views retain their original columns, types
 Currency is part of every grouping key.
 Breakdowns map missing dimensions to `unknown`, default missing currency to USD, and bucket event timestamps by UTC hour.
 Both PostgreSQL and the in-memory aggregator retain a `PaymentCaptured` event with no amount for operational audit but exclude it from monetary totals and payment counts.
-`totalRevenue`, `routeRevenue`, and `revenue_per_hour` are arrays of Money values ordered by ISO currency code.
+`totalRevenue` and `revenue_per_hour` are arrays of Money values ordered by ISO currency code.
 The in-memory aggregator and PostgreSQL reader preserve every currency independently and never add or convert unlike currencies.
 An empty monetary result is represented by an empty array rather than by a synthetic zero in a default currency.
 The revenue endpoint paginates grouped `items` with `limit` and `offset` while `totalRevenue` always covers the complete filtered result.
@@ -160,4 +160,6 @@ These local measurements establish lock behavior and correctness; they do not es
 PostgreSQL computes operational metrics directly over indexed timestamp ranges; it does not load or truncate an arbitrary latest-event sample.
 The windows are 60 seconds for `orders_per_second`, one hour for captured revenue, booking latency and scalper block rate, 24 hours for refund rate, and five minutes for context rollups.
 `/api/v1/metrics/operational` intentionally excludes route rows; use the paginated `/api/v1/metrics/routes` endpoint for route detail.
+The route endpoint covers the preceding 24 hours, orders rows by service date descending then route ID, and reports the complete group count independently of `limit` and `offset`.
+It contains operational demand/capacity fields only; route revenue is available from `/api/v1/metrics/revenue?groupBy=route`.
 On a populated database, run `scripts/prepare_operational_indexes.py` before registering migration 009 so the supporting indexes are built concurrently.

@@ -14,12 +14,12 @@
 | `avg_booking_latency` | 最近1小时 booking latency 样本的 p50、p95、p99。 |
 | `refund_rate` | 最近24小时退款事件数量除以订单事件数量。 |
 | `scalper_block_rate` | 最近1小时拦截事件数量除以拦截与订单事件总数。 |
-| `routeRevenue` | 路线和服务日期下 `PaymentCaptured` 按币种分别求和，返回 Money 数组。 |
 | `routeDemand` | 路线和服务日期下搜索事件数量与订单事件数量之和。 |
 
 路线聚合读取最新的 confirmed、capacity 和席别使用字段。
 缺少非零 confirmed 值时，当前代码使用订单事件数量，缺少 capacity 时使用零。
 这些指标依赖输入事件提供的维度与计数，不能代替 Capacity 的实时可售判断。
+生产 `/metrics/routes` 只聚合最近24小时，在 PostgreSQL 内先形成完整路线/服务日期分组，再按 `serviceDate DESC, routeId ASC` 分页；它不返回路线收入。
 
 PostgreSQL 在数据库内按时间索引聚合完整窗口，不使用行数上限。
 `/metrics/operational` 的订单速率为60秒、收入/延迟/风控为1小时、退款率为24小时、context rollup 为5分钟。

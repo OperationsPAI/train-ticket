@@ -197,8 +197,10 @@ class ReportingReadRepository:
     def operational_metrics(self, at: datetime | None = None) -> MetricSnapshot:
         return self.metric_aggregator.snapshot(at)
 
-    def route_metrics(self, at: datetime | None = None) -> tuple[RouteMetrics, ...]:
-        return self.metric_aggregator.route_metrics(at)
+    def route_metrics(self, *, limit: int = 20, offset: int = 0, at: datetime | None = None) -> tuple[tuple[RouteMetrics, ...], int]:
+        routes = tuple(sorted(self.metric_aggregator.route_metrics(at), key=lambda item: item.route_id))
+        routes = tuple(sorted(routes, key=lambda item: item.service_date, reverse=True))
+        return routes[offset : offset + limit], len(routes)
 
     def context_count_report(self, group_by: str = "source_context", limit: int = 20, offset: int = 0, at: datetime | None = None) -> ContextCountReport:
         return self.metric_aggregator.context_count_report(group_by=group_by, limit=limit, offset=offset, at=at)
@@ -537,8 +539,8 @@ class ReportingApplicationService:
     def operational_metrics(self, at: datetime | None = None) -> MetricSnapshot:
         return self.repository.operational_metrics(at)
 
-    def route_metrics(self, at: datetime | None = None) -> tuple[RouteMetrics, ...]:
-        return self.repository.route_metrics(at)
+    def route_metrics(self, *, limit: int = 20, offset: int = 0, at: datetime | None = None) -> tuple[tuple[RouteMetrics, ...], int]:
+        return self.repository.route_metrics(limit=limit, offset=offset, at=at)
 
     def context_count_report(self, group_by: str = "source_context", limit: int = 20, offset: int = 0, at: datetime | None = None) -> ContextCountReport:
         return self.repository.context_count_report(group_by=group_by, limit=limit, offset=offset, at=at)

@@ -93,7 +93,7 @@ Use the shape required by the target endpoint; do not rename `amount` to `minorU
 Currency and units remain part of every amount's meaning.
 
 Reporting's HTTP [money serializer](../../../services/reporting/src/reporting/api.py) returns `{"amount": "123.45", "currency": "CNY"}` for one Money value.
-`items[].revenue` is one Money value; `totalRevenue`, `routeRevenue`, and `revenue_per_hour` are arrays containing one Money value per currency.
+`items[].revenue` is one Money value; `totalRevenue` and `revenue_per_hour` are arrays containing one Money value per currency.
 `yieldPerKm` is also serialized as a decimal string.
 Reporting's monetary revenue fields represent gross captured payments; their aggregation scope and currency limitations are defined in [Reporting](reporting.md).
 

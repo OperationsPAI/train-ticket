@@ -171,6 +171,24 @@ class EndpointTest(unittest.TestCase):
         self.assertEqual(response.json()["orders_per_second"], 0.1667)
         self.assertIn("avg_booking_latency", response.json())
 
+    def test_route_metrics_endpoint_is_windowed_and_paginated(self) -> None:
+        service = ReportingApplicationService()
+        occurred_at = datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        for route in ("seg-a", "seg-b"):
+            service.handle_event(EventEnvelope(
+                eventId=f"evt-{route}", eventType="TripSearched", occurredAt=occurred_at,
+                correlationId="corr-1", producer="trip-planning", schemaVersion=1,
+                payload={"segmentRef": route}, causationId="evt-source",
+            ))
+
+        response = TestClient(create_app(service=service)).get("/api/v1/metrics/routes?limit=1&offset=1")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["total"], 2)
+        self.assertEqual(response.json()["windowSeconds"], 86400)
+        self.assertEqual(len(response.json()["items"]), 1)
+        self.assertNotIn("routeRevenue", response.json()["items"][0])
+
     def test_anomaly_detection_publishes_event(self) -> None:
         publisher = FakePublisher()
         service = ReportingApplicationService(publisher=publisher)
