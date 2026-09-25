@@ -279,6 +279,76 @@ func TestPublishedCompositionReplacementMapsHistoricalUnits(t *testing.T) {
 	}
 }
 
+func TestPublishedPhysicalClassesCoexistAndReplaceOnlyTheirOwnComposition(t *testing.T) {
+	repo := newMemRepo()
+	svc := New(repo, &memPub{}, nil)
+	ctx := context.Background()
+	seat, err := svc.CreateSeatMap(ctx, CreateSeatMapRequest{ScheduledServiceRef: "ss-classes", ServiceDate: "2026-09-25", CompositionVersion: "seat-v1", CompositionSeed: "BASE", MappingVersion: "seat-map-v1", OperatorRef: "op"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seat, err = svc.PublishSeatMap(ctx, seat.SeatMapID, PublishSeatMapRequest{ExpectedSeatMapVersion: seat.SeatMapVersion, PublishReason: "INITIAL", OperatorRef: "op"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sleeper, err := svc.CreateSeatMap(ctx, CreateSeatMapRequest{ScheduledServiceRef: "ss-classes", ServiceDate: "2026-09-25", CompositionVersion: "sleeper-v1", CompositionSeed: "SLEEPER", MappingVersion: "sleeper-map-v1", OperatorRef: "op"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sleeper, err = svc.PublishSeatMap(ctx, sleeper.SeatMapID, PublishSeatMapRequest{ExpectedSeatMapVersion: sleeper.SeatMapVersion, PublishReason: "INITIAL", OperatorRef: "op"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current, _, _ := repo.GetSeatMap(ctx, seat.SeatMapID); current.Status != domain.SeatMapStatusPublished {
+		t.Fatalf("seat map was superseded by disjoint sleeper classes: %+v", current)
+	}
+	replacement, err := svc.CreateSeatMap(ctx, CreateSeatMapRequest{ScheduledServiceRef: "ss-classes", ServiceDate: "2026-09-25", CompositionVersion: "seat-v2", CompositionSeed: "BASE", MappingVersion: "seat-map-v2", OperatorRef: "op"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement, err = svc.PublishSeatMap(ctx, replacement.SeatMapID, PublishSeatMapRequest{ExpectedSeatMapVersion: replacement.SeatMapVersion, PublishReason: "REPLACEMENT", OperatorRef: "op"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldSeat, _, _ := repo.GetSeatMap(ctx, seat.SeatMapID)
+	currentSleeper, _, _ := repo.GetSeatMap(ctx, sleeper.SeatMapID)
+	if oldSeat.Status != domain.SeatMapStatusSuperseded || replacement.ReplacesSeatMapID != seat.SeatMapID {
+		t.Fatalf("seat replacement lineage old=%+v replacement=%+v", oldSeat, replacement)
+	}
+	if currentSleeper.Status != domain.SeatMapStatusPublished {
+		t.Fatalf("disjoint sleeper map was superseded: %+v", currentSleeper)
+	}
+	if _, err := svc.CapacityComposition(ctx, "ss-classes", "2026-09-25", "standard"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CapacityComposition(ctx, "ss-classes", "2026-09-25", "SLEEPER_HARD"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPublishRejectsAmbiguousCurrentMapForSameClass(t *testing.T) {
+	repo := newMemRepo()
+	svc := New(repo, &memPub{}, nil)
+	ctx := context.Background()
+	for _, version := range []string{"v1", "v2"} {
+		seatMap, err := domain.NewContractSeatMap("ss-ambiguous", "2026-09-25", version, "BASE", "map-"+version, "", time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := seatMap.Publish(seatMap.SeatMapVersion, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		repo.maps[seatMap.SeatMapID] = seatMap
+	}
+	candidate, err := svc.CreateSeatMap(ctx, CreateSeatMapRequest{ScheduledServiceRef: "ss-ambiguous", ServiceDate: "2026-09-25", CompositionVersion: "v3", CompositionSeed: "BASE", MappingVersion: "map-v3", OperatorRef: "op"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.PublishSeatMap(ctx, candidate.SeatMapID, PublishSeatMapRequest{ExpectedSeatMapVersion: candidate.SeatMapVersion, PublishReason: "REPLACEMENT", OperatorRef: "op"}); err == nil {
+		t.Fatal("expected ambiguous current class publication to fail")
+	}
+}
+
 func TestCapacityBoundStandingAndIntervalReuse(t *testing.T) {
 	repo := newMemRepo()
 	svc := New(repo, &memPub{}, nil)
