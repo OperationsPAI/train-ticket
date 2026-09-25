@@ -25,6 +25,14 @@ Status: implemented
 
 Policy issue is idempotent on the request's idempotency key, because it is called from the purchase funnel where a retry must not sell a second policy.
 
+## Claim payout
+
+An approved claim is paid as Wallet stored value through Wallet / Promotion's owning `POST /api/v1/benefits` API. Travel Insurance first persists a `REQUESTED` payout advice with a stable UUID-v7 idempotency key, then issues a `MANUAL_OPS` `BALANCE` benefit with `issuanceRef=insurance-claim:{claimId}:v1` and an `INSURANCE_CLAIM` business reference. It reads the resulting benefit back from Wallet and verifies the account, currency, amount and claim reference before marking the advice, claim and policy complete.
+
+`PAID_OUT` and `InsurancePayoutCompleted` therefore mean that a concrete Wallet benefit was observed. A timeout or invalid Wallet response leaves the claim `APPROVED` and the payout advice `REQUESTED`; retrying reuses the same advice and idempotency key. `PAYMENT_REFUND` is not accepted for claim proceeds because a claim is not a reversal of the original premium or ticket payment.
+
+The downstream URL template defaults to `http://%s:8080` and can be overridden with `INSURANCE_PAYOUT_URL_TEMPLATE`.
+
 ## Tests
 
 ```bash
