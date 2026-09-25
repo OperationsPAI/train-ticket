@@ -14,9 +14,14 @@ _PROJECTION_RETRY_DELAYS_SECONDS = (0.2, 0.4, 0.8, 1.6, 3.2)
 
 
 class DownstreamError(RuntimeError):
-    def __init__(self, message: str, code: str | None = None) -> None:
+    def __init__(self, message: str, code: str | None = None, status: int | None = None) -> None:
         super().__init__(message)
         self.code = code
+        # The downstream's own HTTP status, when it answered one. A refusal on
+        # business grounds and an unreachable service are different answers to
+        # the caller, and reporting both as 503 told the load generator that a
+        # conflict was an outage.
+        self.status = status
 
 
 def _env_name(service: str) -> str:
@@ -82,7 +87,7 @@ class DownstreamHttpClient:
         except error.HTTPError as exc:
             raw = exc.read().decode("utf-8", errors="replace")
             message, code = _downstream_failure(service, raw, exc.reason)
-            raise DownstreamError(message, code) from exc
+            raise DownstreamError(message, code, exc.code) from exc
         except error.URLError as exc:
             raise DownstreamError(f"{service} unavailable: {exc.reason}") from exc
         except JSONDecodeError as exc:
