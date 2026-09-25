@@ -6,12 +6,15 @@ import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.platformkit.messaging.PrefixedIds;
 import com.trainticket.platformkit.persistence.OptimisticConcurrencyException;
 import com.trainticket.platformkit.persistence.OutboxAppender;
+import com.trainticket.walletpromotion.application.MutationArtifacts;
 import com.trainticket.walletpromotion.application.PromotionRepository;
 import com.trainticket.walletpromotion.domain.BenefitRedemption;
+import com.trainticket.walletpromotion.domain.BenefitReservation;
 import com.trainticket.walletpromotion.domain.BenefitType;
 import com.trainticket.walletpromotion.domain.BusinessReason;
 import com.trainticket.walletpromotion.domain.PromotionInstrument;
 import com.trainticket.walletpromotion.domain.PromotionStatus;
+import com.trainticket.walletpromotion.domain.ReservationRelease;
 import com.trainticket.walletpromotion.domain.ReversalRecord;
 import com.trainticket.walletpromotion.domain.WalletAccount;
 import com.trainticket.walletpromotion.domain.WalletPromotionEvent;
@@ -130,7 +133,7 @@ public class PostgresPromotionRepository implements PromotionRepository {
         String sql = """
             SELECT data::text
               FROM promotion_instrument_snapshots
-             WHERE data->>'status' IN ('ISSUED', 'RESERVED', 'RELEASED')
+             WHERE data->>'status' IN ('ISSUED', 'RESERVED', 'REDEEMED', 'RELEASED', 'REVERSED')
                AND data->>'validUntil' <= ?
              ORDER BY data->>'validUntil'
              LIMIT ?
@@ -148,12 +151,41 @@ public class PostgresPromotionRepository implements PromotionRepository {
     }
 
     @Override
-    public Optional<BenefitRedemption> findRedemptionByReason(String benefitId, BusinessReason reason) {
+    public List<BenefitReservation> findExpiredReservations(Instant now, int limit) {
         return jdbc.query(
-            "SELECT data::text FROM benefit_redemptions WHERE benefit_id = ? AND reason_key = ?",
+            "SELECT data::text FROM benefit_reservations WHERE status='ACTIVE' AND expires_at<=? ORDER BY expires_at LIMIT ?",
+            (rs, rowNumber) -> read(rs.getString(1), BenefitReservation.class),
+            java.sql.Timestamp.from(now),
+            limit
+        );
+    }
+
+    @Override
+    public List<BenefitReservation> findActiveReservations(String benefitId) {
+        return jdbc.query(
+            "SELECT data::text FROM benefit_reservations WHERE benefit_id=? AND status='ACTIVE' ORDER BY reservation_ref",
+            (rs, rowNumber) -> read(rs.getString(1), BenefitReservation.class),
+            benefitId
+        );
+    }
+
+    @Override
+    public Optional<BenefitReservation> findReservation(String benefitId, String reservationRef) {
+        return jdbc.query(
+            "SELECT data::text FROM benefit_reservations WHERE benefit_id=? AND reservation_ref=?",
+            rs -> rs.next() ? Optional.of(read(rs.getString(1), BenefitReservation.class)) : Optional.empty(),
+            benefitId,
+            reservationRef
+        );
+    }
+
+    @Override
+    public Optional<BenefitRedemption> findRedemptionByReference(String benefitId, String redemptionRef) {
+        return jdbc.query(
+            "SELECT data::text FROM benefit_redemptions WHERE benefit_id = ? AND redemption_ref = ?",
             rs -> rs.next() ? Optional.of(read(rs.getString(1), BenefitRedemption.class)) : Optional.empty(),
             benefitId,
-            reason.key()
+            redemptionRef
         );
     }
 
@@ -167,23 +199,77 @@ public class PostgresPromotionRepository implements PromotionRepository {
     }
 
     @Override
+    public Optional<ReservationRelease> findReleaseByReference(String benefitId, String releaseRef) {
+        return jdbc.query(
+            "SELECT data::text FROM reservation_releases WHERE benefit_id=? AND release_ref=?",
+            rs -> rs.next() ? Optional.of(read(rs.getString(1), ReservationRelease.class)) : Optional.empty(),
+            benefitId,
+            releaseRef
+        );
+    }
+
+    @Override
+    public Optional<ReversalRecord> findReversalByReference(String redemptionId, String reversalRef) {
+        return jdbc.query(
+            "SELECT data::text FROM redemption_reversals WHERE redemption_id=? AND reversal_ref=?",
+            rs -> rs.next() ? Optional.of(read(rs.getString(1), ReversalRecord.class)) : Optional.empty(),
+            redemptionId,
+            reversalRef
+        );
+    }
+
+    @Override
     public void saveMutation(
         PromotionInstrument benefit,
         WalletAccount wallet,
         WalletPromotionEvent event,
-        BenefitRedemption redemption,
-        ReversalRecord reversal
+        MutationArtifacts artifacts
     ) {
         saveSnapshot("promotion_instrument_snapshots", benefit.benefitId(), benefit.version(), benefit);
         saveSnapshot("wallet_account_snapshots", wallet.walletAccountId(), wallet.version(), wallet);
         appendLedgerEntry(benefit, wallet, event);
+        for (BenefitReservation reservation : artifacts.reservations()) {
+            upsertReservation(reservation);
+        }
+        BenefitRedemption redemption = artifacts.redemption();
         if (redemption != null) {
             insertRedemption(redemption);
         }
+        if (artifacts.release() != null) {
+            insertRelease(artifacts.release());
+        }
+        ReversalRecord reversal = artifacts.reversal();
         if (reversal != null) {
             insertReversal(reversal);
         }
         outbox.append(envelope(event, benefit));
+    }
+
+    private void upsertReservation(BenefitReservation reservation) {
+        jdbc.update(
+            """
+            INSERT INTO benefit_reservations(benefit_id,reservation_ref,status,expires_at,data)
+            VALUES(?,?,?,?,?::jsonb)
+            ON CONFLICT(benefit_id,reservation_ref) DO UPDATE
+              SET status=EXCLUDED.status,expires_at=EXCLUDED.expires_at,data=EXCLUDED.data,updated_at=now()
+            """,
+            reservation.benefitId(),
+            reservation.reservationRef(),
+            reservation.status().name(),
+            java.sql.Timestamp.from(reservation.expiresAt()),
+            json(reservation)
+        );
+    }
+
+    private void insertRelease(ReservationRelease release) {
+        jdbc.update(
+            "INSERT INTO reservation_releases(release_id,benefit_id,reservation_ref,release_ref,data) VALUES(?,?,?,?,?::jsonb)",
+            release.releaseId(),
+            release.benefitId(),
+            release.reservationRef(),
+            release.releaseRef(),
+            json(release)
+        );
     }
 
     private void appendLedgerEntry(PromotionInstrument benefit, WalletAccount wallet, WalletPromotionEvent event) {
@@ -203,21 +289,24 @@ public class PostgresPromotionRepository implements PromotionRepository {
     private void insertRedemption(BenefitRedemption redemption) {
         jdbc.update(
             """
-            INSERT INTO benefit_redemptions(redemption_id, benefit_id, reason_key, data)
-            VALUES (?, ?, ?, ?::jsonb)
+            INSERT INTO benefit_redemptions(redemption_id, benefit_id, reason_key, redemption_ref, data)
+            VALUES (?, ?, ?, ?, ?::jsonb)
             """,
             redemption.redemptionId(),
             redemption.benefitId(),
             redemption.businessReason().key(),
+            redemption.redemptionRef(),
             json(redemption)
         );
     }
 
     private void insertReversal(ReversalRecord reversal) {
         jdbc.update(
-            "INSERT INTO redemption_reversals(reversal_id, redemption_id, data) VALUES (?, ?, ?::jsonb)",
+            "INSERT INTO redemption_reversals(reversal_id, redemption_id, reason_key, reversal_ref, data) VALUES (?, ?, ?, ?, ?::jsonb)",
             reversal.reversalId(),
             reversal.redemptionId(),
+            reversal.businessReason().key(),
+            reversal.reversalRef(),
             json(reversal)
         );
         jdbc.update(

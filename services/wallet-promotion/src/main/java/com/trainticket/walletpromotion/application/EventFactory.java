@@ -1,8 +1,10 @@
 package com.trainticket.walletpromotion.application;
 
 import com.trainticket.walletpromotion.domain.BenefitRedemption;
+import com.trainticket.walletpromotion.domain.BenefitReservation;
 import com.trainticket.walletpromotion.domain.Money;
 import com.trainticket.walletpromotion.domain.PromotionInstrument;
+import com.trainticket.walletpromotion.domain.ReservationRelease;
 import com.trainticket.walletpromotion.domain.WalletBalanceDelta;
 import com.trainticket.walletpromotion.domain.WalletPromotionEvent;
 import java.time.Instant;
@@ -39,6 +41,7 @@ final class EventFactory {
     static WalletPromotionEvent reserved(
         PromotionInstrument benefit,
         ReserveBenefitCommand command,
+        BenefitReservation reservation,
         WalletBalanceDelta delta,
         Instant occurredAt
     ) {
@@ -46,6 +49,7 @@ final class EventFactory {
         payload.put("reservedAmount", command.amount());
         payload.put("reservationRef", command.reservationRef());
         payload.put("reservationExpiresAt", iso(command.reservationExpiresAt()));
+        payload.put("useReference", reservation.useReference());
         payload.put("availableAmount", benefit.availableAmount());
         payload.put("totalReservedAmount", benefit.reservedAmount());
         payload.put("reservedAt", iso(occurredAt));
@@ -64,6 +68,7 @@ final class EventFactory {
         payload.put("redeemedAmount", redemption.amount());
         payload.put("redemptionRef", redemption.redemptionRef());
         payload.put("reservationRef", reservationRef);
+        payload.put("useReference", redemption.useReference());
         payload.put("availableAmount", benefit.availableAmount());
         payload.put("reservedAmount", benefit.reservedAmount());
         payload.put("totalRedeemedAmount", benefit.redeemedAmount());
@@ -74,12 +79,14 @@ final class EventFactory {
     static WalletPromotionEvent released(
         PromotionInstrument benefit,
         ReleaseBenefitCommand command,
+        ReservationRelease release,
         WalletBalanceDelta delta,
         Instant occurredAt
     ) {
         Map<String, Object> payload = basePayload(benefit, delta);
         payload.put("releasedAmount", command.amount());
         payload.put("reservationRef", command.reservationRef());
+        payload.put("releaseRef", release.releaseRef());
         payload.put("availableAmount", benefit.availableAmount());
         payload.put("reservedAmount", benefit.reservedAmount());
         payload.put("releasedAt", iso(occurredAt));
@@ -119,6 +126,7 @@ final class EventFactory {
         PromotionInstrument benefit,
         String redemptionId,
         String reversalId,
+        String reversalRef,
         Money reversedAmount,
         WalletBalanceDelta delta,
         Instant occurredAt
@@ -126,6 +134,7 @@ final class EventFactory {
         Map<String, Object> payload = basePayload(benefit, delta);
         payload.put("redemptionId", redemptionId);
         payload.put("reversalId", reversalId);
+        payload.put("reversalRef", reversalRef);
         payload.put("reversedAmount", reversedAmount);
         payload.put("availableAmount", benefit.availableAmount());
         payload.put("reservedAmount", benefit.reservedAmount());

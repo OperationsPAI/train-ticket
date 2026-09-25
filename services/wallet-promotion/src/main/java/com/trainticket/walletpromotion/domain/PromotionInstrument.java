@@ -36,6 +36,9 @@ public record PromotionInstrument(
         Objects.requireNonNull(issuanceSource); Objects.requireNonNull(applicableScope); Objects.requireNonNull(redemptionRule); Objects.requireNonNull(revocationRule);
         Objects.requireNonNull(validFrom); Objects.requireNonNull(validUntil); Objects.requireNonNull(businessReason); Objects.requireNonNull(createdAt); Objects.requireNonNull(updatedAt);
         if (!validUntil.isAfter(validFrom)) throw new DomainException("validUntil must be after validFrom");
+        if (!issuedAmount.currency().equals(applicableScope.currency())) throw new DomainException("scope currency must match issuedAmount");
+        long accounted = Math.addExact(Math.addExact(availableAmount.minorUnits(), reservedAmount.minorUnits()), redeemedAmount.minorUnits());
+        if (accounted > issuedAmount.minorUnits()) throw new DomainException("benefit balances exceed issuedAmount");
         if (issuanceSource == IssuanceSource.POST_SALES_COMP && (caseId == null || caseId.isBlank())) throw new DomainException("caseId is required for POST_SALES_COMP");
     }
 
@@ -45,57 +48,86 @@ public record PromotionInstrument(
     }
 
     public PromotionInstrument reserve(Money amount, BusinessReason reason, Instant now) {
-        requireNotExpired(now); amount.requirePositive("amount"); issuedAmount.requireSameCurrency(amount);
-        if (!(status == PromotionStatus.ISSUED || status == PromotionStatus.RELEASED)) throw new DomainException("benefit cannot be reserved from " + status);
+        requireUsable(now); amount.requirePositive("amount"); issuedAmount.requireSameCurrency(amount);
+        requireActive("reserved");
         if (availableAmount.minorUnits() < amount.minorUnits()) throw new DomainException("insufficient available benefit amount");
+        if (redemptionRule.singleUse() && (reservedAmount.minorUnits() != 0 || redeemedAmount.minorUnits() != 0
+            || availableAmount.minorUnits() != amount.minorUnits())) {
+            throw new DomainException("single-use benefit must reserve its complete remaining amount");
+        }
         return transition(PromotionStatus.RESERVED, availableAmount.minus(amount), reservedAmount.plus(amount), redeemedAmount, reason, now);
     }
 
     public PromotionInstrument redeem(Money amount, BusinessReason reason, Instant now, boolean fromReservation) {
-        requireNotExpired(now); amount.requirePositive("amount"); issuedAmount.requireSameCurrency(amount);
+        requireUsable(now); amount.requirePositive("amount"); issuedAmount.requireSameCurrency(amount);
         if (redemptionRule.maxRedemptionAmount() != null && amount.minorUnits() > redemptionRule.maxRedemptionAmount().minorUnits()) throw new DomainException("amount exceeds maxRedemptionAmount");
         if (redemptionRule.requiresReservation() && !fromReservation) throw new DomainException("reservation is required before redemption");
+        requireActive("redeemed");
         if (fromReservation) {
-            if (status != PromotionStatus.RESERVED) throw new DomainException("reserved redemption requires RESERVED status");
             if (reservedAmount.minorUnits() < amount.minorUnits()) throw new DomainException("insufficient reserved benefit amount");
-            return transition(PromotionStatus.REDEEMED, availableAmount, reservedAmount.minus(amount), redeemedAmount.plus(amount), reason, now);
+            if (redemptionRule.singleUse() && (reservedAmount.minorUnits() != amount.minorUnits() || availableAmount.minorUnits() != 0)) {
+                throw new DomainException("single-use benefit must redeem its complete reserved amount");
+            }
+            Money reserved = reservedAmount.minus(amount);
+            Money redeemed = redeemedAmount.plus(amount);
+            return transition(redemptionStatus(availableAmount, reserved), availableAmount, reserved, redeemed, reason, now);
         }
-        if (!(status == PromotionStatus.ISSUED || status == PromotionStatus.RELEASED)) throw new DomainException("benefit cannot be redeemed from " + status);
         if (availableAmount.minorUnits() < amount.minorUnits()) throw new DomainException("insufficient available benefit amount");
-        PromotionStatus next = redemptionRule.singleUse() || availableAmount.minorUnits() == amount.minorUnits() ? PromotionStatus.REDEEMED : status;
-        return transition(next, availableAmount.minus(amount), reservedAmount, redeemedAmount.plus(amount), reason, now);
+        if (redemptionRule.singleUse() && (availableAmount.minorUnits() != amount.minorUnits() || reservedAmount.minorUnits() != 0)) {
+            throw new DomainException("single-use benefit must redeem its complete available amount");
+        }
+        Money available = availableAmount.minus(amount);
+        Money redeemed = redeemedAmount.plus(amount);
+        return transition(redemptionStatus(available, reservedAmount), available, reservedAmount, redeemed, reason, now);
     }
 
     public PromotionInstrument release(Money amount, BusinessReason reason, Instant now) {
         amount.requirePositive("amount"); issuedAmount.requireSameCurrency(amount);
-        if (status != PromotionStatus.RESERVED) throw new DomainException("benefit cannot be released from " + status);
+        requireActive("released");
         if (reservedAmount.minorUnits() < amount.minorUnits()) throw new DomainException("insufficient reserved benefit amount");
-        return transition(PromotionStatus.RELEASED, availableAmount.plus(amount), reservedAmount.minus(amount), redeemedAmount, reason, now);
+        Money reserved = reservedAmount.minus(amount);
+        PromotionStatus next = reserved.minorUnits() > 0 ? PromotionStatus.RESERVED : PromotionStatus.RELEASED;
+        return transition(next, availableAmount.plus(amount), reserved, redeemedAmount, reason, now);
     }
 
     public PromotionInstrument expire(BusinessReason reason, Instant now) {
-        if (!(status == PromotionStatus.ISSUED || status == PromotionStatus.RESERVED || status == PromotionStatus.RELEASED)) throw new DomainException("benefit cannot expire from " + status);
+        requireActive("expired");
         if (now.isBefore(validUntil)) throw new DomainException("benefit is not expired yet");
         return transition(PromotionStatus.EXPIRED, Money.zero(issuedAmount.currency()), Money.zero(issuedAmount.currency()), redeemedAmount, reason, now);
     }
 
     public PromotionInstrument revoke(BusinessReason reason, Instant now) {
-        if (!(status == PromotionStatus.ISSUED || status == PromotionStatus.RELEASED)) throw new DomainException("benefit cannot be revoked from " + status);
+        requireActive("revoked");
         if (reservedAmount.minorUnits() != 0) throw new DomainException("reserved amount must be zero before revoke");
         return transition(PromotionStatus.REVOKED, Money.zero(issuedAmount.currency()), reservedAmount, redeemedAmount, reason, now);
     }
 
     public PromotionInstrument reverse(Money amount, BusinessReason reason, Instant now) {
         amount.requirePositive("amount"); issuedAmount.requireSameCurrency(amount);
-        if (status != PromotionStatus.REDEEMED) throw new DomainException("benefit cannot reverse redemption from " + status);
         if (redeemedAmount.minorUnits() < amount.minorUnits()) throw new DomainException("reversal exceeds redeemed amount");
-        return transition(PromotionStatus.REVERSED, availableAmount.plus(amount), reservedAmount, redeemedAmount.minus(amount), reason, now);
+        boolean restoreAvailable = status != PromotionStatus.EXPIRED
+            && status != PromotionStatus.REVOKED
+            && now.isBefore(validUntil);
+        PromotionStatus next = restoreAvailable
+            ? PromotionStatus.REVERSED
+            : status == PromotionStatus.REVOKED ? PromotionStatus.REVOKED : PromotionStatus.EXPIRED;
+        Money available = restoreAvailable ? availableAmount.plus(amount) : Money.zero(issuedAmount.currency());
+        Money reserved = restoreAvailable ? reservedAmount : Money.zero(issuedAmount.currency());
+        return transition(next, available, reserved, redeemedAmount.minus(amount), reason, now);
     }
 
     private PromotionInstrument transition(PromotionStatus next, Money available, Money reserved, Money redeemed, BusinessReason reason, Instant now) {
-        if (next != status && !status.canTransitionTo(next)) throw new DomainException("invalid promotion transition " + status + " -> " + next);
         return new PromotionInstrument(benefitId, accountId, walletAccountId, benefitType, balanceType, next, issuedAmount, available, reserved, redeemed, issuanceSource, caseId, applicableScope, redemptionRule, revocationRule, validFrom, validUntil, reason, createdAt, now, version + 1);
     }
-    private void requireNotExpired(Instant now) { if (!now.isBefore(validUntil)) throw new DomainException("benefit validity has expired"); }
+    private void requireActive(String operation) { if (status.terminal()) throw new DomainException("benefit cannot be " + operation + " from " + status); }
+    private void requireUsable(Instant now) {
+        if (now.isBefore(validFrom)) throw new DomainException("benefit validity has not started");
+        if (!now.isBefore(validUntil)) throw new DomainException("benefit validity has expired");
+    }
+    private static PromotionStatus redemptionStatus(Money available, Money reserved) {
+        if (reserved.minorUnits() > 0) return PromotionStatus.RESERVED;
+        if (available.minorUnits() > 0) return PromotionStatus.ISSUED;
+        return PromotionStatus.REDEEMED;
+    }
     private static void requireText(String value, String name) { if (value == null || value.isBlank()) throw new DomainException(name + " is required"); }
 }
