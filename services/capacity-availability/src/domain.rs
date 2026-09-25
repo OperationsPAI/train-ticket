@@ -105,8 +105,16 @@ impl std::fmt::Display for DomainError {
                     hold_id, now, expires_at
                 )
             }
-            DomainError::HoldExpiredBeforeConfirmation { hold_id, now, expires_at } => {
-                write!(f, "hold {} expired before confirmation: now={} expires_at={}", hold_id, now, expires_at)
+            DomainError::HoldExpiredBeforeConfirmation {
+                hold_id,
+                now,
+                expires_at,
+            } => {
+                write!(
+                    f,
+                    "hold {} expired before confirmation: now={} expires_at={}",
+                    hold_id, now, expires_at
+                )
             }
         }
     }
@@ -475,13 +483,13 @@ impl CapacityHold {
 
     fn confirm(&mut self, now: u64) -> DomainResult<()> {
         match self.state {
-            CapacityHoldState::Held if now >= self.expires_at => Err(
-                DomainError::HoldExpiredBeforeConfirmation {
+            CapacityHoldState::Held if now >= self.expires_at => {
+                Err(DomainError::HoldExpiredBeforeConfirmation {
                     hold_id: self.hold_id.to_string(),
                     now,
                     expires_at: self.expires_at,
-                },
-            ),
+                })
+            }
             CapacityHoldState::Held => {
                 self.state = CapacityHoldState::Confirmed;
                 self.confirmed_at = Some(now);
@@ -859,11 +867,17 @@ impl InventoryPool {
     }
 
     pub fn physical_capacity(&self) -> u32 {
-        if self.identity.sellable_unit_type_ref == "STANDING_QUOTA" { 0 } else { self.physical_unit_count() as u32 }
+        if self.identity.sellable_unit_type_ref == "STANDING_QUOTA" {
+            0
+        } else {
+            self.physical_unit_count() as u32
+        }
     }
 
     pub fn effective_capacity(&self) -> u32 {
-        if self.identity.sellable_unit_type_ref == "STANDING_QUOTA" { return self.physical_unit_count() as u32; }
+        if self.identity.sellable_unit_type_ref == "STANDING_QUOTA" {
+            return self.physical_unit_count() as u32;
+        }
         let physical = self.physical_capacity() as f64;
         (physical * (1.0 + self.overbooking_policy.max_overbooking_pct.max(0.0) / 100.0)).floor()
             as u32
@@ -896,7 +910,11 @@ impl InventoryPool {
     }
 
     /// 重新加载文档时记录单元数量，供供给补全之前的计数使用。
-    pub fn with_stored_unit_counts(mut self, capacity: Option<usize>, physical: Option<usize>) -> Self {
+    pub fn with_stored_unit_counts(
+        mut self,
+        capacity: Option<usize>,
+        physical: Option<usize>,
+    ) -> Self {
         self.capacity_unit_count = capacity;
         self.physical_unit_count = physical;
         self
@@ -906,7 +924,12 @@ impl InventoryPool {
         self.physical_units.as_ref().unwrap_or(&self.capacity_units)
     }
 
-    pub fn apply_physical_supply(&mut self, service: String, date: String, units: HashSet<CapacityUnitRef>) {
+    pub fn apply_physical_supply(
+        &mut self,
+        service: String,
+        date: String,
+        units: HashSet<CapacityUnitRef>,
+    ) {
         self.capacity_units.extend(units.iter().cloned());
         self.physical_units = Some(units);
         self.capacity_unit_count = None;
@@ -1098,7 +1121,9 @@ impl InventoryPool {
         };
         self.version += 1;
         let mut events = vec![event, self.snapshot_updated_event(now)];
-        if self.identity.sellable_unit_type_ref != "STANDING_QUOTA" && self.confirmed_count() > self.physical_capacity() {
+        if self.identity.sellable_unit_type_ref != "STANDING_QUOTA"
+            && self.confirmed_count() > self.physical_capacity()
+        {
             events.push(DomainEvent::OverbookingThresholdReached(
                 OverbookingThresholdReached {
                     envelope: EventEnvelope::new(
@@ -1756,11 +1781,20 @@ mod tests {
     #[test]
     fn late_confirmation_expires_instead_of_reviving_hold() {
         let mut pool = pool();
-        pool.request_hold(request("hold-late", "01A", 1, 3, "idem-late", 10, 20), 10).unwrap();
-        let (events, expired) = pool.confirm_or_expire_hold(&hold_id("hold-late"), 20).unwrap();
+        pool.request_hold(request("hold-late", "01A", 1, 3, "idem-late", 10, 20), 10)
+            .unwrap();
+        let (events, expired) = pool
+            .confirm_or_expire_hold(&hold_id("hold-late"), 20)
+            .unwrap();
         assert!(expired);
-        assert!(matches!(events.first(), Some(DomainEvent::CapacityHoldExpired(_))));
-        assert_eq!(pool.hold(&hold_id("hold-late")).unwrap().state, CapacityHoldState::Expired);
+        assert!(matches!(
+            events.first(),
+            Some(DomainEvent::CapacityHoldExpired(_))
+        ));
+        assert_eq!(
+            pool.hold(&hold_id("hold-late")).unwrap().state,
+            CapacityHoldState::Expired
+        );
     }
 
     #[test]
