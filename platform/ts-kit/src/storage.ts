@@ -551,8 +551,16 @@ export type OutboxRelayOptions = Readonly<{
 /** Rows per retention DELETE. */
 const CLEANUP_BATCH_SIZE = 1_000;
 
-/** Batches per table per sweep. Bounds one pass; the next pass resumes. */
-const CLEANUP_MAX_BATCHES = 1;
+/**
+ * Batches per table per sweep. Bounds one pass; the next pass resumes.
+ *
+ * Five rather than one: one batch of 1000 rows every twenty polls is a ceiling
+ * of 200 deleted rows per second, and Notification publishes 212 rows per
+ * second into its outbox. The table therefore grew by about twelve rows per
+ * second for as long as the deployed version ran, and reached 36 million rows
+ * and 34 GB while every sweep reported that it had hit its batch budget.
+ */
+const CLEANUP_MAX_BATCHES = 5;
 
 export class OutboxRelay {
   private stopped = true;
