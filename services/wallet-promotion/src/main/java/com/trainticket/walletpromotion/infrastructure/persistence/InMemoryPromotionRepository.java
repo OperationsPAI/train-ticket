@@ -14,16 +14,16 @@ import org.springframework.stereotype.Repository;
 @Repository
 @ConditionalOnMissingBean(PromotionRepository.class)
 public class InMemoryPromotionRepository implements PromotionRepository {
-    private final Map<String,com.trainticket.walletpromotion.application.IssueBenefitCommand> compensationRequests=new ConcurrentHashMap<>();
-    private final Map<String,String> compensationBenefits=new ConcurrentHashMap<>();
-    public Optional<PromotionInstrument> findCompensationIssue(com.trainticket.walletpromotion.application.IssueBenefitCommand command) {
-        var original=compensationRequests.get(command.caseId());
+    private final Map<String,com.trainticket.walletpromotion.application.IssueBenefitCommand> issuanceRequests=new ConcurrentHashMap<>();
+    private final Map<String,String> issuanceBenefits=new ConcurrentHashMap<>();
+    public Optional<PromotionInstrument> findIssue(com.trainticket.walletpromotion.application.IssueBenefitCommand command) {
+        var original=issuanceRequests.get(command.issuanceKey());
         if(original==null)return Optional.empty();
-        if(!original.equals(command))throw new com.trainticket.platformkit.http.ApiException(com.trainticket.platformkit.http.ApiErrorCode.CONFLICT,"compensation case already has another issuance request");
-        return findBenefit(compensationBenefits.get(command.caseId()));
+        if(!original.equals(command))throw new com.trainticket.platformkit.http.ApiException(com.trainticket.platformkit.http.ApiErrorCode.CONFLICT,"issuance key already has another request");
+        return findBenefit(issuanceBenefits.get(command.issuanceKey()));
     }
-    public void recordCompensationIssue(com.trainticket.walletpromotion.application.IssueBenefitCommand command,String benefitId) {
-        compensationRequests.put(command.caseId(),command);compensationBenefits.put(command.caseId(),benefitId);
+    public void recordIssue(com.trainticket.walletpromotion.application.IssueBenefitCommand command,String benefitId) {
+        issuanceRequests.put(command.issuanceKey(),command);issuanceBenefits.put(command.issuanceKey(),benefitId);
     }
     private final Map<String, PromotionInstrument> benefits = new ConcurrentHashMap<>();
     private final Map<String, WalletAccount> wallets = new ConcurrentHashMap<>();
@@ -37,6 +37,7 @@ public class InMemoryPromotionRepository implements PromotionRepository {
     private final EventPublisher publisher;
     public InMemoryPromotionRepository(Optional<EventPublisher> publisher) { this.publisher = publisher.orElse(envelope -> {}); }
     public Optional<PromotionInstrument> findBenefit(String benefitId) { return Optional.ofNullable(benefits.get(benefitId)); }
+    public Optional<PromotionInstrument> lockBenefit(String benefitId) { return findBenefit(benefitId); }
     public Optional<WalletAccount> findWalletByAccountId(String accountId) { return wallets.values().stream().filter(w -> w.accountId().equals(accountId)).findFirst(); }
     public List<PromotionInstrument> listBenefits(String accountId, PromotionStatus status, BenefitType benefitType, int limit, int offset) { return filtered(accountId,status,benefitType).stream().skip(offset).limit(limit).toList(); }
     public int countBenefits(String accountId, PromotionStatus status, BenefitType benefitType) { return filtered(accountId,status,benefitType).size(); }
