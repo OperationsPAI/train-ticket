@@ -54,7 +54,8 @@ SQL 保留源事件表，物化视图是可重新计算的派生结果。
 `orders_per_second` 为最近60秒订单事件数除以60所得的平均每秒速率，保留四位小数。
 该速率只统计订单创建事实，不重复计算确认事件。
 captured 金额、预订延迟和风控拦截率使用最近1小时，退款率使用最近24小时，context rollup 使用最近5分钟。
-`trends` 返回当前快照的单个时间点。
+`trends` 返回最近60个完整 UTC 分钟的连续序列，窗口为 `[start,end)`，排除当前未完成分钟并补齐空桶。
+序列包括每分钟平均 `orders_per_second`、每分钟按币种的 `gross_captured_amount` 和每分钟 `refund_rate`。
 完整计算口径见 [指标与投影](../10-domain-enrichment/reporting-enrichment.md)。
 
 ## API 与事件

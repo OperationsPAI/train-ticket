@@ -163,3 +163,7 @@ The windows are 60 seconds for `orders_per_second`, one hour for captured revenu
 The route endpoint covers the preceding 24 hours, orders rows by service date descending then route ID, and reports the complete group count independently of `limit` and `offset`.
 It contains operational demand/capacity fields only; route revenue is available from `/api/v1/metrics/revenue?groupBy=route`.
 On a populated database, run `scripts/prepare_operational_indexes.py` before registering migration 009 so the supporting indexes are built concurrently.
+
+The trends endpoint returns exactly 60 complete one-minute UTC buckets over `[start,end)`, excluding the current incomplete minute.
+It reports `orders_per_second` as each minute's order-created count divided by 60, `gross_captured_amount` as per-currency Money values for that minute, and `refund_rate` as minute refunds divided by minute order creations.
+Empty buckets are emitted with zero rates and an empty money array, so callers can plot a continuous series without inventing points.
