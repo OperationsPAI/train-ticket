@@ -227,7 +227,8 @@ def _copy_capture_references(
     params: tuple[Any, ...] = () if since is None else (since,)
     query = f"""
       COPY (
-        SELECT
+        WITH capture_rows AS (
+          SELECT
           event->>'eventId' AS event_id,
           COALESCE(NULLIF(event->'payload'->>'businessRef',''),
                    NULLIF(event->'payload'->>'orderId',''),
@@ -238,10 +239,17 @@ def _copy_capture_references(
                    NULLIF(snapshot.data->>'paymentIntentId','')) AS payment_intent_id,
           COALESCE(NULLIF(event->'payload'->>'purpose',''),
                    NULLIF(snapshot.data->>'purpose','')) AS payment_purpose,
-          COALESCE(NULLIF(event->>'occurredAt','')::timestamptz,snapshot.updated_at) AS source_occurred_at
-        FROM payment_intent_snapshots snapshot
-        CROSS JOIN LATERAL jsonb_array_elements(COALESCE(snapshot.data->'domainEvents','[]'::jsonb)) event
-        WHERE event->>'eventType'='PaymentCaptured' {where}
+          COALESCE(NULLIF(event->>'occurredAt','')::timestamptz,snapshot.updated_at) AS source_occurred_at,
+          snapshot.id AS source_id
+          FROM payment_intent_snapshots snapshot
+          CROSS JOIN LATERAL jsonb_array_elements(COALESCE(snapshot.data->'domainEvents','[]'::jsonb)) event
+          WHERE event->>'eventType'='PaymentCaptured'
+            AND NULLIF(event->>'eventId','') IS NOT NULL {where}
+        )
+        SELECT DISTINCT ON (event_id)
+          event_id,business_ref,payment_intent_id,payment_purpose,source_occurred_at
+        FROM capture_rows
+        ORDER BY event_id,source_occurred_at DESC,source_id DESC
       ) TO STDOUT
     """
     with psycopg.connect(source_url) as source:
@@ -274,13 +282,459 @@ def _copy_capture_references(
     return int(row[0])
 
 
-CAPTURE_SQL = """
-INSERT INTO reporting_capture_references(event_id,business_ref,payment_intent_id,payment_purpose,source_occurred_at)
-VALUES (%s,%s,%s,%s,%s) ON CONFLICT(event_id) DO UPDATE SET
- business_ref=EXCLUDED.business_ref,payment_intent_id=EXCLUDED.payment_intent_id,
- payment_purpose=EXCLUDED.payment_purpose,source_occurred_at=EXCLUDED.source_occurred_at
-WHERE reporting_capture_references.source_occurred_at<=EXCLUDED.source_occurred_at
-"""
+def _pipe_copy(
+    source: psycopg.Connection[Any],
+    source_statement: str,
+    target: psycopg.Connection[Any],
+    target_statement: str,
+    source_params: tuple[Any, ...] = (),
+) -> None:
+    with source.cursor().copy(source_statement, source_params) as copy_out:
+        with target.cursor().copy(target_statement) as copy_in:
+            for block in copy_out:
+                copy_in.write(block)
+
+
+def _copy_target_requirements(
+    target: psycopg.Connection[Any],
+    target_statement: str,
+    source: psycopg.Connection[Any],
+    source_statement: str,
+    target_params: tuple[Any, ...] = (),
+) -> None:
+    with target.cursor().copy(target_statement, target_params) as copy_out:
+        with source.cursor().copy(source_statement) as copy_in:
+            for block in copy_out:
+                copy_in.write(block)
+
+
+def _merge_stage(target: psycopg.Connection[Any], statement: str) -> int:
+    row = target.execute(statement).fetchone()
+    target.commit()
+    return int(row[0])
+
+
+def _copy_post_sales_scopes(source_url: str, target: psycopg.Connection[Any]) -> int:
+    target.execute(
+        """
+        CREATE TEMP TABLE IF NOT EXISTS reporting_scope_stage(
+          business_ref text,order_id text,segment_refs text[],traveler_refs text[],source_occurred_at timestamptz
+        ) ON COMMIT PRESERVE ROWS;
+        TRUNCATE reporting_scope_stage
+        """
+    )
+    target.commit()
+    with psycopg.connect(source_url, autocommit=True) as source:
+        source.execute(
+            """
+            CREATE TEMP TABLE reporting_required_business(source_id text,business_ref text,PRIMARY KEY(source_id,business_ref))
+            ON COMMIT PRESERVE ROWS
+            """
+        )
+        _copy_target_requirements(
+            target,
+            """
+            COPY (
+              SELECT regexp_replace(business_ref,'^psc-',''),business_ref
+              FROM reporting_capture_references WHERE business_ref LIKE %s
+              UNION
+              SELECT business_ref,business_ref
+              FROM reporting_capture_references WHERE business_ref LIKE %s
+            ) TO STDOUT
+            """,
+            source,
+            "COPY reporting_required_business(source_id,business_ref) FROM STDIN",
+            ("psc-%", "psc-%"),
+        )
+        _pipe_copy(
+            source,
+            """
+            COPY (
+              SELECT required.business_ref,
+                     COALESCE(NULLIF(snapshot.data->>'journeyOrderId',''),NULLIF(snapshot.data->>'orderId','')),
+                     ARRAY(SELECT DISTINCT value FROM jsonb_array_elements_text(COALESCE(snapshot.data->'scope'->'segmentRefs','[]'::jsonb)) value ORDER BY value),
+                     ARRAY(SELECT DISTINCT value FROM jsonb_array_elements_text(COALESCE(snapshot.data->'scope'->'travelerRefs','[]'::jsonb)) value ORDER BY value),
+                     snapshot.updated_at
+              FROM reporting_required_business required
+              JOIN post_sales_case_snapshots snapshot ON snapshot.id=required.source_id
+              WHERE COALESCE(NULLIF(snapshot.data->>'journeyOrderId',''),NULLIF(snapshot.data->>'orderId','')) IS NOT NULL
+            ) TO STDOUT
+            """,
+            target,
+            "COPY reporting_scope_stage(business_ref,order_id,segment_refs,traveler_refs,source_occurred_at) FROM STDIN",
+        )
+    return _merge_stage(
+        target,
+        """
+        WITH source_rows AS (
+          SELECT DISTINCT ON (business_ref)
+            business_ref,order_id,segment_refs,traveler_refs,source_occurred_at
+          FROM reporting_scope_stage
+          ORDER BY business_ref,source_occurred_at DESC,order_id DESC
+        ), merged AS (
+          INSERT INTO reporting_business_scopes(business_ref,order_id,segment_refs,traveler_refs,source_occurred_at)
+          SELECT business_ref,order_id,segment_refs,traveler_refs,source_occurred_at FROM source_rows
+          ON CONFLICT(business_ref) DO UPDATE SET
+            order_id=EXCLUDED.order_id,
+            segment_refs=CASE WHEN cardinality(EXCLUDED.segment_refs)>0 THEN EXCLUDED.segment_refs ELSE reporting_business_scopes.segment_refs END,
+            traveler_refs=CASE WHEN cardinality(EXCLUDED.traveler_refs)>0 THEN EXCLUDED.traveler_refs ELSE reporting_business_scopes.traveler_refs END,
+            source_occurred_at=EXCLUDED.source_occurred_at
+          WHERE reporting_business_scopes.source_occurred_at<=EXCLUDED.source_occurred_at
+          RETURNING 1
+        ) SELECT count(*) FROM merged
+        """,
+    )
+
+
+def _prepare_required_orders(target: psycopg.Connection[Any], source: psycopg.Connection[Any]) -> None:
+    source.execute(
+        "CREATE TEMP TABLE reporting_required_orders(order_id text PRIMARY KEY) ON COMMIT PRESERVE ROWS"
+    )
+    _copy_target_requirements(
+        target,
+        """
+        COPY (
+          SELECT order_id FROM reporting_business_scopes
+          UNION
+          SELECT business_ref FROM reporting_capture_references WHERE business_ref LIKE %s
+        ) TO STDOUT
+        """,
+        source,
+        "COPY reporting_required_orders(order_id) FROM STDIN",
+        ("ord-%",),
+    )
+    source.execute("ANALYZE reporting_required_orders")
+
+
+def _copy_order_facts(source_url: str, target: psycopg.Connection[Any]) -> dict[str, int]:
+    target.execute(
+        """
+        CREATE TEMP TABLE IF NOT EXISTS reporting_order_snapshot_stage(
+          order_id text,source_occurred_at timestamptz,segments jsonb,travelers jsonb
+        ) ON COMMIT PRESERVE ROWS;
+        TRUNCATE reporting_order_snapshot_stage
+        """
+    )
+    target.commit()
+    with psycopg.connect(source_url, autocommit=True) as source:
+        _prepare_required_orders(target, source)
+        _pipe_copy(
+            source,
+            """
+            COPY (
+              SELECT COALESCE(NULLIF(snapshot.data->>'orderId',''),snapshot.id),snapshot.updated_at,
+                     COALESCE(snapshot.data->'segments','[]'::jsonb),
+                     COALESCE(snapshot.data->'travelers',snapshot.data->'travelerRefs','[]'::jsonb)
+              FROM reporting_required_orders required
+              JOIN journey_order_snapshots snapshot ON snapshot.id=required.order_id
+            ) TO STDOUT
+            """,
+            target,
+            "COPY reporting_order_snapshot_stage(order_id,source_occurred_at,segments,travelers) FROM STDIN",
+        )
+    scopes = _merge_stage(
+        target,
+        """
+        WITH source_rows AS (
+          SELECT DISTINCT ON (order_id) order_id,source_occurred_at
+          FROM reporting_order_snapshot_stage
+          ORDER BY order_id,source_occurred_at DESC
+        ), merged AS (
+          INSERT INTO reporting_business_scopes(business_ref,order_id,segment_refs,traveler_refs,source_occurred_at)
+          SELECT order_id,order_id,'{}'::text[],'{}'::text[],source_occurred_at FROM source_rows
+          ON CONFLICT(business_ref) DO UPDATE SET order_id=EXCLUDED.order_id,source_occurred_at=EXCLUDED.source_occurred_at
+          WHERE reporting_business_scopes.source_occurred_at<=EXCLUDED.source_occurred_at
+          RETURNING 1
+        ) SELECT count(*) FROM merged
+        """,
+    )
+    routes = _merge_stage(
+        target,
+        """
+        WITH source_rows AS (
+          SELECT DISTINCT ON (order_id,route_id)
+            order_id,route_id,service_date,source_occurred_at
+          FROM (
+            SELECT stage.order_id,segment->>'segmentRef' AS route_id,
+                   NULLIF(left(segment->>'departureTime',10),'')::date AS service_date,
+                   stage.source_occurred_at
+            FROM reporting_order_snapshot_stage stage
+            CROSS JOIN LATERAL jsonb_array_elements(stage.segments) segment
+            WHERE NULLIF(segment->>'segmentRef','') IS NOT NULL
+          ) routes
+          ORDER BY order_id,route_id,source_occurred_at DESC
+        ), merged AS (
+          INSERT INTO reporting_order_routes(order_id,route_id,service_date,source_occurred_at)
+          SELECT order_id,route_id,service_date,source_occurred_at FROM source_rows
+          ON CONFLICT(order_id,route_id) DO UPDATE SET service_date=EXCLUDED.service_date,source_occurred_at=EXCLUDED.source_occurred_at
+          WHERE reporting_order_routes.source_occurred_at<=EXCLUDED.source_occurred_at
+          RETURNING 1
+        ) SELECT count(*) FROM merged
+        """,
+    )
+    travelers = _merge_stage(
+        target,
+        """
+        WITH source_rows AS (
+          SELECT DISTINCT ON (order_id,traveler_ref)
+            order_id,traveler_ref,traveler_type,source_occurred_at
+          FROM (
+            SELECT stage.order_id,traveler->>'travelerId' AS traveler_ref,
+                   traveler->>'travelerType' AS traveler_type,stage.source_occurred_at
+            FROM reporting_order_snapshot_stage stage
+            CROSS JOIN LATERAL jsonb_array_elements(stage.travelers) traveler
+            WHERE NULLIF(traveler->>'travelerId','') IS NOT NULL
+              AND NULLIF(traveler->>'travelerType','') IS NOT NULL
+          ) travelers
+          ORDER BY order_id,traveler_ref,source_occurred_at DESC,traveler_type DESC
+        ), merged AS (
+          INSERT INTO reporting_order_travelers(order_id,traveler_ref,traveler_type,source_occurred_at)
+          SELECT order_id,traveler_ref,traveler_type,source_occurred_at FROM source_rows
+          ON CONFLICT(order_id,traveler_ref) DO UPDATE SET traveler_type=EXCLUDED.traveler_type,source_occurred_at=EXCLUDED.source_occurred_at
+          WHERE reporting_order_travelers.source_occurred_at<=EXCLUDED.source_occurred_at
+          RETURNING 1
+        ) SELECT count(*) FROM merged
+        """,
+    )
+    return {"order_scopes": scopes, "routes": routes, "travelers": travelers}
+
+
+def _copy_ancillary_facts(source_url: str, target: psycopg.Connection[Any]) -> dict[str, int]:
+    target.execute(
+        """
+        CREATE TEMP TABLE IF NOT EXISTS reporting_ancillary_stage(
+          item_id text,order_id text,segment_ref text,traveler_ref text,attachment_type text,purchased boolean,source_occurred_at timestamptz
+        ) ON COMMIT PRESERVE ROWS;
+        TRUNCATE reporting_ancillary_stage
+        """
+    )
+    target.commit()
+    with psycopg.connect(source_url, autocommit=True) as source:
+        _prepare_required_orders(target, source)
+        source.execute(
+            "CREATE TEMP TABLE reporting_required_items(item_id text PRIMARY KEY) ON COMMIT PRESERVE ROWS"
+        )
+        _copy_target_requirements(
+            target,
+            "COPY (SELECT DISTINCT business_ref FROM reporting_capture_references WHERE business_ref LIKE %s) TO STDOUT",
+            source,
+            "COPY reporting_required_items(item_id) FROM STDIN",
+            ("aoi-%",),
+        )
+        source.execute("ANALYZE reporting_required_items")
+        _pipe_copy(
+            source,
+            """
+            COPY (
+              WITH candidates AS (
+                SELECT snapshot.* FROM ancillary_order_items snapshot JOIN reporting_required_items item ON item.item_id=snapshot.id
+                UNION ALL
+                SELECT snapshot.* FROM ancillary_order_items snapshot JOIN reporting_required_orders required
+                  ON COALESCE(NULLIF(snapshot.data->>'journeyOrderId',''),NULLIF(snapshot.data->>'orderId',''))=required.order_id
+              )
+              SELECT DISTINCT ON (id) id,
+                     COALESCE(NULLIF(data->>'journeyOrderId',''),NULLIF(data->>'orderId','')),
+                     data->>'segmentRef',data->>'travelerRef',
+                     CASE WHEN upper(COALESCE(NULLIF(data->>'serviceType',''),data->'catalogSnapshot'->>'serviceType',''))='INSURANCE'
+                          THEN 'INSURANCE' ELSE 'ANCILLARY' END,
+                     (NULLIF(data->>'paymentIntentId','') IS NOT NULL OR NULLIF(data->>'paymentCapturedAt','') IS NOT NULL
+                       OR data->>'status' IN ('CONFIRMED','FULFILLMENT_READY','FULFILLED','REFUND_PENDING','REFUNDED')),
+                     updated_at
+              FROM candidates
+              WHERE COALESCE(NULLIF(data->>'journeyOrderId',''),NULLIF(data->>'orderId','')) IS NOT NULL
+              ORDER BY id,updated_at DESC
+            ) TO STDOUT
+            """,
+            target,
+            "COPY reporting_ancillary_stage(item_id,order_id,segment_ref,traveler_ref,attachment_type,purchased,source_occurred_at) FROM STDIN",
+        )
+    scopes = _merge_stage(
+        target,
+        """
+        WITH merged AS (
+          INSERT INTO reporting_business_scopes(business_ref,order_id,segment_refs,traveler_refs,source_occurred_at)
+          SELECT item_id,order_id,CASE WHEN segment_ref IS NULL THEN '{}' ELSE ARRAY[segment_ref] END,
+                 CASE WHEN traveler_ref IS NULL THEN '{}' ELSE ARRAY[traveler_ref] END,source_occurred_at
+          FROM reporting_ancillary_stage
+          ON CONFLICT(business_ref) DO UPDATE SET order_id=EXCLUDED.order_id,
+            segment_refs=CASE WHEN cardinality(EXCLUDED.segment_refs)>0 THEN EXCLUDED.segment_refs ELSE reporting_business_scopes.segment_refs END,
+            traveler_refs=CASE WHEN cardinality(EXCLUDED.traveler_refs)>0 THEN EXCLUDED.traveler_refs ELSE reporting_business_scopes.traveler_refs END,
+            source_occurred_at=EXCLUDED.source_occurred_at
+          WHERE reporting_business_scopes.source_occurred_at<=EXCLUDED.source_occurred_at RETURNING 1
+        ) SELECT count(*) FROM merged
+        """,
+    )
+    attachments = _merge_stage(
+        target,
+        """
+        WITH source_rows AS (
+          SELECT DISTINCT ON (order_id,attachment_type)
+            order_id,attachment_type,source_occurred_at
+          FROM reporting_ancillary_stage
+          WHERE purchased
+          ORDER BY order_id,attachment_type,source_occurred_at DESC,item_id DESC
+        ), merged AS (
+          INSERT INTO reporting_order_attachments(order_id,attachment_type,source_occurred_at)
+          SELECT order_id,attachment_type,source_occurred_at FROM source_rows
+          ON CONFLICT(order_id,attachment_type) DO UPDATE SET source_occurred_at=EXCLUDED.source_occurred_at
+          WHERE reporting_order_attachments.source_occurred_at<=EXCLUDED.source_occurred_at RETURNING 1
+        ) SELECT count(*) FROM merged
+        """,
+    )
+    return {"ancillary_scopes": scopes, "attachments": attachments}
+
+
+def _copy_insurance_facts(source_url: str, target: psycopg.Connection[Any]) -> dict[str, int]:
+    target.execute(
+        """
+        CREATE TEMP TABLE IF NOT EXISTS reporting_insurance_stage(
+          policy_id text,ancillary_id text,order_id text,segment_refs text[],traveler_ref text,source_occurred_at timestamptz
+        ) ON COMMIT PRESERVE ROWS;
+        TRUNCATE reporting_insurance_stage
+        """
+    )
+    target.commit()
+    with psycopg.connect(source_url, autocommit=True) as source:
+        _prepare_required_orders(target, source)
+        source.execute(
+            "CREATE TEMP TABLE reporting_required_policies(business_ref text PRIMARY KEY) ON COMMIT PRESERVE ROWS"
+        )
+        _copy_target_requirements(
+            target,
+            """
+            COPY (
+              SELECT business_ref FROM reporting_capture_references WHERE business_ref LIKE %s
+              UNION
+              SELECT business_ref FROM reporting_capture_references WHERE business_ref LIKE %s
+            ) TO STDOUT
+            """,
+            source,
+            "COPY reporting_required_policies(business_ref) FROM STDIN",
+            ("pol-%", "aoi-%"),
+        )
+        _pipe_copy(
+            source,
+            """
+            COPY (
+              WITH candidates AS (
+                SELECT snapshot.* FROM policy_snapshots snapshot JOIN reporting_required_orders required
+                  ON COALESCE(NULLIF(snapshot.data->>'journeyOrderId',''),NULLIF(snapshot.data->>'orderId',''))=required.order_id
+                UNION ALL
+                SELECT snapshot.* FROM policy_snapshots snapshot JOIN reporting_required_policies required
+                  ON snapshot.id=required.business_ref
+                UNION ALL
+                SELECT snapshot.* FROM policy_snapshots snapshot JOIN reporting_required_policies required
+                  ON snapshot.data->>'policyId'=required.business_ref
+                UNION ALL
+                SELECT snapshot.* FROM policy_snapshots snapshot JOIN reporting_required_policies required
+                  ON snapshot.data->>'ancillaryOrderItemId'=required.business_ref
+              )
+              SELECT DISTINCT ON (id)
+                     COALESCE(NULLIF(data->>'policyId',''),id),data->>'ancillaryOrderItemId',
+                     COALESCE(NULLIF(data->>'journeyOrderId',''),NULLIF(data->>'orderId','')),
+                     ARRAY(SELECT DISTINCT value FROM jsonb_array_elements_text(COALESCE(data->'segmentRefs','[]'::jsonb)) value ORDER BY value),
+                     data->>'travelerRef',updated_at
+              FROM candidates
+              WHERE COALESCE(NULLIF(data->>'journeyOrderId',''),NULLIF(data->>'orderId','')) IS NOT NULL
+              ORDER BY id,updated_at DESC
+            ) TO STDOUT
+            """,
+            target,
+            "COPY reporting_insurance_stage(policy_id,ancillary_id,order_id,segment_refs,traveler_ref,source_occurred_at) FROM STDIN",
+        )
+    scopes = _merge_stage(
+        target,
+        """
+        WITH source_rows AS (
+          SELECT policy_id AS business_ref,order_id,segment_refs,CASE WHEN traveler_ref IS NULL THEN '{}' ELSE ARRAY[traveler_ref] END traveler_refs,source_occurred_at
+          FROM reporting_insurance_stage WHERE policy_id IS NOT NULL
+          UNION ALL
+          SELECT ancillary_id,order_id,segment_refs,CASE WHEN traveler_ref IS NULL THEN '{}' ELSE ARRAY[traveler_ref] END,source_occurred_at
+          FROM reporting_insurance_stage WHERE ancillary_id IS NOT NULL
+        ), merged AS (
+          INSERT INTO reporting_business_scopes(business_ref,order_id,segment_refs,traveler_refs,source_occurred_at)
+          SELECT DISTINCT ON (business_ref) business_ref,order_id,segment_refs,traveler_refs,source_occurred_at
+          FROM source_rows ORDER BY business_ref,source_occurred_at DESC
+          ON CONFLICT(business_ref) DO UPDATE SET order_id=EXCLUDED.order_id,
+            segment_refs=CASE WHEN cardinality(EXCLUDED.segment_refs)>0 THEN EXCLUDED.segment_refs ELSE reporting_business_scopes.segment_refs END,
+            traveler_refs=CASE WHEN cardinality(EXCLUDED.traveler_refs)>0 THEN EXCLUDED.traveler_refs ELSE reporting_business_scopes.traveler_refs END,
+            source_occurred_at=EXCLUDED.source_occurred_at
+          WHERE reporting_business_scopes.source_occurred_at<=EXCLUDED.source_occurred_at RETURNING 1
+        ) SELECT count(*) FROM merged
+        """,
+    )
+    attachments = _merge_stage(
+        target,
+        """
+        WITH source_rows AS (
+          SELECT DISTINCT ON (order_id)
+            order_id,source_occurred_at
+          FROM reporting_insurance_stage
+          ORDER BY order_id,source_occurred_at DESC,policy_id DESC
+        ), merged AS (
+          INSERT INTO reporting_order_attachments(order_id,attachment_type,source_occurred_at)
+          SELECT order_id,'INSURANCE',source_occurred_at FROM source_rows
+          ON CONFLICT(order_id,attachment_type) DO UPDATE SET source_occurred_at=EXCLUDED.source_occurred_at
+          WHERE reporting_order_attachments.source_occurred_at<=EXCLUDED.source_occurred_at RETURNING 1
+        ) SELECT count(*) FROM merged
+        """,
+    )
+    return {"insurance_scopes": scopes, "attachments": attachments}
+
+
+def _copy_seat_facts(source_url: str, table: str, priority: int, target: psycopg.Connection[Any]) -> int:
+    target.execute(
+        """
+        CREATE TEMP TABLE IF NOT EXISTS reporting_seat_stage(
+          order_id text,segment_ref text,traveler_ref text,seat_class text,source_priority integer,source_occurred_at timestamptz
+        ) ON COMMIT PRESERVE ROWS;
+        TRUNCATE reporting_seat_stage
+        """
+    )
+    target.commit()
+    with psycopg.connect(source_url, autocommit=True) as source:
+        _prepare_required_orders(target, source)
+        query = sql.SQL(
+            """
+            COPY (
+              SELECT COALESCE(NULLIF(snapshot.data->>'journeyOrderId',''),NULLIF(snapshot.data->>'orderId','')),
+                     snapshot.data->>'segmentRef',snapshot.data->>'travelerRef',
+                     COALESCE(NULLIF(snapshot.data->>'requestedClassRef',''),NULLIF(snapshot.data->>'classRef','')),
+                     {priority},snapshot.updated_at
+              FROM {table} snapshot JOIN reporting_required_orders required
+                ON COALESCE(NULLIF(snapshot.data->>'journeyOrderId',''),NULLIF(snapshot.data->>'orderId',''))=required.order_id
+              WHERE COALESCE(NULLIF(snapshot.data->>'requestedClassRef',''),NULLIF(snapshot.data->>'classRef','')) IS NOT NULL
+                AND NULLIF(snapshot.data->>'segmentRef','') IS NOT NULL
+                AND NULLIF(snapshot.data->>'travelerRef','') IS NOT NULL
+            ) TO STDOUT
+            """
+        ).format(table=sql.Identifier(table), priority=sql.Literal(priority))
+        _pipe_copy(
+            source,
+            query.as_string(source),
+            target,
+            "COPY reporting_seat_stage(order_id,segment_ref,traveler_ref,seat_class,source_priority,source_occurred_at) FROM STDIN",
+        )
+    return _merge_stage(
+        target,
+        """
+        WITH source_rows AS (
+          SELECT DISTINCT ON (order_id,segment_ref,traveler_ref)
+            order_id,segment_ref,traveler_ref,seat_class,source_priority,source_occurred_at
+          FROM reporting_seat_stage
+          ORDER BY order_id,segment_ref,traveler_ref,source_occurred_at DESC,seat_class DESC
+        ), merged AS (
+          INSERT INTO reporting_seat_classes(order_id,segment_ref,traveler_ref,seat_class,source_priority,source_occurred_at)
+          SELECT order_id,segment_ref,traveler_ref,seat_class,source_priority,source_occurred_at FROM source_rows
+          ON CONFLICT(order_id,segment_ref,traveler_ref) DO UPDATE SET seat_class=EXCLUDED.seat_class,
+            source_priority=EXCLUDED.source_priority,source_occurred_at=EXCLUDED.source_occurred_at
+          WHERE (reporting_seat_classes.source_priority,reporting_seat_classes.source_occurred_at)
+             <=(EXCLUDED.source_priority,EXCLUDED.source_occurred_at) RETURNING 1
+        ) SELECT count(*) FROM merged
+        """,
+    )
+
+
 ROUTE_SQL = """
 INSERT INTO reporting_order_routes(order_id,route_id,service_date,source_occurred_at)
 VALUES (%s,%s,%s,%s) ON CONFLICT(order_id,route_id) DO UPDATE SET
@@ -344,58 +798,6 @@ def _ensure_setup(conn: psycopg.Connection[Any], schema: str) -> None:
     conn.commit()
 
 
-def _required_refs(conn: psycopg.Connection[Any], prefix: str, batch_size: int) -> Iterator[list[str]]:
-    last = ""
-    while True:
-        rows = conn.execute(
-            """
-            SELECT DISTINCT business_ref
-            FROM reporting_capture_references
-            WHERE business_ref LIKE %s AND business_ref>%s
-            ORDER BY business_ref LIMIT %s
-            """,
-            (prefix + "%", last, batch_size),
-        ).fetchall()
-        if not rows:
-            return
-        values = [str(row[0]) for row in rows]
-        yield values
-        last = values[-1]
-
-
-def _required_order_ids(conn: psycopg.Connection[Any], batch_size: int) -> Iterator[list[str]]:
-    last = ""
-    while True:
-        rows = conn.execute(
-            """
-            SELECT order_id FROM (
-              SELECT order_id FROM reporting_business_scopes
-              UNION
-              SELECT business_ref AS order_id FROM reporting_capture_references WHERE business_ref LIKE %s
-            ) required
-            WHERE order_id>%s ORDER BY order_id LIMIT %s
-            """,
-            ("ord-%", last, batch_size),
-        ).fetchall()
-        if not rows:
-            return
-        values = [str(row[0]) for row in rows]
-        yield values
-        last = values[-1]
-
-
-def _snapshots_by_ids(url: str, table: str, ids: Sequence[str]) -> list[tuple[Any, datetime]]:
-    if not ids:
-        return []
-    with psycopg.connect(url) as conn:
-        with conn.transaction():
-            conn.execute("SET TRANSACTION READ ONLY")
-            return conn.execute(
-                sql.SQL("SELECT data,updated_at FROM {} WHERE id=ANY(%s)").format(sql.Identifier(table)),
-                (list(ids),),
-            ).fetchall()
-
-
 def backfill(
     reporting_url: str,
     source_urls: Mapping[str, str],
@@ -415,61 +817,59 @@ def backfill(
         writer.counts["captures"] = _copy_capture_references(source_urls["payment"], reporting, since)
 
         if since is None:
-            post_sales_batches = (
-                _snapshots_by_ids(
-                    source_urls["post_sales"],
-                    "post_sales_case_snapshots",
-                    sorted(set(refs) | {ref.removeprefix("psc-") for ref in refs}),
-                )
-                for refs in _required_refs(reporting, "psc-", batch_size)
+            writer.counts["post_sales_scopes"] = _copy_post_sales_scopes(
+                source_urls["post_sales"], reporting
             )
-            ancillary_batches = (
-                _snapshots_by_ids(source_urls["ancillary_service"], "ancillary_order_items", refs)
-                for refs in _required_refs(reporting, "aoi-", batch_size)
+            for key, count in _copy_insurance_facts(source_urls["travel_insurance"], reporting).items():
+                writer.counts[key] = writer.counts.get(key, 0) + count
+            for key, count in _copy_ancillary_facts(source_urls["ancillary_service"], reporting).items():
+                writer.counts[key] = writer.counts.get(key, 0) + count
+            writer.counts.update(_copy_order_facts(source_urls["journey_order"], reporting))
+            writer.counts["seat_classes"] = _copy_seat_facts(
+                source_urls["booking_orchestration"],
+                "segment_booking_snapshots",
+                1,
+                reporting,
             )
-            policy_batches = (
-                _snapshots_by_ids(source_urls["travel_insurance"], "policy_snapshots", refs)
-                for prefix in ("aoi-", "pol-")
-                for refs in _required_refs(reporting, prefix, batch_size)
-            )
-            order_batches = (
-                _snapshots_by_ids(source_urls["journey_order"], "journey_order_snapshots", order_ids)
-                for order_ids in _required_order_ids(reporting, batch_size)
+            writer.counts["seat_classes"] += _copy_seat_facts(
+                source_urls["seat_assignment"],
+                "seat_allocations",
+                2,
+                reporting,
             )
         else:
             post_sales_batches = _iter_snapshots(source_urls["post_sales"], "post_sales_case_snapshots", batch_size, since)
             ancillary_batches = _iter_snapshots(source_urls["ancillary_service"], "ancillary_order_items", batch_size, since)
             policy_batches = _iter_snapshots(source_urls["travel_insurance"], "policy_snapshots", batch_size, since)
             order_batches = _iter_snapshots(source_urls["journey_order"], "journey_order_snapshots", batch_size, since)
+            for rows in post_sales_batches:
+                writer.write("post_sales_scopes", SCOPE_SQL, [row for data, updated in rows if (row := post_sales_scope_row(data, updated))])
+            for rows in ancillary_batches:
+                parsed = [ancillary_rows(data, updated) for data, updated in rows]
+                writer.write("ancillary_scopes", SCOPE_SQL, [scope for scope, _ in parsed if scope])
+                writer.write("attachments", ATTACHMENT_SQL, [attachment for _, attachment in parsed if attachment])
+            for rows in policy_batches:
+                parsed = [insurance_rows(data, updated) for data, updated in rows]
+                writer.write("insurance_scopes", SCOPE_SQL, [row for scopes, _ in parsed for row in scopes])
+                writer.write("attachments", ATTACHMENT_SQL, [row for _, attachments in parsed for row in attachments])
 
-        for rows in post_sales_batches:
-            writer.write("post_sales_scopes", SCOPE_SQL, [row for data, updated in rows if (row := post_sales_scope_row(data, updated))])
-        for rows in ancillary_batches:
-            parsed = [ancillary_rows(data, updated) for data, updated in rows]
-            writer.write("ancillary_scopes", SCOPE_SQL, [scope for scope, _ in parsed if scope])
-            writer.write("attachments", ATTACHMENT_SQL, [attachment for _, attachment in parsed if attachment])
-        for rows in policy_batches:
-            parsed = [insurance_rows(data, updated) for data, updated in rows]
-            writer.write("insurance_scopes", SCOPE_SQL, [row for scopes, _ in parsed for row in scopes])
-            writer.write("attachments", ATTACHMENT_SQL, [row for _, attachments in parsed for row in attachments])
+            for rows in order_batches:
+                parsed = [order_rows(data, updated) for data, updated in rows]
+                writer.write("routes", ROUTE_SQL, [row for routes, _, _ in parsed for row in routes])
+                writer.write("travelers", TRAVELER_SQL, [row for _, travelers, _ in parsed for row in travelers])
+                writer.write("order_scopes", SCOPE_SQL, [scope for _, _, scope in parsed if scope])
 
-        for rows in order_batches:
-            parsed = [order_rows(data, updated) for data, updated in rows]
-            writer.write("routes", ROUTE_SQL, [row for routes, _, _ in parsed for row in routes])
-            writer.write("travelers", TRAVELER_SQL, [row for _, travelers, _ in parsed for row in travelers])
-            writer.write("order_scopes", SCOPE_SQL, [scope for _, _, scope in parsed if scope])
-
-        for source_name, table, priority in (
-            ("booking_orchestration", "segment_booking_snapshots", 1),
-            ("seat_assignment", "seat_allocations", 2),
-        ):
-            for batch in _iter_snapshots(source_urls[source_name], table, batch_size, since):
-                rows = []
-                for data, updated in batch:
-                    parsed = seat_row(data, updated, priority)
-                    if parsed:
-                        rows.append(parsed)
-                writer.write("seat_classes", SEAT_SQL, rows)
+            for source_name, table, priority in (
+                ("booking_orchestration", "segment_booking_snapshots", 1),
+                ("seat_assignment", "seat_allocations", 2),
+            ):
+                for batch in _iter_snapshots(source_urls[source_name], table, batch_size, since):
+                    rows = []
+                    for data, updated in batch:
+                        parsed = seat_row(data, updated, priority)
+                        if parsed:
+                            rows.append(parsed)
+                    writer.write("seat_classes", SEAT_SQL, rows)
 
         totals = reporting.execute(
             """
