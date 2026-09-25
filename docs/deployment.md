@@ -3,14 +3,20 @@
 ## 当前常驻环境
 
 常驻 Helm release 为 `train-ticket`，命名空间为 `train-ticket`。
-当前 revision 283 的运行证据与既有测试结果统一见[当前状态](00-current-status.md)。
+运行中的 revision、证据与既有测试结果统一见[当前状态](00-current-status.md)。
 全部待办统一见 [TODO](TODO.md)。
-本文中的构建、部署和测试入口仅供新环境使用，或者在后续明确开展更新并验证前提后使用。
-本次文档收尾不执行构建、部署或新增测试。
 
-禁止对当前 resident279 执行默认 `make deploy`、`make deploy-fast`、其依赖部署目标或缺少完整配置的 Helm upgrade。
-Makefile 默认使用 `IMAGE_TAG=local`，无法据此保留常驻 release 的逐服务镜像引用。
-`deploy-fast` 仍会应用 Helm 配置、执行种子脚本和冒烟写入，不能作为当前常驻环境的配置更新捷径。
+常驻环境的更新入口是 Skaffold 的 `resident` profile：
+
+```bash
+skaffold run -p resident -d mirrors.tencent.com/microservice
+```
+
+它只为输入内容变化的服务重建镜像、推送，并用 `setValueTemplates` 把完整镜像引用交给 Helm，因此只有内容确实变化的服务会换 Pod。
+不要对常驻 release 使用默认 `make deploy`、`make deploy-fast` 或缺少完整配置的 Helm upgrade：`make` 默认 `IMAGE_TAG=local`，无法保留常驻 release 的逐服务镜像引用，而 `deploy-fast` 仍会应用配置、执行种子脚本和冒烟写入。
+
+`values.yaml` 里 `loadgen.replicas` 是 0，所以每次渲染都会把负载生成器缩回 0。
+验收窗口开始前手动 `kubectl scale deploy/loadgen --replicas=1`，窗口结束再缩回 0；窗口期间不要执行任何部署。
 
 常驻 Skaffold profile 只加载 chart 自带的 [values.yaml](../deploy/helm/train-ticket/values.yaml)，镜像仓库、存储类型、集中遥测、负载周期与常驻 exporter 都在这一份文件里。
 
