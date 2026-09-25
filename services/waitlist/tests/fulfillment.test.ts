@@ -364,7 +364,7 @@ test("completed local effects stay matching until authoritative order confirmati
   assert.equal(publisher.findByEventType("WaitlistFulfilled").length, 1);
 });
 
-test("a payment captured concurrently with cancellation fences capacity and order cleanup", async () => {
+test("a payment captured concurrently with authorization cleanup resumes ticketing without releasing capacity", async () => {
   const entry = matchingEntry(["tvl-1"]);
   const traveler = entry.fulfillment.travelers[0]!;
   entry.recordBookingSaga("saga-1");
@@ -376,14 +376,19 @@ test("a payment captured concurrently with cancellation fences capacity and orde
   entry.recordPayment("pi-fulfillment", "CREATED");
   await repository.save(entry);
   client.captureDuringCancellation = true;
+  let now = new Date("2026-10-19T00:00:00.000Z");
   const service = new WaitlistApplicationService(repository, new InMemoryEventPublisher(), undefined, undefined, undefined,
-    () => new Date("2026-10-19T00:00:00.000Z"), undefined, undefined, client);
+    () => now, undefined, undefined, client);
 
   await service.advanceNextWork();
+  client.sagaStatusOverride = "TICKETING";
+  now = new Date(now.getTime() + 1_001);
+  await service.advanceNextWork();
 
-  assert.equal(repository.current().status, "SUSPENDED");
+  assert.equal(repository.current().status, "MATCHING");
   assert.equal(repository.current().fulfillment?.paymentStatus, "CAPTURED");
   assert.equal(client.paymentCancelCalls.length, 1);
   assert.equal(client.releaseCalls.length, 0);
   assert.equal(client.orderCancelCalls.length, 0);
+  assert.equal(client.entitlementEffects, 1);
 });
