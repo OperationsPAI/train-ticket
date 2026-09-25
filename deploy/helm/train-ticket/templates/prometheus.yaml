@@ -382,6 +382,21 @@ data:
             target_label: node
       {{- end }}
 
+      {{- if and .Values.otelCollector.enabled .Values.otelCollector.prometheusExporter.enabled }}
+      # Business services publish OTLP metrics to the gateway. They do not share
+      # a native /metrics endpoint, so scrape the gateway's bounded Prometheus
+      # exporter once instead of creating one failing target per application pod.
+      - job_name: train-ticket-applications
+        scrape_interval: {{ .Values.prometheus.applicationMetrics.scrapeInterval }}
+        static_configs:
+          - targets: ['otel-collector:{{ .Values.otelCollector.prometheusExporter.port }}']
+        metric_relabel_configs:
+          # Defence in depth after the Collector's OTTL allowlist. Keep only the
+          # bounded labels that recording rules and failure exercises consume.
+          - action: labelkeep
+            regex: __name__|job|instance|exported_job|exported_instance|service|namespace|http_route|http_request_method|http_response_status_code|network_protocol_version|url_scheme|db_client_connection_pool_name|db_client_connection_state|pool|jvm_memory_pool_name|jvm_memory_type|jvm_gc_name|jvm_gc_action|jvm_gc_cause|go_memory_type|go_gc_type|v8js_heap_space_name|v8js_gc_type|nodejs_eventloop_state|workflow|stage|state|outcome|reason_code|currency|channel|operation|travel_class|seat_mode|ticket_type|queue|event_stream|consumer_group|event_type|source_service|target_service|le|quantile
+      {{- end }}
+
       # Opt-in scraping for application pods, same annotation contract as the
       # cluster collector's own prometheus receiver.
       - job_name: kubernetes-pods
