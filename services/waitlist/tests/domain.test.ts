@@ -32,6 +32,23 @@ test("matching entries return to queue instead of cancelling directly", () => {
   assert.equal(entry.offerExpiresAt, null);
 });
 
+test("a requeued entry rotates fulfillment effect keys for the next promotion", () => {
+  const entry = WaitlistEntry.create({ entryId: "wl-rematch", accountId: "acc", travelerRefs: ["t1", "t2"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", priority: {} });
+  entry.offer("offer-1", 1, "fare-1", undefined, new Date("2026-01-01T00:00:00.000Z"), new Date("2026-01-01T00:15:00.000Z"));
+  entry.linkJourneyOrder(new Date("2026-01-01T00:01:00.000Z"), "ord-1", { currency: "CNY", minorUnits: 100 });
+  const first = entry.fulfillment;
+
+  entry.returnToQueue();
+  const second = entry.fulfillment;
+
+  assert.notEqual(second.paymentCreateIdempotencyKey, first.paymentCreateIdempotencyKey);
+  assert.notEqual(second.paymentCaptureIdempotencyKey, first.paymentCaptureIdempotencyKey);
+  assert.notEqual(second.orderCancelIdempotencyKey, first.orderCancelIdempotencyKey);
+  assert.notEqual(second.travelers[0]?.segmentBookingId, first.travelers[0]?.segmentBookingId);
+  assert.notEqual(second.travelers[0]?.entitlementIdempotencyKey, first.travelers[0]?.entitlementIdempotencyKey);
+  assert.deepEqual(WaitlistEntry.fromSnapshot(entry.toSnapshot()).fulfillment, second);
+});
+
 test("offer acceptance rejects the exact expiry instant", () => {
   const entry = WaitlistEntry.create({ entryId: "wl-expiry", accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND_CLASS", priority: {} });
   const now = new Date("2026-01-01T00:00:00.000Z");
