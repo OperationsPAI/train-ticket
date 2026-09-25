@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"errors"
 	"github.com/trainticket/greenfield/platform/go-kit/ids"
 	kitmsg "github.com/trainticket/greenfield/platform/go-kit/messaging"
 	"github.com/trainticket/greenfield/services/payment-channel/internal/domain"
@@ -16,6 +17,8 @@ type memRepo struct {
 	stmts         map[string]*domain.ChannelStatement
 	disc          map[string]*domain.ReconciliationDiscrepancy
 	refundUpdates int
+	ordersErr     error
+	refundsErr    error
 }
 
 func newMem() *memRepo {
@@ -42,11 +45,14 @@ func (m *memRepo) GetOrder(_ context.Context, id string) (*domain.ChannelOrder, 
 	return o, nil
 }
 func (m *memRepo) ListOrdersForStatement(_ context.Context, channel, date, currency string) ([]domain.ChannelOrder, error) {
+	if m.ordersErr != nil {
+		return nil, m.ordersErr
+	}
 	out := []domain.ChannelOrder{}
 	start, _ := time.Parse("2006-01-02", date)
 	end := start.Add(24 * time.Hour)
 	for _, o := range m.orders {
-		if o.Channel == channel && o.Amount.Currency == currency && !o.UpdatedAt.Before(start) && o.UpdatedAt.Before(end) {
+		if o.Status == domain.StatusSucceeded && o.CompletedAt != nil && o.Channel == channel && o.Amount.Currency == currency && !o.CompletedAt.Before(start) && o.CompletedAt.Before(end) {
 			out = append(out, *o)
 		}
 	}
@@ -77,11 +83,14 @@ func (m *memRepo) FindRefundForOrder(_ context.Context, orderID, refundID string
 	return nil, nil
 }
 func (m *memRepo) ListRefundsForStatement(_ context.Context, channel, date, currency string) ([]domain.ChannelRefund, error) {
+	if m.refundsErr != nil {
+		return nil, m.refundsErr
+	}
 	out := []domain.ChannelRefund{}
 	start, _ := time.Parse("2006-01-02", date)
 	end := start.Add(24 * time.Hour)
 	for _, o := range m.refunds {
-		if o.Channel == channel && o.Amount.Currency == currency && !o.UpdatedAt.Before(start) && o.UpdatedAt.Before(end) {
+		if o.Status == domain.StatusSucceeded && o.CompletedAt != nil && o.Channel == channel && o.Amount.Currency == currency && !o.CompletedAt.Before(start) && o.CompletedAt.Before(end) {
 			out = append(out, *o)
 		}
 	}
@@ -256,6 +265,78 @@ func TestStatementGenerationFiltersByStatementDate(t *testing.T) {
 	}
 	if st.LineCount != 1 {
 		t.Fatalf("expected one same-day line, got %d", st.LineCount)
+	}
+}
+
+func TestStatementGenerationUsesTerminalOccurrenceInsteadOfSnapshotUpdate(t *testing.T) {
+	repo := newMem()
+	svc := New(repo, &pub{}, nil)
+	ctx := context.Background()
+	cmd := ids.NewCommandID()
+	corr := ids.NewCorrelationID()
+	order, err := svc.CreateOrder(ctx, CreateOrderRequest{
+		PaymentIntentID: "pi-occurrence", BusinessRef: "ord-occurrence", Purpose: "purchase",
+		Channel: domain.ChannelAlipay, Amount: domain.Money{Currency: "CNY", MinorUnits: 100},
+		IdempotencyKey: ids.NewUUIDv7(), SourceCommandID: cmd, CorrelationID: corr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	order, err = svc.SubmitOrder(ctx, order.ChannelOrderID, order.Version, order.RequestFingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settledAt := time.Date(2026, time.September, 23, 23, 59, 58, 0, time.UTC)
+	queriedAt := settledAt.Add(48 * time.Hour)
+	order.CompletedAt = &settledAt
+	order.UpdatedAt = queriedAt
+
+	statement, err := svc.GenerateStatement(ctx, GenerateStatementRequest{
+		Channel: order.Channel, StatementDate: "2026-09-23", Currency: "CNY", SeedVersion: "v1",
+		CorrelationID: corr, SourceCommandID: cmd,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if statement.LineCount != 1 || len(statement.Lines) != 1 {
+		t.Fatalf("terminal occurrence must remain on its settlement day: %+v", statement)
+	}
+	if !statement.Lines[0].OccurredAt.Equal(settledAt) {
+		t.Fatalf("line occurrence=%s want %s", statement.Lines[0].OccurredAt, settledAt)
+	}
+	wrongDay, err := svc.GenerateStatement(ctx, GenerateStatementRequest{
+		Channel: order.Channel, StatementDate: "2026-09-25", Currency: "CNY", SeedVersion: "v2",
+		CorrelationID: corr, SourceCommandID: cmd,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wrongDay.LineCount != 0 {
+		t.Fatalf("later snapshot update moved terminal fact into another statement: %+v", wrongDay.Lines)
+	}
+}
+
+func TestStatementGenerationPropagatesFactReadFailures(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		set  func(*memRepo)
+		want string
+	}{
+		{name: "orders", set: func(repo *memRepo) { repo.ordersErr = errors.New("orders unavailable") }, want: "UNAVAILABLE: load channel orders for statement: orders unavailable"},
+		{name: "refunds", set: func(repo *memRepo) { repo.refundsErr = errors.New("refunds unavailable") }, want: "UNAVAILABLE: load channel refunds for statement: refunds unavailable"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repo := newMem()
+			test.set(repo)
+			svc := New(repo, &pub{}, nil)
+			_, err := svc.GenerateStatement(context.Background(), GenerateStatementRequest{
+				Channel: domain.ChannelAlipay, StatementDate: "2026-09-25", Currency: "CNY", SeedVersion: "v1",
+				CorrelationID: ids.NewCorrelationID(), SourceCommandID: ids.NewCommandID(),
+			})
+			if err == nil || err.Error() != test.want {
+				t.Fatalf("generation error=%v want %q", err, test.want)
+			}
+		})
 	}
 }
 
