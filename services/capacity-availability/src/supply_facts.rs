@@ -217,6 +217,8 @@ pub struct Allocation {
     pub segment_booking_id: String,
     pub journey_order_id: String,
     pub traveler_ref: String,
+    #[serde(default)]
+    pub capacity_unit_ref: String,
     pub interval: Interval,
     pub seat_ref: SeatReference,
     pub status: String,
@@ -249,6 +251,7 @@ pub struct PendingOccupancy {
     pub segment_booking_id: String,
     pub journey_order_id: String,
     pub traveler_ref: String,
+    pub capacity_unit_ref: String,
     pub interval: Interval,
 }
 
@@ -327,6 +330,7 @@ impl SeatSupply {
             )?;
             require(
                 !a.capacity_hold_id.is_empty()
+                    && !a.capacity_unit_ref.is_empty()
                     && !a.segment_booking_id.is_empty()
                     && !a.journey_order_id.is_empty()
                     && !a.traveler_ref.is_empty()
@@ -351,12 +355,21 @@ impl SeatSupply {
         interval: &Interval,
         holds: &[PendingOccupancy],
     ) -> Result<usize, AppError> {
+        Ok(self.available_refs(interval, holds)?.len())
+    }
+
+    pub fn available_refs(
+        &self,
+        interval: &Interval,
+        holds: &[PendingOccupancy],
+    ) -> Result<Vec<String>, AppError> {
         require(
             interval.from_seq < interval.to_seq,
             "requested station interval is invalid",
         )?;
         if self.class_ref == "STANDING" {
-            let mut occupancy: HashMap<&str, (&str, &str, &str, &Interval)> = HashMap::new();
+            let refs = self.capacity_refs();
+            let mut occupancy: HashMap<&str, (&str, &str, &str, &str, &Interval)> = HashMap::new();
             for a in &self.allocations {
                 require(
                     occupancy
@@ -366,6 +379,7 @@ impl SeatSupply {
                                 &a.segment_booking_id,
                                 &a.journey_order_id,
                                 &a.traveler_ref,
+                                &a.capacity_unit_ref,
                                 &a.interval,
                             ),
                         )
@@ -384,8 +398,9 @@ impl SeatSupply {
                         a.0 == hold.segment_booking_id
                             && a.1 == hold.journey_order_id
                             && a.2 == hold.traveler_ref
-                            && a.3.from_seq == hold.interval.from_seq
-                            && a.3.to_seq == hold.interval.to_seq,
+                            && a.3 == hold.capacity_unit_ref
+                            && a.4.from_seq == hold.interval.from_seq
+                            && a.4.to_seq == hold.interval.to_seq,
                         "standing allocation differs from its capacity hold",
                     )?;
                 } else {
@@ -395,27 +410,21 @@ impl SeatSupply {
                             &hold.segment_booking_id,
                             &hold.journey_order_id,
                             &hold.traveler_ref,
+                            &hold.capacity_unit_ref,
                             &hold.interval,
                         ),
                     );
                 }
             }
-            let points = std::iter::once(interval.from_seq).chain(
-                occupancy
-                    .values()
-                    .map(|a| a.3.from_seq)
-                    .filter(|point| *point > interval.from_seq && *point < interval.to_seq),
-            );
-            let peak = points
-                .map(|point| {
-                    occupancy
-                        .values()
-                        .filter(|a| a.3.from_seq <= point && point < a.3.to_seq)
-                        .count()
-                })
-                .max()
-                .unwrap_or(0);
-            return Ok(self.capacity().saturating_sub(peak));
+            let mut occupied_refs = HashSet::new();
+            for value in occupancy.values() {
+                if value.4.overlaps(interval) {
+                    require(refs.iter().any(|reference| reference == value.3), "standing occupancy has no valid quota slot")?;
+                    occupied_refs.insert(value.3.to_owned());
+                }
+            }
+            let available: Vec<String> = refs.into_iter().filter(|reference| !occupied_refs.contains(reference.as_str())).collect();
+            return Ok(available);
         }
         let mut occupied: HashMap<&str, Vec<&Interval>> = HashMap::new();
         let mut allocated_holds = HashMap::new();
@@ -455,20 +464,29 @@ impl SeatSupply {
                     a.segment_booking_id == hold.segment_booking_id
                         && a.journey_order_id == hold.journey_order_id
                         && a.traveler_ref == hold.traveler_ref
+                        && a.capacity_unit_ref == hold.capacity_unit_ref
+                        && a.seat_ref.seat_unit_ref == hold.capacity_unit_ref
                         && a.interval.from_seq == hold.interval.from_seq
                         && a.interval.to_seq == hold.interval.to_seq,
                     "seat allocation differs from its capacity hold",
                 )?;
             } else {
                 require(
+                    self.units.iter().any(|unit| unit.seat_unit_ref == hold.capacity_unit_ref),
+                    "active historical Hold has no resolvable physical unit",
+                )?;
+                occupied.entry(&hold.capacity_unit_ref).or_default().push(&hold.interval);
+                require(
                     pending.insert(&hold.hold_id),
                     "pending occupancy repeats a hold",
                 )?;
             }
         }
-        Ok(self
-            .capacity()
-            .saturating_sub(occupied.len() + pending.len()))
+        let mut available: Vec<String> = self.units.iter()
+            .filter(|unit| !occupied.get(unit.seat_unit_ref.as_str()).is_some_and(|intervals| intervals.iter().any(|occupied| occupied.overlaps(interval))))
+            .map(|unit| unit.seat_unit_ref.clone()).collect();
+        available.sort();
+        Ok(available)
     }
 }
 
@@ -1145,5 +1163,57 @@ mod reservation_source_tests {
     fn inconsistent_or_unknown_sources_are_rejected() {
         assert!(facts("purchase", "CHANGE_CASE", "case-1").validate_source().is_err());
         assert!(facts("legacy", "PURCHASE_ORDER", "ord-1").validate_source().is_err());
+    }
+}
+
+#[cfg(test)]
+mod occupancy_slot_tests {
+    use super::*;
+
+    fn physical_supply() -> SeatSupply {
+        SeatSupply {
+            scheduled_service_ref: "ss-1".into(), service_date: "2026-09-25".into(),
+            class_ref: "SECOND_CLASS".into(), seat_map_id: "map-1".into(), seat_map_version: 2,
+            composition_version: "v1".into(), captured_at: "2026-09-25T00:00:00Z".into(),
+            units: vec![
+                PhysicalUnit { seat_unit_ref: "seat-a".into(), assignable: true, allocation_type: "SEAT".into() },
+                PhysicalUnit { seat_unit_ref: "seat-b".into(), assignable: true, allocation_type: "SEAT".into() },
+            ], allocations: vec![], standing_policy: None,
+        }
+    }
+
+    fn pending(id: &str, unit: &str, from: u32, to: u32) -> PendingOccupancy {
+        PendingOccupancy { hold_id: id.into(), segment_booking_id: format!("sb-{id}"),
+            journey_order_id: format!("ord-{id}"), traveler_ref: format!("tvl-{id}"),
+            capacity_unit_ref: unit.into(), interval: Interval { from_seq: from, to_seq: to } }
+    }
+
+    #[test]
+    fn physical_slots_follow_half_open_interval_binding() {
+        let supply = physical_supply();
+        let occupied = pending("1", "seat-a", 0, 2);
+        assert_eq!(supply.available_refs(&Interval { from_seq: 1, to_seq: 3 }, &[occupied.clone()]).unwrap(), vec!["seat-b"]);
+        assert_eq!(supply.available_refs(&Interval { from_seq: 2, to_seq: 4 }, &[occupied]).unwrap(), vec!["seat-a", "seat-b"]);
+    }
+
+    #[test]
+    fn allocation_and_hold_must_share_the_bound_unit() {
+        let mut supply = physical_supply();
+        supply.allocations.push(Allocation { seat_allocation_id: "alloc-1".into(), capacity_hold_id: "1".into(),
+            scheduled_service_ref: "ss-1".into(), service_date: "2026-09-25".into(), segment_booking_id: "sb-1".into(),
+            journey_order_id: "ord-1".into(), traveler_ref: "tvl-1".into(), capacity_unit_ref: "seat-a".into(),
+            interval: Interval { from_seq: 0, to_seq: 2 }, seat_ref: SeatReference { seat_unit_ref: "seat-a".into(), allocation_type: "SEAT".into() }, status: "ALLOCATED".into() });
+        assert!(supply.available_refs(&Interval { from_seq: 0, to_seq: 2 }, &[pending("1", "seat-b", 0, 2)]).is_err());
+    }
+
+    #[test]
+    fn standing_slots_are_atomic_and_reusable_only_after_nonoverlap() {
+        let supply = SeatSupply { scheduled_service_ref: "ss-1".into(), service_date: "2026-09-25".into(),
+            class_ref: "STANDING".into(), seat_map_id: "map-1".into(), seat_map_version: 2,
+            composition_version: "v1".into(), captured_at: "2026-09-25T00:00:00Z".into(), units: vec![], allocations: vec![],
+            standing_policy: Some(StandingPolicy { version: "standing-second-class-10pct-v1".into(), basis_class: "SECOND_CLASS".into(), basis_units: 20, percent: 10, limit: 2 }) };
+        let occupied = pending("1", "quota:standing-second-class-10pct-v1:0", 0, 2);
+        assert_eq!(supply.available_refs(&Interval { from_seq: 1, to_seq: 3 }, &[occupied.clone()]).unwrap(), vec!["quota:standing-second-class-10pct-v1:1"]);
+        assert_eq!(supply.available_refs(&Interval { from_seq: 2, to_seq: 4 }, &[occupied]).unwrap().len(), 2);
     }
 }
