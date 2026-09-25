@@ -24,6 +24,7 @@ public final class PostSalesCase {
     private PostSalesCaseStatus status;
     private PostSalesDecision decision;
     private PostSalesExecutionPlan executionPlanAggregate;
+    private PostSalesExecutionRedrive executionRedrive;
     private String terminalReason;
     private String targetOfferId;
     private final Map<String, Map<String, Object>> changeOperations = new java.util.LinkedHashMap<>();
@@ -173,6 +174,7 @@ public final class PostSalesCase {
     public PostSalesCaseStatus status() { return status; }
     public PostSalesDecision decision() { return decision; }
     public PostSalesExecutionPlan executionPlanAggregate() { return executionPlanAggregate; }
+    public PostSalesExecutionRedrive executionRedrive() { return executionRedrive; }
     public String terminalReason() { return terminalReason; }
     public long version() { return version; }
     public PostSalesCase withVersion(long version) {
@@ -184,6 +186,54 @@ public final class PostSalesCase {
     }
     public List<PostSalesStep> executionPlan() { return executionPlan.stream().map(PostSalesStep::copy).toList(); }
     public List<PostSalesEvent> domainEvents() { return List.copyOf(domainEvents); }
+
+    public PostSalesCase withExecutionRedrive(PostSalesExecutionRedrive redrive) {
+        executionRedrive = Objects.requireNonNull(redrive, "executionRedrive is required");
+        return this;
+    }
+
+    public boolean prepareExecutionRedrive(
+        Instant occurredAt,
+        String sourceCommandId,
+        String causationId,
+        String correlationId
+    ) {
+        requireStatus(PostSalesCaseStatus.EXECUTING);
+        requireDecision();
+        if (executionPlan.isEmpty()) {
+            throw new DomainRuleViolation("executing post-sales case requires a persisted execution plan");
+        }
+        if (executionRedrive != null) {
+            return false;
+        }
+        String stableCausationId = com.trainticket.platformkit.messaging.PrefixedIds.isCausationId(causationId)
+            ? causationId : com.trainticket.platformkit.messaging.PrefixedIds.newCommandId();
+        String stableCorrelationId = com.trainticket.platformkit.messaging.PrefixedIds.isCorrelationId(correlationId)
+            ? correlationId : com.trainticket.platformkit.messaging.PrefixedIds.newCorrelationId();
+        executionRedrive = new PostSalesExecutionRedrive(
+            "http-approval",
+            "auto",
+            new EventMetadata(com.trainticket.platformkit.idempotency.UuidV7.generate(occurredAt), occurredAt,
+                sourceCommandId, stableCausationId, stableCorrelationId, 1,
+                Map.of("status", status.name(), "redrive", "true")),
+            new EventMetadata(com.trainticket.platformkit.idempotency.UuidV7.generate(occurredAt), occurredAt,
+                sourceCommandId, stableCausationId, stableCorrelationId, 1,
+                Map.of("status", status.name(), "redrive", "true"))
+        );
+        return true;
+    }
+
+    public List<PostSalesEvent> executionRedriveEvents() {
+        requireStatus(PostSalesCaseStatus.EXECUTING);
+        requireDecision();
+        PostSalesExecutionRedrive redrive = Objects.requireNonNull(executionRedrive,
+            "execution redrive must be prepared before events are rebuilt");
+        return List.of(
+            new PostSalesApproved(caseId, journeyOrderId, decision.kind(), redrive.approvalRef(), redrive.approvedMetadata()),
+            new PostSalesExecutionStarted(caseId, executionPlan.stream().map(PostSalesStep::type).toList(),
+                redrive.executionApprovalRef(), redrive.executionStartedMetadata())
+        );
+    }
 
     public Set<String> releasedOrderItems() { return Set.copyOf(releasedOrderItems); }
 
