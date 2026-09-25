@@ -19,10 +19,13 @@ The current baseline covers the smallest shared vocabulary needed before
 bounded contexts exchange events or references:
 
 - `PlaceRef`, `TravelerRef`, and `SegmentRef` stable cross-context references.
+  Constructors require the `plc-`, `tvl-`, and `seg-` boundary prefixes and a
+  non-empty opaque suffix.
 - `Money` with minor-unit amount and three-letter uppercase currency code.
 - `UnixMillis` and `TimeWindow` for schedule and event timestamps.
 - `EventEnvelope` with `event_id`, `event_type`, `schema_version`,
   `occurred_at`, `correlation_id`, and optional `causation_id`.
+  The wrappers require `evt-`, `corr-`, and `cmd-` or `evt-` respectively.
 
 The Rust implementation is a reference for invariants only. Serialization
 shape and generated language bindings remain future work.
