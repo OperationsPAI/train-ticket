@@ -38,8 +38,7 @@ PostgreSQL 的操作聚合最多加载最新10000条符合条件的事件。
 缺失维度为 `unknown`，缺失币种为 USD，时间维度按 UTC 小时归集。
 `yieldPerKm` 为 captured 金额除以记录的距离总和，附加服务和保险附加率使用 captured 行的对应标记计数。
 
-PostgreSQL 包含缺失金额的 captured 行，金额按零计算且数量增加一次。
-内存金额报表排除缺失金额事件。
+缺少 amount 的 `PaymentCaptured` 保留在源事件表用于审计，但 PostgreSQL 与内存金额报表都排除该行，金额与 payment count 均不增加。
 `totalRevenue` 返回分页前完整筛选结果、按 ISO 币种代码排序的 Money 数组，不执行汇率换算；空结果返回空数组。
 `items` 使用 `limit`/`offset` 分页，`total` 表示分页前分组行数；越界页不改变完整总额。
 
@@ -68,4 +67,4 @@ PostgreSQL 包含缺失金额的 captured 行，金额按零计算且数量增�
 gross captured 及 grouping sets SQL 已在 Helm revision 279 的生产基线中生效。
 数据库变更保留源事件表，并保存视图原有名称、列、索引、所有权和授权。
 
-实现依据为 [领域计算](../../services/reporting/src/reporting/domain.py)、[PostgreSQL 存储](../../services/reporting/src/reporting/adapters/storage/postgres.py)、[查询入口](../../services/reporting/src/reporting/api.py) 和 [物化视图 SQL](../../services/reporting/migrations/005_gross_captured_revenue.sql)。
+实现依据为 [领域计算](../../services/reporting/src/reporting/domain.py)、[PostgreSQL 存储](../../services/reporting/src/reporting/adapters/storage/postgres.py)、[查询入口](../../services/reporting/src/reporting/api.py)、[gross captured SQL](../../services/reporting/migrations/005_gross_captured_revenue.sql) 和 [缺失金额一致性 SQL](../../services/reporting/migrations/006_exclude_incomplete_captures.sql)。
