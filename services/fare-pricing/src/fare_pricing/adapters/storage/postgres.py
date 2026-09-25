@@ -32,6 +32,7 @@ from fare_pricing.domain import (
     RuleSetStatus,
     RuleSnapshot,
     ValidityWindow,
+    normalize_capacity_class_ref,
 )
 from fare_pricing.application.service import (
     AdjustmentQuoteNotFoundError,
@@ -608,10 +609,15 @@ class PostgresFarePricingStore:
         if not refs or departure_date is None:
             return ()
         target_date = date.fromisoformat(departure_date)
+        normalized_class = normalize_capacity_class_ref(class_ref) if class_ref else None
 
         def read(conn: Any) -> tuple[CapacitySnapshot, ...]:
-            class_filter = " AND class_ref = %s" if class_ref else ""
-            params: tuple[Any, ...] = (list(refs), target_date, class_ref) if class_ref else (list(refs), target_date)
+            class_filter = " AND class_ref = %s" if normalized_class else ""
+            params: tuple[Any, ...] = (
+                (list(refs), target_date, normalized_class)
+                if normalized_class
+                else (list(refs), target_date)
+            )
             rows = conn.execute(
                 "SELECT segment_ref,departure_date,class_ref,total_capacity,remaining_capacity,snapshot_version,"
                 "source_occurred_at,source_event_id FROM capacity_snapshot_cache "
