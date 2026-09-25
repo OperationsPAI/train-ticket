@@ -44,4 +44,38 @@ describe("notification metrics", () => {
       await provider.shutdown();
     }
   });
+
+  it("reports queue depth and oldest age as gauges with only state and channel", async () => {
+    const exporter = new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE);
+    const reader = new PeriodicExportingMetricReader({ exporter, exportIntervalMillis: 60_000 });
+    const provider = new MeterProvider({ readers: [reader] });
+    try {
+      const recorder = new OpenTelemetryNotificationMetrics(provider.getMeter("notification-queue-test"));
+      recorder.queueDepth([
+        { state: "Ready", channel: "EMAIL", tasks: 2_287_687, oldestAgeSeconds: 19_865 },
+        { state: "Claimed", channel: "EMAIL", tasks: 93, oldestAgeSeconds: 0 },
+      ]);
+      await reader.forceFlush();
+
+      const collected = new Map<string, ResourceMetrics["scopeMetrics"][number]["metrics"][number]>();
+      for (const resource of exporter.getMetrics()) {
+        for (const scope of resource.scopeMetrics) {
+          for (const metric of scope.metrics) collected.set(metric.descriptor.name, metric);
+        }
+      }
+
+      const tasks = collected.get("train_ticket.notification.queue.tasks");
+      const oldest = collected.get("train_ticket.notification.queue.oldest_age");
+      assert.ok(tasks, "queue depth gauge must be exported");
+      assert.ok(oldest, "oldest age gauge must be exported");
+      assert.equal(oldest.descriptor.unit, "s");
+      const ready = tasks.dataPoints.find(point => point.attributes.state === "Ready");
+      assert.equal(ready?.value, 2_287_687);
+      assert.deepEqual(Object.keys(ready!.attributes).sort(), ["channel", "state"]);
+      assert.equal(oldest.dataPoints.find(point => point.attributes.state === "Ready")?.value, 19_865);
+    } finally {
+      await provider.shutdown();
+    }
+  });
+
 });
