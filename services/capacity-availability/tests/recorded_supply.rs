@@ -35,6 +35,11 @@ fn recorded_full_business_class_has_no_remaining_capacity_and_deduplicates_holds
         scheduled_service_ref: supply.scheduled_service_ref.clone(),
         service_date: supply.service_date.clone(),
         class_ref: supply.class_ref.clone(),
+        booking_purpose: "purchase".into(),
+        offer_item_ref: "ofi-recorded".into(),
+        standing_accepted: false,
+        source_type: "PURCHASE_ORDER".into(),
+        source_ref: first.journey_order_id.clone(),
     };
     supply.validate(&request).unwrap();
     let interval = Interval {
