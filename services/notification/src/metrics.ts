@@ -12,6 +12,12 @@ export type NotificationDeliveryMetricOutcome =
 export type NotificationRetryMetricOutcome = "scheduled" | "deferred" | "exhausted";
 export type NotificationPolicyMetricOutcome = "cancelled" | "kept" | "error";
 export type NotificationPolicyAction = "expire" | "supersede";
+export type NotificationQueueObservation = Readonly<{
+  state: string;
+  channel: string;
+  tasks: number;
+  oldestAgeSeconds: number;
+}>;
 export type NotificationReasonCode =
   | "none"
   | "recipient_quota"
@@ -31,18 +37,31 @@ export interface NotificationMetricRecorder {
   deliveryResult(channel: ChannelType, outcome: NotificationDeliveryMetricOutcome, reasonCode: NotificationReasonCode): void;
   retry(channel: ChannelType, outcome: NotificationRetryMetricOutcome, reasonCode: NotificationReasonCode): void;
   policyAction(action: NotificationPolicyAction, channel: ChannelType, outcome: NotificationPolicyMetricOutcome, reasonCode: NotificationReasonCode): void;
+  /**
+   * Replace the queue depth snapshot the observable gauges report.
+   *
+   * A level, not a delta: the queue depth is durable state owned by the
+   * database, so the value survives a process restart and cannot be mistaken
+   * for a counter reset. One sample per state and channel; a state that stops
+   * being observed goes stale in Prometheus rather than reading as zero.
+   */
+  queueDepth(samples: readonly NotificationQueueObservation[]): void;
 }
 
 export class NoopNotificationMetrics implements NotificationMetricRecorder {
   deliveryResult(): void {}
   retry(): void {}
   policyAction(): void {}
+  queueDepth(): void {}
 }
 
 export class OpenTelemetryNotificationMetrics implements NotificationMetricRecorder {
   private readonly deliveryResults;
   private readonly retries;
   private readonly policyActions;
+  private readonly queueTasks;
+  private readonly queueOldestAge;
+  private queueSamples: readonly NotificationQueueObservation[] = [];
 
   constructor(meter: Meter) {
     this.deliveryResults = meter.createCounter("train_ticket.notification.delivery_results", {
@@ -57,6 +76,20 @@ export class OpenTelemetryNotificationMetrics implements NotificationMetricRecor
       unit: "{action}",
       description: "Notification expiry and supersession policy decisions.",
     });
+    this.queueTasks = meter.createObservableGauge("train_ticket.notification.queue.tasks", {
+      unit: "{task}",
+      description: "Durable notification delivery queue depth by state and channel.",
+    });
+    this.queueOldestAge = meter.createObservableGauge("train_ticket.notification.queue.oldest_age", {
+      unit: "s",
+      description: "Age of the oldest due notification task, the primary user-delay signal.",
+    });
+    this.queueTasks.addCallback(result => {
+      for (const sample of this.queueSamples) result.observe(sample.tasks, { state: sample.state, channel: sample.channel });
+    });
+    this.queueOldestAge.addCallback(result => {
+      for (const sample of this.queueSamples) result.observe(sample.oldestAgeSeconds, { state: sample.state, channel: sample.channel });
+    });
   }
 
   deliveryResult(channel: ChannelType, outcome: NotificationDeliveryMetricOutcome, reasonCode: NotificationReasonCode): void {
@@ -69,6 +102,10 @@ export class OpenTelemetryNotificationMetrics implements NotificationMetricRecor
 
   policyAction(action: NotificationPolicyAction, channel: ChannelType, outcome: NotificationPolicyMetricOutcome, reasonCode: NotificationReasonCode): void {
     this.policyActions.add(1, { action, channel, outcome, reason_code: reasonCode });
+  }
+
+  queueDepth(samples: readonly NotificationQueueObservation[]): void {
+    this.queueSamples = samples.map(sample => ({ ...sample }));
   }
 }
 
