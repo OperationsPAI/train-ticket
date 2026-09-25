@@ -28,7 +28,15 @@ public record PostSalesExecutionEvidence(
         String travelerRef,
         String segmentRef,
         Instant voidedAt
-    ) { }
+    ) {
+        public EntitlementEvidence {
+            entitlementId = PostSalesScope.requireText(entitlementId, "entitlementId");
+            segmentBookingId = PostSalesScope.requireText(segmentBookingId, "segmentBookingId");
+            travelerRef = PostSalesScope.requireText(travelerRef, "travelerRef");
+            segmentRef = PostSalesScope.requireText(segmentRef, "segmentRef");
+            voidedAt = Objects.requireNonNull(voidedAt, "voidedAt is required");
+        }
+    }
 
     public record BookingEvidence(
         String segmentBookingId,
@@ -36,18 +44,41 @@ public record PostSalesExecutionEvidence(
         String travelerRef,
         String segmentRef,
         String capacityHoldId
-    ) { }
+    ) {
+        public BookingEvidence {
+            segmentBookingId = PostSalesScope.requireText(segmentBookingId, "segmentBookingId");
+            entitlementId = PostSalesScope.requireText(entitlementId, "entitlementId");
+            travelerRef = PostSalesScope.requireText(travelerRef, "travelerRef");
+            segmentRef = PostSalesScope.requireText(segmentRef, "segmentRef");
+            capacityHoldId = PostSalesScope.requireText(capacityHoldId, "capacityHoldId");
+        }
+    }
 
     public record CapacityEvidence(
         String capacityHoldId,
         String segmentBookingId,
         boolean absentAfterCancellation
-    ) { }
+    ) {
+        public CapacityEvidence {
+            capacityHoldId = PostSalesScope.requireText(capacityHoldId, "capacityHoldId");
+            segmentBookingId = PostSalesScope.requireText(segmentBookingId, "segmentBookingId");
+        }
+    }
 
     public record RefundEvidence(
         String refundId,
         String paymentIntentId,
         Money amount,
         String status
-    ) { }
+    ) {
+        public RefundEvidence {
+            refundId = PostSalesScope.requireText(refundId, "refundId");
+            paymentIntentId = PostSalesScope.requireText(paymentIntentId, "paymentIntentId");
+            amount = Objects.requireNonNull(amount, "amount is required");
+            status = PostSalesScope.requireText(status, "status");
+            if (!java.util.Set.of("REQUESTED", "SUBMITTED", "SETTLED").contains(status)) {
+                throw new DomainRuleViolation("refund evidence is not an accepted payment state");
+            }
+        }
+    }
 }
