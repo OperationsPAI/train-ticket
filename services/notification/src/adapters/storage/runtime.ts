@@ -28,6 +28,8 @@ import { RateLimitExceeded, type NotificationTask } from "../../domain.js";
 import { redisUrl } from "../messaging/stream-config.js";
 import { PostgresNotificationAggregator, PostgresNotificationTaskRepository, PostgresRateLimitRepository, PostgresRecipientContactRepository, PostgresUserPreferenceRepository } from "./notification-repository.js";
 import { PostgresDeliveryScheduler, startDeliveryWorker } from "./delivery-queue.js";
+import { queueDepthRefreshMs, readDeliveryQueueDepth } from "../../queue-depth.js";
+import { notificationMetricsFromEnvironment } from "../../metrics.js";
 import type { NotificationTrailResponse } from "../../app.js";
 
 export const NOTIFICATION_OUTBOX_RELAY_OPTIONS = Object.freeze({
@@ -115,6 +117,25 @@ export async function startNotificationStorage(channelGateway: NotificationChann
   }, 1000);
   retryTimer.unref();
 
+  // The delivery queue depth is the signal an operator needs before anyone
+  // notices a delay, and it is a level owned by the database. Refresh the
+  // snapshot on a timer; the observable gauges read the last good one. A failed
+  // refresh keeps the previous snapshot rather than reporting an empty queue,
+  // because "could not read" and "nothing waiting" must not look alike.
+  const queueMetrics = notificationMetricsFromEnvironment();
+  let refreshingDepth = false;
+  const refreshDepth = () => {
+    if (refreshingDepth) return;
+    refreshingDepth = true;
+    readDeliveryQueueDepth(pool)
+      .then(samples => queueMetrics.queueDepth(samples))
+      .catch(error => console.error(sanitizedErrorForLog(error)))
+      .finally(() => { refreshingDepth = false; });
+  };
+  refreshDepth();
+  const depthTimer = setInterval(refreshDepth, queueDepthRefreshMs());
+  depthTimer.unref();
+
   return {
     ready: migrationsAwareReadiness(migrations, pool),
     failure: () => migrations.failure(),
@@ -125,6 +146,7 @@ export async function startNotificationStorage(channelGateway: NotificationChann
     stop: async () => {
       stopping = true;
       clearInterval(retryTimer);
+      clearInterval(depthTimer);
       await retrying;
       await replay.stop();
       await deliveryWorker.stop();
