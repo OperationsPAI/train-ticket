@@ -56,7 +56,7 @@ func TestClaimRejectsUnverifiedDelayFact(t *testing.T) {
 	}
 }
 
-func TestApprovedClaimCanSettleOnce(t *testing.T) {
+func TestApprovedClaimRequiresCompletedPayoutEvidence(t *testing.T) {
 	now := time.Date(2026, 7, 10, 10, 0, 0, 0, time.UTC)
 	policy, err := NewIssuedPolicy(PolicyIssueRequest{PolicyID: "pol-1", Product: publishedDelayProduct(t, now), JourneyOrderID: "jo-1", AncillaryOrderItemID: "anc-1", AccountID: "acct-1", TravelerRef: "trav-1", SegmentRefs: []string{"seg-a"}, PaymentIntentID: "pi-1", CoverageStartAt: now.Add(-time.Minute), CoverageEndAt: now.Add(time.Hour), Now: now})
 	if err != nil {
@@ -70,11 +70,21 @@ func TestApprovedClaimCanSettleOnce(t *testing.T) {
 	if claim.Status != ClaimApproved {
 		t.Fatalf("claim status = %s", claim.Status)
 	}
-	advice, err := claim.Settle("pad-1", PayoutPaymentRefund, "DELAY_60")
+	advice, err := claim.PreparePayout("pad-1", "acct-1", PayoutWalletBenefit, "DELAY_60", "019f4d68-21b9-7929-acd0-27646534d84f", now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if advice.Status != "COMPLETED" || claim.Status != ClaimPaidOut {
+	if advice.Status != "REQUESTED" || claim.Status != ClaimApproved {
 		t.Fatalf("unexpected settlement: %#v %#v", advice, claim)
+	}
+	completed, err := advice.Complete("ben-1", now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := claim.CompletePayout(completed); err != nil {
+		t.Fatal(err)
+	}
+	if completed.Status != "COMPLETED" || completed.ExecutionRef != "ben-1" || claim.Status != ClaimPaidOut {
+		t.Fatalf("unexpected payout completion: %#v %#v", completed, claim)
 	}
 }
