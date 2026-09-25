@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
@@ -30,6 +31,7 @@ public final class AuthoritativeBenefitScopeVerifier implements BenefitScopeVeri
     private final RestClient offers;
     private final RestClient fares;
 
+    @Autowired
     public AuthoritativeBenefitScopeVerifier(
         RestClient.Builder builder,
         @Value("${JOURNEY_ORDER_BASE_URL:http://journey-order:8080}") String journeyOrderBaseUrl,
