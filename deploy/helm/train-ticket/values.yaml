@@ -863,6 +863,7 @@ services:
       PG_MAX_POOL_SIZE: "24"
   offer-management:
     db: offer_management
+    image: mirrors.tencent.com/microservice/offer-management:current-9ef6cbfe@sha256:dc42dd1148a5a61c5c75ff0921bb3dfc048d285862069abb4966dd9045dfbaed
     strategy:
       type: RollingUpdate
       rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
@@ -882,7 +883,7 @@ services:
     env:
       # Reserve database capacity for all service pools and rolling updates.
       PG_MAX_POOL_SIZE: "24"
-      CONSUMER_THREADS: "4"   # 5 streams
+      CONSUMER_BATCH_CONCURRENCY: "4"   # 5 streams
     # 4 consumer threads do not fit in the default 500m CPU limit. Raising
     # CONSUMER_THREADS without raising this caused a CrashLoopBackOff: the
     # threads saturated half a core working through the backlog, the HTTP thread
