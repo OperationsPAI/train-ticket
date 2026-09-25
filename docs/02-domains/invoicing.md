@@ -21,6 +21,8 @@ Invoice creation reads the required context through the same PostgreSQL connecti
 Amount basis reads require an existing order projection, a recorded expected total, and matching currency and minor units in the financial projection.
 Missing or incomplete context returns HTTP 404 for the basis query and HTTP 412 for invoice creation.
 These checks establish projection completeness; an order creation event can also supply a total, so total presence alone is not lifecycle confirmation evidence.
+After a changed journey, the financial projection can combine original fare revenue, multiple fare-difference recognitions and multiple refund reversals across those recognitions. The projection remains incomplete until its net amount equals the latest Journey Order total.
+For `REVENUE_RECOGNITION`, `amountBasisHash` is calculated from sorted recognition IDs, the net total and the complete reversal history keyed by recognition and refund identity. Equivalent business events therefore converge to the same basis across valid arrival orders, new envelope event IDs and process restarts.
 Request identity, title version, invoice scope and financial basis are checked before committing invoice and outbox records.
 Rejected commands do not commit an accepted command result.
 
@@ -40,5 +42,5 @@ The Journey Order stream uses four consumers in one group.
 Per order PostgreSQL locks and event timestamps preserve the latest applicable total under duplicate and out of order delivery.
 Creation facts can complete missing scope references without replacing a subsequent adjustment total.
 
-Recorded tests cover missing context, exact totals, invoice replay, six event orders, concurrent duplicate delivery, independent order progress and compensation preservation.
+Recorded tests cover missing context, exact totals, changed-order mixed payments and repeated refunds, stable basis hashes, invoice replay, six event orders, concurrent duplicate delivery, independent order progress and compensation preservation.
 Deployment and live verification results are in [current status](../00-current-status.md).

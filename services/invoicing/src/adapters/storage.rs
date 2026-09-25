@@ -59,7 +59,7 @@ impl PostgresInvoicingService {
         let ids: Vec<String> = history.recognitions.keys().cloned().collect();
         let basis = AmountBasis { basis_type:"REVENUE_RECOGNITION".into(), revenue_recognition_ids:ids.clone(), finance_invoice_id:None,
             tax_lines:vec![TaxLine { tax_code:"VAT_SIM".into(),tax_rate_basis_points:0,taxable_amount:total.clone(),tax_amount:Money {currency:total.currency.clone(),minor_units:0} }],
-            total_amount:total.clone(),amount_basis_hash:crate::utils::sha256_prefixed(&crate::utils::normalize_json(&json!({"revenueRecognitionIds":ids,"totalAmount":total,"reversals":history.reversals}))) };
+            total_amount:total.clone(),amount_basis_hash:crate::application::revenue_amount_basis_hash(&ids,&total,&history) };
         let projection = crate::application::OrderProjection { account_id: current["accountId"].as_str().ok_or_else(|| internal("order account missing"))?.into(),
             traveler_refs:serde_json::from_value(current["travelerRefs"].clone()).map_err(internal)?,segment_refs:serde_json::from_value(current["segmentRefs"].clone()).map_err(internal)?,expected_total:Some(expected),updated_at:Some(observed_at) };
         for (kind,data) in [("amounts",serde_json::to_value(&basis).map_err(internal)?),("amount_history",serde_json::to_value(history).map_err(internal)?),("orders",serde_json::to_value(projection).map_err(internal)?)] {

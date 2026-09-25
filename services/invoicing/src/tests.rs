@@ -67,6 +67,55 @@ async fn revenue_basis_sums_distinct_items_and_deduplicates_recognition_ids() {
     assert_eq!(basis.tax_lines[0].taxable_amount.minor_units, 10000);
 }
 
+#[tokio::test]
+async fn mixed_revenue_basis_hash_is_independent_of_valid_arrival_order() {
+    let order = "ord-mixed-basis";
+    let first = InMemoryInvoicingService::default();
+    let second = InMemoryInvoicingService::default();
+    for service in [&first, &second] {
+        service.apply_subscribed_event(rust_kit::messaging::EventEnvelope::new(
+            "JourneyOrderPostSalesAdjusted", rust_kit::messaging::now_rfc3339_utc(), corr(), None::<String>, "journey-order",
+            json!({"orderId":order,"accountId":"acc-mixed-basis","segmentRefs":["seg-new"],
+                "monetarySummary":{"total":{"currency":"CNY","minorUnits":11500}}}),
+        )).await.unwrap();
+    }
+    let recognized = |recognition: &str, minor_units: i64| rust_kit::messaging::EventEnvelope::new(
+        "RevenueRecognized", rust_kit::messaging::now_rfc3339_utc(), corr(), None::<String>, "finance-settlement",
+        json!({"orderId":order,"revenueRecognitionId":recognition,
+            "amount":{"currency":"CNY","minorUnits":minor_units}}),
+    );
+    let reversed = |recognition: &str, refund: &str, minor_units: i64| rust_kit::messaging::EventEnvelope::new(
+        "RevenueRecognitionReversed", rust_kit::messaging::now_rfc3339_utc(), corr(), None::<String>, "finance-settlement",
+        json!({"orderId":order,"revenueRecognitionId":recognition,"sourceEventId":refund,
+            "amount":{"currency":"CNY","minorUnits":minor_units}}),
+    );
+    let original = recognized("rr-original", 10000);
+    let change_one = recognized("rr-change-1", 2000);
+    let change_two = recognized("rr-change-2", 3000);
+    let original_refund_one = reversed("rr-original", "rf-original-1", 1000);
+    let original_refund_two = reversed("rr-original", "rf-original-2", 500);
+    let change_refund = reversed("rr-change-1", "rf-change-1", 2000);
+
+    for event in [&original, &change_one, &change_two, &original_refund_one, &original_refund_two, &change_refund] {
+        first.apply_subscribed_event(event.clone()).await.unwrap();
+    }
+    for event in [&original, &original_refund_one, &original_refund_two, &change_one, &change_refund, &change_two] {
+        let mut replay = event.clone();
+        replay.event_id = format!("evt-{}", uuid::Uuid::now_v7());
+        second.apply_subscribed_event(replay).await.unwrap();
+    }
+
+    let first_basis = first.get_amount_basis(order.into()).await.unwrap();
+    let second_basis = second.get_amount_basis(order.into()).await.unwrap();
+    assert_eq!(first_basis, second_basis);
+    assert_eq!(first_basis.total_amount.minor_units, 11500);
+    assert_eq!(first_basis.revenue_recognition_ids, vec!["rr-change-1", "rr-change-2", "rr-original"]);
+    assert_eq!(
+        serde_json::to_value(&first.snapshot().amount_history[order]).unwrap(),
+        serde_json::to_value(&second.snapshot().amount_history[order]).unwrap(),
+    );
+}
+
 async fn project_amount(
     svc: &InMemoryInvoicingService,
     order_id: &str,
