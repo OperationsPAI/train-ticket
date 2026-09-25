@@ -23,6 +23,19 @@ public final class CompensationExecutionService {
     private final String base;
     private final CompensationMismatchStore mismatches;
     private final Clock clock;
+    private com.trainticket.postsales.observability.PostSalesMetricRecorder metrics =
+        com.trainticket.postsales.observability.NoopPostSalesMetrics.INSTANCE;
+
+    /**
+     * Bound by Spring once the observability configuration exists. Tests that
+     * build the service directly keep the no-op recorder.
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setPostSalesMetrics(com.trainticket.postsales.observability.PostSalesMetricRecorder recorder) {
+        if (recorder != null) {
+            this.metrics = recorder;
+        }
+    }
 
     public CompensationExecutionService(PostSalesApplicationService cases,ChangeExecutionGuard guard,RestClient.Builder builder,ObjectMapper mapper,
         CompensationMismatchStore mismatches,Clock clock,
@@ -128,6 +141,9 @@ public final class CompensationExecutionService {
     private void freeze(PostSalesCase current,String correlation,String code,String reason,JsonNode refunds,JsonNode wallet,JsonNode rights){
         String stableCorrelation=correlation==null || correlation.isBlank()?"corr-unknown":correlation;
         Money approved=current.decision().amountSnapshot().refundAmount();
+        // A frozen compensation is a rejected outcome, not money that moved.
+        metrics.compensation(com.trainticket.postsales.observability.PostSalesMetricLabels.Outcome.REJECTED,
+            approved.currency().getCurrencyCode());
         var checkpoint=new CompensationMismatchCheckpoint(current.caseId(),current.journeyOrderId(),current.status().name(),code,reason,
             approved.currency().getCurrencyCode(),approved.toMinorUnits(),refunds.deepCopy(),wallet.deepCopy(),rights.deepCopy(),
             mapper.valueToTree(current.compensationOperations()),stableCorrelation,clock.instant());

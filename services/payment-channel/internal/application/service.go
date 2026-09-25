@@ -11,6 +11,7 @@ import (
 
 	kitmsg "github.com/trainticket/greenfield/platform/go-kit/messaging"
 	"github.com/trainticket/greenfield/services/payment-channel/internal/domain"
+	"github.com/trainticket/greenfield/services/payment-channel/internal/metrics"
 )
 
 type DomainError struct{ Code, Message string }
@@ -51,13 +52,25 @@ type Service struct {
 	repo      Repository
 	publisher Publisher
 	tx        UnitOfWork
+	metrics   metrics.Recorder
 }
 
+// New builds a service that drops business metrics, which keeps the many tests
+// and the no-metrics path free of an OpenTelemetry meter.
 func New(repo Repository, p Publisher, tx UnitOfWork) *Service {
+	return NewWithMetrics(repo, p, tx, metrics.Noop{})
+}
+
+// NewWithMetrics builds a service that publishes the channel's bounded
+// operation and amount counters.
+func NewWithMetrics(repo Repository, p Publisher, tx UnitOfWork, recorder metrics.Recorder) *Service {
 	if tx == nil {
 		tx = func(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) }
 	}
-	return &Service{repo: repo, publisher: p, tx: tx}
+	if recorder == nil {
+		recorder = metrics.Noop{}
+	}
+	return &Service{repo: repo, publisher: p, tx: tx, metrics: recorder}
 }
 
 type StatementFilter struct {
@@ -125,6 +138,7 @@ func (s *Service) SubmitOrder(ctx context.Context, id string, expected int64, fp
 	if err != nil {
 		return nil, derr("NOT_FOUND", "channel order not found")
 	}
+	before := o.Status
 	old := o.Version
 	if err := o.Submit(expected, fp, time.Now().UTC()); err != nil {
 		return nil, mapRule(err)
@@ -138,6 +152,7 @@ func (s *Service) SubmitOrder(ctx context.Context, id string, expected int64, fp
 	if err != nil {
 		return nil, err
 	}
+	s.recordOrderOutcome(ctx, o, before)
 	return o, nil
 }
 func (s *Service) QueryOrder(ctx context.Context, id string, expected int64, reason string) (*domain.ChannelOrder, error) {
@@ -145,6 +160,7 @@ func (s *Service) QueryOrder(ctx context.Context, id string, expected int64, rea
 	if err != nil {
 		return nil, derr("NOT_FOUND", "channel order not found")
 	}
+	before := o.Status
 	old := o.Version
 	if err := o.Query(expected, reason, time.Now().UTC()); err != nil {
 		return nil, mapRule(err)
@@ -158,6 +174,7 @@ func (s *Service) QueryOrder(ctx context.Context, id string, expected int64, rea
 	if err != nil {
 		return nil, err
 	}
+	s.recordOrderOutcome(ctx, o, before)
 	return o, nil
 }
 func (s *Service) GetOrder(ctx context.Context, id string) (*domain.ChannelOrder, error) {
@@ -231,6 +248,7 @@ func (s *Service) CreateRefund(ctx context.Context, r CreateRefundRequest) (*dom
 }
 func (s *Service) SubmitRefund(ctx context.Context, id string, expected int64, fp string) (*domain.ChannelRefund, error) {
 	var r *domain.ChannelRefund
+	before := ""
 	err := s.tx(ctx, func(tx context.Context) error {
 		var err error
 		r, err = s.repo.GetRefund(tx, id)
@@ -238,6 +256,7 @@ func (s *Service) SubmitRefund(ctx context.Context, id string, expected int64, f
 			return derr("NOT_FOUND", "channel refund not found")
 		}
 		terminal := domain.IsTerminal(r.Status)
+		before = r.Status
 		old := r.Version
 		if err := r.Submit(expected, fp, time.Now().UTC()); err != nil {
 			return mapRule(err)
@@ -253,6 +272,7 @@ func (s *Service) SubmitRefund(ctx context.Context, id string, expected int64, f
 	if err != nil {
 		return nil, err
 	}
+	s.recordRefundOutcome(ctx, r, before)
 	return r, nil
 }
 func (s *Service) QueryRefund(ctx context.Context, id string, expected int64, reason string) (*domain.ChannelRefund, error) {
@@ -260,6 +280,7 @@ func (s *Service) QueryRefund(ctx context.Context, id string, expected int64, re
 	if err != nil {
 		return nil, derr("NOT_FOUND", "channel refund not found")
 	}
+	before := r.Status
 	old := r.Version
 	if err := r.Query(expected, reason, time.Now().UTC()); err != nil {
 		return nil, mapRule(err)
@@ -273,6 +294,7 @@ func (s *Service) QueryRefund(ctx context.Context, id string, expected int64, re
 	if err != nil {
 		return nil, err
 	}
+	s.recordRefundOutcome(ctx, r, before)
 	return r, nil
 }
 func (s *Service) GetRefund(ctx context.Context, id string) (*domain.ChannelRefund, error) {
@@ -631,6 +653,43 @@ func (s *Service) publish(ctx context.Context, evs []domain.Event) error {
 	}
 	return nil
 }
+
+// recordOrderOutcome reports the capture movement a submission or query
+// actually produced. Re-reading an already-terminal order changes nothing, so
+// it records nothing and cannot inflate the counter.
+func (s *Service) recordOrderOutcome(ctx context.Context, order *domain.ChannelOrder, before string) {
+	if order.Status == before {
+		return
+	}
+	switch order.Status {
+	case domain.StatusSucceeded:
+		s.record(ctx, metrics.OperationCapture, metrics.OutcomeSucceeded, order.Amount, order.Channel)
+	case domain.StatusFailed:
+		s.record(ctx, metrics.OperationCapture, metrics.OutcomeFailed, order.Amount, order.Channel)
+	case domain.StatusMissed:
+		s.record(ctx, metrics.OperationCapture, metrics.OutcomeMissed, order.Amount, order.Channel)
+	}
+}
+
+func (s *Service) recordRefundOutcome(ctx context.Context, refund *domain.ChannelRefund, before string) {
+	if refund.Status == before {
+		return
+	}
+	switch refund.Status {
+	case domain.StatusSucceeded:
+		s.record(ctx, metrics.OperationRefund, metrics.OutcomeSucceeded, refund.Amount, refund.Channel)
+	case domain.StatusFailed:
+		s.record(ctx, metrics.OperationRefund, metrics.OutcomeFailed, refund.Amount, refund.Channel)
+	case domain.StatusMissed:
+		s.record(ctx, metrics.OperationRefund, metrics.OutcomeMissed, refund.Amount, refund.Channel)
+	}
+}
+
+func (s *Service) record(ctx context.Context, operation metrics.Operation, outcome metrics.Outcome, amount domain.Money, channel string) {
+	s.metrics.Operation(ctx, operation, outcome, amount.Currency, channel)
+	s.metrics.Amount(ctx, operation, outcome, amount.Currency, channel, amount.MinorUnits)
+}
+
 func mapRule(err error) error {
 	if err == nil {
 		return nil
