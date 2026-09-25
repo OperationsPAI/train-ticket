@@ -475,6 +475,10 @@ async fn request_context_handler(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContractError {
     EmptyId { kind: &'static str },
+    InvalidIdPrefix {
+        kind: &'static str,
+        expected: &'static str,
+    },
     InvalidCurrencyCode(String),
     InvalidTimeWindow,
     EmptyEventType,
@@ -485,6 +489,9 @@ impl fmt::Display for ContractError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyId { kind } => write!(f, "{kind} must not be empty"),
+            Self::InvalidIdPrefix { kind, expected } => {
+                write!(f, "{kind} must use {expected} prefix")
+            }
             Self::InvalidCurrencyCode(code) => {
                 write!(
                     f,
@@ -501,16 +508,29 @@ impl fmt::Display for ContractError {
 impl std::error::Error for ContractError {}
 
 macro_rules! id_type {
-    ($name:ident) => {
+    ($name:ident, $expected:literal, [$($prefix:literal),+ $(,)?]) => {
         #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
         pub struct $name(String);
 
         impl $name {
             pub fn new(value: impl Into<String>) -> Result<Self, ContractError> {
                 let value = value.into();
-                if value.trim().is_empty() {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
                     return Err(ContractError::EmptyId {
                         kind: stringify!($name),
+                    });
+                }
+                let valid = value == trimmed
+                    && [$($prefix),+].iter().any(|prefix| {
+                        value
+                            .strip_prefix(prefix)
+                            .is_some_and(|suffix| !suffix.is_empty())
+                    });
+                if !valid {
+                    return Err(ContractError::InvalidIdPrefix {
+                        kind: stringify!($name),
+                        expected: $expected,
                     });
                 }
                 Ok(Self(value))
@@ -545,12 +565,12 @@ macro_rules! id_type {
     };
 }
 
-id_type!(PlaceRef);
-id_type!(TravelerRef);
-id_type!(SegmentRef);
-id_type!(EventId);
-id_type!(CausationId);
-id_type!(CorrelationId);
+id_type!(PlaceRef, "plc-", ["plc-"]);
+id_type!(TravelerRef, "tvl-", ["tvl-"]);
+id_type!(SegmentRef, "seg-", ["seg-"]);
+id_type!(EventId, "evt-", ["evt-"]);
+id_type!(CausationId, "cmd- or evt-", ["cmd-", "evt-"]);
+id_type!(CorrelationId, "corr-", ["corr-"]);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CurrencyCode(String);
@@ -833,14 +853,36 @@ mod tests {
     }
 
     #[test]
-    fn id_refs_reject_blank_values() {
+    fn shared_reference_wrappers_enforce_their_prefixes() {
         assert_eq!(
             TravelerRef::new("   ").unwrap_err(),
             ContractError::EmptyId {
                 kind: "TravelerRef"
             }
         );
+        assert_eq!(PlaceRef::new("plc-beijing").unwrap().as_str(), "plc-beijing");
+        assert_eq!(TravelerRef::new("tvl-123").unwrap().as_str(), "tvl-123");
         assert_eq!(SegmentRef::new("seg-123").unwrap().as_str(), "seg-123");
+        assert_eq!(
+            SegmentRef::new("segment-123").unwrap_err(),
+            ContractError::InvalidIdPrefix {
+                kind: "SegmentRef",
+                expected: "seg-"
+            }
+        );
+        assert!(TravelerRef::new("tvl-").is_err());
+        assert!(PlaceRef::new(" plc-beijing").is_err());
+    }
+
+    #[test]
+    fn envelope_reference_wrappers_enforce_their_prefixes() {
+        assert!(EventId::new("evt-1").is_ok());
+        assert!(CorrelationId::new("corr-1").is_ok());
+        assert!(CausationId::new("cmd-1").is_ok());
+        assert!(CausationId::new("evt-1").is_ok());
+        assert!(EventId::new("cmd-1").is_err());
+        assert!(CorrelationId::new("evt-1").is_err());
+        assert!(CausationId::new("corr-1").is_err());
     }
 
     #[test]
