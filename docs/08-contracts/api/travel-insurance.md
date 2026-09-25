@@ -53,6 +53,8 @@ The default target is `WALLET_BENEFIT`. The operation:
 
 A timeout, non-2xx response, malformed response or mismatched read-back returns HTTP 503 `UNAVAILABLE`. The claim remains `APPROVED` and its advice remains `REQUESTED`. Retrying reuses the same advice, Wallet idempotency key and issuance identity. HTTP success is not accepted as proof without the read-back verification.
 
+After a successful itinerary change, Travel Insurance consumes `JourneyOrderPostSalesAdjusted`, reads the applied Post Sales case and the current Journey Order through their owning APIs, and moves each affected still-issued policy to the replacement segment and departure/arrival window. The event's segment list must contain the replacement segment; the account and traveler scope must match. Replays are no-ops.
+
 ### PayoutAdvice response
 
 | Field | Type | Description |

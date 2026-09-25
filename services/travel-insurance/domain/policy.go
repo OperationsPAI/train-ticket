@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -160,11 +161,25 @@ func (p *Policy) CancelForRefund() (Money, error) {
 }
 
 func (p *Policy) AdjustCoverage(start, end time.Time) error {
+	return p.AdjustJourney(p.SegmentRefs, start, end)
+}
+
+func (p *Policy) AdjustJourney(segmentRefs []string, start, end time.Time) error {
 	if p.Status != PolicyIssued {
 		return fmt.Errorf("policy coverage cannot be adjusted from %s", p.Status)
 	}
-	p.CoverageStartAt = start.UTC()
-	p.CoverageEndAt = end.UTC()
+	refs := normalizeRefs(segmentRefs)
+	if len(refs) == 0 {
+		return fmt.Errorf("at least one segment ref is required")
+	}
+	start = start.UTC()
+	end = end.UTC()
+	if p.CoverageStartAt.Equal(start) && p.CoverageEndAt.Equal(end) && slices.Equal(p.SegmentRefs, refs) {
+		return nil
+	}
+	p.SegmentRefs = refs
+	p.CoverageStartAt = start
+	p.CoverageEndAt = end
 	p.AggregateVersion++
 	return p.Validate()
 }
