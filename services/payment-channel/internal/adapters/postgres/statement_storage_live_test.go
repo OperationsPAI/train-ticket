@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -198,6 +199,60 @@ func TestLiveConcurrentStatementGenerationReplaysOneIdentity(t *testing.T) {
 	changed.ScenarioCodes = nil
 	if _, err := service.GenerateStatement(ctx, changed); err == nil || err.Error() != "DOMAIN_RULE_VIOLATION: statement identity was reused with different generation scenarios" {
 		t.Fatalf("changed generation replay was accepted: %v", err)
+	}
+}
+
+func TestLiveStatementGenerationUsesOneDatabaseSnapshotAcrossPages(t *testing.T) {
+	pool := newStatementTestPool(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	seedStatementFacts(t, ctx, pool, 6000, 0)
+	transactor := NewTransactor(pool)
+	repository := NewRepository(transactor)
+
+	transactionStarted := make(chan struct{})
+	inserted := make(chan error, 1)
+	go func() {
+		<-transactionStarted
+		_, insertErr := pool.Exec(ctx, `INSERT INTO channel_order_snapshots (id, version, data) VALUES (
+			'cho-000000005500a', 1, jsonb_build_object(
+				'channelOrderId', 'cho-000000005500a', 'paymentIntentId', 'pi-concurrent',
+				'businessRef', 'ord-concurrent', 'purpose', 'purchase', 'channel', 'ALIPAY_SIM',
+				'amount', jsonb_build_object('currency', 'CNY', 'minorUnits', 1250),
+				'status', 'SUCCEEDED', 'idempotencyKey', 'idem-concurrent',
+				'requestFingerprint', 'fp-concurrent', 'sourceCommandId', 'cmd-source',
+				'correlationId', 'corr-source', 'channelTransactionId', 'ctx-concurrent',
+				'acceptedAt', '2026-09-24T12:00:00Z', 'completedAt', '2026-09-24T12:00:00Z',
+				'attempts', '[]'::jsonb, 'createdAt', '2026-09-24T12:00:00Z',
+				'updatedAt', '2026-09-24T12:00:00Z', 'version', 1
+			)
+		)`)
+		inserted <- insertErr
+	}()
+	err := transactor.Within(ctx, func(tx context.Context) error {
+		statement, err := repository.ClaimStatementForGeneration(tx, domain.ChannelAlipay, "2026-09-24", "CNY", "snapshot-v1", "chs-snapshot")
+		if err != nil || statement != nil {
+			return fmt.Errorf("claim statement: statement=%+v err=%w", statement, err)
+		}
+		first, err := repository.ListPaymentFactsForStatement(tx, domain.ChannelAlipay, "2026-09-24", "CNY", "", 5000, time.Date(2026, time.September, 25, 0, 0, 0, 0, time.UTC))
+		if err != nil || len(first) != 5000 {
+			return fmt.Errorf("first page: count=%d err=%w", len(first), err)
+		}
+		close(transactionStarted)
+		if insertErr := <-inserted; insertErr != nil {
+			return insertErr
+		}
+		second, err := repository.ListPaymentFactsForStatement(tx, domain.ChannelAlipay, "2026-09-24", "CNY", first[len(first)-1].ChannelOrderID, 5000, time.Date(2026, time.September, 25, 0, 0, 0, 0, time.UTC))
+		if err != nil {
+			return err
+		}
+		if len(second) != 1000 {
+			return fmt.Errorf("repeatable-read page observed concurrent fact: count=%d want 1000", len(second))
+		}
+		return errors.New("rollback snapshot fixture")
+	})
+	if err == nil || err.Error() != "rollback snapshot fixture" {
+		t.Fatalf("snapshot transaction failed unexpectedly: %v", err)
 	}
 }
 
