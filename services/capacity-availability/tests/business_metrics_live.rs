@@ -9,7 +9,7 @@
 //! `TEST_DATABASE_URL` plus `cargo test -- --ignored`.
 
 use capacity_availability::adapters::storage::PostgresCapacityService;
-use capacity_availability::metrics::{CapacityUnitState, CapacityBusinessMetrics};
+use capacity_availability::metrics::{CapacityBusinessMetrics, CapacityUnitState};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::str::FromStr;
 
@@ -35,7 +35,12 @@ fn pool_document(segment_ref: &str, holds: serde_json::Value) -> serde_json::Val
     })
 }
 
-fn hold_document(hold_id: &str, state: &str, requested_at: u64, expires_at: u64) -> serde_json::Value {
+fn hold_document(
+    hold_id: &str,
+    state: &str,
+    requested_at: u64,
+    expires_at: u64,
+) -> serde_json::Value {
     serde_json::json!({
         "holdId": hold_id,
         "inventoryPoolId": "pool:seg-live-1:SECOND_CLASS",
@@ -69,7 +74,10 @@ async fn a_second_instance_publishes_the_same_level_from_the_durable_document() 
         .connect(&url)
         .await
         .expect("connect");
-    let schema = format!("capacity_business_metrics_{}", uuid::Uuid::now_v7().simple());
+    let schema = format!(
+        "capacity_business_metrics_{}",
+        uuid::Uuid::now_v7().simple()
+    );
     sqlx::query(&format!("CREATE SCHEMA {schema}"))
         .execute(&admin)
         .await
@@ -97,7 +105,12 @@ async fn a_second_instance_publishes_the_same_level_from_the_durable_document() 
         "seg-live-1",
         serde_json::json!([
             hold_document("hold-live-held", "Held", now - 60_000, now + 240_000),
-            hold_document("hold-live-confirmed", "Confirmed", now - 120_000, now + 180_000),
+            hold_document(
+                "hold-live-confirmed",
+                "Confirmed",
+                now - 120_000,
+                now + 180_000
+            ),
         ]),
     );
     sqlx::query("INSERT INTO inventory_pool_snapshots(id, version, data) VALUES ($1, $2, $3)")
@@ -125,7 +138,10 @@ async fn a_second_instance_publishes_the_same_level_from_the_durable_document() 
     // milliseconds older rather than different.
     assert_eq!(published.hold_age.len(), republished.hold_age.len());
     for (before, after) in published.hold_age.iter().zip(republished.hold_age.iter()) {
-        assert_eq!((before.state, before.travel_class), (after.state, after.travel_class));
+        assert_eq!(
+            (before.state, before.travel_class),
+            (after.state, after.travel_class)
+        );
         assert!(
             (before.seconds - after.seconds).abs() < 5.0,
             "a restart changed the hold age: {before:?} vs {after:?}"

@@ -127,7 +127,7 @@ async fn deployed_reservation_resolves_actual_offer_date_and_physical_supply() {
             )
             .unwrap(),
         0
-        );
+    );
 }
 
 /**

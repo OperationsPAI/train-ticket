@@ -754,6 +754,13 @@ services:
     # Two replicas: every reservation takes a Hold here, and the pool locks are
     # database advisory locks, so replicas coordinate through PostgreSQL.
     replicas: 2
+    env:
+      # The capacity levels are folded from every pool document, holds inline.
+      # Measured on this cluster: seven hundred thousand documents, about five
+      # seconds of database work per rebuild. Five minutes is a fraction of a
+      # percent of the shard's capacity and far finer than the levels are read
+      # at; the earlier one-minute cadence was set before that read existed.
+      CAPACITY_METRICS_REFRESH_MS: "300000"
     strategy:
       type: RollingUpdate
       rollingUpdate:

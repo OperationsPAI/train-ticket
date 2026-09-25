@@ -124,9 +124,17 @@ pub mod redis_subscriber {
         pub async fn new(redis_url: &str) -> Result<Self, rust_kit::messaging::SubscribeFailed> {
             Ok(Self {
                 inner: rust_kit::messaging::redis_runtime::RedisEventSubscriber::new(redis_url)?
-                    .with_event_filter(|event| matches!(event.event_type.as_str(),
-                        "SegmentReservationRequested" | "SegmentReservationConfirmed" | "SegmentBookingCancelled"
-                        | "SegmentTicketed" | "PostSalesApplied" | "EntitlementVoided")),
+                    .with_event_filter(|event| {
+                        matches!(
+                            event.event_type.as_str(),
+                            "SegmentReservationRequested"
+                                | "SegmentReservationConfirmed"
+                                | "SegmentBookingCancelled"
+                                | "SegmentTicketed"
+                                | "PostSalesApplied"
+                                | "EntitlementVoided"
+                        )
+                    }),
             })
         }
 
