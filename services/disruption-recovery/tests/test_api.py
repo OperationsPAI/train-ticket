@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from disruption_recovery import create_app
 from disruption_recovery.application.service import InMemoryStore
+from disruption_recovery.downstream import DownstreamError
 import re as _re
 
 
@@ -273,3 +274,73 @@ def test_probes_do_not_queue_behind_the_recovery_operations() -> None:
                 f"blocking work onto the event loop"
             )
     assert seen == probes, f"probe routes missing from the app: {probes - seen}"
+
+
+def test_a_downstream_refusal_keeps_its_own_status() -> None:
+    """A conflict is not an outage.
+
+    Selecting a refund for an order that already has one in progress is refused
+    by Post Sales on business grounds. Reporting that as 503 UNAVAILABLE told the
+    load generator an outage had happened, and the journey was recorded as a
+    failure the user would have complained about.
+    """
+
+    class ConflictDownstream:
+        def open_refund_case(self, *_args, **_kwargs):
+            raise DownstreamError(
+                "A refund or change case is already in progress for this order",
+                "REFUND_ALREADY_IN_PROGRESS",
+                409,
+            )
+
+        def __getattr__(self, name):  # any other call fails the same way
+            raise DownstreamError(
+                "A refund or change case is already in progress for this order",
+                "REFUND_ALREADY_IN_PROGRESS",
+                409,
+            )
+
+    store = InMemoryStore()
+    app = create_app(store=store)
+    client = TestClient(app)
+    created = client.post(
+        "/api/v1/disruptions", json=report_body(), headers={"Idempotency-Key": "0194f2e0-7b3e-7610-8000-000000000120"}
+    ).json()
+    case = created["recoveryCases"][0]
+    option_id = next(o["optionId"] for o in case["optionSet"]["options"] if o["optionType"] == "REFUND")
+    app.state.disruption_recovery_service.downstream = ConflictDownstream()
+
+    response = client.post(
+        f"/api/v1/recovery-cases/{case['caseId']}/select-option",
+        json={"optionId": option_id, "selectedBy": {"actorType": "USER", "actorId": "acc-1"}},
+        headers={"Idempotency-Key": "0194f2e0-7b3e-7610-8000-000000000121"},
+    )
+
+    assert response.status_code != 503, response.text
+    body = response.json()
+    assert body["code"] == "CONFLICT"
+    assert body["details"]["domainCode"] == "REFUND_ALREADY_IN_PROGRESS"
+
+
+def test_an_unreachable_downstream_is_still_unavailable() -> None:
+    class UnreachableDownstream:
+        def __getattr__(self, name):
+            raise DownstreamError("post-sales unavailable: connection refused")
+
+    app = create_app(store=InMemoryStore())
+    client = TestClient(app)
+    created = client.post(
+        "/api/v1/disruptions", json=report_body(), headers={"Idempotency-Key": "0194f2e0-7b3e-7610-8000-000000000122"}
+    ).json()
+    case = created["recoveryCases"][0]
+    option_id = next(o["optionId"] for o in case["optionSet"]["options"] if o["optionType"] == "REFUND")
+    app.state.disruption_recovery_service.downstream = UnreachableDownstream()
+
+    response = client.post(
+        f"/api/v1/recovery-cases/{case['caseId']}/select-option",
+        json={"optionId": option_id, "selectedBy": {"actorType": "USER", "actorId": "acc-1"}},
+        headers={"Idempotency-Key": "0194f2e0-7b3e-7610-8000-000000000123"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["code"] == "UNAVAILABLE"
