@@ -6,6 +6,7 @@ from enum import Enum
 from datetime import UTC, datetime
 import json
 from collections import OrderedDict, deque
+import inspect
 import logging
 import os
 import socket
@@ -565,9 +566,56 @@ class RedisEventSubscriber(EventSubscriber):
         self._process_message(stream, group, actual_consumer_name, entry_id, fields, handler)
 
 
+def handler_accepts_stream(handler: Callable[..., Any]) -> bool:
+    """Whether this handler declared a second parameter for its stream.
+
+    The subscriber already knows which stream an entry arrived on, and the
+    audit row a handler writes wants it: `processed_events.stream` is the only
+    record of which stream an event was consumed from, and the outbox writes
+    the same value from the publishing side. A handler that only declares the
+    envelope keeps the old single-argument contract, so this is opt-in and no
+    existing service has to change to stay correct.
+
+    Resolved once per handler and memoised, because it is consulted for every
+    delivered message and `inspect.signature` is not cheap enough to call
+    there. The handler itself is retained as the memo key's companion so an id
+    cannot be reused by a different handler after the first is collected.
+    """
+    key = id(handler)
+    cached = _HANDLER_STREAM_ARITY.get(key)
+    if cached is not None and cached[0] is handler:
+        return cached[1]
+    arity = _handler_declares_stream(handler)
+    _HANDLER_STREAM_ARITY[key] = (handler, arity)
+    return arity
+
+
+_HANDLER_STREAM_ARITY: dict[int, tuple[Any, bool]] = {}
+
+
+def _handler_declares_stream(handler: Callable[..., Any]) -> bool:
+    try:
+        signature = inspect.signature(handler)
+    except (TypeError, ValueError):
+        return False
+    positional = 0
+    for parameter in signature.parameters.values():
+        if parameter.kind is inspect.Parameter.VAR_POSITIONAL:
+            return True
+        if parameter.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD):
+            positional += 1
+    return positional >= 2
+
+
+def _invoke_handler(handler: Callable[..., Any], envelope: EventEnvelope, stream: str) -> Any:
+    if handler_accepts_stream(handler):
+        return handler(envelope, stream)
+    return handler(envelope)
+
+
 def _call_handler_with_span(handler: Callable[[EventEnvelope], Any], envelope: EventEnvelope, stream: str, group: str) -> Any:
     if not otel_tracing_enabled():
-        return handler(envelope)
+        return _invoke_handler(handler, envelope, stream)
     from opentelemetry import context, trace
     from opentelemetry.trace import SpanKind, Status, StatusCode
 
@@ -586,7 +634,7 @@ def _call_handler_with_span(handler: Callable[[EventEnvelope], Any], envelope: E
     parent_context = _remote_parent_context(envelope)
     with trace.get_tracer(__name__).start_as_current_span(span_name, context=parent_context or context.get_current(), kind=SpanKind.CONSUMER, attributes=attributes) as span:
         try:
-            result = handler(envelope)
+            result = _invoke_handler(handler, envelope, stream)
         except Exception as exc:
             span.record_exception(exc)
             span.set_status(Status(StatusCode.ERROR, exc.__class__.__name__))
@@ -664,6 +712,8 @@ class InMemoryEventSubscriber(EventSubscriber):
         for envelope in self.envelopes:
             if envelope.eventId in self.seen_event_ids:
                 continue
+            # The in-memory transport has no stream key, so it keeps its own
+            # name here rather than pretending to be a Redis stream.
             result = _call_handler_with_span(handler, envelope, "in-memory", "in-memory")
             if not isinstance(result, HandlerResult) or result.status is HandlerStatus.SUCCESS:
                 self.seen_event_ids.add(envelope.eventId)
