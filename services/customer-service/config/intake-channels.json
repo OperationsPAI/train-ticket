@@ -1,0 +1,3 @@
+{
+  "channels": ["APP", "WEB", "PHONE", "IM", "EMAIL", "IN_APP_MESSAGE", "BOT", "OPERATOR_CONSOLE"]
+}

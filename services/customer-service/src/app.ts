@@ -32,6 +32,7 @@ import {
   type RequestContext,
   type SchemaDetail,
 } from "@trainticket/ts-kit";
+import { intakeChannels } from "./intake-rules.js";
 import { serviceProfile } from "./profile.js";
 
 export type HealthStatus = Readonly<{
@@ -106,7 +107,7 @@ type OTelTracer = Readonly<{
   startSpan: (name: string, options?: Record<string, unknown>) => OTelSpan;
 }>;
 
-const channels = ["APP", "WEB", "PHONE", "IM", "EMAIL", "IN_APP_MESSAGE", "BOT", "OPERATOR_CONSOLE"] as const;
+const channels = intakeChannels();
 const priorities = ["LOW", "NORMAL", "HIGH", "URGENT"] as const;
 const customerTiers = ["STANDARD", "SILVER", "GOLD", "PLATINUM", "DIAMOND"] as const;
 const escalationLevels = ["L1_AGENT", "L2_SPECIALIST", "L3_SUPERVISOR"] as const;
