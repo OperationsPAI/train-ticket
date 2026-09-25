@@ -25,6 +25,9 @@ public final class GlobalOpenTelemetryRegistrar implements SmartLifecycle {
         } catch (IllegalStateException ignored) {
             // Another application context in the same JVM already registered OpenTelemetry.
         }
+        // Components created during bean construction use this handle rather than calling
+        // GlobalOpenTelemetry.get() too early and permanently installing the no-op global.
+        ProcessOpenTelemetry.register(sdk);
         running = true;
     }
 
