@@ -853,6 +853,13 @@ services:
   trip-planning:
     db: trip_planning
     image: mirrors.tencent.com/microservice/trip-planning:ondemand-9ef6cbfe@sha256:53c48894c077ee4ab76a549ed2ce0a188ede914bb71268f58bfd7fa324c78cc5
+    # Three replicas: one served 60 to 270 searches a second with its own
+    # metrics reporting success while the load generator recorded fourteen
+    # thousand client timeouts in the same window -- requests that never reached
+    # a handler, because one pod's accept queue is the ceiling. The service is
+    # stateless: its subscriber shares a consumer group and its outbox relay
+    # claims work with SKIP LOCKED.
+    replicas: 3
     strategy:
       type: RollingUpdate
       rollingUpdate:
