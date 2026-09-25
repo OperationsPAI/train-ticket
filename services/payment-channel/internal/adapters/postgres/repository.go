@@ -76,7 +76,38 @@ func (r *Repository) UpdateRefund(ctx context.Context, o *domain.ChannelRefund, 
 	return conflict(r.update(ctx, "channel_refund_snapshots", o.ChannelRefundID, e, o))
 }
 func (r *Repository) GetRefund(ctx context.Context, id string) (*domain.ChannelRefund, error) {
+	if _, inTransaction := ctx.Value(txKey{}).(storage.DBTX); inTransaction {
+		var locked string
+		if err := r.tx.DBFor(ctx).QueryRow(ctx, "SELECT id FROM channel_refund_snapshots WHERE id=$1 FOR UPDATE", id).Scan(&locked); err != nil {
+			return nil, err
+		}
+	}
 	return get[domain.ChannelRefund](ctx, r.snap(ctx, "channel_refund_snapshots"), id)
+}
+func (r *Repository) FindRefundForOrder(ctx context.Context, orderID, refundID string) (*domain.ChannelRefund, error) {
+	rows, err := r.tx.DBFor(ctx).Query(ctx, `SELECT data FROM channel_refund_snapshots WHERE data->>'channelOrderId'=$1 AND data->>'refundId'=$2 ORDER BY id LIMIT 2`, orderID, refundID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var found *domain.ChannelRefund
+	for rows.Next() {
+		if found != nil {
+			return nil, fmt.Errorf("multiple channel refunds share business refund identity")
+		}
+		var raw json.RawMessage
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		found, err = decode[domain.ChannelRefund](raw)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return found, nil
 }
 func (r *Repository) SaveStatement(ctx context.Context, o *domain.ChannelStatement) error {
 	return conflict(r.save(ctx, "channel_statement_snapshots", o.ChannelStatementID, o))
