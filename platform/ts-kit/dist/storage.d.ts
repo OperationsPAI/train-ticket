@@ -195,6 +195,7 @@ export type OutboxRelayOptions = Readonly<{
     pollIntervalMs?: number;
     batchSize?: number;
     streamMaxLen?: number;
+    processedEventRetentionMs?: number;
     onFailure?: (error: unknown) => void;
     /** Name used for the liveness component; defaults to "outbox-relay". */
     name?: string;
@@ -223,6 +224,7 @@ export declare class OutboxRelay {
     private run;
     private cleanup;
     private sweep;
+    private processedEventRetentionMs;
 }
 export type ProcessedEventInput = Readonly<{
     eventId: string;

@@ -21,6 +21,7 @@ import {
   connectRedisWithRetry,
   createPostgresPool,
   createRedisClient,
+  eventReplayRetentionMs,
   migrationsAwareReadiness,
   redisClientLiveness,
   startMigrations,
@@ -291,7 +292,7 @@ export async function startLoyaltyStorage(pool: Pool = createPostgresPool()): Pr
   await connectRedisWithRetry(redis, "loyalty-membership-outbox");
   const repository = new PostgresMemberRepository(pool);
   const publisher = new TransactionalOutboxPublisher(new OutboxAppender(pool));
-  const relay = new OutboxRelay(pool, redis, { name: "loyalty-membership-outbox-relay", onFailure: (error: unknown) => console.warn({ service: "loyalty-membership", dependency: "outbox", errorName: error instanceof Error ? error.name : "UnknownError" }) });
+  const relay = new OutboxRelay(pool, redis, { name: "loyalty-membership-outbox-relay", processedEventRetentionMs: eventReplayRetentionMs(), onFailure: (error: unknown) => console.warn({ service: "loyalty-membership", dependency: "outbox", errorName: error instanceof Error ? error.name : "UnknownError" }) });
   relay.start();
   const idempotencyStore = new PostgresIdempotencyStore(pool);
   const deadLetterEvidenceSink = new PostgresDeadLetterEvidenceStore(pool);
