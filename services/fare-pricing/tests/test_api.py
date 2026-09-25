@@ -23,13 +23,14 @@ from fare_pricing import (
     calculate_fare_quote,
 )
 from fare_pricing.api import create_app
-from fare_pricing.adapters.messaging.handlers import handle_identity_verification_event
+from fare_pricing.adapters.messaging.handlers import handle_capacity_snapshot_updated, handle_identity_verification_event
 from fare_pricing.application import deterministic_rule_set_event_id
 from fare_pricing.ids import uuid7
-from fare_pricing.application.service import InMemoryStore
+from fare_pricing.application.service import FarePricingService, InMemoryStore
 from fare_pricing.ports import EventEnvelope
 from fare_pricing.ports.messaging import PublishFailed
 from fare_pricing.adapters.messaging.fake import FakeEventPublisher, FakeEventSubscriber
+from train_ticket_platform.messaging import FatalHandlerError
 
 # The HTTP API resolves rule sets against the real wall clock
 # (FarePricingService.find_published_rule_set_id defaults `at` to datetime.now).
@@ -959,6 +960,46 @@ class FarePricingMessagingTest(unittest.TestCase):
         # eligibility discount is asserted in isolation:
         # base 100.00 + tax 7.50 + fee 5.00 - member 12.50 - student 20.00 = 80.00
         self.assertEqual(quote_resp.json()["breakdown"]["total"], {"currency": "CNY", "minorUnits": 8000})
+
+    def test_capacity_event_replay_is_deduplicated_and_changed_content_is_rejected(self) -> None:
+        store = InMemoryStore()
+        service = FarePricingService(store)
+        payload = {
+            "segmentRef": "seg-capacity-dedup",
+            "departureDate": (NOW + timedelta(days=3)).date().isoformat(),
+            "totalCapacity": 100,
+            "remainingCapacity": 40,
+            "snapshotVersion": 7,
+        }
+        event = EventEnvelope(
+            event_id="evt-capacity-dedup",
+            event_type="CapacitySnapshotUpdated",
+            producer="capacity-availability",
+            correlation_id="corr-capacity-dedup",
+            occurred_at=NOW,
+            payload=payload,
+        )
+
+        handle_capacity_snapshot_updated(service, event)
+        handle_capacity_snapshot_updated(service, event)
+
+        self.assertEqual(store.processed_events, {event.eventId})
+        self.assertEqual(len(store.capacity_snapshots), 1)
+        self.assertEqual(next(iter(store.capacity_snapshots.values())).remaining_capacity, 40)
+
+        changed = EventEnvelope(
+            event_id=event.eventId,
+            event_type=event.eventType,
+            producer=event.producer,
+            correlation_id="corr-delivery-metadata-may-change",
+            occurred_at=NOW + timedelta(seconds=1),
+            payload={**payload, "remainingCapacity": 39},
+        )
+        with self.assertRaises(FatalHandlerError):
+            handle_capacity_snapshot_updated(service, changed)
+
+        self.assertEqual(store.processed_events, {event.eventId})
+        self.assertEqual(next(iter(store.capacity_snapshots.values())).remaining_capacity, 40)
 
     def test_fake_subscriber_deduplicates_duplicate_event_ids(self) -> None:
         duplicate = EventEnvelope(
