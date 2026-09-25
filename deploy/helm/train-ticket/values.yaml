@@ -751,10 +751,21 @@ services:
   capacity-availability:
     db: capacity_availability
     image: mirrors.tencent.com/microservice/capacity-availability:final-e98069db@sha256:e880d85d81be4688528f256df1b03ef13eed8dc93aeb5e46fff13d0cac79f039
-    # Two replicas: every reservation takes a Hold here, and the pool locks are
-    # database advisory locks, so replicas coordinate through PostgreSQL.
-    replicas: 2
+    # Four replicas: every reservation takes a Hold here, and the pool locks are
+    # database advisory locks, so replicas coordinate through PostgreSQL. Two
+    # replicas with twenty four threads each could not clear the reservation
+    # backlog that the rejected-source defect left on the Booking stream: the
+    # consumer sat three to four thousand entries behind and a reservation
+    # confirmed minutes after the load generator gave up, which is what it
+    # reports as `failed_at_staff-poll-reservation`.
+    replicas: 4
     env:
+      # The Booking stream peaks near two hundred events per second while a Hold
+      # needs several database writes. Four threads fell behind during a peak
+      # window, so the reservation confirmation missed the load generator
+      # window. Twenty four holds the ramped peak at zero lag; a burst still
+      # moves faster than this consumer.
+      CONSUMER_THREADS: "24"
       # The capacity levels are folded from every pool document, holds inline.
       # Measured on this cluster: seven hundred thousand documents and about a
       # hundred seconds of database work per rebuild, because every hold array
@@ -774,13 +785,6 @@ services:
       preStop:
         exec:
           command: ["sleep", "10"]
-    env:
-      # The Booking stream peaks near two hundred events per second while a Hold
-      # needs several database writes. Four threads fell behind during a peak
-      # window, so the reservation confirmation missed the load generator
-      # window. Twenty four holds the ramped peak at zero lag; a burst still
-      # moves faster than this consumer.
-      CONSUMER_THREADS: "24"
   fare-pricing:
     db: fare_pricing
     image: mirrors.tencent.com/microservice/fare-pricing:final-e98069db@sha256:589cc0ad43fc832f0861f9a0e35c3aabc6500e0dd2c977dd0c478c2f8bdf81db
