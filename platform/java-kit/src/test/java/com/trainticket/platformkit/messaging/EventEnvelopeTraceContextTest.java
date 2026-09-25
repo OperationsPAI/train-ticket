@@ -217,8 +217,8 @@ class EventEnvelopeTraceContextTest {
         }
 
         @Override
-        public List<StreamEntry> autoClaim(String stream, String group, String consumerName) {
-            return List.of();
+        public AutoClaimResult autoClaim(String stream, String group, String consumerName, String startId) {
+            return new AutoClaimResult("0-0", List.of());
         }
 
         @Override
