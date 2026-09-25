@@ -226,11 +226,35 @@ pub struct CapacityMetricsSnapshot {
 /// Pure, so the restart test can hand the same durable rows to a second call and
 /// prove the levels repeat instead of resetting.
 pub fn build_snapshot(pools: &[DurablePoolFact], now_millis: u64) -> CapacityMetricsSnapshot {
-    let mut units: BTreeMap<(CapacityUnitState, TravelClass, SeatMode), i64> = BTreeMap::new();
-    let mut ages: BTreeMap<(HoldAgeState, TravelClass), f64> = BTreeMap::new();
-    let mut sellable: BTreeMap<(TravelClass, SeatMode), i64> = BTreeMap::new();
-
+    let mut fold = SnapshotFold::new();
     for pool in pools {
+        fold.absorb(pool, now_millis);
+    }
+    fold.finish()
+}
+
+/// The same fold, one row at a time.
+///
+/// The published levels are a function of every pool document, and this
+/// cluster holds seven hundred thousand of them in seven gigabytes: reading
+/// them all into a `Vec` before folding is what OOM-killed the service at a
+/// four gigabyte limit. Fold state is bounded by the number of label
+/// combinations rather than by the number of pools, so a caller that streams
+/// rows through `absorb` needs memory proportional to the labels alone.
+#[derive(Default)]
+pub struct SnapshotFold {
+    units: BTreeMap<(CapacityUnitState, TravelClass, SeatMode), i64>,
+    ages: BTreeMap<(HoldAgeState, TravelClass), f64>,
+    sellable: BTreeMap<(TravelClass, SeatMode), i64>,
+}
+
+impl SnapshotFold {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Fold one durable pool document into the levels.
+    pub fn absorb(&mut self, pool: &DurablePoolFact, now_millis: u64) {
         let mut blocked = 0_i64;
         for hold in &pool.holds {
             let class_ref = hold
@@ -258,8 +282,13 @@ pub fn build_snapshot(pools: &[DurablePoolFact], now_millis: u64) -> CapacityMet
 
             match hold.state.trim().to_ascii_uppercase().as_str() {
                 "REQUESTED" => {
-                    let seconds = now_millis.saturating_sub(hold.requested_at_millis) as f64 / 1000.0;
-                    keep_oldest(&mut ages, (HoldAgeState::Requested, travel_class), seconds);
+                    let seconds =
+                        now_millis.saturating_sub(hold.requested_at_millis) as f64 / 1000.0;
+                    keep_oldest(
+                        &mut self.ages,
+                        (HoldAgeState::Requested, travel_class),
+                        seconds,
+                    );
                 }
                 "HELD" => {
                     // A hold past its expiry has stopped blocking, and the
@@ -267,27 +296,34 @@ pub fn build_snapshot(pools: &[DurablePoolFact], now_millis: u64) -> CapacityMet
                     // liveness test is done here rather than trusted.
                     if hold.expires_at_millis > now_millis {
                         blocked += 1;
-                        *units
+                        *self
+                            .units
                             .entry((CapacityUnitState::Held, travel_class, seat_mode))
                             .or_default() += 1;
                         let seconds =
                             now_millis.saturating_sub(hold.requested_at_millis) as f64 / 1000.0;
-                        keep_oldest(&mut ages, (HoldAgeState::Held, travel_class), seconds);
+                        keep_oldest(&mut self.ages, (HoldAgeState::Held, travel_class), seconds);
                     }
                 }
                 "CONFIRMED" => {
                     blocked += 1;
-                    *units
+                    *self
+                        .units
                         .entry((CapacityUnitState::Confirmed, travel_class, seat_mode))
                         .or_default() += 1;
                     let since = hold.confirmed_at_millis.unwrap_or(hold.requested_at_millis);
                     let seconds = now_millis.saturating_sub(since) as f64 / 1000.0;
-                    keep_oldest(&mut ages, (HoldAgeState::Confirmed, travel_class), seconds);
+                    keep_oldest(
+                        &mut self.ages,
+                        (HoldAgeState::Confirmed, travel_class),
+                        seconds,
+                    );
                 }
                 // Terminal holds stay in the document until the aggregate
                 // retires them, which is what bounds this count.
                 "RELEASED" | "EXPIRED" | "FAILED" => {
-                    *units
+                    *self
+                        .units
                         .entry((CapacityUnitState::Released, travel_class, seat_mode))
                         .or_default() += 1;
                 }
@@ -297,68 +333,79 @@ pub fn build_snapshot(pools: &[DurablePoolFact], now_millis: u64) -> CapacityMet
         // Sellable is a pool-level quantity, attributed to the pool's own class
         // and mode rather than to a substituted one.
         let remaining = (pool.effective_capacity() - blocked).max(0);
-        *sellable
+        *self
+            .sellable
             .entry((TravelClass::from_ref(&pool.class_ref), pool.seat_mode()))
             .or_default() += remaining;
     }
 
-    // "Occupied" is the units no new hold can take: everything blocked, whether
-    // held or confirmed. It is derived from the same rows, so the two views
-    // cannot disagree.
-    let mut occupied: BTreeMap<(TravelClass, SeatMode), i64> = BTreeMap::new();
-    for ((state, travel_class, seat_mode), held) in &units {
-        if matches!(state, CapacityUnitState::Held | CapacityUnitState::Confirmed) {
-            *occupied.entry((*travel_class, *seat_mode)).or_default() += held;
+    /// Produce the published snapshot from everything absorbed so far.
+    pub fn finish(self) -> CapacityMetricsSnapshot {
+        let SnapshotFold {
+            mut units,
+            ages,
+            sellable,
+        } = self;
+        // "Occupied" is the units no new hold can take: everything blocked, whether
+        // held or confirmed. It is derived from the same rows, so the two views
+        // cannot disagree.
+        let mut occupied: BTreeMap<(TravelClass, SeatMode), i64> = BTreeMap::new();
+        for ((state, travel_class, seat_mode), held) in &units {
+            if matches!(
+                state,
+                CapacityUnitState::Held | CapacityUnitState::Confirmed
+            ) {
+                *occupied.entry((*travel_class, *seat_mode)).or_default() += held;
+            }
         }
-    }
-    units.extend(
-        occupied
-            .into_iter()
-            .map(|((travel_class, seat_mode), held)| {
-                (
-                    (CapacityUnitState::Occupied, travel_class, seat_mode),
-                    held,
-                )
-            }),
-    );
+        units.extend(
+            occupied
+                .into_iter()
+                .map(|((travel_class, seat_mode), held)| {
+                    ((CapacityUnitState::Occupied, travel_class, seat_mode), held)
+                }),
+        );
 
-    let mut unit_rows: Vec<CapacityUnitRow> = Vec::new();
-    for ((travel_class, seat_mode), value) in sellable {
-        unit_rows.push(CapacityUnitRow {
-            state: CapacityUnitState::Sellable,
-            travel_class,
-            seat_mode,
-            units: value,
+        let mut unit_rows: Vec<CapacityUnitRow> = Vec::new();
+        for ((travel_class, seat_mode), value) in sellable {
+            unit_rows.push(CapacityUnitRow {
+                state: CapacityUnitState::Sellable,
+                travel_class,
+                seat_mode,
+                units: value,
+            });
+        }
+        unit_rows.extend(
+            units.into_iter().map(
+                |((state, travel_class, seat_mode), units)| CapacityUnitRow {
+                    state,
+                    travel_class,
+                    seat_mode,
+                    units,
+                },
+            ),
+        );
+        unit_rows.sort_by_key(|row| {
+            (
+                row.state.as_str(),
+                row.travel_class.as_str(),
+                row.seat_mode.as_str(),
+            )
         });
-    }
-    unit_rows.extend(units.into_iter().map(|((state, travel_class, seat_mode), units)| {
-        CapacityUnitRow {
-            state,
-            travel_class,
-            seat_mode,
-            units,
+
+        let hold_age = ages
+            .into_iter()
+            .map(|((state, travel_class), seconds)| HoldAgeRow {
+                state,
+                travel_class,
+                seconds,
+            })
+            .collect();
+
+        CapacityMetricsSnapshot {
+            units: unit_rows,
+            hold_age,
         }
-    }));
-    unit_rows.sort_by_key(|row| {
-        (
-            row.state.as_str(),
-            row.travel_class.as_str(),
-            row.seat_mode.as_str(),
-        )
-    });
-
-    let hold_age = ages
-        .into_iter()
-        .map(|((state, travel_class), seconds)| HoldAgeRow {
-            state,
-            travel_class,
-            seconds,
-        })
-        .collect();
-
-    CapacityMetricsSnapshot {
-        units: unit_rows,
-        hold_age,
     }
 }
 
@@ -390,9 +437,7 @@ impl CapacityBusinessMetrics {
         let units_snapshot = Arc::clone(&snapshot);
         otel_meter
             .i64_observable_gauge(CAPACITY_UNITS_METRIC)
-            .with_description(
-                "Capacity units by disposition, bounded travel class and seat mode.",
-            )
+            .with_description("Capacity units by disposition, bounded travel class and seat mode.")
             .with_unit("{unit}")
             .with_callback(move |observer| {
                 let current = units_snapshot
@@ -683,14 +728,20 @@ mod tests {
             before.units
         );
         assert!(
-            before.hold_age.iter().any(|row| row.state == HoldAgeState::Confirmed
-                && (row.seconds - 120.0).abs() < f64::EPSILON),
+            before
+                .hold_age
+                .iter()
+                .any(|row| row.state == HoldAgeState::Confirmed
+                    && (row.seconds - 120.0).abs() < f64::EPSILON),
             "confirmed hold age has to survive a restart: {:?}",
             before.hold_age
         );
         assert!(
-            before.hold_age.iter().any(|row| row.state == HoldAgeState::Held
-                && (row.seconds - 60.0).abs() < f64::EPSILON),
+            before
+                .hold_age
+                .iter()
+                .any(|row| row.state == HoldAgeState::Held
+                    && (row.seconds - 60.0).abs() < f64::EPSILON),
             "the oldest live hold sets the age: {:?}",
             before.hold_age
         );
