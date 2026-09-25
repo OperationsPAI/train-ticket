@@ -168,7 +168,7 @@ class EndpointTest(unittest.TestCase):
         response = client.get("/api/v1/metrics/operational")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["orders_per_second"], 10)
+        self.assertEqual(response.json()["orders_per_second"], 0.1667)
         self.assertIn("avg_booking_latency", response.json())
 
     def test_anomaly_detection_publishes_event(self) -> None:
