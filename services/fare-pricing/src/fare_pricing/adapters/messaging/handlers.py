@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from hashlib import sha256
+import json
 import logging
 from datetime import date, datetime
 from typing import Any, Mapping
 
-from fare_pricing.application.service import FarePricingService
+from train_ticket_platform.messaging import FatalHandlerError
+
+from fare_pricing.application.service import ConsumedEventConflictError, FarePricingService
 from fare_pricing.domain import CapacitySnapshot, EligibilityCertificateSummary, PricingError
 from fare_pricing.ports import EventEnvelope
 
@@ -22,7 +26,17 @@ def handle_capacity_snapshot_updated(service: FarePricingService, envelope: Even
     if envelope.producer != "capacity-availability" or envelope.event_type != CAPACITY_EVENT_TYPE:
         return
     snapshot = capacity_snapshot_from_payload(envelope.payload)
-    service.upsert_capacity_snapshot(snapshot)
+    try:
+        with service.transaction():
+            if not service.mark_event_processed(
+                envelope.eventId,
+                CAPACITY_STREAM,
+                event_semantic_fingerprint(envelope),
+            ):
+                return
+            service.upsert_capacity_snapshot(snapshot)
+    except ConsumedEventConflictError as exc:
+        raise FatalHandlerError(str(exc)) from exc
 
 
 def handle_identity_verification_event(service: FarePricingService, envelope: EventEnvelope) -> None:
@@ -31,20 +45,39 @@ def handle_identity_verification_event(service: FarePricingService, envelope: Ev
         return
     certificate = eligibility_certificate_from_payload(envelope.payload) if envelope.eventType in ELIGIBILITY_CERTIFICATE_EVENT_TYPES else None
     usage_counts = _eligibility_usage_counts_from_payload(envelope.payload) if envelope.eventType in ELIGIBILITY_USAGE_EVENT_TYPES else None
-    with service.transaction():
-        if not service.mark_event_processed(envelope.eventId, IDENTITY_VERIFICATION_STREAM):
-            return
-        if certificate is not None:
-            service.upsert_eligibility_certificate(certificate)
-            return
-        if usage_counts is not None:
-            service.update_eligibility_usage_counts(*usage_counts)
-            return
-        LOGGER.warning(
-            "ack-skip fare-pricing unknown identity-verification eventType=%s eventId=%s",
-            envelope.eventType,
-            envelope.eventId,
-        )
+    try:
+        with service.transaction():
+            if not service.mark_event_processed(
+                envelope.eventId,
+                IDENTITY_VERIFICATION_STREAM,
+                event_semantic_fingerprint(envelope),
+            ):
+                return
+            if certificate is not None:
+                service.upsert_eligibility_certificate(certificate)
+                return
+            if usage_counts is not None:
+                service.update_eligibility_usage_counts(*usage_counts)
+                return
+            LOGGER.warning(
+                "ack-skip fare-pricing unknown identity-verification eventType=%s eventId=%s",
+                envelope.eventType,
+                envelope.eventId,
+            )
+    except ConsumedEventConflictError as exc:
+        raise FatalHandlerError(str(exc)) from exc
+
+
+def event_semantic_fingerprint(envelope: EventEnvelope) -> str:
+    """Fingerprint immutable business content while ignoring delivery metadata."""
+    semantic_content = {
+        "producer": envelope.producer,
+        "eventType": envelope.eventType,
+        "schemaVersion": envelope.schemaVersion,
+        "payload": envelope.payload,
+    }
+    canonical = json.dumps(semantic_content, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def capacity_snapshot_from_payload(payload: Mapping[str, Any]) -> CapacitySnapshot:
