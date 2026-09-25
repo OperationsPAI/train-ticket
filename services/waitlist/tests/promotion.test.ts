@@ -3,7 +3,7 @@ import test from "node:test";
 import { InMemoryEventPublisher } from "@trainticket/ts-kit";
 import { HttpJourneyOrderClient, InMemoryWaitlistRepository, WaitlistApplicationService } from "../src/application.js";
 import { HttpFarePricingClient, HttpOfferManagementClient, type CapacityAvailabilityClient, type FarePricingClient, type JourneyOrderClient, type OfferManagementClient, type WaitlistCapacityFreed } from "../src/promotion.js";
-import type { WaitlistEntry } from "../src/domain.js";
+import { WaitlistEntry } from "../src/domain.js";
 
 const CAPACITY_RELEASE_REF = "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c123";
 
@@ -277,6 +277,47 @@ test("promotion persists the earliest commercial, guarantee and waitlist expiry"
   await service.handleCapacityFreed(capacityEvent());
 
   assert.equal((await repository.get(created.waitlistRequestId))?.offerExpiresAt?.toISOString(), "2026-01-01T00:03:00.000Z");
+});
+
+test("an offer above the verified payment guarantee suspends without consuming the capacity credit", async () => {
+  const repository = new InMemoryWaitlistRepository();
+  const orders = new StubJourneyOrder();
+  const service = new WaitlistApplicationService(repository, new InMemoryEventPublisher(), new StubFarePricing(), new StubCapacity(), orders,
+    () => new Date("2026-01-01T00:00:00.000Z"), new StubOfferManagement());
+  const underfunded = WaitlistEntry.create({
+    entryId: "wlr-underfunded",
+    accountId: "acc",
+    travelerRefs: ["tvl-underfunded"],
+    segmentRef: "seg",
+    departureDate: "2026-07-20",
+    seatClass: "SECOND_CLASS",
+    priority: {},
+    deadline: "2026-01-01T00:20:00.000Z",
+    paymentGuarantee: {
+      paymentIntentId: "pi-underfunded",
+      sourceOrderRef: "ord-source",
+      payerRef: "acc",
+      amount: { currency: "CNY", minorUnits: 10_000 },
+      sourceStatus: "AUTHORIZED",
+      sourceExpiresAt: "2026-01-01T00:05:00.000Z",
+      authorizedUntil: "2026-01-01T00:20:00.000Z",
+      verifiedAt: "2026-01-01T00:00:00.000Z",
+    },
+  });
+  await repository.add(underfunded);
+  await service.recordCapacityFreed(capacityEvent());
+  await service.advanceNextPromotion();
+  await service.advanceNextPromotion();
+  await service.advanceNextPromotion();
+
+  assert.equal((await repository.get(underfunded.entryId))?.status, "SUSPENDED");
+  assert.equal(orders.orders.length, 0);
+
+  const next = WaitlistEntry.create({ entryId: "wlr-next", accountId: "acc", travelerRefs: ["tvl-next"], segmentRef: "seg",
+    departureDate: "2026-07-20", seatClass: "SECOND_CLASS", priority: {}, deadline: "2026-01-01T00:20:00.000Z" });
+  await repository.add(next);
+  await service.advanceNextPromotion();
+  assert.equal((await repository.get(next.entryId))?.status, "MATCHING");
 });
 
 test("order started inside the offer window is linked even if the response crosses expiry", async () => {
