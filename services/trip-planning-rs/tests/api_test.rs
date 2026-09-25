@@ -41,19 +41,18 @@ fn seed_route(
     date: &str,
 ) {
     let departure_date = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").unwrap();
-    let departure_time = departure_date
-        .and_hms_opt(9, 0, 0)
-        .unwrap()
-        .and_utc();
-    state.plan_index.upsert_segment(trip_planning::plan_index::SegmentEntry {
-        segment_ref: format!("seg-{}-{}-{}", origin, destination, date),
-        scheduled_service_ref: format!("ss-{}-{}", origin, date),
-        origin_stop_ref: origin.to_string(),
-        destination_stop_ref: destination.to_string(),
-        departure_time,
-        departure_date,
-        arrival_time: departure_time + chrono::Duration::hours(1),
-    });
+    let departure_time = departure_date.and_hms_opt(9, 0, 0).unwrap().and_utc();
+    state
+        .plan_index
+        .upsert_segment(trip_planning::plan_index::SegmentEntry {
+            segment_ref: format!("seg-{}-{}-{}", origin, destination, date),
+            scheduled_service_ref: format!("ss-{}-{}", origin, date),
+            origin_stop_ref: origin.to_string(),
+            destination_stop_ref: destination.to_string(),
+            departure_time,
+            departure_date,
+            arrival_time: departure_time + chrono::Duration::hours(1),
+        });
 }
 
 fn seed_segment(
@@ -67,17 +66,19 @@ fn seed_segment(
     let departure_time = chrono::DateTime::parse_from_rfc3339(departure)
         .unwrap()
         .with_timezone(&chrono::Utc);
-    state.plan_index.upsert_segment(trip_planning::plan_index::SegmentEntry {
-        segment_ref: reference.to_string(),
-        scheduled_service_ref: format!("ss-{reference}"),
-        origin_stop_ref: origin.to_string(),
-        destination_stop_ref: destination.to_string(),
-        departure_time,
-        departure_date: departure_time.date_naive(),
-        arrival_time: chrono::DateTime::parse_from_rfc3339(arrival)
-            .unwrap()
-            .with_timezone(&chrono::Utc),
-    });
+    state
+        .plan_index
+        .upsert_segment(trip_planning::plan_index::SegmentEntry {
+            segment_ref: reference.to_string(),
+            scheduled_service_ref: format!("ss-{reference}"),
+            origin_stop_ref: origin.to_string(),
+            destination_stop_ref: destination.to_string(),
+            departure_time,
+            departure_date: departure_time.date_naive(),
+            arrival_time: chrono::DateTime::parse_from_rfc3339(arrival)
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+        });
 }
 
 fn publish_same_station_rule(
@@ -448,11 +449,13 @@ async fn multileg_search_is_opt_in_and_enforces_the_published_mct_rule() {
         itineraries[0]["legs"][1]["serviceSegmentRef"],
         "seg-b-c-valid"
     );
-    assert!(json["planningSnapshotRefs"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|value| value == "mct-rule:mct-api:v1"));
+    assert!(
+        json["planningSnapshotRefs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value == "mct-rule:mct-api:v1")
+    );
 }
 
 #[tokio::test]
