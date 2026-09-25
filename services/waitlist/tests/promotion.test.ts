@@ -27,7 +27,11 @@ class StubFarePricing implements FarePricingClient {
 }
 
 class StubOfferManagement implements OfferManagementClient {
-  async createOffer(entry: WaitlistEntry) { return { offerId: `off-${entry.entryId}`, offerVersion: 1, expiresAt: "2026-01-01T00:10:00.000Z" }; }
+  public calls: string[] = [];
+  async createOffer(entry: WaitlistEntry) {
+    this.calls.push(entry.entryId);
+    return { offerId: `off-${entry.entryId}`, offerVersion: 1, expiresAt: "2026-01-01T00:10:00.000Z" };
+  }
 }
 
 class StubCapacity implements CapacityAvailabilityClient {
@@ -241,6 +245,7 @@ test("promotion resumes each persisted checkpoint without repeating completed ca
   assert.equal(ordered?.journeyOrderRef, `ord-${created.waitlistRequestId}`);
   assert.equal(await restarted().advanceNextPromotion(), undefined);
   assert.deepEqual(fare.calls, [created.waitlistRequestId]);
+  assert.deepEqual(offers.calls, [created.waitlistRequestId]);
   assert.deepEqual(orders.orders, [created.waitlistRequestId]);
 });
 
