@@ -47,6 +47,10 @@ pub fn postgres_router(service: Arc<PostgresCapacityService>) -> Router {
         .route("/api/v1/capacity-holds", post(hold_capacity_pg))
         .route("/api/v1/capacity/holds", post(hold_capacity_pg))
         .route(
+            "/api/v1/capacity/segments/{segment_ref}/snapshot",
+            get(get_capacity_snapshot_pg),
+        )
+        .route(
             "/api/v1/capacity-holds/{hold_id}/confirm",
             post(confirm_hold_pg),
         )
@@ -373,6 +377,20 @@ async fn query_availability_pg(
         .await
         .map_err(|e| AppErrorResponse::new(e, correlation_id))?;
     Ok(Json(to_availability_json(result)))
+}
+
+#[cfg(feature = "redis-impl")]
+async fn get_capacity_snapshot_pg(
+    Extension(service): Extension<Arc<PostgresCapacityService>>,
+    Extension(context): Extension<RequestContext>,
+    axum::extract::Path(segment_ref): axum::extract::Path<String>,
+) -> Result<Json<CapacitySnapshotJson>, AppErrorResponse> {
+    let correlation_id = context.correlation_id().to_string();
+    let result = service
+        .query_capacity_snapshot(&segment_ref)
+        .await
+        .map_err(|e| AppErrorResponse::new(e, correlation_id))?;
+    Ok(Json(to_capacity_snapshot_json(result)))
 }
 
 #[cfg(feature = "redis-impl")]
