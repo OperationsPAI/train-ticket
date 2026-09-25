@@ -118,7 +118,6 @@ def route_metrics_to_json(route: RouteMetrics) -> dict[str, object]:
     return {
         "routeId": route.route_id,
         "serviceDate": route.service_date.isoformat(),
-        "routeRevenue": money_totals_to_json(route.route_revenue),
         "routeDemand": route.route_demand,
         "bookings": route.bookings,
         "searches": route.searches,
@@ -361,8 +360,11 @@ def configure_reporting_endpoints(app: FastAPI, service: ReportingApplicationSer
     @app.get("/api/v1/metrics/routes")
     def get_route_metrics(limit: int = Query(20), offset: int = Query(0)) -> dict[str, object]:
         _validate_pagination(limit, offset)
-        routes = [route_metrics_to_json(route) for route in service.route_metrics()]
-        return _paginated(routes[offset : offset + limit], len(routes), limit, offset)
+        routes, total = service.route_metrics(limit=limit, offset=offset)
+        return {
+            **_paginated([route_metrics_to_json(route) for route in routes], total, limit, offset),
+            "windowSeconds": 86400,
+        }
 
     @app.get("/api/v1/metrics/revenue")
     def get_revenue_report(groupBy: str = "route", limit: int = Query(20), offset: int = Query(0)) -> dict[str, object]:

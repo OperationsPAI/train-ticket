@@ -13,14 +13,14 @@ Finance Settlement 保存收入确认和冲减，Reporting 的金额指标采用
 
 ## 金额口径
 
-`revenue`、`totalRevenue`、`routeRevenue` 和 `revenue_per_hour` 均只统计 `PaymentCaptured`，含义为 gross captured payment amount。
+`revenue`、`totalRevenue` 和 `revenue_per_hour` 均只统计 `PaymentCaptured`，含义为 gross captured payment amount。
 退款、`RevenueRecognized`、`RevenueRecognitionReversed` 和 `PaymentSucceeded` 不增减这些金额。
 同一支付与 Finance 收入确认事件不会重复贡献 gross amount。
 其他事件仍可参与事件计数、dashboard 刷新和异常规则。
 
 金额报表支持 `route`、`seat_class`、`channel`、`traveler_type` 和 `time_period` 五个维度；旧 `passenger_type` 不再接受。
 PostgreSQL 分组始终包含币种，缺失维度使用 `unknown`，缺失币种使用 USD，时间按 UTC 小时归集。
-`totalRevenue`、`routeRevenue` 和 `revenue_per_hour` 均返回按 ISO 币种代码排序的 Money 数组；不同币种不相加、不隐式换算，空结果返回空数组。
+`totalRevenue` 和 `revenue_per_hour` 均返回按 ISO 币种代码排序的 Money 数组；不同币种不相加、不隐式换算，空结果返回空数组。
 金额来自 Payment 的 `PaymentCaptured`，但路线、旅客类型、席别和 attachment 不信任支付事件携带的同名字段。
 路线和旅客来自 Journey Order；改签支付通过 Post Sales case scope 关联订单；席别来自 Booking Orchestration 并由 Seat Assignment 的已接受 `requestedClassRef` 优先校验；附加服务与保险来自各自业务事实。
 多值维度按最小货币单位稳定等分，余数按稳定键顺序分配，因此每个维度按币种求和都严格等于 `totalRevenue`。
@@ -49,7 +49,8 @@ SQL 保留源事件表，物化视图是可重新计算的派生结果。
 默认目录说明只用于初始化缺失指标，已有数据库指标描述保留原值。
 
 内存实现使用 `MetricAggregator`；PostgreSQL 生产实现直接在带索引的时间范围内聚合，不再加载或截断“最新10000条事件”。
-`/metrics/operational` 不嵌入无分页的路线明细，路线数据由 `/metrics/routes` 独立分页返回。
+`/metrics/operational` 不嵌入无分页的路线明细；`/metrics/routes` 在数据库内分页返回最近24小时的路线/服务日期分组，`total` 不受页大小影响。
+该端点只提供需求、订单/搜索、容量和席别利用率；路线金额统一从 `/metrics/revenue?groupBy=route` 查询。
 `orders_per_second` 为最近60秒订单事件数除以60所得的平均每秒速率，保留四位小数。
 该速率只统计订单创建事实，不重复计算确认事件。
 captured 金额、预订延迟和风控拦截率使用最近1小时，退款率使用最近24小时，context rollup 使用最近5分钟。

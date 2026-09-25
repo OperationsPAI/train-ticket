@@ -116,3 +116,37 @@ def test_operational_indexes_are_prepared_before_populated_migration():
                 conn.execute(migration.read_text())
         finally:
             admin.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
+
+
+def test_route_metrics_page_is_complete_beyond_previous_ten_thousand_cap(database):
+    observed_at = datetime(2026, 9, 25, 5, 30, tzinfo=UTC)
+    rows = [
+        (
+            f"evt-route-{index:05d}",
+            "JourneyOrderCreated",
+            observed_at - timedelta(hours=1),
+            f"seg-{index:05d}",
+            observed_at.date(),
+            "SECOND_CLASS",
+            Jsonb({"sourceContext": "journey-order"}),
+        )
+        for index in range(10_001)
+    ]
+    with database.connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.executemany(
+                """
+                INSERT INTO reporting_metric_events(event_id,event_type,occurred_at,route_id,service_date,seat_class,flags)
+                VALUES (%s,%s,%s,%s,%s,%s,%s)
+                """,
+                rows,
+            )
+
+    service = PostgresReportingApplicationService(database)
+    page, total = service.route_metrics(limit=2, offset=9_999, at=observed_at)
+    beyond, beyond_total = service.route_metrics(limit=2, offset=20_000, at=observed_at)
+
+    assert total == beyond_total == 10_001
+    assert [item.route_id for item in page] == ["seg-09999", "seg-10000"]
+    assert all(item.bookings == 1 and item.route_demand == 1 for item in page)
+    assert beyond == ()

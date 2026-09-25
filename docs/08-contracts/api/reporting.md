@@ -68,7 +68,7 @@ Events accepted during a refresh remain pending for the next refresh.
 `groupBy` supports `route`, `seat_class`, `channel`, `traveler_type`, and `time_period` for monetary reports.
 All monetary revenue fields use `PaymentCaptured` only and represent gross captured payment amount.
 Refunds, `RevenueRecognized`, `RevenueRecognitionReversed`, and `PaymentSucceeded` contribute no monetary revenue to these metrics.
-This definition also applies to `routeRevenue` from `/api/v1/metrics/routes` and `revenue_per_hour` from `/api/v1/metrics/operational` and trend reports.
+This definition also applies to `revenue_per_hour` from `/api/v1/metrics/operational` and trend reports.
 Gross captured payment amount does not represent net revenue or accounting recognized revenue.
 The default metric catalog describes this meaning; existing stored metric descriptions are not automatically overwritten.
 
@@ -87,7 +87,7 @@ The default metric catalog describes this meaning; existing stored metric descri
 | `totalRevenue` | Complete filtered-result totals before pagination, one Money value per currency ordered by ISO currency code. An empty result returns `[]`. |
 
 PostgreSQL projection groups always include currency.
-`totalRevenue`, `routeRevenue`, and `revenue_per_hour` preserve each currency as a separate Money value and never perform implicit currency conversion.
+`totalRevenue` and `revenue_per_hour` preserve each currency as a separate Money value and never perform implicit currency conversion.
 Only `items` is paginated. Changing `limit` or `offset`, including requesting an offset beyond the last row, does not change `totalRevenue` or `total`.
 Items are ordered by currency, then revenue descending, then dimension value; this gives stable pagination.
 Trend points for `revenue_per_hour` expose the same array in `points[].values`; non-monetary trend points continue to use `points[].value`.
@@ -102,6 +102,15 @@ Refresh work runs when requests are pending and waits 30 seconds after each comp
 PostgreSQL and the in-memory implementation both exclude a capture whose amount is absent from monetary totals and payment counts.
 Requests using `source_context` or `event_type` return event count reports with zero monetary fields.
 For those reports, `total` is the number of grouped values and `eventCount` is the complete number of source events before pagination.
+
+### Route Metrics
+
+**GET** `/api/v1/metrics/routes?limit=20&offset=0`
+
+The endpoint returns route/service-date groups observed in the preceding 24 hours.
+`items` is ordered by `serviceDate` descending and `routeId` ascending; `total` is the complete group count and `windowSeconds` is `86400`.
+Each item contains demand, booking/search counts, latest confirmed/capacity facts, fill rate, and seat utilization by class.
+It does not contain `routeRevenue`; query `/api/v1/metrics/revenue?groupBy=route` for monetary route attribution.
 
 Operational metrics are calculated by PostgreSQL over complete indexed time ranges and are not capped by a row count.
 The operational response does not embed route rows; route detail is available from the independently paginated `/api/v1/metrics/routes` endpoint.
