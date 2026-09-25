@@ -7,7 +7,7 @@ pub mod plan_index;
 use axum::Router;
 use axum::{Json, routing::get};
 use serde::Serialize;
-use shared_kernel::{RuntimeConfig, apply_runtime, OpenTelemetryObserver};
+use shared_kernel::{OpenTelemetryObserver, RuntimeConfig, apply_runtime};
 use std::io::Write;
 use std::sync::Arc;
 
@@ -79,9 +79,7 @@ pub async fn build_runtime() -> Router {
                     if attempt >= 10 {
                         panic!("Postgres unavailable after {attempt} attempts: {e}");
                     }
-                    log::warn!(
-                        "Postgres not ready (attempt {attempt}/10), retrying in 3s: {e}"
-                    );
+                    log::warn!("Postgres not ready (attempt {attempt}/10), retrying in 3s: {e}");
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                 }
             }
@@ -96,10 +94,10 @@ pub async fn build_runtime() -> Router {
 
     let plan_index = Arc::new(PlanIndex::new());
 
-    // Load existing segments from DB into the in-memory index
-    if let Some(ref pg_pool) = pool {
-        load_index_from_db(pg_pool, &plan_index).await;
-    }
+    // Production searches query only their route/date frontier. Rebuilding the
+    // complete retained timetable here made startup memory and latency grow
+    // linearly with historical data and eventually prevented the HTTP listener
+    // from binding before Kubernetes' startup deadline.
 
     let state = Arc::new(AppState::new(
         pool.clone(),
@@ -117,32 +115,36 @@ pub async fn build_runtime() -> Router {
     let consumer = consumer_name();
     for stream in SUBSCRIPTION_STREAMS {
         let subscriber = rust_kit::messaging::redis_runtime::RedisEventSubscriber::from_env()
-            .expect("failed to create Redis event subscriber").with_event_filter(PlanIndex::handles_event);
-        let handler_state=state.clone();
-        let streams=vec![stream.to_string()];
-        let consumer=format!("{consumer}:{}",stream);
+            .expect("failed to create Redis event subscriber")
+            .with_event_filter(PlanIndex::handles_event);
+        let handler_state = state.clone();
+        let streams = vec![stream.to_string()];
+        let consumer = format!("{consumer}:{}", stream);
         tokio::spawn(async move {
             if let Err(e) = subscriber
-            .subscribe(
-                streams,
-                CONSUMER_GROUP.to_string(),
-                consumer,
-                Box::new(move |envelope| {
-                    let state = handler_state.clone();
-                    Box::pin(async move {
-                        // A failed write must not be acknowledged: the index is
-                        // rebuilt from Postgres on restart, and the consumer
-                        // group starts at `$`, so a dropped write is a segment
-                        // that never becomes searchable again.
-                        state.handle_inbound_event(&envelope).await.map_err(|error| {
-                            rust_kit::messaging::HandlerError::Transient(error.to_string())
+                .subscribe(
+                    streams,
+                    CONSUMER_GROUP.to_string(),
+                    consumer,
+                    Box::new(move |envelope| {
+                        let state = handler_state.clone();
+                        Box::pin(async move {
+                            // A failed write must not be acknowledged: the index is
+                            // rebuilt from Postgres on restart, and the consumer
+                            // group starts at `$`, so a dropped write is a segment
+                            // that never becomes searchable again.
+                            state
+                                .handle_inbound_event(&envelope)
+                                .await
+                                .map_err(|error| {
+                                    rust_kit::messaging::HandlerError::Transient(error.to_string())
+                                })
                         })
-                    })
-                }),
-            )
-            .await
-        {
-            log::error!("event subscriber failed: {}", e);
+                    }),
+                )
+                .await
+            {
+                log::error!("event subscriber failed: {}", e);
             }
         });
     }
@@ -151,7 +153,7 @@ pub async fn build_runtime() -> Router {
     router_with_state(state)
 }
 
-#[cfg(feature = "redis-impl")]
+#[cfg(all(test, feature = "redis-impl"))]
 async fn load_index_from_db(pool: &sqlx::PgPool, index: &PlanIndex) {
     type MctRuleRow = (
         String,
