@@ -14,6 +14,7 @@ When enabled, the index assembles connected train itineraries up to three connec
 The request's `minConnectionMinutes` can make that minimum stricter but cannot weaken the published rule.
 
 `src/plan_index.rs` stores segments by reference and indexes their references by departure date and origin node.
+Production does not rebuild the complete retained timetable at startup. Each request loads only its first-leg origin/date slice from PostgreSQL and, when connections are requested, expands one bounded station/time frontier per allowed connection into a request-local index.
 Node mappings support both node to place and place to nodes lookup.
 Queries resolve the current mappings, including updates received after segment creation.
 Moving a segment to another date or origin removes its old index membership.
