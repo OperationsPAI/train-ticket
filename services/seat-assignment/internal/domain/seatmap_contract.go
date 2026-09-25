@@ -44,6 +44,7 @@ type ContractSeatMap struct {
 	Source              string     `json:"source"`
 	CompositionSeed     string     `json:"compositionSeed"`
 	MappingVersion      string     `json:"mappingVersion"`
+	ReplacesSeatMapID   string     `json:"replacesSeatMapId,omitempty"`
 	Status              string     `json:"status"`
 	Coaches             []Coach    `json:"coaches"`
 	CreatedAt           time.Time  `json:"createdAt"`
