@@ -62,7 +62,8 @@ func main() {
 	go storage.NewOutboxRelay(pool, redisClient).Run(ctx)
 	transactor := adapterpg.NewTransactor(pool)
 	verifier := application.PurchaseVerifier{Client: &http.Client{Timeout: 5 * time.Second}, BaseURLTemplate: "http://%s:8080"}
-	service := application.NewInsuranceService(application.ServiceConfig{Repository: adapterpg.NewRepositoryWithProvider(transactor), Publisher: adapterpg.NewOutboxPublisherWithProvider(transactor), UnitOfWork: transactor.Within, VerifyPurchase: verifier.Verify, VerifyRefund: verifier.VerifyRefund})
+	payout := application.WalletPayoutExecutor{Client: &http.Client{Timeout: 5 * time.Second}, BaseURLTemplate: firstNonBlank(os.Getenv("INSURANCE_PAYOUT_URL_TEMPLATE"), "http://%s:8080")}
+	service := application.NewInsuranceService(application.ServiceConfig{Repository: adapterpg.NewRepositoryWithProvider(transactor), Publisher: adapterpg.NewOutboxPublisherWithProvider(transactor), UnitOfWork: transactor.Within, VerifyPurchase: verifier.Verify, VerifyRefund: verifier.VerifyRefund, PayoutExecutor: payout})
 	bus := kitmessaging.NewRedisEventBusWithClient(redisClient, kitmessaging.RedisConfig{})
 	consumer := os.Getenv("CONSUMER_NAME")
 	if consumer == "" {
@@ -87,4 +88,13 @@ func main() {
 	if err := goruntime.RunHTTPServer(ctx, server); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func firstNonBlank(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }

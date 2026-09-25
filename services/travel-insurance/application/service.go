@@ -26,6 +26,7 @@ type ServiceConfig struct {
 	IDGenerator    func(prefix string) string
 	VerifyPurchase func(context.Context, IssuePolicyCommand, domain.Money) error
 	VerifyRefund   func(context.Context, domain.Policy, string) error
+	PayoutExecutor PayoutExecutor
 }
 
 type InsuranceService struct {
@@ -37,6 +38,7 @@ type InsuranceService struct {
 	idGenerator    func(prefix string) string
 	verifyPurchase func(context.Context, IssuePolicyCommand, domain.Money) error
 	verifyRefund   func(context.Context, domain.Policy, string) error
+	payoutExecutor PayoutExecutor
 	products       map[string]domain.InsuranceProduct
 	policies       map[string]domain.Policy
 	claims         map[string]domain.Claim
@@ -56,7 +58,7 @@ func NewInsuranceService(cfg ServiceConfig) *InsuranceService {
 	if idgen == nil {
 		idgen = ids.NewPrefixed
 	}
-	s := &InsuranceService{repository: cfg.Repository, publisher: publisher, uow: cfg.UnitOfWork, clock: clock, idGenerator: idgen, verifyPurchase: cfg.VerifyPurchase, verifyRefund: cfg.VerifyRefund, products: map[string]domain.InsuranceProduct{}, policies: map[string]domain.Policy{}, claims: map[string]domain.Claim{}, advices: map[string]domain.PayoutAdvice{}}
+	s := &InsuranceService{repository: cfg.Repository, publisher: publisher, uow: cfg.UnitOfWork, clock: clock, idGenerator: idgen, verifyPurchase: cfg.VerifyPurchase, verifyRefund: cfg.VerifyRefund, payoutExecutor: cfg.PayoutExecutor, products: map[string]domain.InsuranceProduct{}, policies: map[string]domain.Policy{}, claims: map[string]domain.Claim{}, advices: map[string]domain.PayoutAdvice{}}
 	s.seedProducts()
 	return s
 }
@@ -295,38 +297,166 @@ func (s *InsuranceService) GetClaim(ctx context.Context, id string) (domain.Clai
 }
 
 func (s *InsuranceService) ApproveClaim(ctx context.Context, cmd SettleClaimCommand) (domain.PayoutAdvice, error) {
-	claim, policy, err := s.claimAndPolicy(ctx, cmd.ClaimID)
+	target := payoutTargetOrDefault(cmd.PayoutTarget)
+	if target != domain.PayoutWalletBenefit {
+		return domain.PayoutAdvice{}, fmt.Errorf("%w: insurance claims are paid through wallet stored value", ErrDomainRule)
+	}
+	if s.payoutExecutor == nil {
+		return domain.PayoutAdvice{}, fmt.Errorf("%w: payout executor is required", ErrPayoutUnavailable)
+	}
+	claim, policy, advice, err := s.preparePayout(ctx, cmd, target)
 	if err != nil {
 		return domain.PayoutAdvice{}, err
 	}
-	if claim.Status == domain.ClaimPending {
-		if err := claim.Approve(claim.ClaimedAmount); err != nil {
-			return domain.PayoutAdvice{}, fmt.Errorf("%w: %v", ErrDomainRule, err)
-		}
+	if advice.Status == "COMPLETED" {
+		return advice, nil
 	}
-	advice, err := claim.Settle(s.idGenerator("pad"), payoutTargetOrDefault(cmd.PayoutTarget), strings.TrimSpace(cmd.ReasonCode))
-	if err != nil {
-		return domain.PayoutAdvice{}, fmt.Errorf("%w: %v", ErrDomainRule, err)
-	}
-	if err := policy.MarkPaidOut(); err != nil {
-		return domain.PayoutAdvice{}, fmt.Errorf("%w: %v", ErrDomainRule, err)
-	}
-	approved, err := s.newEnvelope(ctx, "InsuranceClaimApproved", cmd.CorrelationID, cmd.CausationID, claimPayload(claim))
+	receipt, err := s.payoutExecutor.Disburse(ctx, policy, claim, advice, cmd.CorrelationID)
 	if err != nil {
 		return domain.PayoutAdvice{}, err
 	}
-	paid, err := s.newEnvelope(ctx, "InsurancePayoutCompleted", cmd.CorrelationID, claim.ID, payoutPayload(claim, advice))
-	if err != nil {
-		return domain.PayoutAdvice{}, err
+	if receipt.Target != target || receipt.AccountID != policy.AccountID || receipt.Amount != advice.Amount || strings.TrimSpace(receipt.ExecutionRef) == "" {
+		return domain.PayoutAdvice{}, fmt.Errorf("%w: payout receipt differs from approved claim", ErrPayoutUnavailable)
 	}
-	if err := s.savePolicyClaimAndPublish(ctx, policy, claim, advice, []kitmsg.EventEnvelope{approved, paid}); err != nil {
-		return domain.PayoutAdvice{}, err
-	}
-	return advice, nil
+	return s.completePayout(ctx, cmd, receipt)
 }
 
 func (s *InsuranceService) SettleClaim(ctx context.Context, cmd SettleClaimCommand) (domain.PayoutAdvice, error) {
 	return s.ApproveClaim(ctx, cmd)
+}
+
+func (s *InsuranceService) preparePayout(ctx context.Context, cmd SettleClaimCommand, target domain.PayoutTarget) (domain.Claim, domain.Policy, domain.PayoutAdvice, error) {
+	var claim domain.Claim
+	var policy domain.Policy
+	var advice domain.PayoutAdvice
+	err := s.within(ctx, func(tx context.Context) error {
+		var err error
+		if s.repository != nil {
+			if err := s.repository.LockClaim(tx, cmd.ClaimID); err != nil {
+				return err
+			}
+		}
+		claim, policy, err = s.claimAndPolicy(tx, cmd.ClaimID)
+		if err != nil {
+			return err
+		}
+		if claim.Status == domain.ClaimPaidOut {
+			advice, err = s.findPayoutAdviceByClaim(tx, claim.ID)
+			return err
+		}
+		approvedNow := false
+		if claim.Status == domain.ClaimPending {
+			if err := claim.Approve(claim.ClaimedAmount); err != nil {
+				return fmt.Errorf("%w: %v", ErrDomainRule, err)
+			}
+			approvedNow = true
+		}
+		if claim.Status != domain.ClaimApproved {
+			return fmt.Errorf("%w: claim cannot be paid from %s", ErrDomainRule, claim.Status)
+		}
+		existing, found, err := s.findPayoutAdviceForClaim(tx, claim.ID)
+		if err != nil {
+			return err
+		}
+		if found {
+			if !existing.SameDecision(target, claim.ApprovedAmount, strings.TrimSpace(cmd.ReasonCode)) || existing.AccountID != policy.AccountID {
+				return fmt.Errorf("%w: claim already has a different payout decision", ErrConflict)
+			}
+			advice = existing
+		} else {
+			material := strings.Join([]string{claim.ID, policy.ID, policy.AccountID, claim.ApprovedAmount.Currency, fmt.Sprint(claim.ApprovedAmount.MinorUnits), string(target), strings.TrimSpace(cmd.ReasonCode), "v1"}, "|")
+			advice, err = claim.PreparePayout(s.idGenerator("pad"), policy.AccountID, target, strings.TrimSpace(cmd.ReasonCode), deterministicPayoutKey(material), s.clock.Now())
+			if err != nil {
+				return fmt.Errorf("%w: %v", ErrDomainRule, err)
+			}
+		}
+		if s.repository != nil {
+			if err := s.repository.SaveClaim(tx, claim); err != nil {
+				return mapRepoErr(err)
+			}
+			if err := s.repository.SavePayoutAdvice(tx, advice); err != nil {
+				return mapRepoErr(err)
+			}
+		}
+		if approvedNow {
+			approved, err := s.newEnvelope(tx, "InsuranceClaimApproved", cmd.CorrelationID, cmd.CausationID, claimPayload(claim))
+			if err != nil {
+				return err
+			}
+			if err := s.publisher.Publish(tx, approved); err != nil {
+				return fmt.Errorf("%w: %v", ErrPublish, err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return domain.Claim{}, domain.Policy{}, domain.PayoutAdvice{}, err
+	}
+	if s.repository == nil {
+		s.mu.Lock()
+		s.claims[claim.ID] = claim
+		s.advices[advice.ID] = advice
+		s.mu.Unlock()
+	}
+	return claim, policy, advice, nil
+}
+
+func (s *InsuranceService) completePayout(ctx context.Context, cmd SettleClaimCommand, receipt PayoutReceipt) (domain.PayoutAdvice, error) {
+	var completed domain.PayoutAdvice
+	err := s.within(ctx, func(tx context.Context) error {
+		if s.repository != nil {
+			if err := s.repository.LockClaim(tx, cmd.ClaimID); err != nil {
+				return err
+			}
+		}
+		claim, policy, err := s.claimAndPolicy(tx, cmd.ClaimID)
+		if err != nil {
+			return err
+		}
+		advice, err := s.findPayoutAdviceByClaim(tx, claim.ID)
+		if err != nil {
+			return err
+		}
+		completed, err = advice.Complete(receipt.ExecutionRef, s.clock.Now())
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrDomainRule, err)
+		}
+		if claim.Status != domain.ClaimPaidOut {
+			if err := claim.CompletePayout(completed); err != nil {
+				return fmt.Errorf("%w: %v", ErrDomainRule, err)
+			}
+			if err := policy.MarkPaidOut(); err != nil {
+				return fmt.Errorf("%w: %v", ErrDomainRule, err)
+			}
+			paid, err := s.newEnvelope(tx, "InsurancePayoutCompleted", cmd.CorrelationID, cmd.CausationID, payoutPayload(claim, completed))
+			if err != nil {
+				return err
+			}
+			if s.repository != nil {
+				if err := s.repository.SavePolicy(tx, policy); err != nil {
+					return mapRepoErr(err)
+				}
+				if err := s.repository.SaveClaim(tx, claim); err != nil {
+					return mapRepoErr(err)
+				}
+				if err := s.repository.SavePayoutAdvice(tx, completed); err != nil {
+					return mapRepoErr(err)
+				}
+			}
+			if err := s.publisher.Publish(tx, paid); err != nil {
+				return fmt.Errorf("%w: %v", ErrPublish, err)
+			}
+		}
+		if s.repository == nil {
+			s.mu.Lock()
+			s.policies[policy.ID] = policy
+			s.claims[claim.ID] = claim
+			s.advices[completed.ID] = completed
+			s.mu.Unlock()
+		}
+		return nil
+	})
+	return completed, err
 }
 
 func (s *InsuranceService) RejectClaim(ctx context.Context, cmd RejectClaimCommand) (domain.Claim, error) {
@@ -366,7 +496,7 @@ func (s *InsuranceService) ProcessTrainDelayed(ctx context.Context, cmd TrainDel
 		if err != nil {
 			return advices, err
 		}
-		advice, err := s.ApproveClaim(ctx, SettleClaimCommand{ClaimID: claim.ID, PayoutTarget: string(domain.PayoutPaymentRefund), ReasonCode: "TRAIN_DELAY_GT_60", CorrelationID: cmd.CorrelationID, CausationID: claim.ID})
+		advice, err := s.ApproveClaim(ctx, SettleClaimCommand{ClaimID: claim.ID, PayoutTarget: string(domain.PayoutWalletBenefit), ReasonCode: "TRAIN_DELAY_GT_60", CorrelationID: cmd.CorrelationID, CausationID: claim.ID})
 		if err != nil {
 			return advices, err
 		}
@@ -556,6 +686,31 @@ func (s *InsuranceService) findClaim(ctx context.Context, id string) (domain.Cla
 	return claim, nil
 }
 
+func (s *InsuranceService) findPayoutAdviceByClaim(ctx context.Context, claimID string) (domain.PayoutAdvice, error) {
+	if s.repository != nil {
+		return s.repository.FindPayoutAdviceByClaim(ctx, claimID)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, advice := range s.advices {
+		if advice.ClaimID == claimID {
+			return advice, nil
+		}
+	}
+	return domain.PayoutAdvice{}, ErrNotFound
+}
+
+func (s *InsuranceService) findPayoutAdviceForClaim(ctx context.Context, claimID string) (domain.PayoutAdvice, bool, error) {
+	advice, err := s.findPayoutAdviceByClaim(ctx, claimID)
+	if err == nil {
+		return advice, true, nil
+	}
+	if err == ErrNotFound {
+		return domain.PayoutAdvice{}, false, nil
+	}
+	return domain.PayoutAdvice{}, false, err
+}
+
 func (s *InsuranceService) findPoliciesForDelay(ctx context.Context, segmentRef string, occurredAt time.Time) ([]domain.Policy, error) {
 	if s.repository != nil {
 		return s.repository.FindIssuedPoliciesForSegment(ctx, domain.ProductDelayInsurance, segmentRef, occurredAt)
@@ -651,7 +806,7 @@ func validateFileClaim(cmd FileClaimCommand) error {
 
 func payoutTargetOrDefault(target string) domain.PayoutTarget {
 	if strings.TrimSpace(target) == "" {
-		return domain.PayoutPaymentRefund
+		return domain.PayoutWalletBenefit
 	}
 	return domain.PayoutTarget(strings.TrimSpace(target))
 }
@@ -669,7 +824,7 @@ func claimPayload(claim domain.Claim) map[string]any {
 }
 
 func payoutPayload(claim domain.Claim, advice domain.PayoutAdvice) map[string]any {
-	return map[string]any{"claimId": claim.ID, "policyId": claim.PolicyID, "payoutAdviceId": advice.ID, "payoutTarget": advice.PayoutTarget, "amount": advice.Amount, "reasonCode": advice.ReasonCode, "status": advice.Status, "idempotencyKey": advice.IdempotencyKey}
+	return map[string]any{"claimId": claim.ID, "policyId": claim.PolicyID, "payoutAdviceId": advice.ID, "payoutTarget": advice.PayoutTarget, "amount": advice.Amount, "reasonCode": advice.ReasonCode, "status": advice.Status, "idempotencyKey": advice.IdempotencyKey, "executionRef": advice.ExecutionRef, "completedAt": advice.CompletedAt}
 }
 
 func productKey(code domain.ProductCode, version string) string {
