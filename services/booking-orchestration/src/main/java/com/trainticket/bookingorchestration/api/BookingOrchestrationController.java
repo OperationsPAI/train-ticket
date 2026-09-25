@@ -55,7 +55,7 @@ public class BookingOrchestrationController {
 
     public record RequestReservationRequest(
         String segmentRef, String travelerRef, String segmentBookingId,
-        String classRef, String scheduledServiceRef, String serviceDate
+        String classRef, String scheduledServiceRef, String serviceDate, Boolean acceptStanding
     ) {}
 
     public record RequestReservationResponse(
@@ -130,8 +130,10 @@ public class BookingOrchestrationController {
         String correlation = getCorrelationId(httpRequest);
         var saga = service.getSaga(sagaId).orElseThrow(() -> new NotFoundException("Booking saga not found: " + sagaId));
         var accepted = suppliesAcceptedFacts(request)
-            ? new com.trainticket.bookingorchestration.application.ReservationFactsResolver.Facts(saga.journeyOrderId(), request.segmentRef(), request.travelerRef(),
-                request.segmentRef(), request.classRef().trim(), request.scheduledServiceRef().trim(), request.serviceDate().trim())
+            ? new com.trainticket.bookingorchestration.application.ReservationFactsResolver.Facts(
+                saga.journeyOrderId(), request.segmentRef(), request.travelerRef(), request.segmentRef(),
+                request.classRef().trim(), request.scheduledServiceRef().trim(), request.serviceDate().trim(),
+                Boolean.TRUE.equals(request.acceptStanding()))
             : facts.resolve(saga.journeyOrderId(), request.segmentRef(), request.travelerRef(), correlation);
         var result = service.requestReservation(sagaId,
             new RequestReservationCommand(request.segmentRef(), request.travelerRef(), request.segmentBookingId()),

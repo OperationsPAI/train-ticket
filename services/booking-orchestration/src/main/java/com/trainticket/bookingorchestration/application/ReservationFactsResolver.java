@@ -76,7 +76,8 @@ public final class ReservationFactsResolver {
             }
         }
         require(matched, "accepted order has no segment snapshot");
-        return new Facts(orderId, segment, traveler, text(item, "offerItemId"), seatClass, service, departure.atOffset(ZoneOffset.UTC).toLocalDate().toString());
+        return new Facts(orderId, segment, traveler, text(item, "offerItemId"), seatClass, service,
+            departure.atOffset(ZoneOffset.UTC).toLocalDate().toString(), false);
     }
 
     private JsonNode get(String service, String path, String correlation) {
@@ -103,5 +104,5 @@ public final class ReservationFactsResolver {
         if (!condition) throw new BookingOrchestrationService.PreconditionFailedException(message, null);
     }
     public record Facts(String orderId, String segmentRef, String travelerRef, String offerItemRef,
-                        String classRef, String scheduledServiceRef, String serviceDate) {}
+                        String classRef, String scheduledServiceRef, String serviceDate, boolean standingAccepted) {}
 }
