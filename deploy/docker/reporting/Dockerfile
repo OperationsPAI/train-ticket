@@ -13,6 +13,7 @@ FROM python:3.12-slim
 RUN useradd --system --create-home --home-dir /home/app app
 COPY --from=builder /opt/venv /opt/venv
 COPY services/reporting/migrations /app/migrations
+COPY services/reporting/scripts /app/scripts
 ENV PATH=/opt/venv/bin:$PATH PORT=8080 REDIS_URL=redis://localhost:6379 MIGRATIONS_DIR=/app/migrations
 USER app
 EXPOSE 8080
