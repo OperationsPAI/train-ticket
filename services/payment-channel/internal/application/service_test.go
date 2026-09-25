@@ -131,6 +131,9 @@ func (m *memRepo) GetStatement(_ context.Context, id string) (*domain.ChannelSta
 	}
 	return o, nil
 }
+func (m *memRepo) LockStatement(ctx context.Context, id string) (*domain.ChannelStatement, error) {
+	return m.GetStatement(ctx, id)
+}
 func (m *memRepo) ClaimStatementForGeneration(_ context.Context, channel, date, currency, seed, _ string) (*domain.ChannelStatement, error) {
 	for _, statement := range m.stmts {
 		if statement.Channel == channel && statement.StatementDate == date && statement.Currency == currency && statement.SeedVersion == seed {
@@ -247,9 +250,31 @@ func TestOrderRefundStatementDiscrepancyFlow(t *testing.T) {
 	if err != nil || len(page.Items) != st.LineCount {
 		t.Fatalf("statement lines were not queryable: page=%+v err=%v", page, err)
 	}
-	d, err := svc.OpenDiscrepancy(ctx, OpenDiscrepancyRequest{ChannelStatementID: st.ChannelStatementID, DifferenceType: "AMOUNT_MISMATCH", ExpectedAmount: domain.Money{Currency: "CNY", MinorUnits: 100}, ActualAmount: domain.Money{Currency: "CNY", MinorUnits: 101}, EvidenceRef: "hash", CorrelationID: corr, SourceCommandID: cmd})
+	var mismatchedLine domain.StatementLine
+	for _, line := range page.Items {
+		if line.LineStatus == "AMOUNT_MISMATCH" {
+			mismatchedLine = line
+			break
+		}
+	}
+	if mismatchedLine.StatementLineID == "" {
+		t.Fatal("amount mismatch statement line was not generated")
+	}
+	d, err := svc.OpenDiscrepancy(ctx, OpenDiscrepancyRequest{ChannelStatementID: st.ChannelStatementID, StatementLineID: mismatchedLine.StatementLineID, DifferenceType: "AMOUNT_MISMATCH", ExpectedAmount: mismatchedLine.ExpectedAmount, ActualAmount: mismatchedLine.ActualAmount, EvidenceRef: mismatchedLine.EvidenceHash, CorrelationID: corr, SourceCommandID: cmd})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if d.ChannelOrderID != mismatchedLine.ChannelOrderID {
+		t.Fatalf("discrepancy did not inherit statement line order: %+v", d)
+	}
+	for _, invalid := range []OpenDiscrepancyRequest{
+		{ChannelStatementID: st.ChannelStatementID, StatementLineID: "csl-missing", DifferenceType: "AMOUNT_MISMATCH", ExpectedAmount: mismatchedLine.ExpectedAmount, ActualAmount: mismatchedLine.ActualAmount, EvidenceRef: "missing", CorrelationID: corr, SourceCommandID: cmd},
+		{ChannelStatementID: st.ChannelStatementID, StatementLineID: mismatchedLine.StatementLineID, ChannelOrderID: "cho-wrong", DifferenceType: "AMOUNT_MISMATCH", ExpectedAmount: mismatchedLine.ExpectedAmount, ActualAmount: mismatchedLine.ActualAmount, EvidenceRef: "wrong-order", CorrelationID: corr, SourceCommandID: cmd},
+		{ChannelStatementID: st.ChannelStatementID, StatementLineID: mismatchedLine.StatementLineID, DifferenceType: "AMOUNT_MISMATCH", ExpectedAmount: domain.Money{Currency: "CNY", MinorUnits: 999}, ActualAmount: mismatchedLine.ActualAmount, EvidenceRef: "wrong-amount", CorrelationID: corr, SourceCommandID: cmd},
+	} {
+		if _, err := svc.OpenDiscrepancy(ctx, invalid); err == nil {
+			t.Fatalf("invalid line-bound discrepancy was accepted: %+v", invalid)
+		}
 	}
 	d, err = svc.ResolveDiscrepancy(ctx, d.DiscrepancyID, "RESOLVED", "res", "ops", "OK", d.Version, corr, cmd)
 	if err != nil {

@@ -377,6 +377,15 @@ func NewDiscrepancy(id, statementID, lineID, orderID, refundID, financeID, diff 
 	if strings.TrimSpace(statementID) == "" || strings.TrimSpace(diff) == "" || strings.TrimSpace(evidence) == "" {
 		return nil, fmt.Errorf("required discrepancy fields are missing")
 	}
+	if strings.TrimSpace(lineID) == "" && strings.TrimSpace(orderID) == "" && strings.TrimSpace(refundID) == "" && strings.TrimSpace(financeID) == "" {
+		return nil, fmt.Errorf("discrepancy requires a statement line, channel order, channel refund, or finance case reference")
+	}
+	if !validDifferenceType(diff) {
+		return nil, fmt.Errorf("unsupported differenceType")
+	}
+	if strings.TrimSpace(expected.Currency) == "" || strings.TrimSpace(actual.Currency) == "" || expected.MinorUnits < 0 || actual.MinorUnits < 0 {
+		return nil, fmt.Errorf("discrepancy amounts require currency and nonnegative minorUnits")
+	}
 	d := &ReconciliationDiscrepancy{DiscrepancyID: id, ChannelStatementID: statementID, StatementLineID: lineID, ChannelOrderID: orderID, ChannelRefundID: refundID, FinanceReconciliationCaseID: financeID, DifferenceType: diff, ExpectedAmount: expected, ActualAmount: actual, Status: "OPENED", EvidenceRef: evidence, OpenedAt: now.UTC(), UpdatedAt: now.UTC(), Version: 1}
 	d.addEvent("ReconciliationDiscrepancyOpened", map[string]any{"discrepancyId": id, "channelStatementId": statementID, "statementLineId": lineID, "channelOrderId": orderID, "channelRefundId": refundID, "differenceType": diff, "expectedAmount": expected, "actualAmount": actual, "evidenceRef": evidence, "status": "OPENED", "openedAt": now.UTC(), "aggregateVersion": d.Version}, now, cause, corr)
 	if financeID != "" {
@@ -386,7 +395,13 @@ func NewDiscrepancy(id, statementID, lineID, orderID, refundID, financeID, diff 
 	return d, nil
 }
 func (d *ReconciliationDiscrepancy) Resolve(status, ref, operator, reason string, expected int64, now time.Time, corr, cause string) error {
+	if strings.TrimSpace(ref) == "" || strings.TrimSpace(operator) == "" || strings.TrimSpace(reason) == "" {
+		return fmt.Errorf("resolutionRef, operatorRef and reasonCode are required")
+	}
 	if d.Status == "RESOLVED" || d.Status == "REJECTED" {
+		if status != d.Status || ref != d.ResolutionRef {
+			return fmt.Errorf("terminal discrepancy replay does not match stored resolution")
+		}
 		return nil
 	}
 	if expected != d.Version {
@@ -403,6 +418,15 @@ func (d *ReconciliationDiscrepancy) Resolve(status, ref, operator, reason string
 	d.Version++
 	d.addEvent("ReconciliationDiscrepancyResolved", map[string]any{"discrepancyId": d.DiscrepancyID, "financeReconciliationCaseId": d.FinanceReconciliationCaseID, "channelStatementId": d.ChannelStatementID, "resolutionStatus": status, "resolutionRef": ref, "operatorRef": operator, "reasonCode": reason, "resolvedAt": t, "aggregateVersion": d.Version}, now, cause, corr)
 	return nil
+}
+
+func validDifferenceType(value string) bool {
+	switch value {
+	case "MISSING_IN_CHANNEL", "MISSING_IN_PLATFORM", "AMOUNT_MISMATCH", "CURRENCY_MISMATCH", "STATUS_MISMATCH", "DUPLICATE", "REFUND_LAG", "LATE_PAYMENT":
+		return true
+	default:
+		return false
+	}
 }
 func (d *ReconciliationDiscrepancy) PullEvents() []Event { ev := d.events; d.events = nil; return ev }
 func (d *ReconciliationDiscrepancy) addEvent(t string, p any, now time.Time, cause, corr string) {
