@@ -145,6 +145,10 @@ The HTTP evaluation response and case decision expose the approved value as `com
 For wallet compensation, `orderedSteps` is `ISSUE_COMPENSATION_CREDIT`, followed by `APPLY_RESULT`.
 Historical `EXECUTING` redrive reconstructs this event from the persisted step order and reuses the stable redrive event identity stored in the case snapshot.
 It does not restart, clear or reorder execution steps.
+After redrive consumers catch up, the internal execution reconciliation endpoint may account for already completed effects from owning-service GET responses.
+For refund-like cases it requires exact entitlement-to-booking-to-Hold linkage, `VOIDED` entitlement state, `CANCELLED` booking state, and either a matching `RELEASED` Hold or Hold 404 observed only after the other two terminal facts.
+It also requires Payment refunds to equal the frozen approved amount and allocation; a zero approved refund requires no Payment refund.
+Successful reconciliation records the original plan steps and emits the normal `PostSalesApplied` fact once, without sending any downstream command.
 The active executor requires the approved plan to contain `ISSUE_COMPENSATION_CREDIT` before it can issue wallet credit.
 Approval starts internal status `EXECUTING`; the HTTP representation remains `APPROVED` until the case completes.
 Execution records the full request, checked wallet issuance response and verification result in `compensationOperations.request`, `issued` and `verified`.
