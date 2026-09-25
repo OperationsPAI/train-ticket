@@ -322,6 +322,7 @@ pub struct GetHoldResponseJson {
     /// eventual release can find, and the release matches nothing -- silently,
     /// because that lookup returning empty is not an error.
     pub interval: StationIntervalJson,
+    pub supply_evidence: Option<crate::domain::HoldSupplyEvidence>,
 }
 
 #[derive(Debug, Serialize)]
@@ -353,6 +354,7 @@ async fn get_hold(
             from_seq: result.from_seq,
             to_seq: result.to_seq,
         },
+        supply_evidence: result.supply_evidence,
     }))
 }
 
@@ -478,6 +480,7 @@ async fn get_hold_pg(
             from_seq: result.from_seq,
             to_seq: result.to_seq,
         },
+        supply_evidence: result.supply_evidence,
     }))
 }
 
