@@ -45,6 +45,9 @@ class SegmentBookingTest {
         ProviderReservationConfirmed confirmation = new ProviderReservationConfirmed("booking-1", providerReference,
             "confirmed", Map.of("seatClass", "SECOND"));
 
+        // Capacity is held before a reservation can be confirmed: the two
+        // events arrive on separate streams and either can be first.
+        booking.markCapacityHolding("hold-1");
         booking.confirmFromProvider(confirmation);
 
         assertEquals(SegmentBookingStatus.CONFIRMED, booking.status());
@@ -120,6 +123,54 @@ class SegmentBookingTest {
         assertTrue(booking.peekEvents().stream().anyMatch(SegmentBookingEvent.ProviderCancellationRequired.class::isInstance));
         assertTrue(booking.peekEvents().stream().anyMatch(SegmentBookingEvent.SegmentReservationFailed.class::isInstance));
         assertThrows(IllegalStateException.class, () -> booking.markTicketed("entitlement"));
+    }
+
+    @Test
+    void aProviderConfirmationThatOutrunsTheHoldWaitsForIt() {
+        // The two events arrive on separate streams, and a reservation that says
+        // CONFIRMED without a hold cannot be acted on by anything that reads it:
+        // the load generator boards on that pair. Measured on the resident
+        // cluster, 2586 of 2627 confirmed reservations had no hold reference
+        // because the client gave up before capacity caught up.
+        SegmentBooking booking = SegmentBooking.requestReservation("booking-race", "order-race", "offer-item",
+            "rail-segment", "traveler", "purchase", clock);
+        ProviderReference reference = new ProviderReference("provider", "reservation-race", "PNR");
+        booking.pullEvents();
+
+        assertFalse(booking.confirmFromProvider(
+            new ProviderReservationConfirmed(booking.segmentBookingId(), reference, "confirmed", Map.of())));
+
+        assertEquals(SegmentBookingStatus.HOLDING, booking.status());
+        assertTrue(booking.capacityHoldId().isEmpty());
+        assertEquals(reference, booking.pendingProviderReference().orElseThrow());
+        assertTrue(booking.peekEvents().stream()
+            .noneMatch(SegmentBookingEvent.SegmentReservationConfirmed.class::isInstance));
+
+        booking.markCapacityHolding("hold-race");
+
+        assertEquals(SegmentBookingStatus.CONFIRMED, booking.status());
+        assertEquals("hold-race", booking.capacityHoldId().orElseThrow());
+        assertEquals(reference, booking.providerReference().orElseThrow());
+        assertTrue(booking.pendingProviderReference().isEmpty());
+        assertTrue(booking.peekEvents().stream()
+            .anyMatch(SegmentBookingEvent.SegmentReservationConfirmed.class::isInstance));
+    }
+
+    @Test
+    void aDeferredConfirmationStillCancelsTheProviderWhenCapacityFails() {
+        SegmentBooking booking = SegmentBooking.requestReservation("booking-race", "order-race", "offer-item",
+            "rail-segment", "traveler", "purchase", clock);
+        ProviderReference reference = new ProviderReference("provider", "reservation-race", "PNR");
+        booking.confirmFromProvider(
+            new ProviderReservationConfirmed(booking.segmentBookingId(), reference, "confirmed", Map.of()));
+        booking.pullEvents();
+
+        booking.failReservation("NO_AVAILABLE_CAPACITY");
+
+        assertEquals(SegmentBookingStatus.FAILED, booking.status());
+        assertTrue(booking.peekEvents().stream().anyMatch(
+            SegmentBookingEvent.ProviderCancellationRequired.class::isInstance));
+        assertTrue(booking.pendingProviderReference().isEmpty());
     }
 
     @Test
