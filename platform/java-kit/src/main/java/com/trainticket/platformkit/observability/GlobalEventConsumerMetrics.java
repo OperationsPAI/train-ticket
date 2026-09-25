@@ -1,6 +1,5 @@
 package com.trainticket.platformkit.observability;
 
-import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.OpenTelemetry;
 
 /**
@@ -36,7 +35,7 @@ public final class GlobalEventConsumerMetrics implements EventConsumerMetrics {
     }
 
     private EventConsumerMetrics delegate() {
-        OpenTelemetry current = GlobalOpenTelemetry.get();
+        OpenTelemetry current = ProcessOpenTelemetry.get();
         EventConsumerMetrics currentDelegate = delegate;
         if (currentDelegate != null && current == boundOpenTelemetry) {
             return currentDelegate;
