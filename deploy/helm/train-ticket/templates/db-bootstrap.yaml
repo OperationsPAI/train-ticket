@@ -42,7 +42,11 @@ metadata:
     app.kubernetes.io/part-of: train-ticket
     app.kubernetes.io/component: database
   annotations:
-    "helm.sh/hook": pre-upgrade,post-install
+    # A newly declared shard has no Service until Helm has applied the regular
+    # PostgreSQL resources. Running this as pre-upgrade waits for a DNS name
+    # that cannot exist yet and times out the release. Existing services are
+    # switched to a shard only after this post-upgrade job has completed.
+    "helm.sh/hook": post-install,post-upgrade
     "helm.sh/hook-weight": "5"
     "helm.sh/hook-delete-policy": before-hook-creation
 spec:
