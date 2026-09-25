@@ -25,7 +25,9 @@ from reporting.application.service import (
 from reporting.domain import (
     AnomalyDetected,
     AnomalyDetector,
+    AnomalyRuleId,
     AnomalySeverity,
+    ContextEventRollup,
     ContextCountReport,
     DashboardReadModel,
     MetricAggregator,
@@ -53,6 +55,10 @@ from psycopg.types.json import Jsonb
 logger = logging.getLogger(__name__)
 
 _PAYMENT_CAPTURED_EVENT_TYPES = ("PaymentCaptured",)
+_ORDER_CREATED_EVENT_TYPES = ("JourneyOrderCreated", "OrderCreated")
+_PAYMENT_FAILED_EVENT_TYPES = ("PaymentFailed", "PaymentDeclined", "PaymentCaptureFailed")
+_REFUND_EVENT_TYPES = ("RefundSettled", "RefundCompleted", "RefundIssued", "RevenueRecognitionReversed")
+_RISK_BLOCK_EVENT_TYPES = ("ScalperBlocked", "RiskBookingBlocked")
 _REVENUE_PROJECTION_EVENT_TYPES = frozenset({
     "PaymentCaptured",
     "JourneyOrderCreated",
@@ -70,14 +76,6 @@ _REVENUE_PROJECTION_EVENT_TYPES = frozenset({
     "InsurancePolicyCancelled",
 })
 _REVENUE_REFRESH_INTERVAL = 30.0
-
-# How far back the anomaly rules can see. REVENUE_DROP compares the last hour
-# against the same hour yesterday, which is the longest window any rule reads;
-# the rest look back an hour or less. Loading more than this cannot change a
-# verdict, so the write path stops at the boundary and the read endpoints, which
-# report over all of history, keep loading everything.
-_DETECTION_WINDOW = timedelta(days=1, hours=1)
-
 
 def _json_payload(value: Mapping[str, Any]) -> Any:
     return Jsonb(dict(value))
@@ -510,9 +508,7 @@ class PostgresReportingApplicationService:
                 source = EventEnvelope.from_json_dict(pending[-1][3])
                 if any(row[0] in _REVENUE_PROJECTION_EVENT_TYPES for row in pending):
                     self._refresh_revenue_views(conn)
-                aggregator = self._load_aggregator(conn, since=utc_now() - _DETECTION_WINDOW)
-                self._detector.evaluate(aggregator)
-                active = self._detector.list_active()
+                active = self._evaluate_anomalies(conn, utc_now())
                 self._resolve_inactive_anomalies(conn, [anomaly.rule_id for anomaly in active])
                 for anomaly in active:
                     changed = self._save_anomaly(conn, anomaly)
@@ -770,8 +766,178 @@ class PostgresReportingApplicationService:
             self._outbox.append(conn, self._urgent_notification_envelope(anomaly, source))
 
     def operational_metrics(self, at: datetime | None = None) -> MetricSnapshot:
+        now = at or utc_now()
         with self._pool.connection() as conn:
-            return self._load_aggregator(conn).snapshot(at)
+            row = conn.execute(
+                """
+                WITH recent AS MATERIALIZED (
+                  SELECT event_type,occurred_at,amount,currency,booking_latency_ms,flags
+                  FROM reporting_metric_events
+                  WHERE occurred_at >= %s - interval '1 hour' AND occurred_at <= %s
+                ),
+                global_metrics AS (
+                  SELECT
+                    count(*) FILTER (
+                      WHERE occurred_at >= %s - interval '60 seconds'
+                        AND event_type = ANY(%s)
+                    )::numeric / 60 AS orders_per_second,
+                    percentile_cont(0.50) WITHIN GROUP (ORDER BY booking_latency_ms)
+                      FILTER (WHERE booking_latency_ms IS NOT NULL) AS latency_p50,
+                    percentile_cont(0.95) WITHIN GROUP (ORDER BY booking_latency_ms)
+                      FILTER (WHERE booking_latency_ms IS NOT NULL) AS latency_p95,
+                    percentile_cont(0.99) WITHIN GROUP (ORDER BY booking_latency_ms)
+                      FILTER (WHERE booking_latency_ms IS NOT NULL) AS latency_p99,
+                    count(*) FILTER (WHERE event_type = ANY(%s))::numeric
+                      / NULLIF(count(*) FILTER (WHERE event_type = ANY(%s) OR event_type = ANY(%s)),0) AS scalper_block_rate
+                  FROM recent
+                ),
+                refund_window AS (
+                  SELECT count(*) FILTER (WHERE event_type = ANY(%s))::numeric
+                           / NULLIF(count(*) FILTER (WHERE event_type = ANY(%s)),0) AS refund_rate
+                  FROM reporting_metric_events
+                  WHERE event_type = ANY(%s)
+                    AND occurred_at >= %s - interval '24 hours' AND occurred_at <= %s
+                ),
+                revenue AS (
+                  SELECT COALESCE(currency,'USD') AS currency,SUM(amount) AS amount
+                  FROM recent
+                  WHERE event_type='PaymentCaptured' AND amount IS NOT NULL
+                  GROUP BY COALESCE(currency,'USD')
+                ),
+                context AS (
+                  SELECT COALESCE(flags->>'sourceContext','unknown') AS source_context,event_type,
+                         count(*) AS event_count,max(occurred_at) AS last_occurred_at,
+                         count(*) FILTER (WHERE COALESCE((flags->>'anomalySignal')::boolean,false)) AS anomaly_count
+                  FROM recent
+                  WHERE occurred_at >= %s - interval '5 minutes'
+                  GROUP BY 1,2
+                )
+                SELECT global_metrics.orders_per_second,global_metrics.latency_p50,
+                       global_metrics.latency_p95,global_metrics.latency_p99,
+                       COALESCE(refund_window.refund_rate,0),COALESCE(global_metrics.scalper_block_rate,0),
+                       COALESCE((SELECT jsonb_agg(jsonb_build_object('currency',currency,'amount',amount) ORDER BY currency) FROM revenue),'[]'::jsonb),
+                       COALESCE((SELECT jsonb_agg(jsonb_build_object(
+                         'sourceContext',source_context,'eventType',event_type,'count',event_count,
+                         'lastOccurredAt',last_occurred_at,'anomalyCount',anomaly_count
+                       ) ORDER BY source_context,event_type) FROM context),'[]'::jsonb)
+                FROM global_metrics CROSS JOIN refund_window
+                """,
+                (
+                    now,
+                    now,
+                    now,
+                    list(_ORDER_CREATED_EVENT_TYPES),
+                    list(_RISK_BLOCK_EVENT_TYPES),
+                    list(_RISK_BLOCK_EVENT_TYPES),
+                    list(_ORDER_CREATED_EVENT_TYPES),
+                    list(_REFUND_EVENT_TYPES),
+                    list(_ORDER_CREATED_EVENT_TYPES),
+                    list(_REFUND_EVENT_TYPES + _ORDER_CREATED_EVENT_TYPES),
+                    now,
+                    now,
+                    now,
+                ),
+            ).fetchone()
+        revenue = tuple(Money(item["amount"], item["currency"]) for item in row[6])
+        context_rollups = tuple(
+            ContextEventRollup(
+                str(item["sourceContext"]),
+                str(item["eventType"]),
+                int(item["count"]),
+                _row_datetime(item["lastOccurredAt"]),
+                int(item["anomalyCount"]),
+            )
+            for item in row[7]
+        )
+        return MetricSnapshot(
+            generated_at=now,
+            orders_per_second=round(float(row[0] or 0), 4),
+            revenue_per_hour=revenue,
+            fill_rate_by_route={},
+            avg_booking_latency={
+                "p50": float(row[1] or 0),
+                "p95": float(row[2] or 0),
+                "p99": float(row[3] or 0),
+            },
+            refund_rate=float(row[4]),
+            scalper_block_rate=float(row[5]),
+            context_rollups=context_rollups,
+        )
+
+    def _evaluate_anomalies(self, conn: Any, now: datetime) -> tuple[AnomalyDetected, ...]:
+        detected: list[AnomalyDetected] = []
+        revenue_rows = conn.execute(
+            """
+            SELECT COALESCE(currency,'USD'),
+                   COALESCE(SUM(amount) FILTER (WHERE occurred_at >= %s - interval '1 hour' AND occurred_at <= %s),0),
+                   COALESCE(SUM(amount) FILTER (WHERE occurred_at >= %s - interval '25 hours' AND occurred_at <= %s - interval '24 hours'),0)
+            FROM reporting_metric_events
+            WHERE event_type='PaymentCaptured' AND amount IS NOT NULL
+              AND ((occurred_at >= %s - interval '1 hour' AND occurred_at <= %s)
+                OR (occurred_at >= %s - interval '25 hours' AND occurred_at <= %s - interval '24 hours'))
+            GROUP BY COALESCE(currency,'USD')
+            """,
+            (now, now, now, now, now, now, now, now),
+        ).fetchall()
+        revenue_ratios = [Decimal(str(row[1])) / Decimal(str(row[2])) for row in revenue_rows if Decimal(str(row[2])) > 0]
+        if revenue_ratios:
+            ratio = min(revenue_ratios)
+            rule = self._detector._rule(AnomalyRuleId.REVENUE_DROP)
+            if ratio < rule.threshold:
+                detected.append(AnomalyDetected(rule.rule_id.value, ratio.quantize(Decimal("0.01")), rule.threshold, rule.severity, now, rule.urgent))
+
+        row = conn.execute(
+            """
+            SELECT
+              count(*) FILTER (WHERE event_type=ANY(%s) AND occurred_at >= %s - interval '1 minute') AS current_orders,
+              count(*) FILTER (WHERE event_type=ANY(%s) AND occurred_at >= %s - interval '6 minutes' AND occurred_at < %s - interval '1 minute') AS prior_orders,
+              count(*) FILTER (WHERE event_type=ANY(%s) AND occurred_at >= %s - interval '5 minutes') AS payment_failures,
+              count(*) FILTER (WHERE (event_type=ANY(%s) OR event_type='PaymentCaptured') AND occurred_at >= %s - interval '5 minutes') AS payment_attempts,
+              count(*) FILTER (WHERE event_type=ANY(%s) AND occurred_at >= %s - interval '1 hour') AS refunds,
+              count(*) FILTER (WHERE event_type=ANY(%s) AND occurred_at >= %s - interval '1 hour') AS orders
+            FROM reporting_metric_events
+            WHERE event_type=ANY(%s) AND occurred_at >= %s - interval '1 hour'
+            """,
+            (
+                list(_ORDER_CREATED_EVENT_TYPES), now,
+                list(_ORDER_CREATED_EVENT_TYPES), now, now,
+                list(_PAYMENT_FAILED_EVENT_TYPES), now,
+                list(_PAYMENT_FAILED_EVENT_TYPES), now,
+                list(_REFUND_EVENT_TYPES), now,
+                list(_ORDER_CREATED_EVENT_TYPES), now,
+                list(_ORDER_CREATED_EVENT_TYPES + _PAYMENT_FAILED_EVENT_TYPES + _PAYMENT_CAPTURED_EVENT_TYPES + _REFUND_EVENT_TYPES), now,
+            ),
+        ).fetchone()
+        current_orders, prior_orders, failures, attempts, refunds, orders = (int(value or 0) for value in row)
+        prior_average = Decimal(prior_orders) / Decimal("5")
+        order_rule = self._detector._rule(AnomalyRuleId.ORDER_SPIKE)
+        if prior_average > 0 and Decimal(current_orders) > prior_average * order_rule.threshold:
+            detected.append(AnomalyDetected(order_rule.rule_id.value, (Decimal(current_orders) / prior_average).quantize(Decimal("0.01")), order_rule.threshold, order_rule.severity, now, order_rule.urgent))
+        error_rule = self._detector._rule(AnomalyRuleId.ERROR_RATE_SPIKE)
+        error_rate = Decimal(failures) / Decimal(attempts) if attempts else Decimal("0")
+        if attempts and error_rate > error_rule.threshold:
+            detected.append(AnomalyDetected(error_rule.rule_id.value, error_rate.quantize(Decimal("0.01")), error_rule.threshold, error_rule.severity, now, error_rule.urgent))
+        refund_rule = self._detector._rule(AnomalyRuleId.REFUND_SURGE)
+        refund_rate = Decimal(refunds) / Decimal(orders) if orders else Decimal("0")
+        if orders and refund_rate > refund_rule.threshold:
+            detected.append(AnomalyDetected(refund_rule.rule_id.value, refund_rate.quantize(Decimal("0.01")), refund_rule.threshold, refund_rule.severity, now, refund_rule.urgent))
+
+        exhausted = int(conn.execute(
+            """
+            WITH latest AS (
+              SELECT DISTINCT ON (route_id,service_date) route_id,service_date,capacity,confirmed
+              FROM reporting_metric_events
+              WHERE route_id IS NOT NULL AND service_date IS NOT NULL
+                AND (capacity IS NOT NULL OR confirmed IS NOT NULL)
+              ORDER BY route_id,service_date,occurred_at DESC,event_id DESC
+            )
+            SELECT count(*) FROM latest WHERE capacity>0 AND confirmed>=capacity
+            """
+        ).fetchone()[0])
+        capacity_rule = self._detector._rule(AnomalyRuleId.CAPACITY_EXHAUSTION)
+        if Decimal(exhausted) > capacity_rule.threshold:
+            detected.append(AnomalyDetected(capacity_rule.rule_id.value, Decimal(exhausted), capacity_rule.threshold, capacity_rule.severity, now, capacity_rule.urgent))
+        return tuple(detected)
 
     def route_metrics(self, at: datetime | None = None) -> tuple[RouteMetrics, ...]:
         with self._pool.connection() as conn:
