@@ -6,9 +6,14 @@ import logging
 from datetime import date, datetime
 from typing import Any, Mapping
 
-from train_ticket_platform.messaging import FatalHandlerError
+from train_ticket_platform.messaging import FatalHandlerError, TransientHandlerError
 
-from fare_pricing.application.service import ConsumedEventConflictError, FarePricingService
+from fare_pricing.application.service import (
+    ConsumedEventConflictError,
+    FarePricingService,
+    ProjectionConflictError,
+    ProjectionNotReadyError,
+)
 from fare_pricing.domain import CapacitySnapshot, EligibilityCertificateSummary, PricingError
 from fare_pricing.ports import EventEnvelope
 
@@ -35,7 +40,7 @@ def handle_capacity_snapshot_updated(service: FarePricingService, envelope: Even
             ):
                 return
             service.upsert_capacity_snapshot(snapshot)
-    except ConsumedEventConflictError as exc:
+    except (ConsumedEventConflictError, ProjectionConflictError) as exc:
         raise FatalHandlerError(str(exc)) from exc
 
 
@@ -64,8 +69,10 @@ def handle_identity_verification_event(service: FarePricingService, envelope: Ev
                 envelope.eventType,
                 envelope.eventId,
             )
-    except ConsumedEventConflictError as exc:
+    except (ConsumedEventConflictError, ProjectionConflictError) as exc:
         raise FatalHandlerError(str(exc)) from exc
+    except ProjectionNotReadyError as exc:
+        raise TransientHandlerError(str(exc)) from exc
 
 
 def event_semantic_fingerprint(envelope: EventEnvelope) -> str:
