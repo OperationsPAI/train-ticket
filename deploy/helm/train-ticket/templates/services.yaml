@@ -42,7 +42,15 @@ metadata:
     app.kubernetes.io/name: {{ $name }}
     app.kubernetes.io/part-of: train-ticket
 spec:
+  {{- /*
+  Seed an autoscaled Deployment at minReplicas on its first install, then stop
+  owning spec.replicas. Rendering the field on every Helm upgrade resets a
+  Deployment that the HPA has scaled up, creating avoidable capacity drops
+  during an otherwise unrelated release.
+  */}}
+  {{- if or (not $autoscalingEnabled) (not $.Release.IsUpgrade) }}
   replicas: {{ $replicas }}
+  {{- end }}
   strategy:
     {{- toYaml ($svc.strategy | default (dict "type" "Recreate")) | nindent 4 }}
   selector:
