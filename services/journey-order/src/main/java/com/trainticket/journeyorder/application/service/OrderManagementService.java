@@ -28,6 +28,8 @@ import com.trainticket.journeyorder.domain.OfferSnapshotRef;
 import com.trainticket.journeyorder.domain.OrderItem;
 import com.trainticket.journeyorder.domain.SegmentOrderSnapshot;
 import com.trainticket.journeyorder.domain.TravelerRef;
+import com.trainticket.journeyorder.observability.NoopOrderFunnelMetrics;
+import com.trainticket.journeyorder.observability.OrderFunnelMetrics;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -58,16 +60,25 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
     private final IdentityVerificationPort identityVerification;
     private final OfferPricePort offerPrice;
     private final TransactionTemplate createTransaction;
+    private final OrderFunnelMetrics orderFunnelMetrics;
 
     @Autowired
     public OrderManagementService(EventPublisher eventPublisher, Clock clock, JourneyOrderStateRepository stateRepository,
-            IdentityVerificationPort identityVerification, OfferPricePort offerPrice, Optional<PlatformTransactionManager> transactionManager) {
+            IdentityVerificationPort identityVerification, OfferPricePort offerPrice, Optional<PlatformTransactionManager> transactionManager,
+            OrderFunnelMetrics orderFunnelMetrics) {
         this.eventPublisher = eventPublisher;
         this.clock = clock;
         this.stateRepository = stateRepository;
         this.identityVerification = identityVerification;
         this.offerPrice = offerPrice;
         this.createTransaction = transactionManager.map(TransactionTemplate::new).orElse(null);
+        this.orderFunnelMetrics = Objects.requireNonNull(orderFunnelMetrics, "orderFunnelMetrics is required");
+    }
+
+    public OrderManagementService(EventPublisher eventPublisher, Clock clock, JourneyOrderStateRepository stateRepository,
+            IdentityVerificationPort identityVerification, OfferPricePort offerPrice, Optional<PlatformTransactionManager> transactionManager) {
+        this(eventPublisher, clock, stateRepository, identityVerification, offerPrice, transactionManager,
+            new NoopOrderFunnelMetrics());
     }
 
     public OrderManagementService(EventPublisher eventPublisher, Clock clock, JourneyOrderStateRepository stateRepository,
@@ -102,7 +113,35 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         return createOrderFromOffer(request, idempotencyKey, correlationId, offerPrice.resolve(request));
     }
 
+    /**
+     * The order stage of the funnel: one attempt, then exactly one terminal outcome.
+     *
+     * <p>An idempotent replay is not a new attempt, so it returns before the attempt is recorded.
+     * Every other exit -- a completed save or a thrown rejection -- records one outcome, which is
+     * what keeps attempted = accepted + rejected for this stage without leaking an order id onto a
+     * label.
+     */
     public JourneyOrderResult createOrderFromOffer(JourneyOrderRequest request, String idempotencyKey, String correlationId, ResolvedOrderOffer resolved) {
+        IdempotencyEntry<JourneyOrderResult> replay = stateRepository.findCreateIdempotency(idempotencyKey).orElse(null);
+        if (replay != null) {
+            if (!replay.requestFingerprint().equals(createFingerprint(request))) {
+                throw new IdempotencyKeyReused("Idempotency-Key was reused with a different create order request");
+            }
+            return replay.result();
+        }
+        OrderFunnelMetrics.Channel channel = OrderFunnelMetrics.Channel.fromRef(resolved.channelId());
+        orderFunnelMetrics.transition(OrderFunnelMetrics.Stage.ORDER, OrderFunnelMetrics.Outcome.ATTEMPTED, channel);
+        try {
+            JourneyOrderResult result = createOrderFromOfferOnce(request, idempotencyKey, correlationId, resolved);
+            orderFunnelMetrics.transition(OrderFunnelMetrics.Stage.ORDER, OrderFunnelMetrics.Outcome.ACCEPTED, channel);
+            return result;
+        } catch (RuntimeException rejection) {
+            orderFunnelMetrics.transition(OrderFunnelMetrics.Stage.ORDER, OrderFunnelMetrics.Outcome.REJECTED, channel);
+            throw rejection;
+        }
+    }
+
+    private JourneyOrderResult createOrderFromOfferOnce(JourneyOrderRequest request, String idempotencyKey, String correlationId, ResolvedOrderOffer resolved) {
         String fingerprint = createFingerprint(request);
         IdempotencyEntry<JourneyOrderResult> existing = stateRepository.findCreateIdempotency(idempotencyKey).orElse(null);
         if (existing != null) {
