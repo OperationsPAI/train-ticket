@@ -7,6 +7,7 @@ import { toEventEnvelope } from "../../application/messaging.js";
 import { smtpMessageId } from "../channel-gateways.js";
 import { deliveryErrorEvidence } from "../delivery-errors.js";
 import { deliveryReasonCode, notificationMetricsFromEnvironment, type NotificationMetricRecorder } from "../../metrics.js";
+import { deliveryPolicyDecision, type DeliveryPolicyDecision } from "../../delivery-policy.js";
 import { PostgresNotificationTaskRepository, PostgresRateLimitRepository } from "./notification-repository.js";
 
 const CLAIM_LEASE_SECONDS = 30;
@@ -16,6 +17,12 @@ type QueueRow = {
   task_id: string; channels: DeliveryChannel[]; channel_index: number; state: string;
   claim_token: string; attempt_number: number; message_id: string;
 };
+type BeginDeliveryOutcome = Readonly<{
+  task?: NotificationTaskSnapshot;
+  channel?: DeliveryChannel["channel"];
+  policy?: DeliveryPolicyDecision;
+  quotaDeferred?: boolean;
+}>;
 export type DeliveryClaim = Readonly<{ taskId: string; token: string }>;
 export type DeliveryWorkerOperations = Readonly<{
   claim: (limit: number) => Promise<DeliveryClaim[]>;
@@ -117,22 +124,36 @@ export async function claimDelivery(pool: Pool): Promise<DeliveryClaim | undefin
   return (await claimDeliveries(pool, 1))[0];
 }
 
-export async function beginDelivery(pool: Pool, claim: DeliveryClaim): Promise<NotificationTaskSnapshot | undefined> {
+async function prepareDelivery(pool: Pool, claim: DeliveryClaim): Promise<BeginDeliveryOutcome> {
   return withTransaction(pool, async client => {
     const result = await client.query<QueueRow>("SELECT * FROM notification_delivery_queue WHERE task_id=$1 AND claim_token=$2 AND state='Claimed' AND lease_until>now() FOR UPDATE", [claim.taskId, claim.token]);
     const row = result.rows[0];
-    if (!row) return undefined;
+    if (!row) return {};
     const repository = new PostgresNotificationTaskRepository(client);
     const record = await repository.get(row.task_id);
     if (!record) throw new Error("Delivery task missing");
     const channel = row.channels[row.channel_index];
+    const policy = await deliveryPolicyDecision(client, record.data);
+    if (policy) {
+      const cancelled = NotificationTask.restore(record.data).cancel({
+        notificationTaskId: row.task_id,
+        reason: policy.reasonCode.toUpperCase(),
+        cancelledAt: new Date(),
+      });
+      await repository.save(cancelled.task.toSnapshot(), record.version);
+      await new OutboxAppender(client).append(toEventEnvelope(cancelled.event), "events:notification");
+      await client.query("UPDATE notification_delivery_queue SET state='Cancelled',claim_token=NULL,lease_until=NULL,updated_at=now() WHERE task_id=$1", [row.task_id]);
+      await client.query("UPDATE notification_delivery_attempts SET state='CancelledByPolicy',completed_at=now(),result=$2 WHERE claim_token=$1", [claim.token, JSON.stringify(policy)]);
+      await evidence(client, row, "PolicyCancelled", policy);
+      return { channel: channel.channel, policy };
+    }
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [record.data.recipientRef]);
     const decision = await new PostgresRateLimitRepository(client).reserve(row.task_id, record.data.recipientRef, channel.channel, new Date());
     if (!decision.allowed) {
       await client.query("UPDATE notification_delivery_queue SET state='Ready',available_at=$2,claim_token=NULL,lease_until=NULL,updated_at=now() WHERE task_id=$1", [row.task_id, decision.retryAfter]);
       await client.query("UPDATE notification_delivery_attempts SET state='QuotaDeferred',completed_at=now() WHERE claim_token=$1", [claim.token]);
       await evidence(client, row, "QuotaDeferred", { channel: channel.channel, retryAt: decision.retryAfter });
-      return undefined;
+      return { channel: channel.channel, quotaDeferred: true };
     }
     let task = NotificationTask.restore(record.data);
     if (task.status === "Planned" || task.status === "Authorized") {
@@ -144,8 +165,26 @@ export async function beginDelivery(pool: Pool, claim: DeliveryClaim): Promise<N
     await client.query("UPDATE notification_delivery_queue SET state='Sending',lease_until=now()+$2*interval '1 second',updated_at=now() WHERE task_id=$1", [row.task_id, CLAIM_LEASE_SECONDS]);
     await client.query("UPDATE notification_delivery_attempts SET state='Sending',started_at=clock_timestamp() WHERE claim_token=$1", [claim.token]);
     await evidence(client, row, "SendStarted", { channel: channel.channel, messageId: row.message_id });
-    return { ...task.toSnapshot(), channel: channel.channel, variables: channel.variables };
+    return { task: { ...task.toSnapshot(), channel: channel.channel, variables: channel.variables }, channel: channel.channel };
   });
+}
+
+export async function beginDelivery(
+  pool: Pool,
+  claim: DeliveryClaim,
+  metricRecorder: NotificationMetricRecorder = notificationMetricsFromEnvironment(),
+): Promise<NotificationTaskSnapshot | undefined> {
+  const prepared = await prepareDelivery(pool, claim);
+  try {
+    if (prepared.policy && prepared.channel) {
+      metricRecorder.policyAction(prepared.policy.action, prepared.channel, "cancelled", prepared.policy.reasonCode);
+    } else if (prepared.quotaDeferred && prepared.channel) {
+      metricRecorder.retry(prepared.channel, "deferred", "recipient_quota");
+    }
+  } catch {
+    // Policy and quota metrics are diagnostic and run only after the state commit.
+  }
+  return prepared.task;
 }
 
 export async function recordDeliveryResult(
