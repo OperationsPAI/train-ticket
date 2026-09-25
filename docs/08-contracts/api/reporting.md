@@ -63,7 +63,7 @@ Events accepted during a refresh remain pending for the next refresh.
 
 ### Captured Payment Report
 
-**GET** `/api/v1/metrics/revenue?groupBy=route&limit=20`
+**GET** `/api/v1/metrics/revenue?groupBy=route&limit=20&offset=0`
 
 `groupBy` supports `route`, `seat_class`, `channel`, `passenger_type`, and `time_period` for monetary reports.
 All monetary revenue fields use `PaymentCaptured` only and represent gross captured payment amount.
@@ -76,21 +76,27 @@ The default metric catalog describes this meaning; existing stored metric descri
 |---|---|
 | `generatedAt` | Response timestamp; it is not a materialized view freshness watermark. |
 | `groupBy` | Requested dimension. |
+| `total` | Number of grouped rows before pagination. |
+| `limit` | Requested maximum number of grouped rows in `items`. |
+| `offset` | Requested grouped-row offset. |
 | `items[].revenue` | Gross captured amount for the dimension value and currency. |
 | `items[].count` | Captured event count in the PostgreSQL projection; a missing amount contributes zero amount and one count. |
 | `items[].yieldPerKm` | Captured amount divided by the sum of recorded distance, or zero when the distance sum is zero. |
 | `items[].ancillaryAttachRate` | Captured rows with the ancillary flag divided by captured row count. |
 | `items[].insuranceAttachRate` | Captured rows with the insurance flag divided by captured row count. |
-| `totalRevenue` | Array of totals, one Money value per currency, ordered by ISO currency code. An empty result returns `[]`. |
+| `totalRevenue` | Complete filtered-result totals before pagination, one Money value per currency ordered by ISO currency code. An empty result returns `[]`. |
 
 PostgreSQL projection groups always include currency.
 `totalRevenue`, `routeRevenue`, and `revenue_per_hour` preserve each currency as a separate Money value and never perform implicit currency conversion.
+Only `items` is paginated. Changing `limit` or `offset`, including requesting an offset beyond the last row, does not change `totalRevenue` or `total`.
+Items are ordered by currency, then revenue descending, then dimension value; this gives stable pagination.
 Trend points for `revenue_per_hour` expose the same array in `points[].values`; non-monetary trend points continue to use `points[].value`.
 Missing dimension values appear as `unknown`; `time_period` uses UTC hour labels such as `2026-09-23T15:00:00Z`.
 The report covers stored history and reads the last completed materialized refresh.
 Refresh work runs when requests are pending and waits 30 seconds after each completed worker iteration.
 The in memory implementation supports multiple currencies and excludes events whose amount is absent from its monetary count.
 Requests using `source_context` or `event_type` return event count reports with zero monetary fields.
+For those reports, `total` is the number of grouped values and `eventCount` is the complete number of source events before pagination.
 
 Operational, route and anomaly calculations currently load at most the latest 10000 matching events; monetary calculations preserve currencies independently.
 Their time windows are limited by that loaded input.

@@ -499,6 +499,17 @@ class RealTimeMetricsEnrichmentTest(unittest.TestCase):
             [("A", Money("12.00", "CNY")), ("A", Money("3.50", "USD"))],
         )
 
+    def test_revenue_pagination_does_not_change_complete_totals(self) -> None:
+        aggregator = MetricAggregator()
+        for route, amount in (("A", "10.00"), ("B", "20.00"), ("C", "30.00")):
+            aggregator.record(OperationalEvent(route, "PaymentCaptured", NOW, route_id=route, amount=Money(amount, "CNY")))
+
+        report = aggregator.revenue_report("route", limit=1, offset=1, at=NOW)
+
+        self.assertEqual([item.value for item in report.items], ["B"])
+        self.assertEqual(report.total_revenue, (Money("60.00", "CNY"),))
+        self.assertEqual((report.total_items, report.limit, report.offset), (3, 1, 1))
+
     def test_payment_failure_rate_detects_anomaly(self) -> None:
         aggregator = MetricAggregator()
         detector = AnomalyDetector()
@@ -548,6 +559,17 @@ class RealTimeMetricsEnrichmentTest(unittest.TestCase):
         self.assertEqual([item.value for item in report.items], ["DispatchRequested", "DispatchFailed", "WaitlistQueued"])
         self.assertEqual([item.count for item in report.items], [2, 1, 1])
         self.assertEqual(report.total_count, 4)
+
+    def test_context_count_report_paginates_groups_and_preserves_event_count(self) -> None:
+        aggregator = MetricAggregator()
+        aggregator.record(OperationalEvent("a-1", "A", NOW, source_context="one"))
+        aggregator.record(OperationalEvent("a-2", "A", NOW, source_context="one"))
+        aggregator.record(OperationalEvent("b-1", "B", NOW, source_context="two"))
+
+        report = aggregator.context_count_report("source_context", limit=1, offset=1, at=NOW)
+
+        self.assertEqual([item.value for item in report.items], ["two"])
+        self.assertEqual((report.total_items, report.total_count, report.limit, report.offset), (2, 3, 1, 1))
 
     def test_context_count_report_rejects_invalid_counts(self) -> None:
         with self.assertRaisesRegex(ReportingError, "count must be positive"):
