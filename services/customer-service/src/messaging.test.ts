@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { RedisEventSubscriber } from "./adapters/messaging/subscriber.js";
+import { CustomerServiceRedisEventSubscriber, RedisEventSubscriber } from "./adapters/messaging/subscriber.js";
 import { CUSTOMER_SERVICE_SUBSCRIPTIONS } from "./adapters/messaging/stream-config.js";
 import { CustomerServiceApplication } from "./application/customer-service.js";
 import { EvidenceRef, ManualActionRequest, SupportCase, type CustomerServiceDomainEvent } from "./domain.js";
@@ -376,6 +376,47 @@ describe("customer-service messaging ports", () => {
     assert.match((observed[0] as Error).message, /background loop failed/);
   });
 
+  it("isolates recovery by stream so one slow handler cannot block another stream", async () => {
+    const slowStream = "events:post-sales";
+    const fastStream = "events:identity-verification";
+    let releaseSlow!: () => void;
+    const slowGate = new Promise<void>((resolve) => { releaseSlow = resolve; });
+    const started: string[] = [];
+    const redisByStream = new Map<string, RecoveryRedis>();
+    const subscriber = new CustomerServiceRedisEventSubscriber((stream) => {
+      const redis = new RecoveryRedis(stream);
+      redisByStream.set(stream, redis);
+      return new RedisEventSubscriber(redis as never);
+    });
+
+    await subscriber.subscribe(
+      [slowStream, fastStream],
+      "customer-service",
+      "customer-service-test",
+      async (envelope) => {
+        started.push(envelope.producer);
+        if (envelope.producer === "post-sales") {
+          await slowGate;
+        }
+      },
+    );
+
+    try {
+      await waitFor(() => started.includes("post-sales"), 2_000);
+      await waitFor(() => started.includes("identity-verification"), 250);
+      assert.deepEqual(
+        [...redisByStream.entries()].map(([stream, redis]) => [stream, redis.claimedStreams]),
+        [
+          [slowStream, [slowStream]],
+          [fastStream, [fastStream]],
+        ],
+      );
+    } finally {
+      releaseSlow();
+      await subscriber.stop();
+    }
+  });
+
   it("in-memory subscriber applies consumer-side deduplication", async () => {
     const subscriber = new InMemoryEventSubscriber();
     const envelope: EventEnvelope = {
@@ -457,4 +498,55 @@ async function waitFor(condition: () => boolean, timeoutMs = 100): Promise<void>
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   assert.equal(condition(), true);
+}
+
+class RecoveryRedis {
+  private delivered = false;
+  private disconnected = false;
+  private readonly blockedReads: Array<() => void> = [];
+  readonly claimedStreams: string[] = [];
+
+  constructor(private readonly stream: string) {}
+
+  disconnect(): void {
+    this.disconnected = true;
+    for (const resolve of this.blockedReads.splice(0)) resolve();
+  }
+
+  async xgroup(): Promise<void> {}
+
+  async xreadgroup(): Promise<null> {
+    if (this.disconnected) return null;
+    await new Promise<void>((resolve) => this.blockedReads.push(resolve));
+    return null;
+  }
+
+  async xautoclaim(stream: string): Promise<unknown[]> {
+    this.claimedStreams.push(stream);
+    if (this.delivered) return ["0-0", []];
+    this.delivered = true;
+    return ["0-0", [["1-0", ["envelope", JSON.stringify(recoveryEnvelope(this.stream))]]]];
+  }
+
+  async xpending(_stream: string, _group: string, entryId: string): Promise<unknown[]> {
+    return [[entryId, "old-consumer", 60_001, 2]];
+  }
+
+  async xack(): Promise<number> {
+    return 1;
+  }
+}
+
+function recoveryEnvelope(stream: string): EventEnvelope {
+  const producer = stream.replace(/^events:/, "");
+  return {
+    eventId: `evt-${producer}`,
+    eventType: "RecoveryTestEvent",
+    occurredAt: "2026-09-25T12:00:00.000Z",
+    correlationId: `corr-${producer}`,
+    causationId: `evt-source-${producer}`,
+    producer,
+    schemaVersion: 1,
+    payload: {},
+  };
 }
