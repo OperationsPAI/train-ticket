@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   OptimisticConcurrencyConflict,
+  DurableEventReplayWorker,
   OutboxAppender,
   OutboxRelay,
   PostgresDeadLetterEvidenceStore,
@@ -17,6 +18,7 @@ import {
   withTransaction,
   type EventEnvelope,
   type DeadLetterEvidenceSink,
+  type EventReplaySource,
   type MigrationSupervisor,
 } from "@trainticket/ts-kit";
 
@@ -61,6 +63,36 @@ export async function startNotificationStorage(channelGateway: NotificationChann
   });
   relay.start();
   const deliveryWorker = startDeliveryWorker(pool, channelGateway);
+  const deadLetterEvidenceSink = new PostgresDeadLetterEvidenceStore(pool);
+
+  const handleExternalTrigger = async (original: EventEnvelope, stream?: string): Promise<"ack" | "retry" | "dlq"> => {
+    if (!templateCodeFor(original)) return "ack";
+    return withTransaction(pool, async (client) => {
+      const guard = new ProcessedEventsGuard(client);
+      if (!await guard.tryStart(original.eventId, stream)) {
+        return "ack";
+      }
+      const envelope = await resolveRecipient(client, original);
+      const result = await deliverOrDefer(client, envelope, stream, channelGateway);
+      if (result === "dlq") {
+        // A fatal trigger is evidence, not a successfully consumed business fact.
+        // Keep it eligible for an explicit replay after the contract/data issue is
+        // corrected; otherwise the processed-event guard would make recovery look
+        // successful without re-running validation.
+        await client.query("DELETE FROM processed_events WHERE event_id=$1", [original.eventId]);
+      }
+      return result;
+    });
+  };
+  const replay = new DurableEventReplayWorker(
+    pool,
+    notificationReplaySources(),
+    handleExternalTrigger,
+    { consumerGroup: "notification", pollIntervalMs: replayPollIntervalMs(), deadLetterEvidenceSink },
+  );
+  let stopping = false;
+  if (migrations.isReady()) replay.start();
+  else void migrations.applied().then(() => { if (!stopping) replay.start(); });
 
   let retrying: Promise<void> | undefined;
   const retryTimer = setInterval(() => {
@@ -76,21 +108,13 @@ export async function startNotificationStorage(channelGateway: NotificationChann
     failure: () => migrations.failure(),
     schema: () => migrations.detail(),
     getNotificationTrail: notificationId => getNotificationTrail(pool, notificationId),
-    deadLetterEvidenceSink: new PostgresDeadLetterEvidenceStore(pool),
-    handleExternalTrigger: async (original, stream) => {
-      if (!templateCodeFor(original)) return "ack";
-      return withTransaction(pool, async (client) => {
-        const guard = new ProcessedEventsGuard(client);
-        if (!await guard.tryStart(original.eventId, stream)) {
-          return "ack";
-        }
-        const envelope = await resolveRecipient(client, original);
-        return deliverOrDefer(client, envelope, stream, channelGateway);
-      });
-    },
+    deadLetterEvidenceSink,
+    handleExternalTrigger,
     stop: async () => {
+      stopping = true;
       clearInterval(retryTimer);
       await retrying;
+      await replay.stop();
       await deliveryWorker.stop();
       // Stop the migration retry first: otherwise a shutdown during the retry
       // window leaves a backoff timer running and can issue queries against a
@@ -101,6 +125,19 @@ export async function startNotificationStorage(channelGateway: NotificationChann
       await Promise.allSettled([redis.quit(), pool.end()]);
     },
   };
+}
+
+export function notificationReplaySources(): readonly EventReplaySource[] {
+  return [
+    { name: "post-sales", producer: "post-sales", endpoint: process.env.POST_SALES_EVENT_REPLAY_URL ?? "http://post-sales:8080/api/v1/internal/event-replay" },
+    { name: "payment", producer: "payment", endpoint: process.env.PAYMENT_EVENT_REPLAY_URL ?? "http://payment:8080/api/v1/internal/event-replay" },
+    { name: "wallet-promotion", producer: "wallet-promotion", endpoint: process.env.WALLET_PROMOTION_EVENT_REPLAY_URL ?? "http://wallet-promotion:8080/api/v1/internal/event-replay" },
+  ];
+}
+
+function replayPollIntervalMs(): number {
+  const configured = Number(process.env.EVENT_REPLAY_POLL_INTERVAL_MS ?? "5000");
+  return Number.isFinite(configured) && configured >= 100 ? configured : 5_000;
 }
 
 export async function getNotificationTrail(pool: import("pg").Pool, notificationId: string): Promise<NotificationTrailResponse | undefined> {
