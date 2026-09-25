@@ -6,6 +6,7 @@ import type { DeliveryChannel, DeliveryResult, NotificationChannelGateway, Notif
 import { toEventEnvelope } from "../../application/messaging.js";
 import { smtpMessageId } from "../channel-gateways.js";
 import { deliveryErrorEvidence } from "../delivery-errors.js";
+import { deliveryReasonCode, notificationMetricsFromEnvironment, type NotificationMetricRecorder } from "../../metrics.js";
 import { PostgresNotificationTaskRepository, PostgresRateLimitRepository } from "./notification-repository.js";
 
 const CLAIM_LEASE_SECONDS = 30;
@@ -147,14 +148,19 @@ export async function beginDelivery(pool: Pool, claim: DeliveryClaim): Promise<N
   });
 }
 
-export async function recordDeliveryResult(pool: Pool, claim: DeliveryClaim, result: DeliveryResult): Promise<void> {
-  await withTransaction(pool, async client => {
+export async function recordDeliveryResult(
+  pool: Pool,
+  claim: DeliveryClaim,
+  result: DeliveryResult,
+  metricRecorder: NotificationMetricRecorder = notificationMetricsFromEnvironment(),
+): Promise<void> {
+  const observation = await withTransaction(pool, async client => {
     const found = await client.query<QueueRow>("SELECT * FROM notification_delivery_queue WHERE task_id=$1 FOR UPDATE", [claim.taskId]);
     const row = found.rows[0];
     if (!row) throw new Error("Delivery queue entry missing");
     const attempt = await client.query("SELECT state FROM notification_delivery_attempts WHERE claim_token=$1 AND task_id=$2", [claim.token, claim.taskId]);
     if (!attempt.rows[0]) throw new Error("Delivery attempt missing");
-    if (!["Sending", "Unknown"].includes(attempt.rows[0].state)) return;
+    if (!["Sending", "Unknown"].includes(attempt.rows[0].state)) return undefined;
     if (row.claim_token !== claim.token || !["Sending", "Unknown"].includes(row.state)) throw new Error("Delivery claim no longer owns task");
     if (row.state === "Unknown" && !result.ok && result.outcome === "Unknown") return;
     const channel = row.channels[row.channel_index].channel;
@@ -179,7 +185,20 @@ export async function recordDeliveryResult(pool: Pool, claim: DeliveryClaim, res
     await evidence(client, row, row.state === "Unknown" ? "LateResult" : "SendResult", { ...result, nextState: state, retryAt, fallback });
     await client.query("UPDATE notification_delivery_queue SET state=$2,channel_index=channel_index+$3,available_at=$4,lease_until=NULL,updated_at=now() WHERE task_id=$1",
       [row.task_id, state, fallback ? 1 : 0, retryAt ?? new Date()]);
+    return {
+      channel,
+      outcome: result.ok ? "delivered" : result.outcome === "Unknown" ? "unknown" : retry ? "retry_scheduled" : fallback ? "fallback_scheduled" : "failed",
+      reasonCode: deliveryReasonCode(result.ok ? "Delivered" : result.outcome, result.ok ? undefined : result.providerCode),
+      retry,
+    } as const;
   });
+  if (!observation) return;
+  try {
+    metricRecorder.deliveryResult(observation.channel, observation.outcome, observation.reasonCode);
+    if (observation.retry) metricRecorder.retry(observation.channel, "scheduled", observation.reasonCode);
+  } catch {
+    // Telemetry must not turn an already committed receipt into a worker error.
+  }
 }
 
 export async function recoverDeliveryClaims(pool: Pool): Promise<void> {
