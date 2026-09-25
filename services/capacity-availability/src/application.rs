@@ -665,6 +665,7 @@ impl CapacityService {
                     capacity_unit_ref: hold.scope.capacity_unit_ref.to_string(),
                     from_seq: hold.scope.station_interval.from_seq(),
                     to_seq: hold.scope.station_interval.to_seq(),
+                    supply_evidence: hold.scope.supply_evidence.clone(),
                 });
             }
         }
@@ -960,6 +961,7 @@ pub struct GetHoldResponse {
     /// eventual release can find, and the release silently matches nothing.
     pub from_seq: u32,
     pub to_seq: u32,
+    pub supply_evidence: Option<HoldSupplyEvidence>,
 }
 
 // ---------------------------------------------------------------------------
