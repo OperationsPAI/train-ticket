@@ -289,6 +289,9 @@ type GenerateStatementRequest struct {
 }
 
 func (s *Service) GenerateStatement(ctx context.Context, r GenerateStatementRequest) (*domain.ChannelStatement, error) {
+	if strings.TrimSpace(r.OperatorRef) == "" || strings.TrimSpace(r.ReasonCode) == "" {
+		return nil, derr("VALIDATION_FAILED", "operatorRef and reasonCode are required")
+	}
 	statementIdentity := domain.StatementIdentityKey(r.Channel, r.StatementDate, r.Currency, r.SeedVersion)
 	if _, err := domain.NewStatementBuilder(r.Channel, r.StatementDate, r.Currency, r.SeedVersion); err != nil {
 		return nil, derr("VALIDATION_FAILED", err.Error())
