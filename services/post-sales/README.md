@@ -117,6 +117,16 @@ Execution records preserve the downstream results and their business references.
 
 Java keeps refund/change case workflows explicit and compatible with transaction review tooling.
 
+## Historical execution redrive
+
+Call `POST /api/v1/post-sales-cases/{caseId}/approve` with a new UUID v7 HTTP idempotency key to redrive a historical case that remains internally `EXECUTING` after its original approval messages have expired.
+Post Sales reconstructs `PostSalesApproved` from the frozen decision, scope, refund allocation and approved actions, and reconstructs `PostSalesExecutionStarted` from the persisted execution plan.
+The first redrive stores stable event metadata in the case snapshot; repeated and concurrent calls reuse the same event IDs, so the transactional outbox contains at most one redrive pair at a time and can enqueue that pair again after outbox retention.
+
+The redrive does not repeat approval or reset execution evidence.
+Payment refund commands retain their `caseId` or `caseId:paymentIntentId` idempotency keys, entitlement voiding retains the same case reference and is a no-op after a successful void, and capacity release remains state-idempotent in its owning service.
+An `APPLIED` case is returned without publishing a redrive event.
+
 ## Check
 
 ```bash
