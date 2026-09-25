@@ -112,7 +112,18 @@ export class HttpWaitlistFulfillmentClient implements WaitlistFulfillmentClient 
     if (!paymentIntentId) return undefined;
     const payment = await this.getPayment(paymentIntentId, correlationId);
     if (["CAPTURED", "FAILED", "CANCELLED", "EXPIRED"].includes(payment.status)) return payment;
-    const body = await this.post("payment", `/api/v1/payment-intents/${encodeURIComponent(paymentIntentId)}/cancel`, entry.fulfillment.paymentCancelIdempotencyKey, { reason }, correlationId);
+    const path = `/api/v1/payment-intents/${encodeURIComponent(paymentIntentId)}/cancel`;
+    const headers: Record<string, string> = { "content-type": "application/json", "Idempotency-Key": entry.fulfillment.paymentCancelIdempotencyKey };
+    if (correlationId) headers["x-correlation-id"] = correlationId;
+    const response = await this.fetcher(`${this.base("payment")}${path}`, {
+      method: "POST", headers, body: JSON.stringify({ reason }), signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) {
+      const current = await this.getPayment(paymentIntentId, correlationId);
+      if (["CAPTURED", "FAILED", "CANCELLED", "EXPIRED"].includes(current.status)) return current;
+      throw new Error(`Waitlist fulfillment payment request failed with status ${response.status}`);
+    }
+    const body = responseObject(await response.json(), "payment");
     return {
       paymentIntentId: requiredString(body, "paymentIntentId"), businessRef: entry.journeyOrderRef!, payerRef: entry.accountId,
       status: normalizePaymentStatus(requiredString(body, "status")), amount: entry.fulfillment.orderAmount!,
@@ -120,8 +131,8 @@ export class HttpWaitlistFulfillmentClient implements WaitlistFulfillmentClient 
   }
 
   async releaseCapacity(traveler: FulfillmentTraveler, capacityHoldId: string, correlationId?: string): Promise<void> {
-    const current = await this.get("capacity-availability", `/api/v1/capacity-holds/${encodeURIComponent(capacityHoldId)}`, correlationId, true);
-    if (!current || ["RELEASED", "EXPIRED", "CANCELLED", "FAILED"].includes(optionalString(current, "status") ?? "")) return;
+    const current = await this.getRequired("capacity-availability", `/api/v1/capacity-holds/${encodeURIComponent(capacityHoldId)}`, correlationId);
+    if (["RELEASED", "EXPIRED", "CANCELLED", "FAILED"].includes(optionalString(current, "status") ?? "")) return;
     await this.post("capacity-availability", `/api/v1/capacity-holds/${encodeURIComponent(capacityHoldId)}/release`, traveler.capacityReleaseIdempotencyKey, {}, correlationId);
   }
 
