@@ -34,6 +34,7 @@ Ancillary revenue is recognized from its fulfillment fact.
 Produced when a recorded revenue amount is reversed for an applied refund or checked financial adjustment.
 `componentCode` identifies the original revenue component.
 Compensation approval and completion do not produce a reversal.
+For post-sales cases with mixed payments, each settled refund is matched through its Payment intent's authoritative capture event to the original `fare` or `change-payment` recognition. The refund ID is the durable reversal identity: replaying the same amount is a no-op and changing the amount is rejected. The case total must equal the approved refund, while the aggregate assigned to each Payment cannot exceed its persisted refunded or captured amount.
 
 | Field | Type | Description |
 |---|---|---|
