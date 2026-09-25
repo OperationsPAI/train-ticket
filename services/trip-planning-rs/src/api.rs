@@ -13,17 +13,21 @@ use shared_kernel::RequestContext;
 use std::sync::Arc;
 
 use crate::application::AppState;
-use crate::domain::{
-    Itinerary, search_itineraries, PreferenceConstraints, TripIntent,
-};
+use crate::domain::{Itinerary, PreferenceConstraints, TripIntent, search_itineraries};
 
 const MAX_CONNECTIONS: u32 = 3;
 const DEFAULT_MAX_CONNECTION_WAIT_MINUTES: u32 = 24 * 60;
 
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
-        .route("/api/v1/itineraries/search", post(search_itineraries_handler))
-        .route("/api/v1/itineraries/{itineraryRef}", get(get_itinerary_handler))
+        .route(
+            "/api/v1/itineraries/search",
+            post(search_itineraries_handler),
+        )
+        .route(
+            "/api/v1/itineraries/{itineraryRef}",
+            get(get_itinerary_handler),
+        )
         .layer(Extension(state))
 }
 
@@ -131,17 +135,18 @@ async fn search_itineraries_handler(
     }
 
     let max_results = req.max_results.unwrap_or(10).clamp(1, 50);
-    let departure_date = NaiveDate::parse_from_str(&req.departure_date, "%Y-%m-%d").map_err(|_| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                code: "VALIDATION_FAILED".to_string(),
-                message: "departureDate must be an ISO-8601 date".to_string(),
-                correlation_id: correlation_id.clone(),
-                details: serde_json::json!({}),
-            }),
-        )
-    })?;
+    let departure_date =
+        NaiveDate::parse_from_str(&req.departure_date, "%Y-%m-%d").map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    code: "VALIDATION_FAILED".to_string(),
+                    message: "departureDate must be an ISO-8601 date".to_string(),
+                    correlation_id: correlation_id.clone(),
+                    details: serde_json::json!({}),
+                }),
+            )
+        })?;
 
     // Build TripIntent
     let window_start = Utc
@@ -167,25 +172,22 @@ async fn search_itineraries_handler(
         preferences,
     };
 
-    // Look up candidates from the in-memory index
-    let real_candidates = match intent.preferences.max_connections {
-        Some(max_connections) if max_connections > 0 => state.plan_index.candidates_with_connections(
+    let max_connections = intent.preferences.max_connections.unwrap_or(0);
+    let maximum_wait_minutes = intent
+        .preferences
+        .max_connection_wait_minutes
+        .unwrap_or(DEFAULT_MAX_CONNECTION_WAIT_MINUTES);
+    let real_candidates = state
+        .search_candidates(
             &intent.origin_ref,
             &intent.destination_ref,
             departure_date,
             max_connections,
             intent.preferences.min_connection_minutes,
-            intent
-                .preferences
-                .max_connection_wait_minutes
-                .unwrap_or(DEFAULT_MAX_CONNECTION_WAIT_MINUTES),
-        ),
-        _ => state.plan_index.candidates(
-            &intent.origin_ref,
-            &intent.destination_ref,
-            departure_date,
-        ),
-    };
+            maximum_wait_minutes,
+        )
+        .await
+        .map_err(|error| storage_error(error, &correlation_id))?;
 
     // No candidate means no itinerary. An empty result is the honest answer and
     // the one every caller already handles: the load generator records
@@ -271,8 +273,11 @@ async fn get_itinerary_handler(
 ) -> Result<Json<Value>, (StatusCode, Json<ErrorResponse>)> {
     let correlation_id = context.correlation_id().to_string();
 
-    if let Some(snapshot) = state.get_itinerary(&itinerary_ref).await
-        .map_err(|error| storage_error(error, &correlation_id))? {
+    if let Some(snapshot) = state
+        .get_itinerary(&itinerary_ref)
+        .await
+        .map_err(|error| storage_error(error, &correlation_id))?
+    {
         return Ok(Json(snapshot));
     }
 
@@ -291,12 +296,20 @@ async fn get_itinerary_handler(
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn storage_error(error: rust_kit::storage::StorageError, correlation_id: &str) -> (StatusCode, Json<ErrorResponse>) {
+fn storage_error(
+    error: rust_kit::storage::StorageError,
+    correlation_id: &str,
+) -> (StatusCode, Json<ErrorResponse>) {
     log::error!("itinerary storage failed: {}", error);
-    (StatusCode::SERVICE_UNAVAILABLE, Json(ErrorResponse {
-        code: "UNAVAILABLE".into(), message: "Itinerary storage unavailable".into(),
-        correlation_id: correlation_id.into(), details: serde_json::json!({}),
-    }))
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(ErrorResponse {
+            code: "UNAVAILABLE".into(),
+            message: "Itinerary storage unavailable".into(),
+            correlation_id: correlation_id.into(),
+            details: serde_json::json!({}),
+        }),
+    )
 }
 
 fn validate_search_request(req: &SearchRequest) -> Result<(), String> {
@@ -320,7 +333,10 @@ fn validate_search_request(req: &SearchRequest) -> Result<(), String> {
     if req.channel.trim().is_empty() {
         return Err("channel is required".to_string());
     }
-    if req.max_results.is_some_and(|value| !(1..=50).contains(&value)) {
+    if req
+        .max_results
+        .is_some_and(|value| !(1..=50).contains(&value))
+    {
         return Err("maxResults must be between 1 and 50".to_string());
     }
     if req
@@ -383,10 +399,7 @@ fn itinerary_to_contract(itinerary: &Itinerary) -> ItineraryJson {
                 service_segment_ref: leg.service_segment_ref.clone(),
                 origin_stop_ref: leg.origin_stop_ref.clone(),
                 destination_stop_ref: leg.destination_stop_ref.clone(),
-                departure_time: leg
-                    .departure_time
-                    .format("%Y-%m-%dT%H:%M:%SZ")
-                    .to_string(),
+                departure_time: leg.departure_time.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
                 arrival_time: leg.arrival_time.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
                 mode: leg.mode.clone(),
             })
@@ -395,11 +408,12 @@ fn itinerary_to_contract(itinerary: &Itinerary) -> ItineraryJson {
             currency: h.currency.clone(),
             minor_units: h.amount_minor,
         }),
-        availability_hint: itinerary.availability_hint.as_ref().map(|h| {
-            AvailabilityHintJson {
+        availability_hint: itinerary
+            .availability_hint
+            .as_ref()
+            .map(|h| AvailabilityHintJson {
                 status: h.status.clone(),
                 confidence: h.confidence,
-            }
-        }),
+            }),
     }
 }
