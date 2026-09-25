@@ -4,7 +4,7 @@ import hashlib
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -110,6 +110,9 @@ _REPORTING_APPLIED_EVENT_TYPES = frozenset(
     )
 )
 
+TREND_BUCKETS = 60
+TREND_BUCKET_SECONDS = 60
+
 
 def reporting_applies_event_type(event_type: str) -> bool:
     """Return whether Reporting has a projection rule for an upstream event.
@@ -136,6 +139,71 @@ def rfc3339_utc(value: datetime) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=UTC)
     return value.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def trends_from_events(events: Any, at: datetime | None = None) -> dict[str, object]:
+    generated_at = at or utc_now()
+    end_at = generated_at.astimezone(UTC).replace(second=0, microsecond=0)
+    start_at = end_at - timedelta(minutes=TREND_BUCKETS)
+    buckets = [start_at + timedelta(minutes=index) for index in range(TREND_BUCKETS)]
+    orders = {bucket: 0 for bucket in buckets}
+    refunds = {bucket: 0 for bucket in buckets}
+    revenue: dict[datetime, dict[str, Decimal]] = {bucket: {} for bucket in buckets}
+    for event in events:
+        if not start_at <= event.occurred_at < end_at:
+            continue
+        bucket = event.occurred_at.astimezone(UTC).replace(second=0, microsecond=0)
+        if event.is_order:
+            orders[bucket] += 1
+        if event.is_refund:
+            refunds[bucket] += 1
+        if event.is_payment_captured and event.amount is not None:
+            values = revenue[bucket]
+            values[event.amount.currency] = values.get(event.amount.currency, Decimal("0.00")) + event.amount.amount
+    return {
+        "generatedAt": rfc3339_utc(generated_at),
+        "window": {
+            "start": rfc3339_utc(start_at),
+            "end": rfc3339_utc(end_at),
+            "bucketSeconds": TREND_BUCKET_SECONDS,
+            "pointCount": TREND_BUCKETS,
+        },
+        "series": [
+            {
+                "metric": "orders_per_second",
+                "unit": "orders_per_second",
+                "points": [
+                    {"at": rfc3339_utc(bucket), "value": round(orders[bucket] / TREND_BUCKET_SECONDS, 4)}
+                    for bucket in buckets
+                ],
+            },
+            {
+                "metric": "gross_captured_amount",
+                "unit": "money_per_minute",
+                "points": [
+                    {
+                        "at": rfc3339_utc(bucket),
+                        "values": [
+                            {"amount": str(Money(amount, currency).amount), "currency": currency}
+                            for currency, amount in sorted(revenue[bucket].items())
+                        ],
+                    }
+                    for bucket in buckets
+                ],
+            },
+            {
+                "metric": "refund_rate",
+                "unit": "ratio",
+                "points": [
+                    {
+                        "at": rfc3339_utc(bucket),
+                        "value": 0.0 if orders[bucket] == 0 else refunds[bucket] / orders[bucket],
+                    }
+                    for bucket in buckets
+                ],
+            },
+        ],
+    }
 
 
 @dataclass(slots=True)
@@ -551,25 +619,8 @@ class ReportingApplicationService:
     def list_anomalies(self) -> tuple[AnomalyDetected, ...]:
         return self.repository.list_anomalies()
 
-    def trends(self) -> dict[str, object]:
-        snapshot = self.operational_metrics()
-        return {
-            "generatedAt": rfc3339_utc(snapshot.generated_at),
-            "series": [
-                {"metric": "orders_per_second", "points": [{"at": rfc3339_utc(snapshot.generated_at), "value": snapshot.orders_per_second}]},
-                {
-                    "metric": "revenue_per_hour",
-                    "points": [{
-                        "at": rfc3339_utc(snapshot.generated_at),
-                        "values": [
-                            {"amount": str(total.amount), "currency": total.currency}
-                            for total in snapshot.revenue_per_hour
-                        ],
-                    }],
-                },
-                {"metric": "refund_rate", "points": [{"at": rfc3339_utc(snapshot.generated_at), "value": snapshot.refund_rate}]},
-            ],
-        }
+    def trends(self, at: datetime | None = None) -> dict[str, object]:
+        return trends_from_events(self.repository.metric_aggregator.events, at)
 
     def handle_event(self, envelope: EventEnvelope) -> HandlerResult:
         if not reporting_applies_event_type(envelope.eventType):

@@ -20,6 +20,8 @@ from reporting.application.service import (
     project_revenue_facts,
     reporting_applies_event_type,
     rfc3339_utc,
+    TREND_BUCKETS,
+    TREND_BUCKET_SECONDS,
     utc_now,
 )
 from reporting.domain import (
@@ -1117,23 +1119,86 @@ class PostgresReportingApplicationService:
             for row in rows
         )
 
-    def trends(self) -> dict[str, object]:
-        snapshot = self.operational_metrics()
+    def trends(self, at: datetime | None = None) -> dict[str, object]:
+        generated_at = at or utc_now()
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                """
+                WITH bounds AS (
+                  SELECT date_bin(interval '1 minute',%s::timestamptz,timestamptz '1970-01-01 00:00:00+00') AS end_at
+                ),
+                buckets AS (
+                  SELECT generate_series(end_at-interval '60 minutes',end_at-interval '1 minute',interval '1 minute') AS bucket
+                  FROM bounds
+                ),
+                recent AS MATERIALIZED (
+                  SELECT date_bin(interval '1 minute',occurred_at,timestamptz '1970-01-01 00:00:00+00') AS bucket,
+                         event_type,amount,COALESCE(currency,'USD') AS currency
+                  FROM reporting_metric_events,bounds
+                  WHERE occurred_at>=end_at-interval '60 minutes' AND occurred_at<end_at
+                    AND event_type=ANY(%s)
+                ),
+                counts AS (
+                  SELECT bucket,
+                         count(*) FILTER (WHERE event_type=ANY(%s)) AS orders,
+                         count(*) FILTER (WHERE event_type=ANY(%s)) AS refunds
+                  FROM recent GROUP BY bucket
+                ),
+                revenue AS (
+                  SELECT bucket,currency,SUM(amount) AS amount
+                  FROM recent
+                  WHERE event_type='PaymentCaptured' AND amount IS NOT NULL
+                  GROUP BY bucket,currency
+                ),
+                revenue_json AS (
+                  SELECT bucket,jsonb_agg(jsonb_build_object('amount',amount,'currency',currency) ORDER BY currency) AS values
+                  FROM revenue GROUP BY bucket
+                )
+                SELECT buckets.bucket,
+                       COALESCE(counts.orders,0)::numeric/60 AS orders_per_second,
+                       COALESCE(revenue_json.values,'[]'::jsonb) AS captured_amount,
+                       CASE WHEN COALESCE(counts.orders,0)=0 THEN 0
+                            ELSE COALESCE(counts.refunds,0)::numeric/counts.orders END AS refund_rate
+                FROM buckets
+                LEFT JOIN counts USING(bucket)
+                LEFT JOIN revenue_json USING(bucket)
+                ORDER BY buckets.bucket
+                """,
+                (
+                    generated_at,
+                    list(_ORDER_CREATED_EVENT_TYPES + _REFUND_EVENT_TYPES + _PAYMENT_CAPTURED_EVENT_TYPES),
+                    list(_ORDER_CREATED_EVENT_TYPES),
+                    list(_REFUND_EVENT_TYPES),
+                ),
+            ).fetchall()
+        end_at = generated_at.astimezone(UTC).replace(second=0, microsecond=0)
         return {
-            "generatedAt": rfc3339_utc(snapshot.generated_at),
+            "generatedAt": rfc3339_utc(generated_at),
+            "window": {
+                "start": rfc3339_utc(end_at - timedelta(minutes=TREND_BUCKETS)),
+                "end": rfc3339_utc(end_at),
+                "bucketSeconds": TREND_BUCKET_SECONDS,
+                "pointCount": TREND_BUCKETS,
+            },
             "series": [
-                {"metric": "orders_per_second", "points": [{"at": rfc3339_utc(snapshot.generated_at), "value": snapshot.orders_per_second}]},
                 {
-                    "metric": "revenue_per_hour",
-                    "points": [{
-                        "at": rfc3339_utc(snapshot.generated_at),
-                        "values": [
-                            {"amount": str(total.amount), "currency": total.currency}
-                            for total in snapshot.revenue_per_hour
-                        ],
-                    }],
+                    "metric": "orders_per_second",
+                    "unit": "orders_per_second",
+                    "points": [{"at": rfc3339_utc(_row_datetime(row[0])), "value": round(float(row[1]), 4)} for row in rows],
                 },
-                {"metric": "refund_rate", "points": [{"at": rfc3339_utc(snapshot.generated_at), "value": snapshot.refund_rate}]},
+                {
+                    "metric": "gross_captured_amount",
+                    "unit": "money_per_minute",
+                    "points": [{
+                        "at": rfc3339_utc(_row_datetime(row[0])),
+                        "values": [{"amount": str(Money(value["amount"], value["currency"]).amount), "currency": value["currency"]} for value in row[2]],
+                    } for row in rows],
+                },
+                {
+                    "metric": "refund_rate",
+                    "unit": "ratio",
+                    "points": [{"at": rfc3339_utc(_row_datetime(row[0])), "value": float(row[3])} for row in rows],
+                },
             ],
         }
 
