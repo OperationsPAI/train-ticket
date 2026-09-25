@@ -68,19 +68,37 @@ the live path works.
 ### The resident cycle is not yet clean
 
 The cycle does not pass the acceptance in [TODO](TODO.md#acceptance) yet. The
-last measured window carries 19569 failed journeys out of 96165, and the
-reservation path is no longer what produces them:
+last measured windows carry 400 to 1000 failed journeys per 2500, and the
+reservation path is no longer what produces them: capacity logs no transient
+failure at all across its replicas while the load generator reports reservations
+that did not confirm.
 
-| Group | Count in the window | Cause |
-|---|---|---|
-| `trip-planning` `search` timeout | 14153 | The search query reads the plan corpus, which the load generator's own bootstrap keeps growing; see the note below. |
-| `trip-planning` `search` 503 | 2890 | The same query holding a pooled connection long enough to exhaust it. |
-| `post-sales` `change-execute` 422 | several hundred | The replacement reservation is refused with `OVERLAPPING_HOLD` while the original hold is still active. |
-| `disruption-recovery` `disruption-select` 503 | tens | A business conflict ("a refund or change case is already in progress for this order") mapped to an availability failure. |
+What the measurements say is left is one instance doing the whole system's work.
+The chart defines six PostgreSQL shards, but only six of the thirty-seven
+services set `pgInstance`; the other thirty-one use `core`, and the read shard's
+copies of the read-heavy databases hold no tables at all. Measured over one
+25 second window on `core`:
 
-The peak windows inside the same run, taken before Trip Planning degraded,
-carried **zero failed journeys out of 10670** and 36 out of 8924, so the
-reservation path itself now holds at the peak.
+| Database | Transactions | Blocks read | Tuples fetched |
+|---|---|---|---|
+| `fare_pricing` | 20886 | 222937 | 22348 |
+| `trip_planning` | 12304 | 827143 | 45420629 |
+| `risk_compliance` | 10906 | 34071 | 35435 |
+| `seat_assignment` | 9712 | 987971 | 793872 |
+| `post_sales` | 9057 | 100400 | 33054 |
+| `capacity_availability` | 7798 | 529477 | 858664 |
+
+`trip_planning` alone reads 45 million tuples in that window: 56 searches a
+second, each fetching about 20000 segment rows from the plan tables. The peak
+windows inside this run, taken before the instance reached that state, carried
+**zero failed journeys out of 10670** and 36 out of 8924, so the reservation
+path itself holds when the instance has room.
+
+The remaining named defects are smaller and were measured separately: a change
+whose replacement reservation is refused with `OVERLAPPING_HOLD` while the
+original hold is still active, and a disruption conflict ("a refund or change
+case is already in progress for this order") reported as a 503 availability
+failure.
 
 #### What the reservation path cost before those fixes
 
