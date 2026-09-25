@@ -1,6 +1,6 @@
 # Reporting 指标与投影
 
-更新日期：2026年9月24日。
+更新日期：2026年9月25日。
 本文描述 Helm revision 279 文档核对时的 Python 实现。
 领域边界见 [Reporting](../02-domains/reporting.md)，统一待办见 [TODO](../TODO.md)。
 
@@ -9,12 +9,12 @@
 | 字段 | 当前计算 |
 |---|---|
 | `orders_per_second` | 最近60秒的订单事件数量，未除以60。 |
-| `revenue_per_hour` | 最近1小时 `PaymentCaptured` 的金额之和。 |
+| `revenue_per_hour` | 最近1小时 `PaymentCaptured` 按币种分别求和，返回 Money 数组。 |
 | `fill_rate_by_route` | 路线和服务日期的 confirmed 与 capacity 比值。 |
 | `avg_booking_latency` | 已加载事件中存在 booking latency 的样本 p50、p95、p99。 |
 | `refund_rate` | 最近24小时退款事件数量除以订单事件数量。 |
 | `scalper_block_rate` | 最近1小时拦截事件数量除以拦截与订单事件总数。 |
-| `routeRevenue` | 路线和服务日期下 `PaymentCaptured` 金额之和。 |
+| `routeRevenue` | 路线和服务日期下 `PaymentCaptured` 按币种分别求和，返回 Money 数组。 |
 | `routeDemand` | 路线和服务日期下搜索事件数量与订单事件数量之和。 |
 
 路线聚合读取最新的 confirmed、capacity 和席别使用字段。
@@ -23,7 +23,7 @@
 
 PostgreSQL 的操作聚合最多加载最新10000条符合条件的事件。
 异常评估另加检测时间范围过滤，仍受条数限制。
-聚合器只接受单币种金额，超出加载范围的事件不会贡献相应指标。
+聚合器按币种独立汇总金额，绝不对不同币种执行相加或隐式换算；超出加载范围的事件不会贡献相应指标。
 `trends` 当前返回 orders、gross captured 和 refund rate 的快照时间点，没有保存完整历史曲线。
 
 ## gross captured 报表
@@ -40,8 +40,7 @@ PostgreSQL 的操作聚合最多加载最新10000条符合条件的事件。
 
 PostgreSQL 包含缺失金额的 captured 行，金额按零计算且数量增加一次。
 内存金额报表排除缺失金额事件。
-`totalRevenue` 为截取返回条目后的金额合计，不执行汇率换算。
-多币种条目与单一币种标量同时出现时，标量不能作为财务总额。
+`totalRevenue` 返回按 ISO 币种代码排序的 Money 数组，不执行汇率换算；空结果返回空数组。
 
 ## 异常规则
 

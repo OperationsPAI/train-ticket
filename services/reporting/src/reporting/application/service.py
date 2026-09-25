@@ -420,7 +420,16 @@ class ReportingApplicationService:
             "generatedAt": rfc3339_utc(snapshot.generated_at),
             "series": [
                 {"metric": "orders_per_second", "points": [{"at": rfc3339_utc(snapshot.generated_at), "value": snapshot.orders_per_second}]},
-                {"metric": "revenue_per_hour", "points": [{"at": rfc3339_utc(snapshot.generated_at), "value": str(snapshot.revenue_per_hour.amount)}]},
+                {
+                    "metric": "revenue_per_hour",
+                    "points": [{
+                        "at": rfc3339_utc(snapshot.generated_at),
+                        "values": [
+                            {"amount": str(total.amount), "currency": total.currency}
+                            for total in snapshot.revenue_per_hour
+                        ],
+                    }],
+                },
                 {"metric": "refund_rate", "points": [{"at": rfc3339_utc(snapshot.generated_at), "value": snapshot.refund_rate}]},
             ],
         }

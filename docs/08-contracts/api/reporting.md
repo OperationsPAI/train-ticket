@@ -1,6 +1,6 @@
 # Reporting HTTP API
 
-Last updated: 2026-09-24.
+Last updated: 2026-09-25.
 
 Runtime baseline: Helm revision 279.
 Remaining work is tracked in [TODO](../../TODO.md).
@@ -81,17 +81,18 @@ The default metric catalog describes this meaning; existing stored metric descri
 | `items[].yieldPerKm` | Captured amount divided by the sum of recorded distance, or zero when the distance sum is zero. |
 | `items[].ancillaryAttachRate` | Captured rows with the ancillary flag divided by captured row count. |
 | `items[].insuranceAttachRate` | Captured rows with the insurance flag divided by captured row count. |
-| `totalRevenue` | Sum of returned items after the result limit, with the first item's currency or USD for an empty result. |
+| `totalRevenue` | Array of totals, one Money value per currency, ordered by ISO currency code. An empty result returns `[]`. |
 
 PostgreSQL projection groups always include currency.
-The response's scalar `totalRevenue` does not convert currencies and must not be interpreted as a valid combined monetary total when returned items contain multiple currencies.
+`totalRevenue`, `routeRevenue`, and `revenue_per_hour` preserve each currency as a separate Money value and never perform implicit currency conversion.
+Trend points for `revenue_per_hour` expose the same array in `points[].values`; non-monetary trend points continue to use `points[].value`.
 Missing dimension values appear as `unknown`; `time_period` uses UTC hour labels such as `2026-09-23T15:00:00Z`.
 The report covers stored history and reads the last completed materialized refresh.
 Refresh work runs when requests are pending and waits 30 seconds after each completed worker iteration.
-The in memory implementation requires one currency and excludes events whose amount is absent from its monetary count.
+The in memory implementation supports multiple currencies and excludes events whose amount is absent from its monetary count.
 Requests using `source_context` or `event_type` return event count reports with zero monetary fields.
 
-Operational, route and anomaly calculations load at most the latest 10000 matching events into a single currency aggregator.
+Operational, route and anomaly calculations currently load at most the latest 10000 matching events; monetary calculations preserve currencies independently.
 Their time windows are limited by that loaded input.
 `orders_per_second` currently returns the number of order events in the last 60 seconds.
 The trends endpoint returns one current point per metric.

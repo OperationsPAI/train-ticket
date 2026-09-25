@@ -411,7 +411,7 @@ class DashboardReadModelRequiredFieldsTest(unittest.TestCase):
 
 class RealTimeMetricsEnrichmentTest(unittest.TestCase):
     def test_recording_the_same_event_id_twice_keeps_one_copy(self) -> None:
-        aggregator = MetricAggregator(currency="USD")
+        aggregator = MetricAggregator()
         event = OperationalEvent(event_id="order-1", event_type="JourneyOrderCreated", occurred_at=NOW, route_id="G123")
         aggregator.record(event)
         aggregator.record(event)
@@ -425,7 +425,7 @@ class RealTimeMetricsEnrichmentTest(unittest.TestCase):
         # every consumer thread, and starved the HTTP workers of the GIL until the
         # metrics endpoints stopped responding at all.
         def elapsed(count: int) -> float:
-            aggregator = MetricAggregator(currency="USD")
+            aggregator = MetricAggregator()
             events = [
                 OperationalEvent(event_id=f"order-{index}", event_type="JourneyOrderCreated", occurred_at=NOW)
                 for index in range(count)
@@ -443,7 +443,7 @@ class RealTimeMetricsEnrichmentTest(unittest.TestCase):
         self.assertLess(large, max(small, 1e-4) * 48)
 
     def test_ten_orders_are_reflected_in_orders_per_second(self) -> None:
-        aggregator = MetricAggregator(currency="USD")
+        aggregator = MetricAggregator()
         for index in range(10):
             aggregator.record(
                 OperationalEvent(
@@ -461,7 +461,7 @@ class RealTimeMetricsEnrichmentTest(unittest.TestCase):
         self.assertEqual(snapshot.avg_booking_latency["p50"], 104.5)
 
     def test_revenue_by_route_returns_top_routes(self) -> None:
-        aggregator = MetricAggregator(currency="USD")
+        aggregator = MetricAggregator()
         payments = [("A", "100.00"), ("B", "300.00"), ("A", "50.00")]
         for index, (route, amount) in enumerate(payments):
             aggregator.record(
@@ -482,9 +482,25 @@ class RealTimeMetricsEnrichmentTest(unittest.TestCase):
         self.assertEqual([item.value for item in report.items], ["B", "A"])
         self.assertEqual(report.items[0].revenue, Money("300.00", "USD"))
         self.assertEqual(report.items[1].yield_per_km, Decimal("0.75"))
+        self.assertEqual(report.total_revenue, (Money("450.00", "USD"),))
+
+    def test_revenue_totals_preserve_each_currency(self) -> None:
+        aggregator = MetricAggregator()
+        aggregator.record(OperationalEvent("cny", "PaymentCaptured", NOW, route_id="A", amount=Money("12.00", "CNY")))
+        aggregator.record(OperationalEvent("usd", "PaymentCaptured", NOW, route_id="A", amount=Money("3.50", "USD")))
+
+        snapshot = aggregator.snapshot(NOW)
+        report = aggregator.revenue_report("route", at=NOW)
+
+        self.assertEqual(snapshot.revenue_per_hour, (Money("12.00", "CNY"), Money("3.50", "USD")))
+        self.assertEqual(report.total_revenue, (Money("12.00", "CNY"), Money("3.50", "USD")))
+        self.assertEqual(
+            [(item.value, item.revenue) for item in report.items],
+            [("A", Money("12.00", "CNY")), ("A", Money("3.50", "USD"))],
+        )
 
     def test_payment_failure_rate_detects_anomaly(self) -> None:
-        aggregator = MetricAggregator(currency="USD")
+        aggregator = MetricAggregator()
         detector = AnomalyDetector()
         for index in range(8):
             aggregator.record(OperationalEvent(f"ok-{index}", "PaymentCaptured", NOW + timedelta(seconds=index), amount=Money("10.00", "USD")))
@@ -497,7 +513,7 @@ class RealTimeMetricsEnrichmentTest(unittest.TestCase):
         self.assertEqual(anomalies[0].severity, AnomalySeverity.CRITICAL)
 
     def test_context_rollups_count_source_contexts_and_anomaly_signals(self) -> None:
-        aggregator = MetricAggregator(currency="USD")
+        aggregator = MetricAggregator()
         aggregator.record(OperationalEvent("waitlist-1", "WaitlistQueued", NOW, source_context="waitlist"))
         aggregator.record(OperationalEvent("waitlist-2", "WaitlistExpired", NOW + timedelta(minutes=1), source_context="waitlist", anomaly_signal=True))
 
@@ -508,7 +524,7 @@ class RealTimeMetricsEnrichmentTest(unittest.TestCase):
         self.assertEqual(rollups[("waitlist", "WaitlistExpired")].anomaly_rate, 1.0)
 
     def test_context_count_report_sorts_by_count_then_stable_value(self) -> None:
-        aggregator = MetricAggregator(currency="USD")
+        aggregator = MetricAggregator()
         aggregator.record(OperationalEvent("dispatch-1", "DispatchRequested", NOW, source_context="dispatch"))
         aggregator.record(OperationalEvent("waitlist-1", "WaitlistQueued", NOW, source_context="waitlist"))
         aggregator.record(OperationalEvent("waitlist-2", "WaitlistExpired", NOW + timedelta(minutes=1), source_context="waitlist"))
@@ -521,7 +537,7 @@ class RealTimeMetricsEnrichmentTest(unittest.TestCase):
         self.assertEqual(report.total_count, 4)
 
     def test_context_count_report_supports_event_type_dimension(self) -> None:
-        aggregator = MetricAggregator(currency="USD")
+        aggregator = MetricAggregator()
         aggregator.record(OperationalEvent("dispatch-1", "DispatchRequested", NOW, source_context="dispatch"))
         aggregator.record(OperationalEvent("dispatch-2", "DispatchRequested", NOW + timedelta(seconds=1), source_context="dispatch"))
         aggregator.record(OperationalEvent("dispatch-3", "DispatchFailed", NOW + timedelta(seconds=2), source_context="dispatch"))
