@@ -56,6 +56,7 @@ logger = logging.getLogger(__name__)
 
 _PAYMENT_CAPTURED_EVENT_TYPES = ("PaymentCaptured",)
 _ORDER_CREATED_EVENT_TYPES = ("JourneyOrderCreated", "OrderCreated")
+_SEARCH_EVENT_TYPES = ("TripSearched", "SearchPerformed", "OfferSearchRequested")
 _PAYMENT_FAILED_EVENT_TYPES = ("PaymentFailed", "PaymentDeclined", "PaymentCaptureFailed")
 _REFUND_EVENT_TYPES = ("RefundSettled", "RefundCompleted", "RefundIssued", "RevenueRecognitionReversed")
 _RISK_BLOCK_EVENT_TYPES = ("ScalperBlocked", "RiskBookingBlocked")
@@ -939,9 +940,89 @@ class PostgresReportingApplicationService:
             detected.append(AnomalyDetected(capacity_rule.rule_id.value, Decimal(exhausted), capacity_rule.threshold, capacity_rule.severity, now, capacity_rule.urgent))
         return tuple(detected)
 
-    def route_metrics(self, at: datetime | None = None) -> tuple[RouteMetrics, ...]:
+    def route_metrics(self, *, limit: int = 20, offset: int = 0, at: datetime | None = None) -> tuple[tuple[RouteMetrics, ...], int]:
+        now = at or utc_now()
         with self._pool.connection() as conn:
-            return self._load_aggregator(conn).route_metrics(at)
+            rows = conn.execute(
+                """
+                WITH recent AS MATERIALIZED (
+                  SELECT event_id,event_type,occurred_at,route_id,
+                         COALESCE(service_date,(occurred_at AT TIME ZONE 'UTC')::date) AS service_date,
+                         seat_class,capacity,confirmed
+                  FROM reporting_metric_events
+                  WHERE occurred_at >= %s - interval '24 hours' AND occurred_at <= %s
+                    AND route_id IS NOT NULL
+                ),
+                route_groups AS MATERIALIZED (
+                  SELECT route_id,service_date,
+                         count(*) FILTER (WHERE event_type=ANY(%s)) AS searches,
+                         count(*) FILTER (WHERE event_type=ANY(%s)) AS bookings,
+                         (array_agg(confirmed ORDER BY occurred_at DESC,event_id DESC)
+                           FILTER (WHERE confirmed IS NOT NULL))[1] AS latest_confirmed,
+                         (array_agg(capacity ORDER BY occurred_at DESC,event_id DESC)
+                           FILTER (WHERE capacity IS NOT NULL))[1] AS latest_capacity
+                  FROM recent GROUP BY route_id,service_date
+                ),
+                summary AS (SELECT count(*) AS total_items FROM route_groups),
+                page AS MATERIALIZED (
+                  SELECT * FROM route_groups
+                  ORDER BY service_date DESC,route_id
+                  LIMIT %s OFFSET %s
+                ),
+                class_groups AS (
+                  SELECT recent.route_id,recent.service_date,recent.seat_class,
+                         count(*) FILTER (WHERE recent.event_type=ANY(%s)) AS bookings,
+                         (array_agg(recent.confirmed ORDER BY recent.occurred_at DESC,recent.event_id DESC)
+                           FILTER (WHERE recent.confirmed IS NOT NULL))[1] AS latest_confirmed,
+                         (array_agg(recent.capacity ORDER BY recent.occurred_at DESC,recent.event_id DESC)
+                           FILTER (WHERE recent.capacity IS NOT NULL))[1] AS latest_capacity
+                  FROM recent JOIN page USING(route_id,service_date)
+                  WHERE recent.seat_class IS NOT NULL
+                  GROUP BY recent.route_id,recent.service_date,recent.seat_class
+                ),
+                class_rates AS (
+                  SELECT route_id,service_date,jsonb_object_agg(
+                    seat_class,
+                    CASE WHEN COALESCE(latest_capacity,0)=0 THEN 0
+                         ELSE LEAST(1.0,COALESCE(latest_confirmed,bookings)::numeric/latest_capacity) END
+                    ORDER BY seat_class
+                  ) AS utilization
+                  FROM class_groups GROUP BY route_id,service_date
+                )
+                SELECT page.route_id,page.service_date,page.searches,page.bookings,
+                       COALESCE(page.latest_confirmed,page.bookings),COALESCE(page.latest_capacity,0),
+                       COALESCE(class_rates.utilization,'{}'::jsonb),summary.total_items
+                FROM summary
+                LEFT JOIN page ON true
+                LEFT JOIN class_rates USING(route_id,service_date)
+                ORDER BY page.service_date DESC,page.route_id
+                """,
+                (
+                    now,
+                    now,
+                    list(_SEARCH_EVENT_TYPES),
+                    list(_ORDER_CREATED_EVENT_TYPES),
+                    limit,
+                    offset,
+                    list(_ORDER_CREATED_EVENT_TYPES),
+                ),
+            ).fetchall()
+        total = int(rows[0][7])
+        metrics = tuple(
+            RouteMetrics(
+                route_id=str(row[0]),
+                service_date=_row_date(row[1], now) or now.date(),
+                route_demand=int(row[2]) + int(row[3]),
+                bookings=int(row[3]),
+                searches=int(row[2]),
+                confirmed=int(row[4]),
+                capacity=int(row[5]),
+                seat_utilization_by_class={str(key): float(value) for key, value in dict(row[6]).items()},
+            )
+            for row in rows
+            if row[0] is not None
+        )
+        return metrics, total
 
     def context_count_report(self, group_by: str = "source_context", limit: int = 20, offset: int = 0, at: datetime | None = None) -> ContextCountReport:
         with self._pool.connection() as conn:

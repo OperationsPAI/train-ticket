@@ -567,7 +567,6 @@ class OperationalEvent:
 class RouteMetrics:
     route_id: str
     service_date: date
-    route_revenue: tuple[Money, ...]
     route_demand: int
     bookings: int
     searches: int
@@ -995,23 +994,13 @@ class MetricAggregator:
     def route_metrics(self, at: datetime | None = None) -> tuple[RouteMetrics, ...]:
         now = at or datetime.now(UTC)
         grouped: dict[tuple[str, date], list[OperationalEvent]] = {}
-        revenue_by_route: dict[tuple[str, date], list[Money]] = {}
         for event in self.events:
-            if event.is_payment_captured and event.amount is not None:
-                routes = self.revenue_facts.routes_for(event)
-                allocations = self._split_money(event.amount, len(routes))
-                for route, amount in zip(routes, allocations, strict=True):
-                    service_date = route.service_date or event.occurred_at.astimezone(UTC).date()
-                    revenue_by_route.setdefault((route.route_id, service_date), []).append(amount)
-                continue
             if event.route_id is None:
                 continue
             service_date = event.service_date or event.occurred_at.astimezone(UTC).date()
             grouped.setdefault((event.route_id, service_date), []).append(event)
         metrics: list[RouteMetrics] = []
-        for route_id, service_date in sorted(set(grouped) | set(revenue_by_route), key=lambda item: (item[1], item[0])):
-            events = grouped.get((route_id, service_date), [])
-            revenue = self._money_totals_from_money(revenue_by_route.get((route_id, service_date), ()))
+        for (route_id, service_date), events in grouped.items():
             searches = sum(1 for event in events if event.is_search)
             bookings = sum(1 for event in events if event.is_order)
             confirmed = self._latest_int(events, "confirmed") or bookings
@@ -1021,7 +1010,6 @@ class MetricAggregator:
                 RouteMetrics(
                     route_id=route_id,
                     service_date=service_date,
-                    route_revenue=revenue,
                     route_demand=searches + bookings,
                     bookings=bookings,
                     searches=searches,
