@@ -44,17 +44,18 @@ The route and seat class materialized views retain their original columns, types
 Each refresh therefore uses three base relation scans.
 Currency is part of every grouping key.
 Breakdowns map missing dimensions to `unknown`, default missing currency to USD, and bucket event timestamps by UTC hour.
-The SQL count includes captured event rows with missing amounts, whose amount contribution is zero.
-The in memory aggregator counts captured events with an amount.
+Both PostgreSQL and the in-memory aggregator retain a `PaymentCaptured` event with no amount for operational audit but exclude it from monetary totals and payment counts.
 `totalRevenue`, `routeRevenue`, and `revenue_per_hour` are arrays of Money values ordered by ISO currency code.
 The in-memory aggregator and PostgreSQL reader preserve every currency independently and never add or convert unlike currencies.
 An empty monetary result is represented by an empty array rather than by a synthetic zero in a default currency.
 The revenue endpoint paginates grouped `items` with `limit` and `offset` while `totalRevenue` always covers the complete filtered result.
 `total` is the number of grouped rows before pagination; requesting an offset beyond the last row returns an empty `items` array with the same complete totals.
 
-## Coordinated migration 005
+## Coordinated revenue migrations
 
-`005_gross_captured_revenue.sql` requires an explicit `reporting.allow_revenue_rebuild=on` setting when source data exists.
+`005_gross_captured_revenue.sql` established the gross captured projection.
+`006_exclude_incomplete_captures.sql` aligns PostgreSQL with the in-memory rule for captures that have no amount.
+Both require an explicit `reporting.allow_revenue_rebuild=on` setting when source data exists.
 An empty installation can apply the migration through normal startup.
 The migration never deletes or updates `reporting_metric_events`.
 It creates three replacement materialized views with data and unique indexes before dropping the previous derived views and restoring their names.
@@ -81,7 +82,7 @@ services/reporting/.venv/bin/python services/reporting/scripts/migrate_revenue.p
   --allow-rebuild --statement-timeout-seconds 600
 ```
 
-The runner calls Python-kit `run_migrations`, which records the exact version `005_gross_captured_revenue.sql` in `schema_migrations` in the same transaction as the SQL changes.
+The runner calls Python-kit `run_migrations`, applies any pending revenue migration in order, and verifies that `006_exclude_incomplete_captures.sql` is recorded in `schema_migrations` in the same transaction as its SQL changes.
 The session advisory lock covers the runner and its completion checks.
 The runner reports total elapsed time and the SQL notice for the final swap duration, including any lock acquisition wait.
 The swap notice is emitted before commit; exclusive locks remain held through the runner's version insertion and commit.
@@ -114,6 +115,9 @@ Additional recorded rows cover both sides of a UTC hour boundary, null route and
 Local migration tests check column types, grants, source preservation, repeated delivery, empty installation, refresh exclusion, dependency rollback, swap timeout, and the runner version record.
 The recorded payments are CNY only; the plan test verifies currency in all five grouping keys, while the existing Money tests verify currency validation and reject currency mixing.
 No recorded multi currency payment dataset was available, so a full multi currency event replay is not claimed.
+
+A read-only production audit on 2026-09-25 found 2,904,448 `PaymentCaptured` rows, all with amount and currency; the only currency present was CNY.
+The missing-amount regression therefore appends one synthetic incomplete capture to unchanged recorded production rows and proves that the source row is retained while both PostgreSQL and in-memory revenue stay at 20 payments and CNY 1928.59.
 
 The local verification on 2026-09-23 completed with 83 tests passed and zero skipped in 4.87 seconds, including PostgreSQL and Redis tests.
 The built reporting image also passed all 83 tests with zero skipped in 5.09 seconds using its installed runtime dependencies.
