@@ -13,4 +13,5 @@ use (
 	./services/service-plan
 	./services/supplier-catalog
 	./services/travel-insurance
+	./tools/redis-state-collector
 )
