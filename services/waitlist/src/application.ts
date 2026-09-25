@@ -1,6 +1,7 @@
 import { tracedFetch, type EventPublisher } from "@trainticket/ts-kit";
-import { DomainError, WaitlistEntry, WaitlistQueue, type CreateWaitlistEntry, type FareClass, type PriorityInput, type WaitlistEntrySnapshot } from "./domain.js";
-import { HttpCapacityAvailabilityClient, HttpFarePricingClient, HttpOfferManagementClient, PromotionOrchestrator, type CapacityAvailabilityClient, type FarePricingClient, type JourneyOrderClient, type OfferManagementClient, type WaitlistCapacityFreed, type WaitlistRepository } from "./promotion.js";
+import { DomainError, WaitlistEntry, WaitlistQueue, normalizeFareClass, type CreateWaitlistEntry, type FareClass, type FareClassInput, type PriorityInput, type TravelInterval, type WaitlistEntrySnapshot } from "./domain.js";
+import { SuppliedWaitlistIntentResolver, type WaitlistIntentResolver } from "./intent.js";
+import { HttpCapacityAvailabilityClient, HttpFarePricingClient, HttpOfferManagementClient, PromotionOrchestrator, type CapacityAvailabilityClient, type FarePricingClient, type JourneyOrderClient, type OfferManagementClient, type WaitlistCapacityFreed, type WaitlistMatchCriteria, type WaitlistRepository } from "./promotion.js";
 import { publishAll, waitlistCancelled, waitlistExpired, waitlistFulfilled, waitlistPaymentAuthorizationRequested, waitlistQueued, waitlistRequestCreated } from "./publisher.js";
 
 export type JoinWaitlistRequest = Readonly<{
@@ -9,8 +10,11 @@ export type JoinWaitlistRequest = Readonly<{
   travelerRef?: string;
   segmentRef: string;
   departureDate?: string;
-  seatClass?: FareClass;
-  travelClass?: FareClass;
+  seatClass?: FareClassInput;
+  travelClass?: FareClassInput;
+  scheduledServiceRef?: string;
+  interval?: TravelInterval;
+  stopSequenceVersion?: string;
   deadline?: string;
   paymentGuaranteeRef?: string;
   loyaltyTier?: PriorityInput["loyaltyTier"];
@@ -95,9 +99,10 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
     return this.snapshot(entry);
   }
 
-  async findTopQueued(segmentRef: string, departureDate: string, seatClass?: string): Promise<WaitlistEntry | undefined> {
-    const queue = this.buildQueue(segmentRef, departureDate, seatClass);
-    return queue.nextQueued();
+  async findTopQueued(criteria: WaitlistMatchCriteria): Promise<WaitlistEntry | undefined> {
+    return [...this.entries.values()]
+      .filter((entry) => entry.status === "QUEUED" && matchesCapacity(entry, criteria))
+      .sort(compareForPromotion)[0];
   }
 
   async findExpiredOffers(now: Date): Promise<readonly WaitlistEntry[]> {
@@ -133,13 +138,11 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
     return [...this.entries.values()].some((entry) => isActiveStatus(entry.status) && entry.travelerRefs[0] === travelerRef && entry.intentFingerprint === intentFingerprint);
   }
 
-  // Mirrors PostgresWaitlistRepository: queue identity keys on segmentRef alone,
-  // because the entry's departureDate is deadline-derived when the create request
-  // omits it and the CapacityReleased trigger carries no departureDate at all.
   private buildQueue(segmentRef: string, departureDate: string, seatClass?: string): WaitlistQueue {
-    const matching = [...this.entries.values()].filter((entry) => entry.status !== "CLOSED" && entry.segmentRef === segmentRef && (!seatClass || entry.seatClass === seatClass));
-    const classForQueue = (seatClass ?? matching[0]?.seatClass ?? "SECOND") as FareClass;
-    return new WaitlistQueue(segmentRef, matching[0]?.departureDate ?? departureDate, classForQueue, matching.filter((entry) => entry.seatClass === classForQueue));
+    const classForQueue = normalizeFareClass(seatClass ?? "SECOND_CLASS");
+    const matching = [...this.entries.values()].filter((entry) => entry.status !== "CLOSED"
+      && entry.segmentRef === segmentRef && entry.departureDate === departureDate && entry.seatClass === classForQueue);
+    return new WaitlistQueue(segmentRef, departureDate, classForQueue, matching);
   }
 
   private snapshot(entry: WaitlistEntry): WaitlistEntrySnapshot {
@@ -162,12 +165,13 @@ export class WaitlistApplicationService {
     private readonly journeyOrder: JourneyOrderClient = new HttpJourneyOrderClient(),
     private readonly now: () => Date = () => new Date(),
     offerManagement: OfferManagementClient = new HttpOfferManagementClient(),
+    private readonly intentResolver: WaitlistIntentResolver = new SuppliedWaitlistIntentResolver(),
   ) {
     this.promotion = new PromotionOrchestrator(repository, farePricing, capacityAvailability, publisher ?? { publish: async () => undefined }, offerManagement, now);
   }
 
   async join(request: JoinWaitlistRequest, correlationId?: string): Promise<WaitlistRequestResource> {
-    const entry = WaitlistEntry.create(this.toCreateCommand(request));
+    const entry = WaitlistEntry.create(await this.toCreateCommand(request, correlationId));
     const snapshot = await this.repository.add(entry);
     const aggregateVersion = entry.loadedVersion;
     if (this.publisher) {
@@ -259,16 +263,30 @@ export class WaitlistApplicationService {
     return archived;
   }
 
-  private toCreateCommand(request: JoinWaitlistRequest): CreateWaitlistEntry {
+  private async toCreateCommand(request: JoinWaitlistRequest, correlationId?: string): Promise<CreateWaitlistEntry> {
     const travelerRefs = request.travelerRef ? [request.travelerRef] : request.travelerRefs ?? [];
-    const seatClass = request.seatClass ?? request.travelClass ?? "SECOND";
-    const departureDate = request.departureDate ?? dateFromDeadline(request.deadline);
-    return {
+    const intent = await this.intentResolver.resolve({
       accountId: request.accountId,
       travelerRefs,
       segmentRef: request.segmentRef,
-      departureDate,
-      seatClass,
+      itineraryRef: request.itineraryRef ?? request.segmentRef,
+      paymentGuaranteeRef: request.paymentGuaranteeRef ?? "",
+      departureDate: request.departureDate,
+      deadline: request.deadline,
+      seatClass: request.seatClass ?? request.travelClass,
+      scheduledServiceRef: request.scheduledServiceRef,
+      interval: request.interval,
+      stopSequenceVersion: request.stopSequenceVersion,
+    }, correlationId);
+    return {
+      accountId: request.accountId,
+      travelerRefs: intent.travelerRefs,
+      segmentRef: intent.segmentRef,
+      scheduledServiceRef: intent.scheduledServiceRef,
+      departureDate: intent.departureDate,
+      seatClass: intent.seatClass,
+      interval: intent.interval,
+      stopSequenceVersion: intent.stopSequenceVersion,
       itineraryRef: request.itineraryRef ?? request.segmentRef,
       deadline: request.deadline,
       paymentGuaranteeRef: request.paymentGuaranteeRef,
@@ -276,9 +294,9 @@ export class WaitlistApplicationService {
       priority: {
         loyaltyTier: request.loyaltyTier ?? "NONE",
         tripCount: request.tripCount ?? 0,
-        daysBefore: request.daysBefore ?? daysBefore(departureDate),
-        groupSize: travelerRefs.length,
-        fareClass: seatClass,
+        daysBefore: request.daysBefore ?? daysBefore(intent.departureDate),
+        groupSize: intent.travelerRefs.length,
+        fareClass: intent.seatClass,
         specialStatus: request.specialStatus ?? "NONE",
       },
     };
@@ -344,7 +362,20 @@ function daysBefore(departureDate: string): number {
   return Math.max(0, Math.ceil((departure - Date.now()) / (24 * 60 * 60 * 1000)));
 }
 
-function dateFromDeadline(deadline?: string): string {
-  if (!deadline) return new Date().toISOString().slice(0, 10);
-  return deadline.slice(0, 10);
+function matchesCapacity(entry: WaitlistEntry, criteria: WaitlistMatchCriteria): boolean {
+  return entry.segmentRef === criteria.segmentRef
+    && entry.scheduledServiceRef === criteria.scheduledServiceRef
+    && entry.departureDate === criteria.departureDate
+    && entry.seatClass === criteria.seatClass
+    && entry.stopSequenceVersion === criteria.stopSequenceVersion
+    && criteria.interval.fromSeq <= entry.interval.fromSeq
+    && criteria.interval.toSeq >= entry.interval.toSeq
+    && entry.travelerRefs.length <= criteria.maxTravelers
+    && (!criteria.intentFingerprint || entry.intentFingerprint === criteria.intentFingerprint);
+}
+
+function compareForPromotion(left: WaitlistEntry, right: WaitlistEntry): number {
+  return right.priorityScore - left.priorityScore
+    || left.createdAt.getTime() - right.createdAt.getTime()
+    || left.entryId.localeCompare(right.entryId);
 }

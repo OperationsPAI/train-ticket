@@ -1,4 +1,6 @@
 import { OptimisticConcurrencyConflict, fatalHandling, successfulHandling, transientHandling, type EventEnvelope, type EventHandlerResult } from "@trainticket/ts-kit";
+import type { CapacityReleaseResolver } from "./capacity-release.js";
+import { normalizeFareClass, type TravelInterval } from "./domain.js";
 import type { WaitlistApplicationService } from "./application.js";
 import type { WaitlistCapacityFreed } from "./promotion.js";
 
@@ -17,19 +19,18 @@ type WaitlistConsumedEventService = Readonly<{
   handleJourneyOrderCancelled(orderId: string, correlationId: string | undefined, envelope: EventEnvelope): Promise<unknown> | unknown;
 }>;
 
-export function createWaitlistEventHandler(service: WaitlistConsumedEventService) {
+const noCapacityReleaseResolver: CapacityReleaseResolver = { resolve: async () => undefined };
+
+export function createWaitlistEventHandler(service: WaitlistConsumedEventService, capacityReleaseResolver: CapacityReleaseResolver = noCapacityReleaseResolver) {
   return async (envelope: EventEnvelope): Promise<EventHandlerResult> => {
     try {
       if (envelope.eventType === "WaitlistCapacityFreed") {
-        await service.handleCapacityFreed(parseCapacityFreed(envelope), envelope.correlationId, envelope);
+        const freed = tryParseCapacityFreed(envelope);
+        if (freed) await service.handleCapacityFreed(freed, envelope.correlationId, envelope);
         return successfulHandling();
       }
       if (envelope.eventType === "CapacityReleased") {
-        // CapacityReleased is a lower-level hold-release fact and does NOT carry
-        // segmentRef/departureDate; only the purpose-built WaitlistCapacityFreed
-        // drives fulfillment. Try leniently; if the fulfillment fields are absent
-        // just ack (skip) rather than throwing fatally and poisoning the consumer.
-        const freed = tryParseCapacityFreed(envelope);
+        const freed = tryParseCapacityFreed(envelope) ?? await capacityReleaseResolver.resolve(envelope, envelope.correlationId);
         if (freed) await service.handleCapacityFreed(freed, envelope.correlationId, envelope);
         return successfulHandling();
       }
@@ -57,16 +58,24 @@ export function tryParseCapacityFreed(envelope: EventEnvelope): WaitlistCapacity
   const payload = envelope.payload as Record<string, unknown>;
   if (typeof payload.segmentRef !== "string" || payload.segmentRef.trim().length === 0) return undefined;
   if (typeof payload.departureDate !== "string" || payload.departureDate.trim().length === 0) return undefined;
+  if (typeof payload.scheduledServiceRef !== "string" || payload.scheduledServiceRef.trim().length === 0) return undefined;
+  if (typeof payload.stopSequenceVersion !== "string" || payload.stopSequenceVersion.trim().length === 0) return undefined;
+  if (typeof payload.seatClass !== "string" && typeof payload.classRef !== "string") return undefined;
+  if (!tryInterval(payload.interval)) return undefined;
   return parseCapacityFreed(envelope);
 }
 
 export function parseCapacityFreed(envelope: EventEnvelope): WaitlistCapacityFreed {
   const payload = envelope.payload as Record<string, unknown>;
   const segmentRef = string(payload.segmentRef);
+  const scheduledServiceRef = string(payload.scheduledServiceRef);
   const departureDate = string(payload.departureDate);
   const freedSlots = number(payload.freedSlots ?? payload.availableSlots ?? payload.quantity ?? 1);
-  const seatClass = typeof payload.seatClass === "string" ? payload.seatClass : typeof payload.classRef === "string" ? payload.classRef : undefined;
-  return { segmentRef, departureDate, freedSlots, seatClass, capacityReleaseRef: envelope.eventId };
+  const seatClass = normalizeFareClass(string(payload.seatClass ?? payload.classRef));
+  const interval = intervalValue(payload.interval);
+  const stopSequenceVersion = string(payload.stopSequenceVersion);
+  const intentFingerprint = typeof payload.intentFingerprint === "string" && payload.intentFingerprint.trim() ? payload.intentFingerprint.trim() : undefined;
+  return { segmentRef, scheduledServiceRef, departureDate, freedSlots, seatClass, interval, stopSequenceVersion, intentFingerprint, capacityReleaseRef: envelope.eventId };
 }
 
 export function parseJourneyOrderId(envelope: EventEnvelope): string {
@@ -83,4 +92,19 @@ function number(value: unknown): number {
   const parsed = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(parsed) || parsed < 1) throw new Error("WaitlistCapacityFreed event must include freedSlots >= 1");
   return parsed;
+}
+
+function tryInterval(value: unknown): TravelInterval | undefined {
+  try { return intervalValue(value); } catch { return undefined; }
+}
+
+function intervalValue(value: unknown): TravelInterval {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("WaitlistCapacityFreed event is missing interval");
+  const body = value as Record<string, unknown>;
+  const fromSeq = Number(body.fromSeq);
+  const toSeq = Number(body.toSeq);
+  if (!Number.isSafeInteger(fromSeq) || !Number.isSafeInteger(toSeq) || fromSeq < 0 || toSeq <= fromSeq) {
+    throw new Error("WaitlistCapacityFreed event interval is invalid");
+  }
+  return { fromSeq, toSeq };
 }

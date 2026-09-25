@@ -61,7 +61,7 @@ test("join publishes waitlist contract facts with deterministic ids and fields",
   assert.equal(created.accountId, "acc-1");
   assert.equal(created.travelerRef, "tvl-1");
   assert.equal(created.segmentRef, "seg-1");
-  assert.equal(created.travelClass, "SECOND");
+  assert.equal(created.travelClass, "SECOND_CLASS");
   assert.equal(created.deadline, "2026-07-20T00:00:00.000Z");
   assert.equal(created.paymentGuaranteeRef, "pay-auth-1");
   assert.equal(created.itineraryRef, "itn-1");
@@ -99,7 +99,7 @@ test("capacity matching records the order without publishing fulfillment", async
   const service = new WaitlistApplicationService(new InMemoryWaitlistRepository(), publisher, new StubFarePricing(), new StubCapacity(), new StubJourneyOrder(), () => new Date("2026-01-01T00:00:00.000Z"), new StubOfferManagement());
   const entry = await service.join({ accountId: "acc", travelerRef: "tvl", segmentRef: "seg", departureDate: "2026-07-20", travelClass: "SECOND", paymentGuaranteeRef: "pay-auth-1", itineraryRef: "itn", intentFingerprint: "intent" });
 
-  const result = await service.handleCapacityFreed({ segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1, capacityReleaseRef: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c123" });
+  const result = await service.handleCapacityFreed({ segmentRef: "seg", scheduledServiceRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND_CLASS", interval: { fromSeq: 0, toSeq: 1 }, stopSequenceVersion: "segment:seg", freedSlots: 1, capacityReleaseRef: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c123" });
 
   assert.equal(result.promoted[0]?.status, "MATCHING");
   assert.equal(result.promoted[0]?.journeyOrderRef, `ord-${entry.waitlistRequestId}`);

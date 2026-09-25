@@ -2,10 +2,24 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { InMemoryEventPublisher } from "@trainticket/ts-kit";
 import { HttpJourneyOrderClient, InMemoryWaitlistRepository, WaitlistApplicationService } from "../src/application.js";
-import { HttpFarePricingClient, HttpOfferManagementClient, type CapacityAvailabilityClient, type FarePricingClient, type JourneyOrderClient, type OfferManagementClient } from "../src/promotion.js";
+import { HttpFarePricingClient, HttpOfferManagementClient, type CapacityAvailabilityClient, type FarePricingClient, type JourneyOrderClient, type OfferManagementClient, type WaitlistCapacityFreed } from "../src/promotion.js";
 import type { WaitlistEntry } from "../src/domain.js";
 
 const CAPACITY_RELEASE_REF = "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c123";
+
+function capacityEvent(overrides: Partial<WaitlistCapacityFreed> = {}): WaitlistCapacityFreed {
+  return {
+    segmentRef: "seg",
+    scheduledServiceRef: "seg",
+    departureDate: "2026-07-20",
+    seatClass: "SECOND_CLASS",
+    interval: { fromSeq: 0, toSeq: 1 },
+    stopSequenceVersion: "segment:seg",
+    freedSlots: 1,
+    capacityReleaseRef: CAPACITY_RELEASE_REF,
+    ...overrides,
+  };
+}
 
 class StubFarePricing implements FarePricingClient {
   public calls: string[] = [];
@@ -41,7 +55,7 @@ test("WaitlistCapacityFreed links the highest priority entry to its pending orde
   const regular = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "NONE", tripCount: 0, daysBefore: 20 });
   const platinum = await service.join({ accountId: "acc", travelerRefs: ["t2"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "PLATINUM", tripCount: 0, daysBefore: 20 });
 
-  const result = await service.handleCapacityFreed({ segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1, capacityReleaseRef: CAPACITY_RELEASE_REF });
+  const result = await service.handleCapacityFreed(capacityEvent());
 
   assert.equal(result.promoted[0]?.waitlistRequestId, platinum.waitlistRequestId);
   assert.equal(result.promoted[0]?.status, "MATCHING");
@@ -81,7 +95,7 @@ test("no payment-service calls are made while fulfilling a matched waitlist entr
     );
     const entry = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "PLATINUM", tripCount: 0, daysBefore: 20, paymentGuaranteeRef: "pay-auth-existing" });
 
-    await service.handleCapacityFreed({ segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1, capacityReleaseRef: CAPACITY_RELEASE_REF });
+    await service.handleCapacityFreed(capacityEvent());
 
     assert.equal((await service.get(entry.waitlistRequestId)).journeyOrderRef, "ord-http");
     assert.deepEqual(calls.map((url) => new URL(url).pathname), ["/api/v1/fare-quotes", "/api/v1/offers", "/api/v1/journey-orders"]);
@@ -110,7 +124,7 @@ test("capacity freed without a CapacityReleased eventId is rejected before publi
   await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "PLATINUM", tripCount: 0, daysBefore: 20 });
 
   await assert.rejects(
-    () => service.handleCapacityFreed({ segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1, capacityReleaseRef: "" }),
+    () => service.handleCapacityFreed(capacityEvent({ capacityReleaseRef: "" })),
     /capacityReleaseRef must be the consumed CapacityReleased eventId/u,
   );
 
@@ -121,7 +135,7 @@ test("promotion records its order reference while awaiting confirmation", async 
   const publisher = new InMemoryEventPublisher();
   const service = new WaitlistApplicationService(new InMemoryWaitlistRepository(), publisher, new StubFarePricing(), new StubCapacity(), new StubJourneyOrder(), () => new Date("2026-01-01T00:00:00.000Z"), new StubOfferManagement());
   const entry = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "PLATINUM", tripCount: 0, daysBefore: 20 });
-  const stored = await service.handleCapacityFreed({ segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1, capacityReleaseRef: CAPACITY_RELEASE_REF });
+  const stored = await service.handleCapacityFreed(capacityEvent());
   const fulfilled = await service.get(entry.waitlistRequestId);
 
   assert.equal(stored.promoted[0]?.journeyOrderRef, `ord-${entry.waitlistRequestId}`);
@@ -137,8 +151,49 @@ test("journey order creation failure leaves matched entry in MATCHING for retry 
   const service = new WaitlistApplicationService(new InMemoryWaitlistRepository(), new InMemoryEventPublisher(), new StubFarePricing(), new StubCapacity(), new FailingJourneyOrder(), () => new Date("2026-01-01T00:00:00.000Z"), new StubOfferManagement());
   const entry = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "PLATINUM", tripCount: 0, daysBefore: 20 });
 
-  await assert.rejects(() => service.handleCapacityFreed({ segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", freedSlots: 1, capacityReleaseRef: CAPACITY_RELEASE_REF }), /downstream unavailable/);
+  await assert.rejects(() => service.handleCapacityFreed(capacityEvent()), /downstream unavailable/);
 
   assert.equal((await service.get(entry.waitlistRequestId)).status, "MATCHING");
   assert.equal((await service.get(entry.waitlistRequestId)).journeyOrderRef, undefined);
+});
+
+test("released capacity matches service, date, class, interval and stop-sequence facts", async () => {
+  const repository = new InMemoryWaitlistRepository();
+  const journeyOrder = new StubJourneyOrder();
+  const service = new WaitlistApplicationService(repository, new InMemoryEventPublisher(), new StubFarePricing(), new StubCapacity(), journeyOrder, () => new Date("2026-01-01T00:00:00.000Z"), new StubOfferManagement());
+  const base = { accountId: "acc", segmentRef: "seg", scheduledServiceRef: "ss-1", departureDate: "2026-07-20", seatClass: "SECOND_CLASS" as const,
+    interval: { fromSeq: 1, toSeq: 3 }, stopSequenceVersion: "sha256:route-v1", daysBefore: 20 };
+  const exact = await service.join({ ...base, travelerRefs: ["exact"], intentFingerprint: "intent-exact", loyaltyTier: "NONE" });
+  const wrongDate = await service.join({ ...base, travelerRefs: ["wrong-date"], departureDate: "2026-07-21", intentFingerprint: "intent-date", loyaltyTier: "PLATINUM" });
+  const wrongClass = await service.join({ ...base, travelerRefs: ["wrong-class"], seatClass: "FIRST_CLASS", intentFingerprint: "intent-class", loyaltyTier: "PLATINUM" });
+  const wrongService = await service.join({ ...base, travelerRefs: ["wrong-service"], scheduledServiceRef: "ss-2", intentFingerprint: "intent-service", loyaltyTier: "PLATINUM" });
+  const wrongStops = await service.join({ ...base, travelerRefs: ["wrong-stops"], stopSequenceVersion: "sha256:route-v2", intentFingerprint: "intent-stops", loyaltyTier: "PLATINUM" });
+  const outsideInterval = await service.join({ ...base, travelerRefs: ["outside"], interval: { fromSeq: 0, toSeq: 4 }, intentFingerprint: "intent-interval", loyaltyTier: "PLATINUM" });
+
+  const result = await service.handleCapacityFreed(capacityEvent({
+    scheduledServiceRef: "ss-1",
+    interval: { fromSeq: 0, toSeq: 3 },
+    stopSequenceVersion: "sha256:route-v1",
+  }));
+
+  assert.deepEqual(result.promoted.map((entry) => entry.waitlistRequestId), [exact.waitlistRequestId]);
+  assert.deepEqual(journeyOrder.orders, [exact.waitlistRequestId]);
+  for (const candidate of [wrongDate, wrongClass, wrongService, wrongStops, outsideInterval]) {
+    assert.equal((await service.get(candidate.waitlistRequestId)).status, "QUEUED");
+  }
+});
+
+test("promotion preserves traveler intent and never splits a group across released slots", async () => {
+  const service = new WaitlistApplicationService(new InMemoryWaitlistRepository(), new InMemoryEventPublisher(), new StubFarePricing(), new StubCapacity(), new StubJourneyOrder(), () => new Date("2026-01-01T00:00:00.000Z"), new StubOfferManagement());
+  const group = await service.join({ accountId: "acc", travelerRefs: ["g1", "g2"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND_CLASS", intentFingerprint: "intent-group", loyaltyTier: "PLATINUM" });
+  const other = await service.join({ accountId: "acc", travelerRefs: ["other"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND_CLASS", intentFingerprint: "intent-other", loyaltyTier: "NONE" });
+
+  const insufficient = await service.handleCapacityFreed(capacityEvent({ intentFingerprint: "intent-group", freedSlots: 1 }));
+  assert.equal(insufficient.promoted.length, 0);
+  assert.equal((await service.get(group.waitlistRequestId)).status, "QUEUED");
+  assert.equal((await service.get(other.waitlistRequestId)).status, "QUEUED");
+
+  const targeted = await service.handleCapacityFreed(capacityEvent({ intentFingerprint: "intent-group", freedSlots: 2 }));
+  assert.deepEqual(targeted.promoted.map((entry) => entry.waitlistRequestId), [group.waitlistRequestId]);
+  assert.equal((await service.get(other.waitlistRequestId)).status, "QUEUED");
 });
