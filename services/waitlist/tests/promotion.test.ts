@@ -279,11 +279,12 @@ test("promotion persists the earliest commercial, guarantee and waitlist expiry"
   assert.equal((await repository.get(created.waitlistRequestId))?.offerExpiresAt?.toISOString(), "2026-01-01T00:03:00.000Z");
 });
 
-test("an offer above the verified payment guarantee suspends without consuming the capacity credit", async () => {
+test("an offer above the verified payment guarantee suspends and returns its capacity credit once", async () => {
+  let current = new Date("2026-01-01T00:00:00.000Z");
   const repository = new InMemoryWaitlistRepository();
   const orders = new StubJourneyOrder();
   const service = new WaitlistApplicationService(repository, new InMemoryEventPublisher(), new StubFarePricing(), new StubCapacity(), orders,
-    () => new Date("2026-01-01T00:00:00.000Z"), new StubOfferManagement());
+    () => current, new StubOfferManagement());
   const underfunded = WaitlistEntry.create({
     entryId: "wlr-underfunded",
     accountId: "acc",
@@ -311,6 +312,7 @@ test("an offer above the verified payment guarantee suspends without consuming t
   await service.advanceNextPromotion();
 
   assert.equal((await repository.get(underfunded.entryId))?.status, "SUSPENDED");
+  assert.deepEqual((await repository.get(underfunded.entryId))?.matchedCapacityCredits, []);
   assert.equal(orders.orders.length, 0);
 
   const next = WaitlistEntry.create({ entryId: "wlr-next", accountId: "acc", travelerRefs: ["tvl-next"], segmentRef: "seg",
@@ -318,6 +320,10 @@ test("an offer above the verified payment guarantee suspends without consuming t
   await repository.add(next);
   await service.advanceNextPromotion();
   assert.equal((await repository.get(next.entryId))?.status, "MATCHING");
+
+  current = new Date("2026-01-01T00:20:00.000Z");
+  await service.expireDueOffers();
+  assert.equal((await repository.get(underfunded.entryId))?.status, "EXPIRED");
 });
 
 test("order started inside the offer window is linked even if the response crosses expiry", async () => {

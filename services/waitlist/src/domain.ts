@@ -355,6 +355,11 @@ export class WaitlistEntry {
     this._status = "SUSPENDED";
   }
 
+  forgetMatchedCapacityCredits(): void {
+    this.assertStatus("MATCHING", "Only matching waitlist entries can clear returned capacity credits");
+    this._matchedCapacityCredits = [];
+  }
+
   confirmJourneyOrder(journeyOrderRef: string): void {
     if (this._journeyOrderRef !== journeyOrderRef) throw new DomainError("PRECONDITION_FAILED", "Confirmed order differs from the matching order");
     if (this._status !== "MATCHING" && this._status !== "SUSPENDED") {
