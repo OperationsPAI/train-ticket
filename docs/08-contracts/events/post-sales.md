@@ -1,6 +1,6 @@
 # Post Sales Events & Commands
 
-Last updated: 2026-09-24.
+Last updated: 2026-09-25.
 
 Runtime baseline: Helm revision 279.
 Remaining work is tracked in [TODO](../../TODO.md).
@@ -112,6 +112,12 @@ Wallet compensation cases preserve their original capacity and are skipped by ca
 | `steps` | object[] | yes | Empty for `COMPENSATION` and `CHANGE`. Refund execution uses `VOID_ENTITLEMENT {entitlementId, reason, policy}` and `RELEASE_CAPACITY {segmentBookingId}`. |
 
 For refund execution, `EntitlementVoided` triggers booking cancellation, `SegmentBookingCancelled` carries `capacityHoldId` for Hold release, and `CapacityReleased` carries `references.segmentBookingRef` for Post Sales completion.
+An operator can redrive a historical case that remains internally `EXECUTING` by calling the approval endpoint with a new HTTP idempotency key.
+Post Sales reconstructs this event from the immutable decision and current persisted execution inputs; it does not approve the case again.
+The first redrive persists one stable event ID and envelope metadata, and later repeated or concurrent redrives reuse that identity.
+Payment deduplicates the refund by canonical case ID, or by `caseId:paymentIntentId` for an allocated split refund.
+Entitlement Ticketing applies the same void action with the same business case reference and emits no second void result when the entitlement is already voided.
+An `APPLIED` case is not redriven.
 For wallet compensation, `approvedActions.decisionKind=COMPENSATION` authorizes the recorded wallet credit amount and supplies an empty `steps` array.
 Payment skips refund processing for this decision kind, and the approval contains no ticket void or capacity release action.
 Original tickets, seat reservations, order and captured payment are preserved.
@@ -137,6 +143,8 @@ The HTTP evaluation response and case decision expose the approved value as `com
 | `approvalRef` | string | yes | Reference to the approval that authorized execution. |
 
 For wallet compensation, `orderedSteps` is `ISSUE_COMPENSATION_CREDIT`, followed by `APPLY_RESULT`.
+Historical `EXECUTING` redrive reconstructs this event from the persisted step order and reuses the stable redrive event identity stored in the case snapshot.
+It does not restart, clear or reorder execution steps.
 The active executor requires the approved plan to contain `ISSUE_COMPENSATION_CREDIT` before it can issue wallet credit.
 Approval starts internal status `EXECUTING`; the HTTP representation remains `APPROVED` until the case completes.
 Execution records the full request, checked wallet issuance response and verification result in `compensationOperations.request`, `issued` and `verified`.
