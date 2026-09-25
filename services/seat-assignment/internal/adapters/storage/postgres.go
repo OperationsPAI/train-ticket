@@ -204,6 +204,10 @@ func (r *Repository) FindSeatMaps(ctx context.Context, scheduledServiceRef, serv
 	}
 	return out, total, rows.Err()
 }
+func (r *Repository) LockSeatMapPublication(ctx context.Context, scheduledServiceRef, serviceDate string) error {
+	_, err := r.tx.DBFor(ctx).Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "seat-map-publication:"+scheduledServiceRef+":"+serviceDate)
+	return err
+}
 func (r *Repository) SaveSeatAllocation(ctx context.Context, a *domain.ContractSeatAllocation) error {
 	b, err := json.Marshal(a)
 	if err != nil {
