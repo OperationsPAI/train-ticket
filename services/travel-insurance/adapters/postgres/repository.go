@@ -109,6 +109,30 @@ func (r *Repository) FindIssuedPolicyByJourneyOrder(ctx context.Context, journey
 	return policy, json.Unmarshal(raw, &policy)
 }
 
+func (r *Repository) FindIssuedPoliciesByJourneyOrder(ctx context.Context, journeyOrderID string) ([]domain.Policy, error) {
+	if _, err := r.db.DBFor(ctx).Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "insurance-journey-change:"+strings.TrimSpace(journeyOrderID)); err != nil {
+		return nil, err
+	}
+	rows, err := r.db.DBFor(ctx).Query(ctx, `SELECT data FROM policy_snapshots WHERE data->>'journeyOrderId'=$1 AND data->>'status'=$2 ORDER BY id`, strings.TrimSpace(journeyOrderID), string(domain.PolicyIssued))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var policies []domain.Policy
+	for rows.Next() {
+		var raw json.RawMessage
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var policy domain.Policy
+		if err := json.Unmarshal(raw, &policy); err != nil {
+			return nil, err
+		}
+		policies = append(policies, policy)
+	}
+	return policies, rows.Err()
+}
+
 func (r *Repository) SaveClaim(ctx context.Context, claim domain.Claim) error {
 	return saveJSON(ctx, r.db.DBFor(ctx), "claim_snapshots", claim.ID, claim)
 }
