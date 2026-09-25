@@ -48,7 +48,8 @@ export interface WaitlistRepository {
   recordCapacityCredit(event: WaitlistCapacityFreed): Promise<boolean> | boolean;
   claimNextPromotion(now: Date): Promise<WaitlistEntry | undefined> | WaitlistEntry | undefined;
   findRecoverablePromotion(): Promise<WaitlistEntry | undefined> | WaitlistEntry | undefined;
-  restoreCapacityCredits(entry: WaitlistEntry): Promise<void> | void;
+  findRecoverableFulfillment(now: Date): Promise<WaitlistEntry | undefined> | WaitlistEntry | undefined;
+  restoreCapacityCredits(entry: WaitlistEntry, slots?: number): Promise<void> | void;
   findTopQueued(criteria: WaitlistMatchCriteria): Promise<WaitlistEntry | undefined> | WaitlistEntry | undefined;
   findByJourneyOrderRef?(journeyOrderRef: string): Promise<WaitlistEntry | undefined> | WaitlistEntry | undefined;
   findExpiredOffers(now: Date): Promise<readonly WaitlistEntry[]> | readonly WaitlistEntry[];
@@ -62,7 +63,7 @@ export interface FarePricingClient {
 }
 
 export interface OfferManagementClient {
-  createOffer(entry: WaitlistEntry, fareQuoteId: string): Promise<{ offerId: string; offerVersion: number; expiresAt: string }>;
+  createOffer(entry: WaitlistEntry, fareQuoteId: string): Promise<{ offerId: string; offerVersion: number; expiresAt: string; total: Readonly<{ currency: string; minorUnits: number }> }>;
 }
 
 export interface CapacityAvailabilityClient {
@@ -70,7 +71,7 @@ export interface CapacityAvailabilityClient {
   releaseHold(entry: WaitlistEntry, capacityHoldId: string): Promise<void>;
 }
 
-export type JourneyOrderCreation = Readonly<{ orderId: string; seatAssignment?: unknown }>;
+export type JourneyOrderCreation = Readonly<{ orderId: string; amount?: Readonly<{ currency: string; minorUnits: number }>; seatAssignment?: unknown }>;
 
 export interface JourneyOrderClient {
   createOrder(entry: WaitlistEntry): Promise<JourneyOrderCreation>;
@@ -108,7 +109,7 @@ export class HttpOfferManagementClient implements OfferManagementClient {
     private readonly channelId = process.env.WAITLIST_CHANNEL_ID ?? process.env.WAITLIST_CHANNEL ?? "WEB",
   ) {}
 
-  async createOffer(entry: WaitlistEntry, fareQuoteId: string): Promise<{ offerId: string; offerVersion: number; expiresAt: string }> {
+  async createOffer(entry: WaitlistEntry, fareQuoteId: string): Promise<{ offerId: string; offerVersion: number; expiresAt: string; total: Readonly<{ currency: string; minorUnits: number }> }> {
     const response = await tracedFetch(`${trimRight(this.baseUrl)}/api/v1/offers`, {
       method: "POST",
       headers: { "content-type": "application/json", "Idempotency-Key": entry.offerIdempotencyKey },
@@ -125,10 +126,12 @@ export class HttpOfferManagementClient implements OfferManagementClient {
     const offerId = stringField(body, "offerId");
     const offerVersion = body.offerVersion;
     const expiresAt = stringField(body, "expiresAt");
+    const total = moneyField(body.total);
     if (!offerId) throw new Error("Offer response did not include offerId");
     if (typeof offerVersion !== "number" || !Number.isSafeInteger(offerVersion) || offerVersion < 1) throw new Error("Offer response did not include a positive integer offerVersion");
     if (!expiresAt || !Number.isFinite(new Date(expiresAt).getTime())) throw new Error("Offer response did not include a valid expiresAt");
-    return { offerId, offerVersion, expiresAt };
+    if (!total) throw new Error("Offer response did not include a positive total");
+    return { offerId, offerVersion, expiresAt, total };
   }
 }
 
@@ -227,14 +230,19 @@ export class PromotionOrchestrator {
       const commercialOffer = await this.offerManagement.createOffer(entry, entry.fareQuoteId!);
       const offerNow = this.now();
       const expiresAt = earliestInstant(commercialOffer.expiresAt, entry.paymentGuarantee.authorizedUntil, entry.deadline);
-      if (expiresAt <= offerNow) throw new DomainError("PRECONDITION_FAILED", "Commercial offer is already outside the waitlist offer window");
+      if (expiresAt <= offerNow || !guaranteeCovers(entry, commercialOffer.total)) {
+        await this.repository.restoreCapacityCredits(entry);
+        entry.suspend();
+        return this.repository.save(entry);
+      }
+      entry.recordOrderAmount(commercialOffer.total);
       entry.offer(commercialOffer.offerId, commercialOffer.offerVersion, entry.fareQuoteId!, undefined, offerNow, expiresAt);
       return this.repository.save(entry);
     }
     const orderRequestedAt = this.now();
     entry.ensureOfferAcceptable(orderRequestedAt);
     const order = await journeyOrder.createOrder(entry);
-    entry.linkJourneyOrder(orderRequestedAt, order.orderId);
+    entry.linkJourneyOrder(orderRequestedAt, order.orderId, order.amount);
     return this.repository.save(entry);
   }
 
@@ -243,7 +251,7 @@ export class PromotionOrchestrator {
     const expired: WaitlistEntrySnapshot[] = [];
     for (const entry of await this.repository.findExpiredOffers(now)) {
       const capacityHoldId = entry.capacityHoldId;
-      if (!entry.journeyOrderRef && entry.matchedCapacityCredits.length > 0) await this.repository.restoreCapacityCredits(entry);
+      if (entry.status === "MATCHING" && !entry.journeyOrderRef && entry.matchedCapacityCredits.length > 0) await this.repository.restoreCapacityCredits(entry);
       entry.expire();
       if (capacityHoldId) await this.capacityAvailability.releaseHold(entry, capacityHoldId);
       const snapshot = await this.repository.save(entry);
@@ -276,4 +284,15 @@ function earliestInstant(...values: readonly string[]): Date {
   const instants = values.map((value) => new Date(value));
   if (instants.some((value) => !Number.isFinite(value.getTime()))) throw new Error("Waitlist offer boundary included an invalid timestamp");
   return new Date(Math.min(...instants.map((value) => value.getTime())));
+}
+function moneyField(value: unknown): Readonly<{ currency: string; minorUnits: number }> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const body = value as Record<string, unknown>;
+  const currency = stringField(body, "currency");
+  const minorUnits = Number(body.minorUnits);
+  return currency && Number.isSafeInteger(minorUnits) && minorUnits > 0 ? { currency, minorUnits } : undefined;
+}
+function guaranteeCovers(entry: WaitlistEntry, amount: Readonly<{ currency: string; minorUnits: number }>): boolean {
+  return entry.paymentGuarantee.amount.currency === amount.currency
+    && entry.paymentGuarantee.amount.minorUnits >= amount.minorUnits;
 }
