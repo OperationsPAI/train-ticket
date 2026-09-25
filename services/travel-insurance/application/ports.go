@@ -26,6 +26,7 @@ type Repository interface {
 	FindPolicyByUniqueness(context.Context, domain.ProductCode, string, string, string, string) (domain.Policy, error)
 	FindIssuedPoliciesForSegment(context.Context, domain.ProductCode, string, time.Time) ([]domain.Policy, error)
 	FindIssuedPolicyByJourneyOrder(context.Context, string) (domain.Policy, error)
+	FindIssuedPoliciesByJourneyOrder(context.Context, string) ([]domain.Policy, error)
 	FindPoliciesByAncillaryItem(context.Context, string) ([]domain.Policy, error)
 	SaveClaim(context.Context, domain.Claim) error
 	FindClaim(context.Context, string) (domain.Claim, error)
@@ -45,6 +46,21 @@ type PayoutReceipt struct {
 
 type PayoutExecutor interface {
 	Disburse(context.Context, domain.Policy, domain.Claim, domain.PayoutAdvice, string) (PayoutReceipt, error)
+}
+
+type JourneyCoverage struct {
+	OrderID             string
+	AccountID           string
+	Status              string
+	TravelerRefs        []string
+	ReplacedSegmentRefs []string
+	SegmentRefs         []string
+	StartsAt            time.Time
+	EndsAt              time.Time
+}
+
+type JourneyCoverageResolver interface {
+	ResolveJourneyCoverage(context.Context, string, string) (JourneyCoverage, error)
 }
 
 type EventPublisher interface {

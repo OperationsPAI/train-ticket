@@ -40,9 +40,37 @@ func (h *InboundHandler) Handle(ctx context.Context, envelope kitmsg.EventEnvelo
 		return h.handleRefundApplied(ctx, envelope)
 	case "TrainDelayed":
 		return h.handleTrainDelayed(ctx, envelope)
+	case "JourneyOrderPostSalesAdjusted":
+		return h.handleJourneyAdjusted(ctx, envelope)
 	default:
 		return nil
 	}
+}
+
+type journeyAdjusted struct {
+	OrderID         string   `json:"orderId"`
+	AccountID       string   `json:"accountId"`
+	PostSalesCaseID string   `json:"postSalesCaseId"`
+	SegmentRefs     []string `json:"segmentRefs"`
+}
+
+func (h *InboundHandler) handleJourneyAdjusted(ctx context.Context, envelope kitmsg.EventEnvelope) error {
+	var payload journeyAdjusted
+	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+		return err
+	}
+	if payload.OrderID == "" || payload.AccountID == "" || payload.PostSalesCaseID == "" {
+		return fmt.Errorf("changed journey references missing")
+	}
+	_, err := h.service.AdjustPoliciesForChangedJourney(ctx, application.JourneyAdjustedCommand{
+		JourneyOrderID: payload.OrderID,
+		AccountID:      payload.AccountID,
+		CaseID:         payload.PostSalesCaseID,
+		SegmentRefs:    payload.SegmentRefs,
+		CorrelationID:  envelope.CorrelationID,
+		CausationID:    envelope.EventID,
+	})
+	return err
 }
 
 type refundApplied struct {
