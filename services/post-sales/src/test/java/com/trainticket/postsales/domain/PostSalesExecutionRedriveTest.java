@@ -37,6 +37,52 @@ class PostSalesExecutionRedriveTest {
             () -> source.prepareExecutionRedrive(NOW.plusSeconds(2), "cmd-redrive", "cmd-redrive", "corr-redrive"));
     }
 
+    @Test
+    void authoritativeEvidenceAccountsForThePersistedPlanAndAppliesTheCase() {
+        PostSalesCase source = executingRefund();
+        long approved = source.decision().amountSnapshot().refundAmount().toMinorUnits();
+        PostSalesExecutionEvidence evidence = evidence(source, approved);
+        int priorEvents = source.domainEvents().size();
+
+        assertTrue(source.reconcileCompletedExecution(evidence, NOW.plusSeconds(20),
+            "cmd-reconcile", "cmd-reconcile", "corr-reconcile"));
+
+        assertEquals(PostSalesCaseStatus.APPLIED, source.status());
+        assertEquals("authoritative downstream execution reconciled", source.terminalReason());
+        assertTrue(source.executionPlan().stream().allMatch(step -> step.status() == PostSalesStepStatus.SUCCEEDED));
+        assertEquals(java.util.Set.of("sb-redrive"), source.releasedOrderItems());
+        assertEquals(7, source.domainEvents().size() - priorEvents);
+        assertTrue(source.domainEvents().stream().anyMatch(PostSalesApplied.class::isInstance));
+        assertFalse(source.reconcileCompletedExecution(evidence, NOW.plusSeconds(21),
+            "cmd-reconcile-again", "cmd-reconcile-again", "corr-reconcile"));
+    }
+
+    @Test
+    void aggregateRejectsEvidenceWithAnUnrelatedCapacityHold() {
+        PostSalesCase source = executingRefund();
+        long approved = source.decision().amountSnapshot().refundAmount().toMinorUnits();
+        PostSalesExecutionEvidence valid = evidence(source, approved);
+        PostSalesExecutionEvidence mismatched = new PostSalesExecutionEvidence(
+            valid.caseId(), valid.journeyOrderId(), valid.entitlements(), valid.bookings(),
+            List.of(new PostSalesExecutionEvidence.CapacityEvidence("hold-other", "sb-redrive", true)),
+            valid.refunds());
+
+        assertThrows(DomainRuleViolation.class, () -> source.reconcileCompletedExecution(mismatched,
+            NOW.plusSeconds(20), "cmd-reconcile", "cmd-reconcile", "corr-reconcile"));
+        assertEquals(PostSalesCaseStatus.EXECUTING, source.status());
+    }
+
+    private static PostSalesExecutionEvidence evidence(PostSalesCase source, long approvedMinorUnits) {
+        return new PostSalesExecutionEvidence(source.caseId(), source.journeyOrderId(),
+            List.of(new PostSalesExecutionEvidence.EntitlementEvidence(
+                "ent-redrive", "sb-redrive", "tvl-redrive", "seg-redrive", NOW.plusSeconds(3))),
+            List.of(new PostSalesExecutionEvidence.BookingEvidence(
+                "sb-redrive", "ent-redrive", "tvl-redrive", "seg-redrive", "hold-redrive")),
+            List.of(new PostSalesExecutionEvidence.CapacityEvidence("hold-redrive", "sb-redrive", true)),
+            List.of(new PostSalesExecutionEvidence.RefundEvidence(
+                "ref-redrive", "pi-redrive", Money.fromMinorUnits(approvedMinorUnits, "CNY"), "SETTLED")));
+    }
+
     static PostSalesCase executingRefund() {
         PostSalesCase source = PostSalesCase.open("ord-redrive", PostSalesCaseType.REFUND,
             PostSalesScope.ticket("sb-redrive", "seg-redrive", "tvl-redrive", "ent-redrive"),
