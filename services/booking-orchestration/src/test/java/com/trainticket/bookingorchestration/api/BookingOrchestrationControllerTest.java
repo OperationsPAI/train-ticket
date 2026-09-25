@@ -141,7 +141,7 @@ class BookingOrchestrationControllerTest {
     @Test
     void requestReservationValidationFailure() {
         String sagaId = createTestSaga();
-        var req = new BookingOrchestrationController.RequestReservationRequest("", null, "", null, null, null);
+        var req = new BookingOrchestrationController.RequestReservationRequest("", null, "", null, null, null, null);
         ResponseEntity<?> response = controller.requestReservation(sagaId, req, UUID.randomUUID().toString(), request);
         assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
         var error = (BookingOrchestrationController.ErrorBody) response.getBody();
