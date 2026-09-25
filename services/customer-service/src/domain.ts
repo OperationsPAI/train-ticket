@@ -18,6 +18,8 @@
 
 import { newEventId, uuidV7 } from "@trainticket/ts-kit";
 
+import { deskPollsQueue } from "./desk-queues.js";
+
 // ─── Error ────────────────────────────────────────────────────────────────────
 
 export class DomainError extends Error {
@@ -834,12 +836,7 @@ export class SupportCase {
   }
 
   assign(command: AssignSupportCase): { case: SupportCase; event: SupportCaseAssigned } {
-    if (!this.canAssign()) {
-      throw new DomainError(
-        "CASE_NOT_ASSIGNABLE",
-        `SupportCase ${this.id} in ${this.status} cannot be assigned`,
-      );
-    }
+    this.requireHandoff(command.ownerQueue);
 
     const newSnapshot: SupportCaseSnapshot = deepFreeze({
       ...this.snapshot,
@@ -1113,6 +1110,28 @@ export class SupportCase {
   }
 
   // ─── State machine guards ──────────────────────────────────────────────────
+
+  /**
+   * Whether the desk can take this case and hand it on.
+   *
+   * The status is the service's business; the queue is the release's, because a queue nobody polls
+   * is a lane the case disappears into rather than a case the desk is working. The two are decided
+   * together so that neither the counter nor the assignment applies half of the handoff.
+   */
+  private requireHandoff(ownerQueue: string): void {
+    if (!this.canAssign()) {
+      throw new DomainError(
+        "CASE_NOT_ASSIGNABLE",
+        `SupportCase ${this.id} in ${this.status} cannot be assigned`,
+      );
+    }
+    if (!deskPollsQueue(ownerQueue)) {
+      throw new DomainError(
+        "CASE_NOT_ROUTABLE",
+        `SupportCase ${this.id} cannot be handed to ${ownerQueue}: the desk does not poll that queue`,
+      );
+    }
+  }
 
   private canClassify(): boolean {
     return this.snapshot.status === "Opened";
