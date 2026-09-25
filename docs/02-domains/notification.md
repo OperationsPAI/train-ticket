@@ -68,6 +68,11 @@ Notification 不修改 Journey Order、Capacity、Payment、Entitlement 或 Post
 延期扫描每秒运行一次，每次最多处理 8 条到期事件。
 未发布实现新增 `notification_delivery_queue`、`notification_delivery_attempts` 和 `notification_delivery_evidence`，并增加按任务及渠道唯一的 quota 预留记录。
 
+Notification 还会在 Redis DLQ 写入与原消息 ACK 之前，把原始 envelope、来源 stream/message、首次及最近失败、尝试次数和恢复状态写入 `event_dead_letters`。
+Payment、Post Sales 和 Wallet / Promotion 的受支持历史事件通过独立 HTTP replay source 拉取，游标保存在 `event_replay_checkpoints`。
+恢复事件进入与在线 Redis 消费相同的事务处理入口；业务成功而游标尚未提交的崩溃重放由 `processed_events` 吸收。
+来源返回 retention gap 时 checkpoint 进入 `GAP`，不允许跳过缺失历史。完整边界见[持久事件恢复契约](../08-contracts/durable-event-recovery.md)。
+
 ## 未发布的 durable queue
 
 消费事务保存 `Planned` 任务、`NotificationScheduled` outbox、渠道计划、quota 决策和队列记录后提交。

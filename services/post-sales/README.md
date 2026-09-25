@@ -62,7 +62,15 @@ The credit step records the benefit ID, or `zero-approved-compensation` for a ze
 The executor preserves the original seat reservations through its wallet only actions; loadgen additionally compares original seat allocations, capacity Holds and paid purchase records.
 PostgreSQL case snapshots retain the operation evidence for retries and restart recovery.
 Wallet / Promotion also deduplicates `POST_SALES_COMP` issuance by `caseId`: an identical command returns the existing benefit, and a different command returns HTTP 409 `CONFLICT` at the wallet API.
-`APPLIED` and `FAILED` compensation cases return their recorded state without further execution.
+Before issuance, Post Sales asks Wallet for the canonical benefit by case. A
+matching benefit left by a crash is adopted without another POST. A proven
+refund, rights, payment or Wallet mismatch is written once to
+`compensation_mismatch_checkpoints`; later execution attempts return 409
+`COMPENSATION_MISMATCH` before any downstream call. The complete record is
+available at `GET /api/v1/internal/compensation-mismatches/{caseId}`.
+`FAILED` compensation cases return their recorded state; `APPLIED` cases are
+read-only reverified so historical missing evidence is frozen rather than
+silently accepted.
 See the [HTTP API](../../docs/08-contracts/api/post-sales.md), [events](../../docs/08-contracts/events/post-sales.md) and [wallet issuance API](../../docs/08-contracts/api/wallet-promotion.md).
 
 ## Change execution
@@ -134,6 +142,10 @@ mvn -Dpost-sales.messaging.redis.enabled=false test
 ```
 
 The full module run on 2026-09-23 reported 89 tests, zero failures, zero errors and 18 tests skipped because their external conditions were not enabled.
+The 2026-09-25 T05 run reported 108 tests, zero failures and zero errors, with
+12 recorded/external-environment tests skipped. It includes a real PostgreSQL
+restart/concurrency test for compensation mismatch checkpoints and local HTTP
+tests proving an existing Wallet benefit is adopted with zero duplicate POSTs.
 The focused recorded run executed `IndependentCapacitySubscriberLiveTest`, `CapacityReleaseDurableDedupTest` and `UnrelatedEventDatabaseIsolationTest`, with all three passing and none skipped.
 Run the recorded tests from this service directory with Java 25, a local PostgreSQL database and an empty dedicated Redis database.
 The isolation test requires Redis messaging to be enabled in its Spring context and uses production stream names only inside that dedicated Redis database.
