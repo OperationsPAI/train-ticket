@@ -51,6 +51,7 @@ to one and back.
 | Resident cycle on revision 386 | 455602 requests and 96165 journeys in 600 seconds, **19569 failed journeys**, dominated by Trip Planning search | `.scratch/runtime-fixes/goal-rev386-ten-minute.json` |
 | Resident window on revision 390 | 488382 requests and 64690 journeys in 600 seconds, **10033 failed journeys** | `.scratch/runtime-fixes/goal-rev388-ten-minute.json` |
 | Resident window on revision 391 | 173869 requests and 61293 journeys, **1046 failed journeys** (1.7%), no failed reservations at all in the shop | `.scratch/runtime-fixes/goal-rev391-ten-minute.json` |
+| Resident window on revision 393 | 413245 requests and 64300 journeys, P99 789 milliseconds, **5673 failed journeys** (8.8%), all of them reservations that did not confirm | `.scratch/runtime-fixes/goal-rev393-ten-minute.json` |
 | Business metric contract | 22 chart tests pass, including the label allowlist and the recording rule targets | `deploy/tests/test_observability_metrics_config.py` |
 | Transport collector | Unit and `miniredis` tests pass; label sets, entry-id ages, dead-letter attribution and the no-poll-before-first-read case | `tools/redis-state-collector` |
 | Notification module suite | 108 passed, 6 skipped, 0 failures | `services/notification` `npm test` |
@@ -69,7 +70,8 @@ the live path works.
 ### The resident cycle is not yet clean
 
 The cycle does not pass the acceptance in [TODO](TODO.md#acceptance) yet, but
-the shape of what fails has changed. The reservation path is clean: no segment
+the shape of what fails has changed, and it swings: the same revision recorded a
+window with 1046 failed journeys and one with 5673. The reservation path is clean: no segment
 booking has failed for its own reasons in the last measured six minutes, none of
 the 457609 holds that were missing their reservation facts is missing them now,
 and capacity logs no transient failure across its replicas. The last window
