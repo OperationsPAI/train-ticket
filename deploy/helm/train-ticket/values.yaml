@@ -1374,7 +1374,7 @@ services:
       limits: { cpu: '1', memory: 2Gi }
   disruption-recovery:
     db: disruption_recovery
-    image: mirrors.tencent.com/microservice/disruption-recovery:zero-impact-29fd62af@sha256:1923f807d65df0cb718659847120c8a9e6e4fa09ae6bf5f2034ee0b12149df62
+    image: mirrors.tencent.com/microservice/disruption-recovery:metrics-4f1b0f0f@sha256:ec94e35411443f8193c428e39584bf783fac4cabee6f2c6708c8b15846ff9538
     strategy:
       type: RollingUpdate
       rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
