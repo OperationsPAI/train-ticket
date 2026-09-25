@@ -23,9 +23,9 @@ export async function startNotificationMessaging(
 ): Promise<NotificationMessagingRuntime> {
   const storage = existingStorage ?? await optionalStorageRuntime(channelGateway);
   const publisher = storage ? undefined : new RedisStreamEventPublisher();
-  const subscriber = new RedisStreamEventSubscriber();
+  const subscriber = new RedisStreamEventSubscriber(undefined, storage?.deadLetterEvidenceSink);
   const subscribers = storage
-    ? NOTIFICATION_SUBSCRIBED_STREAMS.map((_, index) => index === 0 ? subscriber : new RedisStreamEventSubscriber())
+    ? NOTIFICATION_SUBSCRIBED_STREAMS.map((_, index) => index === 0 ? subscriber : new RedisStreamEventSubscriber(undefined, storage.deadLetterEvidenceSink))
     : [subscriber];
   const application = publisher ? new NotificationApplicationService(publisher, undefined, channelGateway, undefined, undefined, undefined, new NotificationAggregator()) : undefined;
   const dispatch: Parameters<RedisStreamEventSubscriber["subscribe"]>[3] = async (envelope) => {

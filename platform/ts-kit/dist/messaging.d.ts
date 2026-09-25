@@ -39,6 +39,23 @@ export type EventBatchHandler = (envelopes: readonly EventEnvelope[]) => Promise
 export type EventHandler = ((envelope: EventEnvelope) => Promise<any> | any) & {
     handleBatch?: EventBatchHandler;
 };
+export type DeadLetterEvidence = Readonly<{
+    sourceStream: string;
+    sourceMessageId: string;
+    consumerGroup: string;
+    consumerName: string;
+    eventId?: string;
+    eventType?: string;
+    producer?: string;
+    originalEnvelope?: string;
+    failureKind: "INVALID_ENVELOPE" | "FATAL_HANDLER" | "RETRY_EXHAUSTED";
+    failureReason: string;
+    attempts: number;
+    deadLetteredAt: string;
+}>;
+export interface DeadLetterEvidenceSink {
+    recordDeadLetter(evidence: DeadLetterEvidence): Promise<void>;
+}
 export interface EventPublisher {
     publish(envelope: EventEnvelope): Promise<void>;
 }
@@ -190,6 +207,7 @@ export declare class RedisEventSubscriber implements EventSubscriber {
     private readonly recoveryCursors;
     constructor(redis?: Redis, onLoopFailure?: SubscriberLoopFailureHandler, options?: Readonly<{
         thrownHandlerErrors?: "retry" | "dlq";
+        deadLetterEvidenceSink?: DeadLetterEvidenceSink;
     }>);
     started(): Promise<void>;
     subscribe(streams: readonly string[], group: string, consumerName: string, handler: EventHandler, signal?: AbortSignal): Promise<void>;
