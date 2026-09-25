@@ -103,3 +103,4 @@ export { RedisStreamEventSubscriber } from "./adapters/messaging/subscriber.js";
 export { startNotificationMessaging, type NotificationMessagingRuntime } from "./adapters/messaging/runtime.js";
 export { PostgresNotificationTaskRepository, PostgresRateLimitRepository, PostgresRecipientContactRepository, PostgresUserPreferenceRepository } from "./adapters/storage/notification-repository.js";
 export { startNotificationStorage, type NotificationStorageRuntime } from "./adapters/storage/runtime.js";
+export { deliveryPolicyDecision, expiryDecision, notificationTtl, supersedingSignatures, type DeliveryPolicyDecision } from "./delivery-policy.js";
