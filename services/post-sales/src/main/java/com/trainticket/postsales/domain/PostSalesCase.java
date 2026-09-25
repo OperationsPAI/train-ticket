@@ -235,6 +235,137 @@ public final class PostSalesCase {
         );
     }
 
+    public boolean reconcileCompletedExecution(
+        PostSalesExecutionEvidence evidence,
+        Instant occurredAt,
+        String sourceCommandId,
+        String causationId,
+        String correlationId
+    ) {
+        if (status == PostSalesCaseStatus.APPLIED) {
+            return false;
+        }
+        requireStatus(PostSalesCaseStatus.EXECUTING);
+        requireDecision();
+        if (caseType == PostSalesCaseType.CHANGE || caseType == PostSalesCaseType.COMPENSATION) {
+            throw new DomainRuleViolation("execution reconciliation supports refund-like cases only");
+        }
+        if (!caseId.equals(evidence.caseId()) || !journeyOrderId.equals(evidence.journeyOrderId())) {
+            throw new DomainRuleViolation("execution evidence belongs to another post-sales case");
+        }
+        Set<String> entitlementIds = evidence.entitlements().stream()
+            .map(PostSalesExecutionEvidence.EntitlementEvidence::entitlementId)
+            .collect(java.util.stream.Collectors.toSet());
+        Set<String> bookingIds = evidence.bookings().stream()
+            .map(PostSalesExecutionEvidence.BookingEvidence::segmentBookingId)
+            .collect(java.util.stream.Collectors.toSet());
+        Set<String> capacityBookingIds = evidence.capacity().stream()
+            .map(PostSalesExecutionEvidence.CapacityEvidence::segmentBookingId)
+            .collect(java.util.stream.Collectors.toSet());
+        if (entitlementIds.size() != evidence.entitlements().size()
+                || bookingIds.size() != evidence.bookings().size()
+                || capacityBookingIds.size() != evidence.capacity().size()
+                || !entitlementIds.equals(new java.util.HashSet<>(scope.entitlementRefs()))
+                || !bookingIds.equals(new java.util.HashSet<>(scope.orderItemRefs()))
+                || !capacityBookingIds.equals(bookingIds)) {
+            throw new DomainRuleViolation("execution evidence does not exactly cover the post-sales scope");
+        }
+        Map<String, PostSalesExecutionEvidence.EntitlementEvidence> entitlementByBooking = evidence.entitlements().stream()
+            .collect(java.util.stream.Collectors.toMap(
+                PostSalesExecutionEvidence.EntitlementEvidence::segmentBookingId, value -> value));
+        Map<String, PostSalesExecutionEvidence.CapacityEvidence> capacityByBooking = evidence.capacity().stream()
+            .collect(java.util.stream.Collectors.toMap(
+                PostSalesExecutionEvidence.CapacityEvidence::segmentBookingId, value -> value));
+        for (PostSalesExecutionEvidence.BookingEvidence booking : evidence.bookings()) {
+            PostSalesExecutionEvidence.EntitlementEvidence entitlement = entitlementByBooking.get(booking.segmentBookingId());
+            PostSalesExecutionEvidence.CapacityEvidence capacityEvidence = capacityByBooking.get(booking.segmentBookingId());
+            if (entitlement == null || capacityEvidence == null
+                    || !booking.entitlementId().equals(entitlement.entitlementId())
+                    || !booking.travelerRef().equals(entitlement.travelerRef())
+                    || !booking.segmentRef().equals(entitlement.segmentRef())
+                    || !booking.capacityHoldId().equals(capacityEvidence.capacityHoldId())) {
+                throw new DomainRuleViolation("execution evidence relationships do not match");
+            }
+        }
+        long refundTotal = 0;
+        for (PostSalesExecutionEvidence.RefundEvidence refund : evidence.refunds()) {
+            if (!decision.amountSnapshot().refundAmount().currency().equals(refund.amount().currency())) {
+                throw new DomainRuleViolation("execution evidence refund currency differs from the approved amount");
+            }
+            refundTotal = Math.addExact(refundTotal, refund.amount().toMinorUnits());
+        }
+        if (refundTotal != decision.amountSnapshot().refundAmount().toMinorUnits()) {
+            throw new DomainRuleViolation("execution evidence refunds differ from the approved amount");
+        }
+        if (decision.amountSnapshot().refundAmount().isZero() && !evidence.refunds().isEmpty()) {
+            throw new DomainRuleViolation("zero approved refund cannot have payment refund evidence");
+        }
+
+        evidence.bookings().forEach(booking -> recordCapacityReleased(booking.segmentBookingId()));
+        recordReconciledStep(PostSalesStepType.DECISION_CONFIRMED, decision.ruleSnapshot().farePricingEvaluationRef(),
+            occurredAt, sourceCommandId, causationId, correlationId);
+        recordReconciledStep(PostSalesStepType.VOID_ENTITLEMENT, join(entitlementIds, "voided-entitlements"),
+            occurredAt, sourceCommandId, causationId, correlationId);
+        recordReconciledStep(PostSalesStepType.CANCEL_SEGMENT, join(bookingIds, "cancelled-bookings"),
+            occurredAt, sourceCommandId, causationId, correlationId);
+        recordReconciledStep(PostSalesStepType.RELEASE_CAPACITY,
+            join(evidence.capacity().stream().map(PostSalesExecutionEvidence.CapacityEvidence::capacityHoldId)
+                .collect(java.util.stream.Collectors.toSet()), "released-capacity"),
+            occurredAt, sourceCommandId, causationId, correlationId);
+        recordReconciledStep(PostSalesStepType.REQUEST_REFUND,
+            evidence.refunds().isEmpty() ? "zero-approved-refund"
+                : join(evidence.refunds().stream().map(PostSalesExecutionEvidence.RefundEvidence::refundId)
+                    .collect(java.util.stream.Collectors.toSet()), "refunds"),
+            occurredAt, sourceCommandId, causationId, correlationId);
+        recordReconciledFinalStep(journeyOrderId, occurredAt, sourceCommandId, causationId, correlationId);
+        if (status != PostSalesCaseStatus.APPLIED) {
+            throw new DomainRuleViolation("reconciled execution did not complete the persisted plan");
+        }
+        return true;
+    }
+
+    private void recordReconciledStep(
+        PostSalesStepType stepType,
+        String externalRef,
+        Instant occurredAt,
+        String sourceCommandId,
+        String causationId,
+        String correlationId
+    ) {
+        if (requireStep(stepType).status() == PostSalesStepStatus.SUCCEEDED) {
+            return;
+        }
+        recordStepSucceeded(stepType, externalRef, occurredAt, sourceCommandId, causationId, correlationId);
+    }
+
+    private void recordReconciledFinalStep(
+        String externalRef,
+        Instant occurredAt,
+        String sourceCommandId,
+        String causationId,
+        String correlationId
+    ) {
+        PostSalesStep step = requireStep(PostSalesStepType.APPLY_RESULT);
+        if (step.status() == PostSalesStepStatus.SUCCEEDED) {
+            return;
+        }
+        ensurePriorStepsSucceeded(PostSalesStepType.APPLY_RESULT);
+        step.succeed(externalRef, occurredAt);
+        if (executionPlanAggregate != null) {
+            executionPlanAggregate.recordStepSucceeded(PostSalesStepType.APPLY_RESULT, externalRef, occurredAt);
+        }
+        domainEvents.add(new PostSalesStepSucceeded(caseId, PostSalesStepType.APPLY_RESULT, externalRef,
+            metadata(occurredAt, sourceCommandId, causationId, correlationId, status)));
+        apply("authoritative downstream execution reconciled", occurredAt, sourceCommandId, causationId, correlationId);
+    }
+
+    private static String join(Set<String> values, String name) {
+        if (values.isEmpty()) {
+            throw new DomainRuleViolation(name + " evidence is required");
+        }
+        return values.stream().sorted().collect(java.util.stream.Collectors.joining(","));
+    }
+
     public Set<String> releasedOrderItems() { return Set.copyOf(releasedOrderItems); }
 
     public PostSalesCase withReleasedOrderItems(Set<String> released) {
