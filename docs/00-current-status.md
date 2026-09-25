@@ -52,6 +52,7 @@ to one and back.
 | Resident window on revision 390 | 488382 requests and 64690 journeys in 600 seconds, **10033 failed journeys** | `.scratch/runtime-fixes/goal-rev388-ten-minute.json` |
 | Resident window on revision 391 | 173869 requests and 61293 journeys, **1046 failed journeys** (1.7%), no failed reservations at all in the shop | `.scratch/runtime-fixes/goal-rev391-ten-minute.json` |
 | Resident window on revision 393 | 413245 requests and 64300 journeys, P99 789 milliseconds, **5673 failed journeys** (8.8%), all of them reservations that did not confirm | `.scratch/runtime-fixes/goal-rev393-ten-minute.json` |
+| Resident window on revision 394 | 441056 requests and 87788 journeys, P99 761 milliseconds, **11814 failed journeys**, the same shape | `.scratch/runtime-fixes/goal-rev394-ten-minute.json` |
 | Business metric contract | 22 chart tests pass, including the label allowlist and the recording rule targets | `deploy/tests/test_observability_metrics_config.py` |
 | Transport collector | Unit and `miniredis` tests pass; label sets, entry-id ages, dead-letter attribution and the no-poll-before-first-read case | `tools/redis-state-collector` |
 | Notification module suite | 108 passed, 6 skipped, 0 failures | `services/notification` `npm test` |
@@ -99,6 +100,14 @@ second, each fetching about 20000 segment rows from the plan tables. The peak
 windows inside this run, taken before the instance reached that state, carried
 **zero failed journeys out of 10670** and 36 out of 8924, so the reservation
 path itself holds when the instance has room.
+
+Trip Planning and Seat Assignment have since been cut over to the read shard --
+the first by a verified copy, the second by logical replication so core kept
+serving -- which takes both of those readers off the instance that carries
+everything else. What the reservation wait is waiting for now is the next
+question, and it is narrower: capacity reports no transient failure, its pool no
+longer times out, its consumer group sits at a few hundred entries, and no
+confirmed booking is missing its hold.
 
 The remaining named defects are smaller and were measured separately: a change
 whose replacement reservation is refused with `OVERLAPPING_HOLD` while the
