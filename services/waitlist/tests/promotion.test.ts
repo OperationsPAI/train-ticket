@@ -27,7 +27,7 @@ class StubFarePricing implements FarePricingClient {
 }
 
 class StubOfferManagement implements OfferManagementClient {
-  async createOffer(entry: WaitlistEntry) { return { offerId: `off-${entry.entryId}`, offerVersion: 1 }; }
+  async createOffer(entry: WaitlistEntry) { return { offerId: `off-${entry.entryId}`, offerVersion: 1, expiresAt: "2026-01-01T00:10:00.000Z" }; }
 }
 
 class StubCapacity implements CapacityAvailabilityClient {
@@ -79,7 +79,7 @@ test("no payment-service calls are made while fulfilling a matched waitlist entr
     const url = String(input);
     calls.push(url);
     if (url.endsWith("/api/v1/fare-quotes")) return Response.json({ quoteId: "fq-http" }, { status: 201 });
-    if (url.endsWith("/api/v1/offers")) return Response.json({ offerId: "off-http", offerVersion: 1 }, { status: 201 });
+    if (url.endsWith("/api/v1/offers")) return Response.json({ offerId: "off-http", offerVersion: 1, expiresAt: "2026-01-01T00:10:00.000Z" }, { status: 201 });
     if (url.endsWith("/api/v1/journey-orders")) return Response.json({ orderId: "ord-http" }, { status: 201 });
     return Response.json({ error: "unexpected" }, { status: 500 });
   }) as typeof fetch;
@@ -196,4 +196,37 @@ test("promotion preserves traveler intent and never splits a group across releas
   const targeted = await service.handleCapacityFreed(capacityEvent({ intentFingerprint: "intent-group", freedSlots: 2 }));
   assert.deepEqual(targeted.promoted.map((entry) => entry.waitlistRequestId), [group.waitlistRequestId]);
   assert.equal((await service.get(other.waitlistRequestId)).status, "QUEUED");
+});
+
+test("promotion persists the earliest commercial, guarantee and waitlist expiry", async () => {
+  class EarlyOffer implements OfferManagementClient {
+    async createOffer(entry: WaitlistEntry) { return { offerId: `off-${entry.entryId}`, offerVersion: 1, expiresAt: "2026-01-01T00:03:00.000Z" }; }
+  }
+  const repository = new InMemoryWaitlistRepository();
+  const service = new WaitlistApplicationService(repository, new InMemoryEventPublisher(), new StubFarePricing(), new StubCapacity(), new StubJourneyOrder(), () => new Date("2026-01-01T00:00:00.000Z"), new EarlyOffer());
+  const created = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND_CLASS", deadline: "2026-01-01T00:05:00.000Z" });
+
+  await service.handleCapacityFreed(capacityEvent());
+
+  assert.equal((await repository.get(created.waitlistRequestId))?.offerExpiresAt?.toISOString(), "2026-01-01T00:03:00.000Z");
+});
+
+test("order started inside the offer window is linked even if the response crosses expiry", async () => {
+  let current = new Date("2026-01-01T00:00:00.000Z");
+  class CrossingOrder implements JourneyOrderClient {
+    async createOrder(entry: WaitlistEntry) {
+      current = new Date("2026-01-01T00:03:00.001Z");
+      return { orderId: `ord-${entry.entryId}` };
+    }
+  }
+  class EarlyOffer implements OfferManagementClient {
+    async createOffer(entry: WaitlistEntry) { return { offerId: `off-${entry.entryId}`, offerVersion: 1, expiresAt: "2026-01-01T00:03:00.000Z" }; }
+  }
+  const repository = new InMemoryWaitlistRepository();
+  const service = new WaitlistApplicationService(repository, new InMemoryEventPublisher(), new StubFarePricing(), new StubCapacity(), new CrossingOrder(), () => current, new EarlyOffer());
+  const created = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND_CLASS", deadline: "2026-01-01T00:05:00.000Z" });
+
+  await service.handleCapacityFreed(capacityEvent());
+
+  assert.equal((await repository.get(created.waitlistRequestId))?.journeyOrderRef, `ord-${created.waitlistRequestId}`);
 });
