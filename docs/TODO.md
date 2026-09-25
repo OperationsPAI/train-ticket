@@ -283,6 +283,31 @@ A one second sweep fails overdue steps with `STEP_TIMED_OUT`, runs the recorded 
 Evidence: the module suite is 94 tests with no failures, and the sweeper, its migration and its outbound events were exercised against the live database (`.scratch/runtime-fixes/booking-saga-timeout-sweep-tests.log`, `booking-saga-timeout-sweep-live-tests.log`).
 Sagas that were already waiting before revision 317 carry no wait start and are not swept; case `psc-01a0d125-f1a7-7f93-884a-d626125a411f` is one of them and reaches its user visible outcome through the post sales deadline instead.
 
+### T18: Complete low-cardinality business telemetry
+
+Status: the OTLP-to-Prometheus path, cardinality guard and recording-rule
+contract are complete; owning-service metrics remain incremental work. See
+[the metric contract](07-observability/business-metrics.md).
+
+1. [ ] Journey Order and Booking Orchestration: publish order funnel and saga
+   active/transition/oldest-age metrics.
+2. [ ] Payment and Payment Channel: publish operation, amount and durable
+   conservation metrics; Post Sales contributes bounded compensation outcomes.
+3. [ ] Capacity Availability and Seat Assignment: publish capacity, hold and
+   allocation state without service/date/segment/seat identifiers as labels.
+4. [ ] Entitlement Ticketing and Fulfillment: publish ticket issue, void,
+   replacement and validation lifecycle metrics.
+5. [ ] Waitlist and Wallet Promotion: publish durable state, oldest-age and
+   operation outcome metrics, reconstructed correctly after restart.
+6. [ ] Notification: publish durable delivery queue depth, oldest task age and
+   retry outcomes without recipient or notification identifiers.
+7. [ ] Add one shared Redis state collector for current consumer lag, pending
+   age and DLQ population; do not poll `XINFO` independently from every replica.
+8. [ ] Port the existing Java event-consumer and outbox metric contract to the
+   Go, Python, TypeScript and Rust platform kits.
+9. [ ] For every source, add a cardinality test proving different business IDs
+   produce the same label set, plus restart tests for durable-state gauges.
+
 ## Handoff rules
 
 No additional implementation or deployment is requested by this documentation closeout.

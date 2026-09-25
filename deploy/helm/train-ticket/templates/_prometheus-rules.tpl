@@ -80,6 +80,24 @@ groups:
             hikaricp_connections_pending{job="train-ticket-applications"}
           )
 
+  - name: train-ticket-transport
+    interval: 30s
+    rules:
+      - record: train_ticket:event_consumer_messages:rate5m
+        expr: sum by (namespace, service, outcome) (rate(train_ticket_event_consumer_messages_total{job="train-ticket-applications"}[5m]))
+      - record: train_ticket:event_consumer_failures:rate5m
+        expr: sum by (namespace, service, reason_code) (rate(train_ticket_event_consumer_failures_total{job="train-ticket-applications"}[5m]))
+      - record: train_ticket:event_consumer_dead_letters:increase5m
+        expr: sum by (namespace, service, reason_code) (increase(train_ticket_event_consumer_dead_letters_total{job="train-ticket-applications"}[5m]))
+      - record: train_ticket:outbox_unpublished_sample:max
+        expr: max by (namespace, service) (train_ticket_outbox_unpublished_sample{job="train-ticket-applications"})
+      - record: train_ticket:outbox_oldest_unpublished_age:max_seconds
+        expr: max by (namespace, service) (train_ticket_outbox_oldest_unpublished_age_seconds{job="train-ticket-applications"})
+      - record: train_ticket:outbox_published:rate5m
+        expr: sum by (namespace, service) (rate(train_ticket_outbox_published_total{job="train-ticket-applications"}[5m]))
+      - record: train_ticket:outbox_failures:rate5m
+        expr: sum by (namespace, service, stage) (rate(train_ticket_outbox_failures_total{job="train-ticket-applications"}[5m]))
+
   - name: train-ticket-business
     interval: 30s
     rules:
