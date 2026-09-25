@@ -26,6 +26,12 @@ INDEXES = {
       WHERE route_id IS NOT NULL AND service_date IS NOT NULL
         AND (capacity IS NOT NULL OR confirmed IS NOT NULL)
     """,
+    "idx_reporting_metric_events_route_window": """
+      CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_reporting_metric_events_route_window
+      ON reporting_metric_events(occurred_at DESC,route_id,service_date)
+      INCLUDE(event_id,event_type,seat_class,capacity,confirmed)
+      WHERE route_id IS NOT NULL
+    """,
 }
 
 
