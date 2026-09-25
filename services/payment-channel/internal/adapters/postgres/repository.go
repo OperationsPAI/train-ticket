@@ -153,6 +153,9 @@ func (r *Repository) ClaimStatementForGeneration(ctx context.Context, channel, d
 	if _, inTransaction := ctx.Value(txKey{}).(storage.DBTX); !inTransaction {
 		return nil, fmt.Errorf("statement generation requires a transaction")
 	}
+	if _, err := r.tx.DBFor(ctx).Exec(ctx, `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`); err != nil {
+		return nil, err
+	}
 	tag, err := r.tx.DBFor(ctx).Exec(ctx, `INSERT INTO channel_statement_identities (identity_key, statement_id)
 		VALUES ($1, $2) ON CONFLICT (identity_key) DO NOTHING`, identity, candidateID)
 	if err != nil {
