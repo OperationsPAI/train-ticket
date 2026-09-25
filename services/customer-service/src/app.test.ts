@@ -199,6 +199,37 @@ describe("customer-service HTTP API", () => {
     assert.equal(fetched.json().description, openBody.description);
   });
 
+  it("answers the platform's channel vocabulary and refuses a code outside it", async () => {
+    const platformChannels = ["APP", "WEB", "PHONE", "IM", "EMAIL", "IN_APP_MESSAGE", "BOT", "OPERATOR_CONSOLE"];
+    const app = createApp();
+
+    for (const channel of platformChannels) {
+      const accepted = await app.inject({
+        method: "POST",
+        url: "/api/v1/support-cases",
+        headers: { "idempotency-key": idempotencyKey() },
+        payload: { ...openBody, channel },
+      });
+      assert.equal(accepted.statusCode, 201, `${channel} is one of the platform's channels`);
+      assert.equal(accepted.json().channel, channel);
+    }
+
+    // MOBILE and COUNTER are fare-pricing's sales channels, a different
+    // enumeration that shares WEB with this one and no other member.
+    for (const channel of ["MOBILE", "COUNTER"]) {
+      const refused = await app.inject({
+        method: "POST",
+        url: "/api/v1/support-cases",
+        headers: { "idempotency-key": idempotencyKey() },
+        payload: { ...openBody, channel },
+      });
+      assert.equal(refused.statusCode, 400, `${channel} is not a case channel`);
+      assert.equal(refused.json().code, "VALIDATION_FAILED");
+      assert.equal(refused.json().details.field, "channel");
+      assert.deepEqual(refused.json().details.allowed, platformChannels);
+    }
+  });
+
   it("requires Idempotency-Key and rejects validation failures with canonical body", async () => {
     const missingKey = await createApp().inject({ method: "POST", url: "/api/v1/support-cases", payload: openBody });
     assert.equal(missingKey.statusCode, 400);
