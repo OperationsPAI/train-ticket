@@ -13,6 +13,7 @@ import (
 	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
 	"github.com/trainticket/greenfield/services/seat-assignment/internal/adapters/api"
 	seatmsg "github.com/trainticket/greenfield/services/seat-assignment/internal/adapters/messaging"
+	"github.com/trainticket/greenfield/services/seat-assignment/internal/adapters/observability"
 	seatpg "github.com/trainticket/greenfield/services/seat-assignment/internal/adapters/storage"
 	"github.com/trainticket/greenfield/services/seat-assignment/internal/application"
 	"github.com/trainticket/greenfield/services/seat-assignment/internal/domain"
@@ -60,7 +61,8 @@ func main() {
 	defer func() { _ = redis.Close() }()
 	go kitstorage.NewOutboxRelay(pool, redis).Run(ctx)
 	tx := seatpg.NewTransactor(pool)
-	svc := application.New(seatpg.NewRepository(tx), seatpg.NewOutboxPublisher(tx), tx.Within)
+	repo := seatpg.NewRepository(tx)
+	svc := application.New(repo, seatpg.NewOutboxPublisher(tx), tx.Within)
 	if sub, err := seatmsg.NewRedisSubscriber(os.Getenv("REDIS_URL")); err == nil {
 		defer func() { _ = sub.Close() }()
 		consumer := os.Getenv("HOSTNAME")
@@ -86,6 +88,13 @@ func main() {
 	if _, err := poolMetrics.RegisterPoolMetrics(goruntime.MeterFromEnv(profile.ServiceID)); err != nil {
 		log.Fatalf("failed to register pool metrics: %v", err)
 	}
+	// train_ticket.seat.allocations: a durable level, refreshed on a timer so a
+	// restart cannot be mistaken for every allocation being released.
+	seatAllocations := observability.NewRecorder()
+	if _, err := seatAllocations.Register(goruntime.MeterFromEnv(profile.ServiceID)); err != nil {
+		log.Fatalf("failed to register seat allocation metrics: %v", err)
+	}
+	go observability.NewCollector(seatAllocations, repo).Run(ctx)
 	router := goruntime.NewGinRouter(goruntime.GinConfig{ServiceID: profile.ServiceID, Metadata: profile, HealthStatus: domain.Health(), ReadyCheck: kitstorage.ReadyCheck(pool, runner.Ready), Observer: goruntime.ObserverFromEnv(profile.ServiceID), HTTPMetrics: httpMetrics})
 	var store idempotency.Store = kitstorage.NewIdempotencyStore(pool)
 	api.NewHandler(svc, store).RegisterRoutes(router)
