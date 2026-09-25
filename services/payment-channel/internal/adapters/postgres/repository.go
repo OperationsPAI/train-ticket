@@ -138,11 +138,18 @@ func (r *Repository) UpdateStatement(ctx context.Context, o *domain.ChannelState
 }
 func (r *Repository) GetStatement(ctx context.Context, id string) (*domain.ChannelStatement, error) {
 	var raw json.RawMessage
-	query := `SELECT data - 'lines' FROM channel_statement_snapshots WHERE id=$1`
-	if _, inTransaction := ctx.Value(txKey{}).(storage.DBTX); inTransaction {
-		query += ` FOR UPDATE`
+	if err := r.tx.DBFor(ctx).QueryRow(ctx, `SELECT data - 'lines' FROM channel_statement_snapshots WHERE id=$1`, id).Scan(&raw); err != nil {
+		return nil, err
 	}
-	if err := r.tx.DBFor(ctx).QueryRow(ctx, query, id).Scan(&raw); err != nil {
+	return decode[domain.ChannelStatement](raw)
+}
+
+func (r *Repository) LockStatement(ctx context.Context, id string) (*domain.ChannelStatement, error) {
+	if _, inTransaction := ctx.Value(txKey{}).(storage.DBTX); !inTransaction {
+		return nil, fmt.Errorf("locking a channel statement requires a transaction")
+	}
+	var raw json.RawMessage
+	if err := r.tx.DBFor(ctx).QueryRow(ctx, `SELECT data - 'lines' FROM channel_statement_snapshots WHERE id=$1 FOR UPDATE`, id).Scan(&raw); err != nil {
 		return nil, err
 	}
 	return decode[domain.ChannelStatement](raw)
@@ -260,6 +267,12 @@ func (r *Repository) UpdateDiscrepancy(ctx context.Context, o *domain.Reconcilia
 	return conflict(r.update(ctx, "channel_discrepancy_snapshots", o.DiscrepancyID, e, o))
 }
 func (r *Repository) GetDiscrepancy(ctx context.Context, id string) (*domain.ReconciliationDiscrepancy, error) {
+	if _, inTransaction := ctx.Value(txKey{}).(storage.DBTX); inTransaction {
+		var locked string
+		if err := r.tx.DBFor(ctx).QueryRow(ctx, "SELECT id FROM channel_discrepancy_snapshots WHERE id=$1 FOR UPDATE", id).Scan(&locked); err != nil {
+			return nil, err
+		}
+	}
 	return get[domain.ReconciliationDiscrepancy](ctx, r.snap(ctx, "channel_discrepancy_snapshots"), id)
 }
 
