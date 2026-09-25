@@ -187,6 +187,55 @@ impl AppState {
                 .execute(pool)
                 .await?;
             }
+            IndexMutation::MinimumConnectionRulePublished(rule) => {
+                sqlx::query(
+                    "INSERT INTO plan_mct_rules (mct_rule_id, version, status, from_node_type, to_node_type, transfer_category, minimum_minutes, conditions, valid_from, valid_until, data) \
+                     VALUES ($1, $2, 'PUBLISHED', $3, $4, $5, $6, $7, $8, $9, $10) \
+                     ON CONFLICT (mct_rule_id) DO UPDATE SET \
+                       version = EXCLUDED.version, \
+                       status = EXCLUDED.status, \
+                       from_node_type = EXCLUDED.from_node_type, \
+                       to_node_type = EXCLUDED.to_node_type, \
+                       transfer_category = EXCLUDED.transfer_category, \
+                       minimum_minutes = EXCLUDED.minimum_minutes, \
+                       conditions = EXCLUDED.conditions, \
+                       valid_from = EXCLUDED.valid_from, \
+                       valid_until = EXCLUDED.valid_until, \
+                       data = EXCLUDED.data, \
+                       updated_at = now() \
+                     WHERE EXCLUDED.version > plan_mct_rules.version \
+                        OR (EXCLUDED.version = plan_mct_rules.version AND plan_mct_rules.status <> 'RETIRED')",
+                )
+                .bind(&rule.rule_id)
+                .bind(rule.version)
+                .bind(&rule.from_node_type)
+                .bind(&rule.to_node_type)
+                .bind(&rule.transfer_category)
+                .bind(i64::from(rule.minimum_minutes))
+                .bind(&rule.conditions)
+                .bind(rule.valid_from)
+                .bind(rule.valid_until)
+                .bind(&envelope.payload)
+                .execute(pool)
+                .await?;
+            }
+            IndexMutation::MinimumConnectionRuleRetired { rule_id, version } => {
+                sqlx::query(
+                    "INSERT INTO plan_mct_rules (mct_rule_id, version, status, data) \
+                     VALUES ($1, $2, 'RETIRED', $3) \
+                     ON CONFLICT (mct_rule_id) DO UPDATE SET \
+                       version = EXCLUDED.version, \
+                       status = EXCLUDED.status, \
+                       data = EXCLUDED.data, \
+                       updated_at = now() \
+                     WHERE EXCLUDED.version >= plan_mct_rules.version",
+                )
+                .bind(rule_id)
+                .bind(version)
+                .bind(&envelope.payload)
+                .execute(pool)
+                .await?;
+            }
             IndexMutation::None => {}
         }
         Ok(())
@@ -286,6 +335,82 @@ mod tests {
             .unwrap();
         sqlx::query("DELETE FROM plan_nodes WHERE node_id = $1")
             .bind(&node_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL pointing at a disposable Postgres database"]
+    async fn minimum_connection_rule_publication_and_retirement_survive_rebuilds() {
+        let database_url =
+            std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        rust_kit::storage::Storage::new(pool.clone())
+            .migrate_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
+            .await
+            .unwrap();
+
+        let rule_id = format!("mct-{}", uuid::Uuid::now_v7());
+        let state = AppState::new(Some(pool.clone()), Arc::new(PlanIndex::new()));
+        let published = EventEnvelope::try_new(
+            "MctRulePublished",
+            messaging::now_rfc3339_utc(),
+            messaging::correlation_id(),
+            None::<String>,
+            "transfer-management",
+            serde_json::json!({
+                "mctRuleId": rule_id,
+                "version": 3,
+                "status": "PUBLISHED",
+                "fromNodeType": "STATION",
+                "toNodeType": "STATION",
+                "transferCategory": "SAME_STATION",
+                "minimumMinutes": 20,
+                "conditions": {},
+                "validFrom": "2026-07-01T00:00:00Z"
+            }),
+        )
+        .unwrap();
+        state.handle_inbound_event(&published).await.unwrap();
+
+        let rebuilt = PlanIndex::new();
+        crate::load_index_from_db(&pool, &rebuilt).await;
+        assert_eq!(rebuilt.minimum_connection_rule_count(), 1);
+
+        let retired = EventEnvelope::try_new(
+            "MctRuleRetired",
+            messaging::now_rfc3339_utc(),
+            messaging::correlation_id(),
+            Some(published.event_id.clone()),
+            "transfer-management",
+            serde_json::json!({
+                "mctRuleId": rule_id,
+                "version": 3,
+                "status": "RETIRED"
+            }),
+        )
+        .unwrap();
+        state.handle_inbound_event(&retired).await.unwrap();
+
+        let rebuilt_after_retirement = PlanIndex::new();
+        crate::load_index_from_db(&pool, &rebuilt_after_retirement).await;
+        assert_eq!(rebuilt_after_retirement.minimum_connection_rule_count(), 0);
+        let status: String = sqlx::query_scalar(
+            "SELECT status FROM plan_mct_rules WHERE mct_rule_id = $1",
+        )
+        .bind(&rule_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(status, "RETIRED");
+
+        sqlx::query("DELETE FROM plan_mct_rules WHERE mct_rule_id = $1")
+            .bind(rule_id)
             .execute(&pool)
             .await
             .unwrap();
