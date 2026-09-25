@@ -13,6 +13,7 @@ import com.trainticket.platformkit.persistence.LazyRedisOutboxRelayLifecycle;
 import com.trainticket.platformkit.persistence.MigrationRunner;
 import com.trainticket.platformkit.persistence.OutboxAppender;
 import com.trainticket.postsales.application.EventPublisher;
+import com.trainticket.postsales.application.CompensationMismatchStore;
 import com.trainticket.postsales.application.PublishFailedException;
 import java.nio.file.Path;
 import java.util.Objects;
@@ -68,6 +69,12 @@ public class PostSalesPersistenceConfiguration {
     @Bean(destroyMethod = "close")
     EventReplayRetentionLifecycle eventReplayRetentionLifecycle(EventReplayArchive archive) {
         return new EventReplayRetentionLifecycle(archive);
+    }
+
+    @Bean
+    @Primary
+    CompensationMismatchStore postgresCompensationMismatchStore(DataSource dataSource, ObjectMapper objectMapper) {
+        return new PostgresCompensationMismatchStore(dataSource, objectMapper);
     }
 
     @Bean
