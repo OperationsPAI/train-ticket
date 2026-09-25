@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { InMemoryEventPublisher, isUuidV7 } from "@trainticket/ts-kit";
-import { WaitlistApplicationService } from "../src/application.js";
+import { InMemoryWaitlistRepository, WaitlistApplicationService } from "../src/application.js";
 import { WaitlistEntry, type FulfillmentTraveler, type WaitlistEntrySnapshot } from "../src/domain.js";
 import type { EntitlementFacts, OrderFacts, PaymentFacts, ReservationFacts, SagaFacts, WaitlistFulfillmentClient } from "../src/fulfillment.js";
 import type { WaitlistCapacityFreed, WaitlistMatchCriteria, WaitlistRepository } from "../src/promotion.js";
@@ -391,4 +391,19 @@ test("a payment captured concurrently with authorization cleanup resumes ticketi
   assert.equal(client.releaseCalls.length, 0);
   assert.equal(client.orderCancelCalls.length, 0);
   assert.equal(client.entitlementEffects, 1);
+});
+
+test("deadline sweep leaves a suspended linked order available for authoritative resolution", async () => {
+  const repository = new InMemoryWaitlistRepository();
+  const entry = matchingEntry(["tvl-1"]);
+  await repository.add(entry);
+  entry.suspend();
+  await repository.save(entry);
+  const service = new WaitlistApplicationService(repository, new InMemoryEventPublisher(), undefined, undefined, undefined,
+    () => new Date("2026-10-20T00:00:00.000Z"));
+
+  assert.deepEqual(await service.expireDueOffers(), []);
+  assert.equal((await repository.get(entry.entryId))?.status, "SUSPENDED");
+  await service.handleJourneyOrderConfirmed(entry.journeyOrderRef!);
+  assert.equal((await repository.get(entry.entryId))?.status, "FULFILLED");
 });
