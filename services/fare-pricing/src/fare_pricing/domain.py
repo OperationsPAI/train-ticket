@@ -217,23 +217,54 @@ class DynamicPricingBand:
 class CapacitySnapshot:
     segment_ref: str
     departure_date: date
+    class_ref: str
     total_capacity: int
     remaining_capacity: int
-    snapshot_version: int
+    snapshot_version: str
+    observed_at: datetime
+    source_event_id: str
 
     def __post_init__(self) -> None:
         if not self.segment_ref.strip():
             raise PricingError("capacity snapshot segment ref is required")
-        if self.total_capacity <= 0:
-            raise PricingError("capacity snapshot total capacity must be positive")
+        normalized_class = normalize_capacity_class_ref(self.class_ref)
+        if not normalized_class:
+            raise PricingError("capacity snapshot class ref is required")
+        if self.total_capacity < 0:
+            raise PricingError("capacity snapshot total capacity cannot be negative")
         if self.remaining_capacity < 0 or self.remaining_capacity > self.total_capacity:
             raise PricingError("capacity snapshot remaining capacity must be within total capacity")
-        if self.snapshot_version < 0:
-            raise PricingError("capacity snapshot version cannot be negative")
+        if not str(self.snapshot_version).strip():
+            raise PricingError("capacity snapshot version is required")
+        if not self.source_event_id.strip():
+            raise PricingError("capacity snapshot source event id is required")
+        observed_at = self.observed_at if self.observed_at.tzinfo is not None else self.observed_at.replace(tzinfo=UTC)
+        object.__setattr__(self, "class_ref", normalized_class)
+        object.__setattr__(self, "snapshot_version", str(self.snapshot_version))
+        object.__setattr__(self, "observed_at", observed_at.astimezone(UTC))
+
+    @property
+    def ordering_key(self) -> tuple[datetime, str]:
+        return self.observed_at, self.source_event_id
 
     @property
     def remaining_pct(self) -> Decimal:
+        if self.total_capacity == 0:
+            return Decimal("0.00")
         return (Decimal(self.remaining_capacity) * Decimal("100") / Decimal(self.total_capacity)).quantize(Decimal("0.01"))
+
+
+def normalize_capacity_class_ref(class_ref: str) -> str:
+    normalized = class_ref.strip().upper().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "STANDARD": "SECOND_CLASS",
+        "SECOND": "SECOND_CLASS",
+        "FIRST": "FIRST_CLASS",
+        "BUSINESS": "BUSINESS_CLASS",
+        "HARD_SLEEPER": "SLEEPER_HARD",
+        "SOFT_SLEEPER": "SLEEPER_SOFT",
+    }
+    return aliases.get(normalized, normalized)
 
 
 ELIGIBILITY_TYPES = frozenset({"STUDENT", "CHILD", "MILITARY_DISABLED"})
