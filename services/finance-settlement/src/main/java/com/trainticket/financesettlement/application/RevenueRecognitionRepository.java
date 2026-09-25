@@ -10,5 +10,6 @@ public interface RevenueRecognitionRepository {
     Optional<RevenueRecognition> findById(String revenueRecognitionId);
     List<RevenueRecognition> findByOrderId(String orderId);
     default List<RevenueRecognition> findBySupplierAndPeriod(String supplierId, LocalDate startDate, LocalDate endDate) { return List.of(); }
+    default List<String> findSupplierIdsForPeriod(LocalDate startDate, LocalDate endDate) { return List.of(); }
     void save(RevenueRecognition recognition);
 }
