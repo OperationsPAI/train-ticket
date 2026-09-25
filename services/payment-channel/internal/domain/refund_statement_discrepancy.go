@@ -160,6 +160,14 @@ type StatementLine struct {
 	EvidenceHash               string    `json:"evidenceHash"`
 }
 
+func (l StatementLine) CanonicalKey() string {
+	sourceID := l.ChannelOrderID
+	if l.LineType == "REFUND" {
+		sourceID = l.ChannelRefundID
+	}
+	return strings.Join([]string{l.LineType, sourceID, l.StatementLineID}, "\x1f")
+}
+
 func StatementIdentityKey(channel, date, currency, seed string) string {
 	return strings.Join([]string{strings.TrimSpace(channel), strings.TrimSpace(date), strings.TrimSpace(currency), strings.TrimSpace(seed)}, "\x1f")
 }
@@ -178,82 +186,142 @@ func FinalizeStatementLine(statementIdentity string, duplicateOrdinal int, line 
 func canonicalStatementLines(lines []StatementLine) []StatementLine {
 	canonical := append([]StatementLine(nil), lines...)
 	sort.Slice(canonical, func(i, j int) bool {
-		left, right := canonical[i], canonical[j]
-		if left.LineType != right.LineType {
-			return left.LineType < right.LineType
-		}
-		if left.ChannelOrderID != right.ChannelOrderID {
-			return left.ChannelOrderID < right.ChannelOrderID
-		}
-		if left.ChannelRefundID != right.ChannelRefundID {
-			return left.ChannelRefundID < right.ChannelRefundID
-		}
-		if left.EvidenceHash != right.EvidenceHash {
-			return left.EvidenceHash < right.EvidenceHash
-		}
-		return left.StatementLineID < right.StatementLineID
+		return canonical[i].CanonicalKey() < canonical[j].CanonicalKey()
 	})
 	return canonical
 }
 
 func StatementContentHash(channel, date, currency, seed string, lines []StatementLine) string {
-	evidence := make([]string, 0, len(lines))
+	builder, err := NewStatementBuilder(channel, date, currency, seed)
+	if err != nil {
+		return ""
+	}
 	for _, line := range canonicalStatementLines(lines) {
-		evidence = append(evidence, line.EvidenceHash)
+		if err := builder.Add(line); err != nil {
+			return ""
+		}
 	}
-	return Hash("channel-statement-v2", channel, date, currency, seed, evidence)
+	return builder.StatementHash()
 }
 
-type ChannelStatement struct {
-	ChannelStatementID string          `json:"channelStatementId"`
-	Channel            string          `json:"channel"`
-	StatementDate      string          `json:"statementDate"`
-	Currency           string          `json:"currency"`
-	SeedVersion        string          `json:"seedVersion"`
-	Status             string          `json:"status"`
-	PeriodStartAt      time.Time       `json:"periodStartAt"`
-	PeriodEndAt        time.Time       `json:"periodEndAt"`
-	GeneratedAt        time.Time       `json:"generatedAt"`
-	FrozenAt           *time.Time      `json:"frozenAt,omitempty"`
-	LineCount          int             `json:"lineCount"`
-	GrossPaymentAmount Money           `json:"grossPaymentAmount"`
-	GrossRefundAmount  Money           `json:"grossRefundAmount"`
-	FeeAmount          Money           `json:"feeAmount"`
-	StatementHash      string          `json:"statementHash"`
-	Lines              []StatementLine `json:"lines,omitempty"`
-	CreatedAt          time.Time       `json:"createdAt"`
-	UpdatedAt          time.Time       `json:"updatedAt"`
-	Version            int64           `json:"version"`
-	events             []Event
+type StatementBuilder struct {
+	channel, date, currency, seed string
+	digest                        string
+	lastKey                       string
+	lineCount                     int
+	grossPayment                  int64
+	grossRefund                   int64
 }
 
-func NewStatement(id, channel, date, currency, seed string, lines []StatementLine, now time.Time, corr, cause string) (*ChannelStatement, error) {
-	if strings.TrimSpace(id) == "" {
-		id = NewID("chs")
-	}
+func NewStatementBuilder(channel, date, currency, seed string) (*StatementBuilder, error) {
 	if !ValidChannel(channel) {
 		return nil, fmt.Errorf("unsupported channel")
 	}
 	if strings.TrimSpace(date) == "" || strings.TrimSpace(currency) == "" || strings.TrimSpace(seed) == "" {
 		return nil, fmt.Errorf("statement fields are required")
 	}
-	start, err := time.Parse("2006-01-02", date)
-	if err != nil {
+	if _, err := time.Parse("2006-01-02", date); err != nil {
 		return nil, fmt.Errorf("statementDate must be YYYY-MM-DD")
 	}
+	return &StatementBuilder{
+		channel: channel, date: date, currency: currency, seed: seed,
+		digest: Hash("channel-statement-v3", channel, date, currency, seed),
+	}, nil
+}
+
+func (b *StatementBuilder) Add(line StatementLine) error {
+	if line.StatementLineID == "" || line.EvidenceHash == "" {
+		return fmt.Errorf("statement line identity and evidence hash are required")
+	}
+	if line.ExpectedAmount.Currency != b.currency || line.ActualAmount.Currency != b.currency {
+		return fmt.Errorf("statement line currency must match statement currency")
+	}
+	key := line.CanonicalKey()
+	if b.lastKey != "" && key <= b.lastKey {
+		return fmt.Errorf("statement lines are not in canonical order")
+	}
+	b.lastKey = key
+	b.digest = Hash("channel-statement-v3-step", b.digest, line.EvidenceHash)
+	b.lineCount++
+	switch line.LineType {
+	case "PAYMENT":
+		b.grossPayment += line.ActualAmount.MinorUnits
+	case "REFUND":
+		b.grossRefund += line.ActualAmount.MinorUnits
+	}
+	return nil
+}
+
+func (b *StatementBuilder) StatementHash() string { return b.digest }
+
+func (b *StatementBuilder) Build(id string, now time.Time, corr, cause string) (*ChannelStatement, error) {
+	if strings.TrimSpace(id) == "" {
+		id = NewID("chs")
+	}
+	start, _ := time.Parse("2006-01-02", b.date)
+	statement := &ChannelStatement{
+		ChannelStatementID: id, Channel: b.channel, StatementDate: b.date, Currency: b.currency,
+		SeedVersion: b.seed, Status: "GENERATED", PeriodStartAt: start.UTC(), PeriodEndAt: start.Add(24 * time.Hour).UTC(),
+		GeneratedAt: now.UTC(), LineCount: b.lineCount,
+		GrossPaymentAmount: Money{Currency: b.currency, MinorUnits: b.grossPayment},
+		GrossRefundAmount:  Money{Currency: b.currency, MinorUnits: b.grossRefund},
+		FeeAmount:          Money{Currency: b.currency, MinorUnits: 0},
+		StatementHash:      b.digest, CreatedAt: now.UTC(), UpdatedAt: now.UTC(), Version: 1,
+	}
+	statement.addEvent("ChannelStatementGenerated", map[string]any{
+		"channelStatementId": id, "channel": b.channel, "statementDate": b.date, "currency": b.currency,
+		"seedVersion": b.seed, "periodStartAt": statement.PeriodStartAt, "periodEndAt": statement.PeriodEndAt,
+		"lineCount": statement.LineCount, "grossPaymentAmount": statement.GrossPaymentAmount,
+		"grossRefundAmount": statement.GrossRefundAmount, "feeAmount": statement.FeeAmount,
+		"statementHash": statement.StatementHash, "status": statement.Status, "generatedAt": now.UTC(),
+		"aggregateVersion": statement.Version,
+	}, now, cause, corr)
+	return statement, nil
+}
+
+type ChannelStatement struct {
+	ChannelStatementID    string          `json:"channelStatementId"`
+	Channel               string          `json:"channel"`
+	StatementDate         string          `json:"statementDate"`
+	Currency              string          `json:"currency"`
+	SeedVersion           string          `json:"seedVersion"`
+	Status                string          `json:"status"`
+	PeriodStartAt         time.Time       `json:"periodStartAt"`
+	PeriodEndAt           time.Time       `json:"periodEndAt"`
+	GeneratedAt           time.Time       `json:"generatedAt"`
+	FrozenAt              *time.Time      `json:"frozenAt,omitempty"`
+	LineCount             int             `json:"lineCount"`
+	GrossPaymentAmount    Money           `json:"grossPaymentAmount"`
+	GrossRefundAmount     Money           `json:"grossRefundAmount"`
+	FeeAmount             Money           `json:"feeAmount"`
+	StatementHash         string          `json:"statementHash"`
+	GenerationFingerprint string          `json:"generationFingerprint,omitempty"`
+	LineStorage           string          `json:"lineStorage,omitempty"`
+	Lines                 []StatementLine `json:"lines,omitempty"`
+	CreatedAt             time.Time       `json:"createdAt"`
+	UpdatedAt             time.Time       `json:"updatedAt"`
+	Version               int64           `json:"version"`
+	events                []Event
+}
+
+const StatementLineStorageNormalized = "NORMALIZED_V1"
+
+func NewStatement(id, channel, date, currency, seed string, lines []StatementLine, now time.Time, corr, cause string) (*ChannelStatement, error) {
+	builder, err := NewStatementBuilder(channel, date, currency, seed)
+	if err != nil {
+		return nil, err
+	}
 	lines = canonicalStatementLines(lines)
-	var gp, gr int64
-	for _, l := range lines {
-		if l.LineType == "PAYMENT" {
-			gp += l.ActualAmount.MinorUnits
-		}
-		if l.LineType == "REFUND" {
-			gr += l.ActualAmount.MinorUnits
+	for _, line := range lines {
+		if err := builder.Add(line); err != nil {
+			return nil, err
 		}
 	}
-	st := &ChannelStatement{ChannelStatementID: id, Channel: channel, StatementDate: date, Currency: currency, SeedVersion: seed, Status: "GENERATED", PeriodStartAt: start.UTC(), PeriodEndAt: start.Add(24 * time.Hour).UTC(), GeneratedAt: now.UTC(), LineCount: len(lines), GrossPaymentAmount: Money{currency, gp}, GrossRefundAmount: Money{currency, gr}, FeeAmount: Money{currency, 0}, Lines: lines, CreatedAt: now.UTC(), UpdatedAt: now.UTC(), Version: 1}
-	st.StatementHash = StatementContentHash(channel, date, currency, seed, lines)
-	st.addEvent("ChannelStatementGenerated", map[string]any{"channelStatementId": id, "channel": channel, "statementDate": date, "currency": currency, "seedVersion": seed, "periodStartAt": st.PeriodStartAt, "periodEndAt": st.PeriodEndAt, "lineCount": st.LineCount, "grossPaymentAmount": st.GrossPaymentAmount, "grossRefundAmount": st.GrossRefundAmount, "feeAmount": st.FeeAmount, "statementHash": st.StatementHash, "status": st.Status, "generatedAt": now.UTC(), "aggregateVersion": st.Version}, now, cause, corr)
+	st, err := builder.Build(id, now, corr, cause)
+	if err != nil {
+		return nil, err
+	}
+	st.Lines = lines
 	return st, nil
 }
 func (s *ChannelStatement) Freeze(hash string, expected int64, now time.Time, operator, reason, corr, cause string) error {
