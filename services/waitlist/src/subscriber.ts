@@ -61,6 +61,7 @@ export function tryParseCapacityFreed(envelope: EventEnvelope): WaitlistCapacity
   if (typeof payload.scheduledServiceRef !== "string" || payload.scheduledServiceRef.trim().length === 0) return undefined;
   if (typeof payload.stopSequenceVersion !== "string" || payload.stopSequenceVersion.trim().length === 0) return undefined;
   if (typeof payload.seatClass !== "string" && typeof payload.classRef !== "string") return undefined;
+  if (envelope.eventType === "WaitlistCapacityFreed" && (typeof payload.capacityReleaseRef !== "string" || !payload.capacityReleaseRef.trim())) return undefined;
   if (!tryInterval(payload.interval)) return undefined;
   return parseCapacityFreed(envelope);
 }
@@ -75,7 +76,8 @@ export function parseCapacityFreed(envelope: EventEnvelope): WaitlistCapacityFre
   const interval = intervalValue(payload.interval);
   const stopSequenceVersion = string(payload.stopSequenceVersion);
   const intentFingerprint = typeof payload.intentFingerprint === "string" && payload.intentFingerprint.trim() ? payload.intentFingerprint.trim() : undefined;
-  return { segmentRef, scheduledServiceRef, departureDate, freedSlots, seatClass, interval, stopSequenceVersion, intentFingerprint, capacityReleaseRef: envelope.eventId };
+  const capacityReleaseRef = envelope.eventType === "WaitlistCapacityFreed" ? string(payload.capacityReleaseRef) : envelope.eventId;
+  return { segmentRef, scheduledServiceRef, departureDate, freedSlots, seatClass, interval, stopSequenceVersion, intentFingerprint, capacityReleaseRef };
 }
 
 export function parseJourneyOrderId(envelope: EventEnvelope): string {
