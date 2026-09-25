@@ -15,6 +15,7 @@ use sqlx::PgPool;
 use crate::supply_facts::{Interval as SupplyInterval, PendingOccupancy, PreparedSupply, ReservationSupply, SeatSupply, SupplyClient, combine_capacity_snapshots, combined_class_snapshot};
 
 mod supply;
+mod business_metrics;
 
 const INVENTORY_TABLE: &str = "inventory_pool_snapshots";
 const HOLD_TABLE: &str = "capacity_hold_snapshots";
@@ -40,6 +41,9 @@ pub struct PostgresCapacityService {
     hold_repo: SnapshotRepository,
     snapshot_repo: SnapshotRepository,
     supply_client: SupplyClient,
+    /// Publishes `train_ticket.capacity.*` from durable rows, not from the
+    /// in-memory aggregate. See `business_metrics.rs`.
+    business_metrics: crate::metrics::CapacityBusinessMetrics,
 }
 
 impl PostgresCapacityService {
@@ -139,11 +143,18 @@ impl PostgresCapacityService {
             snapshot_repo: SnapshotRepository::new(SNAPSHOT_TABLE)?,
             supply_client: SupplyClient::new(std::env::var("SUPPLY_FACTS_BASE_URL_TEMPLATE").unwrap_or_else(|_| "http://%s:8080".into()))
                 .map_err(|error| StorageError::Config(error.message().to_owned()))?,
+            business_metrics: business_metrics::business_metrics(),
         })
     }
 
     pub fn pool(&self) -> &PgPool {
         self.storage.pool()
+    }
+
+    /// The published capacity levels. Read-only, so a test can assert what the
+    /// gauges would observe after a refresh.
+    pub fn business_metrics(&self) -> &crate::metrics::CapacityBusinessMetrics {
+        &self.business_metrics
     }
 
     async fn lock_booking(tx: &mut PgTransaction<'_>, booking: &str) -> Result<(), StorageError> {
