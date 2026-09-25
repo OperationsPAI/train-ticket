@@ -33,6 +33,7 @@ import {
   type SchemaDetail,
 } from "@trainticket/ts-kit";
 import { serviceProfile } from "./profile.js";
+import { intakeChannels, readIntakeSheet } from "./intake-channels.js";
 
 export type HealthStatus = Readonly<{
   status: "ok";
@@ -106,7 +107,9 @@ type OTelTracer = Readonly<{
   startSpan: (name: string, options?: Record<string, unknown>) => OTelSpan;
 }>;
 
-const channels = ["APP", "WEB", "PHONE", "IM", "EMAIL", "IN_APP_MESSAGE", "BOT", "OPERATOR_CONSOLE"] as const;
+// The channels this deployment answers: the platform's vocabulary narrowed to the intake queues
+// its settings sheet says the desk staffs.
+const channels = intakeChannels(readIntakeSheet());
 const priorities = ["LOW", "NORMAL", "HIGH", "URGENT"] as const;
 const customerTiers = ["STANDARD", "SILVER", "GOLD", "PLATINUM", "DIAMOND"] as const;
 const escalationLevels = ["L1_AGENT", "L2_SPECIALIST", "L3_SUPERVISOR"] as const;

@@ -1,0 +1,23 @@
+{
+  "note": "A support case is worked from the intake queue that owns its channel, so the intake answers a channel where this deployment staffs that queue.",
+  "routes": {
+    "APP": "app-desk",
+    "WEB": "web-desk",
+    "PHONE": "phone-desk",
+    "IM": "chat-desk",
+    "EMAIL": "mail-desk",
+    "IN_APP_MESSAGE": "message-desk",
+    "BOT": "bot-desk",
+    "OPERATOR_CONSOLE": "console-desk"
+  },
+  "staffedQueues": [
+    "app-desk",
+    "web-desk",
+    "phone-desk",
+    "chat-desk",
+    "mail-desk",
+    "message-desk",
+    "bot-desk",
+    "console-desk"
+  ]
+}
