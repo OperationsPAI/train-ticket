@@ -1,3 +1,4 @@
+pub mod adapters;
 pub mod api;
 pub mod application;
 pub mod domain;
@@ -14,17 +15,10 @@ pub use application::AppState;
 pub use plan_index::PlanIndex;
 
 #[cfg(feature = "redis-impl")]
+use adapters::messaging::{CONSUMER_GROUP, ITINERARY_STREAM, SUBSCRIPTION_STREAMS};
+
+#[cfg(feature = "redis-impl")]
 const DEFAULT_REDIS_URL: &str = "redis://localhost:6379";
-
-#[cfg(feature = "redis-impl")]
-const CONSUMER_GROUP: &str = "trip-planning";
-
-#[cfg(feature = "redis-impl")]
-const SUBSCRIPTION_STREAMS: &[&str] = &[
-    "events:place-network",
-    "events:service-plan",
-    "events:transfer-management",
-];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ServiceProfile {
@@ -107,7 +101,11 @@ pub async fn build_runtime() -> Router {
         load_index_from_db(pg_pool, &plan_index).await;
     }
 
-    let state = Arc::new(AppState::new(pool.clone(), plan_index.clone()));
+    let state = Arc::new(AppState::new(
+        pool.clone(),
+        plan_index.clone(),
+        ITINERARY_STREAM,
+    ));
 
     // Start outbox relay
     if let Some(ref pg_pool) = pool {
@@ -313,7 +311,7 @@ pub fn router_with_state(state: Arc<AppState>) -> Router {
 /// Construct a test-only router with no persistence.
 pub fn router_for_test() -> (Router, Arc<AppState>) {
     let plan_index = Arc::new(PlanIndex::new());
-    let state = Arc::new(AppState::new(None, plan_index));
+    let state = Arc::new(AppState::new(None, plan_index, "test:trip-planning"));
     let router = router_with_state(state.clone());
     (router, state)
 }
