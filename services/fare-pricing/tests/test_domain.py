@@ -197,7 +197,16 @@ class FarePricingDomainTest(unittest.TestCase):
             ttl=timedelta(minutes=15),
             distance_km=Decimal("600"),
             departure_time=NOW + timedelta(days=4),
-            capacity_snapshots=(CapacitySnapshot("seg-1", (NOW + timedelta(days=4)).date(), 100, 8, 1),),
+            capacity_snapshots=(CapacitySnapshot(
+                "seg-1",
+                (NOW + timedelta(days=4)).date(),
+                "SECOND_CLASS",
+                100,
+                8,
+                "3",
+                NOW,
+                "evt-capacity-domain",
+            ),),
         )
 
         assert quote.breakdown is not None
