@@ -59,6 +59,7 @@ func (r *memRepo) FindSeatMaps(_ context.Context, ss, date, status string, limit
 	}
 	return out, len(out), nil
 }
+func (r *memRepo) LockSeatMapPublication(context.Context, string, string) error { return nil }
 func (r *memRepo) SaveSeatAllocation(_ context.Context, a *domain.ContractSeatAllocation) error {
 	cp := *a
 	r.allocs[a.SeatAllocationID] = &cp
@@ -193,4 +194,45 @@ func TestSeatMapPublishImmutabilityAllocateAdjacencyAndStanding(t *testing.T) {
 
 func allocReq(sb, tvl, hold string, pref *domain.SeatPreferences) AllocateSeatRequest {
 	return AllocateSeatRequest{SegmentBookingID: sb, JourneyOrderID: "ord-1", TravelerRef: tvl, SegmentRef: "seg-1", ScheduledServiceRef: "ss-1", ServiceDate: "2026-08-02", CapacityHoldID: hold, CapacityUnitRef: "cap-standard", Interval: domain.StationInterval{FromSeq: 1, ToSeq: 3}, ClassRef: "standard", IssuePurpose: "INITIAL", SeatPreferences: pref, ExpiresAt: time.Now().Add(time.Hour)}
+}
+
+func TestPublishedCompositionReplacementMapsHistoricalUnits(t *testing.T) {
+	repo := newMemRepo()
+	svc := New(repo, &memPub{}, nil)
+	ctx := context.Background()
+	first, err := svc.CreateSeatMap(ctx, CreateSeatMapRequest{ScheduledServiceRef: "ss-replace", ServiceDate: "2026-09-25", CompositionVersion: "v1", CompositionSeed: "BASE", MappingVersion: "map-v1", OperatorRef: "op"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err = svc.PublishSeatMap(ctx, first.SeatMapID, PublishSeatMapRequest{ExpectedSeatMapVersion: first.SeatMapVersion, PublishReason: "INITIAL", OperatorRef: "op"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := svc.CreateSeatMap(ctx, CreateSeatMapRequest{ScheduledServiceRef: "ss-replace", ServiceDate: "2026-09-25", CompositionVersion: "v2", CompositionSeed: "BASE", MappingVersion: "map-v2", OperatorRef: "op"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err = svc.PublishSeatMap(ctx, second.SeatMapID, PublishSeatMapRequest{ExpectedSeatMapVersion: second.SeatMapVersion, PublishReason: "REPLACEMENT", OperatorRef: "op"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, _, err := repo.GetSeatMap(ctx, first.SeatMapID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if old.Status != domain.SeatMapStatusSuperseded || second.ReplacesSeatMapID != first.SeatMapID {
+		t.Fatalf("replacement lineage old=%+v new=%+v", old, second)
+	}
+	facts, err := svc.CapacityComposition(ctx, "ss-replace", "2026-09-25", "standard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(facts.ReplacementMappings) != len(first.AssignableUnits("standard")) {
+		t.Fatalf("replacement mappings=%d want %d", len(facts.ReplacementMappings), len(first.AssignableUnits("standard")))
+	}
+	for _, mapping := range facts.ReplacementMappings {
+		if mapping.SourceSeatMapID != first.SeatMapID || mapping.SourceSeatUnitRef == mapping.TargetSeatUnitRef || mapping.MappingVersion != "map-v2" {
+			t.Fatalf("invalid replacement mapping %+v", mapping)
+		}
+	}
 }

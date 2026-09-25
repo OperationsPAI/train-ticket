@@ -124,9 +124,16 @@ func (s *Service) PublishSeatMap(ctx context.Context, id string, req PublishSeat
 	if strings.TrimSpace(req.OperatorRef) == "" || strings.TrimSpace(req.PublishReason) == "" {
 		return nil, derr("VALIDATION_FAILED", "publishReason and operatorRef are required")
 	}
+	candidate, _, err := s.repo.GetSeatMap(ctx, id)
+	if err != nil {
+		return nil, derr("NOT_FOUND", "seat map not found")
+	}
 	now := time.Now().UTC()
 	var out *domain.ContractSeatMap
-	err := s.tx(ctx, func(tx context.Context) error {
+	err = s.tx(ctx, func(tx context.Context) error {
+		if err := s.repo.LockSeatMapPublication(tx, candidate.ScheduledServiceRef, candidate.ServiceDate); err != nil {
+			return derr("UNAVAILABLE", err.Error())
+		}
 		seatMap, exp, err := s.repo.GetSeatMap(tx, id)
 		if err != nil {
 			return derr("NOT_FOUND", "seat map not found")
@@ -138,6 +145,28 @@ func (s *Service) PublishSeatMap(ctx context.Context, id string, req PublishSeat
 		if seatMap.SeatMapVersion != req.ExpectedSeatMapVersion {
 			return derr("PRECONDITION_FAILED", "seatMapVersion does not match")
 		}
+		published, total, err := s.repo.FindSeatMaps(tx, seatMap.ScheduledServiceRef, seatMap.ServiceDate, domain.SeatMapStatusPublished, 2, 0)
+		if err != nil {
+			return derr("UNAVAILABLE", err.Error())
+		}
+		if total > 1 {
+			return derr("CONFLICT", "published SeatMap selection is ambiguous")
+		}
+		replaced := []string{}
+		if total == 1 && published[0].SeatMapID != seatMap.SeatMapID {
+			previous, previousVersion, err := s.repo.GetSeatMap(tx, published[0].SeatMapID)
+			if err != nil {
+				return derr("UNAVAILABLE", err.Error())
+			}
+			if err := previous.Retire(previous.SeatMapVersion, "SUPERSEDED", now); err != nil {
+				return mapDomain(err)
+			}
+			if err := s.repo.UpdateSeatMap(tx, previous, previousVersion); err != nil {
+				return derr("CONFLICT", err.Error())
+			}
+			seatMap.ReplacesSeatMapID = previous.SeatMapID
+			replaced = append(replaced, previous.SeatMapID)
+		}
 		if err := seatMap.Publish(req.ExpectedSeatMapVersion, now); err != nil {
 			return derr("DOMAIN_RULE_VIOLATION", "seat map cannot be published from its current state")
 		}
@@ -145,7 +174,7 @@ func (s *Service) PublishSeatMap(ctx context.Context, id string, req PublishSeat
 			return derr("CONFLICT", err.Error())
 		}
 		out = seatMap
-		return s.publish(tx, []domain.Event{{EventType: "SeatMapVersionPublished", AggregateID: seatMap.SeatMapID, Version: int64(seatMap.SeatMapVersion), OccurredAt: now, CorrelationID: req.CorrelationID, CausationID: req.CausationID, Payload: map[string]any{"seatMapId": seatMap.SeatMapID, "scheduledServiceRef": seatMap.ScheduledServiceRef, "serviceDate": seatMap.ServiceDate, "compositionVersion": seatMap.CompositionVersion, "seatMapVersion": seatMap.SeatMapVersion, "publishedAt": now, "operatorRef": req.OperatorRef, "status": seatMap.Status}}})
+		return s.publish(tx, []domain.Event{{EventType: "SeatMapVersionPublished", AggregateID: seatMap.SeatMapID, Version: int64(seatMap.SeatMapVersion), OccurredAt: now, CorrelationID: req.CorrelationID, CausationID: req.CausationID, Payload: map[string]any{"seatMapId": seatMap.SeatMapID, "scheduledServiceRef": seatMap.ScheduledServiceRef, "serviceDate": seatMap.ServiceDate, "compositionVersion": seatMap.CompositionVersion, "seatMapVersion": seatMap.SeatMapVersion, "publishedAt": now, "operatorRef": req.OperatorRef, "status": seatMap.Status, "replacesSeatMapIds": replaced}}})
 	})
 	return out, err
 }
