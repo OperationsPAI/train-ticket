@@ -63,14 +63,14 @@ func main() {
 	transactor := adapterpg.NewTransactor(pool)
 	verifier := application.PurchaseVerifier{Client: &http.Client{Timeout: 5 * time.Second}, BaseURLTemplate: "http://%s:8080"}
 	payout := application.WalletPayoutExecutor{Client: &http.Client{Timeout: 5 * time.Second}, BaseURLTemplate: firstNonBlank(os.Getenv("INSURANCE_PAYOUT_URL_TEMPLATE"), "http://%s:8080")}
-	service := application.NewInsuranceService(application.ServiceConfig{Repository: adapterpg.NewRepositoryWithProvider(transactor), Publisher: adapterpg.NewOutboxPublisherWithProvider(transactor), UnitOfWork: transactor.Within, VerifyPurchase: verifier.Verify, VerifyRefund: verifier.VerifyRefund, PayoutExecutor: payout})
+	service := application.NewInsuranceService(application.ServiceConfig{Repository: adapterpg.NewRepositoryWithProvider(transactor), Publisher: adapterpg.NewOutboxPublisherWithProvider(transactor), UnitOfWork: transactor.Within, VerifyPurchase: verifier.Verify, VerifyRefund: verifier.VerifyRefund, PayoutExecutor: payout, JourneyCoverageResolver: verifier})
 	bus := kitmessaging.NewRedisEventBusWithClient(redisClient, kitmessaging.RedisConfig{})
 	consumer := os.Getenv("CONSUMER_NAME")
 	if consumer == "" {
 		consumer = domain.ServiceID + "-1"
 	}
-	if err := bus.Subscribe(ctx, kitmessaging.Subscription{Streams: []string{"ancillary-service"}, Group: domain.ServiceID, ConsumerName: consumer, EventFilter: func(event kitmessaging.EventEnvelope) bool {
-		return event.EventType == "AncillaryOrderItemRefunded"
+	if err := bus.Subscribe(ctx, kitmessaging.Subscription{Streams: []string{"ancillary-service", "post-sales", "service-plan", "journey-order"}, Group: domain.ServiceID, ConsumerName: consumer, EventFilter: func(event kitmessaging.EventEnvelope) bool {
+		return event.EventType == "AncillaryOrderItemRefunded" || event.EventType == "PostSalesApplied" || event.EventType == "RefundApproved" || event.EventType == "TrainDelayed" || event.EventType == "JourneyOrderPostSalesAdjusted"
 	}}, appmsg.NewInboundHandler(service).Handle); err != nil {
 		log.Fatal(err)
 	}
