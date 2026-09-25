@@ -57,6 +57,7 @@ PostgreSQL 使用 Case 和账户事务锁、`compensation_issuances` 及唯一�
 |---|---|
 | `POST /api/v1/benefits` | 发放权益。 |
 | `GET /api/v1/benefits/{benefitId}` | 查询单个权益。 |
+| `GET /api/v1/internal/benefits/by-case/{caseId}` | 只读查询该 Post Sales case 的唯一补偿权益，供崩溃恢复与审计使用。 |
 | `GET /api/v1/benefits?byAccountId={accountId}` | 按账户分页查询，可过滤状态和类型。 |
 | `POST /api/v1/benefits/{benefitId}/reserve` | 预留金额。 |
 | `POST /api/v1/benefits/{benefitId}/redeem` | 核销金额。 |
@@ -69,5 +70,9 @@ HTTP 写请求要求 `Idempotency-Key`，复用键且请求不同返回 `IDEMPOT
 领域事件包括 `BenefitIssued`、`BenefitReserved`、`BenefitRedeemed`、`BenefitReservationReleased`、`BenefitRevoked`、`BenefitRedemptionReversed` 和 `BenefitExpired`。
 事件与余额变更在本地事务中保存，通过 Outbox 发布。
 售后补偿发放成本由 Finance 消费 `BenefitIssued` 记录，补偿批准与完成事件不重复计入成本。
+
+Post Sales 在发放前先按 canonical `caseId` 使用内部查询检查既有权益。
+如果 Wallet 已提交而 Post Sales 尚未保存 `issued`，它复用现有权益而不再次发放。
+若已存在权益与批准账户、金额、类型或 case 不一致，Post Sales 写入终态 mismatch checkpoint 并停止自动重放。
 
 实现入口见 [服务说明](../../services/wallet-promotion/README.md)、[应用服务](../../services/wallet-promotion/src/main/java/com/trainticket/walletpromotion/application/WalletPromotionService.java) 和 [HTTP API](../08-contracts/api/wallet-promotion.md)。

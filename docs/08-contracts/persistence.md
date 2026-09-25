@@ -99,6 +99,12 @@ Unchanged rulings that this document builds on:
 - Delivery is at-least-once (relay may crash between XADD and marking
   published). That is safe because consumer dedup is durable (§4) and
   event ids are deterministic.
+- Published outbox rows are intentionally short-lived and are not historical
+  replay evidence. Post Sales, Payment and Wallet / Promotion additionally
+  archive the compensation-related event types listed in
+  [durable event recovery](durable-event-recovery.md). Archive insertion shares
+  the state/outbox transaction, uses a monotonic cursor and has an explicit
+  1–90 day retention policy (7 days by default).
 
 ## 4. Durable consumer dedup & idempotency
 
@@ -113,6 +119,10 @@ Unchanged rulings that this document builds on:
   NOT NULL DEFAULT now())`. Middleware semantics are unchanged: same key
   + same hash replays the stored response; same key + different hash →
   `IDEMPOTENCY_KEY_REUSED`.
+- Notification and Loyalty Membership persist poison-message evidence before
+  Redis DLQ publication and XACK. Their replay checkpoints advance only after
+  the normal handler transaction succeeds; a retry after a crash is absorbed
+  by `processed_events`.
 
 ## 5. Kit obligations (one module per language, same port names)
 

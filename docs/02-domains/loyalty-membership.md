@@ -89,6 +89,16 @@ Loyalty Membership 负责会员档案、等级机、积分账本、滚动 12 个
 - `docs/08-contracts/events/journey-order.md` 当前没有 `JourneyCompleted` 或 `JourneyOrderCompleted` 发布事件；`docs/02-domains/journey-order.md` 中的 `JourneyCompleted` 尚未进入 08-contracts 契约面。因此本 baseline 禁止用杜撰的 journey-order 完成事件做 accrual，必须以 `FulfillmentCompleted` 为准；若未来补充 Journey Order 完成契约，应通过单独契约变更接入。
 - Wallet / Promotion 现有契约包含 `benefitType=POINTS` 和 `balanceType=POINTS`，但 Loyalty Membership 激活后，会员积分的权威账本在本域。Loyalty 发起兑换时原则上请求 Wallet 发行 `COUPON`、`COMPENSATION_CREDIT` 或其他权益产物；不得把 Wallet 的 `POINTS` 子账本当作会员积分余额来源。
 
+### Durable replay and dead-letter evidence
+
+Payment 与 Post Sales 的受支持历史事实由各自 PostgreSQL replay archive 提供。
+Loyalty Membership 使用 `event_replay_checkpoints` 保存每个来源的最后完成序号，并通过 PostgreSQL advisory lock 保证同一来源只有一个副本恢复。
+恢复仍进入正常 `processed_events` 与积分账本事务，因此业务提交后、游标提交前崩溃只会造成安全重读，不会重复积分。
+
+进入 Redis DLQ 前，服务先在 `event_dead_letters` 保存原始 envelope、来源、首次/最近失败及恢复状态；保存失败时不 ACK 原消息。
+超过生产者保留窗口会把 checkpoint 标记为 `GAP`，必须人工核对，不能静默跳到现存最早事件。
+详见[持久事件恢复契约](../08-contracts/durable-event-recovery.md)。
+
 ## 5. 聚合设计
 
 | Aggregate Root | Invariants | Commands | Events |
