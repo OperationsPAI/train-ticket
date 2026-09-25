@@ -9,7 +9,7 @@ from decimal import Decimal
 import json
 from typing import Any
 
-from train_ticket_platform.storage import OptimisticConcurrencyError, OutboxAppender, ProcessedEventsGuard, SnapshotRepository
+from train_ticket_platform.storage import OptimisticConcurrencyError, OutboxAppender, SnapshotRepository
 
 from fare_pricing.domain import (
     AdjustmentQuote,
@@ -33,7 +33,12 @@ from fare_pricing.domain import (
     RuleSnapshot,
     ValidityWindow,
 )
-from fare_pricing.application.service import AdjustmentQuoteNotFoundError, QuoteNotFoundError, RuleSetNotFoundError
+from fare_pricing.application.service import (
+    AdjustmentQuoteNotFoundError,
+    ConsumedEventConflictError,
+    QuoteNotFoundError,
+    RuleSetNotFoundError,
+)
 from fare_pricing.ports import EventEnvelope
 
 
@@ -392,7 +397,6 @@ class PostgresFarePricingStore:
         self._quotes = SnapshotRepository("fare_quote_snapshots")
         self._adjustment_quotes = SnapshotRepository("adjustment_quote_snapshots")
         self._eligibility_certificates = SnapshotRepository("eligibility_certificate_cache")
-        self._processed = ProcessedEventsGuard()
 
     @contextmanager
     def transaction(self):
@@ -608,8 +612,41 @@ class PostgresFarePricingStore:
     def append_outbox(self, envelopes: Iterable[EventEnvelope]) -> None:
         self._with_conn(lambda conn: self._outbox.append_many(conn, envelopes))
 
-    def try_mark_processed(self, event_id: str, stream: str | None = None) -> bool:
-        return bool(self._with_conn(lambda conn: self._processed.try_mark_processed(conn, event_id, stream)))
+    def try_mark_processed(
+        self,
+        event_id: str,
+        stream: str | None = None,
+        event_fingerprint: str | None = None,
+    ) -> bool:
+        def mark(conn: Any) -> bool:
+            row = conn.execute(
+                "INSERT INTO processed_events(event_id,stream,event_fingerprint) VALUES (%s,%s,%s) "
+                "ON CONFLICT (event_id) DO NOTHING RETURNING event_id",
+                (event_id, stream, event_fingerprint),
+            ).fetchone()
+            if row is not None:
+                return True
+
+            existing = conn.execute(
+                "SELECT stream,event_fingerprint FROM processed_events WHERE event_id=%s",
+                (event_id,),
+            ).fetchone()
+            if existing is None:
+                raise RuntimeError(f"processed event disappeared during duplicate check: {event_id}")
+            existing_stream = str(existing[0]) if existing[0] is not None else None
+            existing_fingerprint = str(existing[1]) if existing[1] is not None else None
+            if stream is not None and existing_stream is not None and stream != existing_stream:
+                raise ConsumedEventConflictError(f"event id {event_id} was already consumed from {existing_stream}")
+            if event_fingerprint is not None and existing_fingerprint is not None and event_fingerprint != existing_fingerprint:
+                raise ConsumedEventConflictError(f"event id {event_id} was replayed with different content")
+            if event_fingerprint is not None and existing_fingerprint is None:
+                conn.execute(
+                    "UPDATE processed_events SET event_fingerprint=%s WHERE event_id=%s AND event_fingerprint IS NULL",
+                    (event_fingerprint, event_id),
+                )
+            return False
+
+        return bool(self._with_conn(mark))
 
     def upsert_eligibility_certificate(self, certificate: EligibilityCertificateSummary) -> None:
         def write(conn: Any) -> None:
