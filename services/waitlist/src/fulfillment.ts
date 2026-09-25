@@ -323,7 +323,12 @@ export class WaitlistFulfillmentOrchestrator {
         entry.recordReservation(traveler.travelerRef, latest.status, latest.capacityHoldId);
       }
       const capacityHoldId = latest?.capacityHoldId ?? traveler.capacityHoldId;
-      if (capacityHoldId) await this.client.releaseCapacity(traveler, capacityHoldId, correlationId);
+      if (capacityHoldId) {
+        await this.client.releaseCapacity(traveler, capacityHoldId, correlationId);
+        continue;
+      }
+      const reservationStatus = latest?.status ?? traveler.reservationStatus;
+      if (reservationStatus && !["FAILED", "CANCELLED"].includes(reservationStatus)) return this.defer(entry);
     }
     await this.client.cancelOrder(entry, reason, correlationId);
     return this.defer(entry);
