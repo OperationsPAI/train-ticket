@@ -1,6 +1,6 @@
 # Trip Planning — Events & Commands
 
-Last updated: 2026-06-28
+Last updated: 2026-09-25
 
 ## Published Events
 
@@ -81,5 +81,6 @@ Last updated: 2026-06-28
 |---|---|---|
 | place-network | `PlaceId`, `TransportNodeId` | Origin/destination resolution. |
 | service-plan | `ServiceSegment`, `ScheduledService` | Leg candidate generation. |
+| transfer-management | `MctRulePublished`, `MctRuleRetired` | Required minimum connection time when connected search is explicitly enabled. |
 | capacity-availability | `AvailabilitySnapshot` | Availability hints. |
 | fare-pricing | `FareQuote` | Price hints. |

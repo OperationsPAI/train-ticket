@@ -23,6 +23,7 @@ const CONSUMER_GROUP: &str = "trip-planning";
 const SUBSCRIPTION_STREAMS: &[&str] = &[
     "events:place-network",
     "events:service-plan",
+    "events:transfer-management",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -154,6 +155,19 @@ pub async fn build_runtime() -> Router {
 
 #[cfg(feature = "redis-impl")]
 async fn load_index_from_db(pool: &sqlx::PgPool, index: &PlanIndex) {
+    type MctRuleRow = (
+        String,
+        i64,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<i64>,
+        Option<serde_json::Value>,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<chrono::DateTime<chrono::Utc>>,
+    );
+
     // Load segments
     let rows: Result<Vec<(String, Option<String>, String, String, chrono::DateTime<chrono::Utc>, chrono::NaiveDate, chrono::DateTime<chrono::Utc>)>, _> =
         sqlx::query_as(
@@ -198,6 +212,76 @@ async fn load_index_from_db(pool: &sqlx::PgPool, index: &PlanIndex) {
         }
         Err(e) => {
             log::warn!("failed to load nodes from DB: {}", e);
+        }
+    }
+
+    let rule_rows: Result<Vec<MctRuleRow>, _> = sqlx::query_as(
+        "SELECT mct_rule_id, version, status, from_node_type, to_node_type, transfer_category, \
+                minimum_minutes, conditions, valid_from, valid_until \
+         FROM plan_mct_rules",
+    )
+    .fetch_all(pool)
+    .await;
+
+    match rule_rows {
+        Ok(rows) => {
+            for (
+                rule_id,
+                version,
+                status,
+                from_node_type,
+                to_node_type,
+                transfer_category,
+                minimum_minutes,
+                conditions,
+                valid_from,
+                valid_until,
+            ) in rows
+            {
+                if status == "RETIRED" {
+                    index.retire_minimum_connection_rule(&rule_id, version);
+                    continue;
+                }
+                let (
+                    Some(from_node_type),
+                    Some(to_node_type),
+                    Some(transfer_category),
+                    Some(minimum_minutes),
+                    Some(valid_from),
+                ) = (
+                    from_node_type,
+                    to_node_type,
+                    transfer_category,
+                    minimum_minutes,
+                    valid_from,
+                )
+                else {
+                    log::warn!("ignoring incomplete published MCT rule {}", rule_id);
+                    continue;
+                };
+                let Ok(minimum_minutes) = u32::try_from(minimum_minutes) else {
+                    log::warn!("ignoring MCT rule {} with invalid minimum", rule_id);
+                    continue;
+                };
+                index.upsert_minimum_connection_rule(plan_index::MinimumConnectionRule {
+                    rule_id,
+                    version,
+                    from_node_type,
+                    to_node_type,
+                    transfer_category,
+                    minimum_minutes,
+                    conditions: conditions.unwrap_or_else(|| serde_json::json!({})),
+                    valid_from,
+                    valid_until,
+                });
+            }
+            log::info!(
+                "loaded {} published MCT rules into plan index",
+                index.minimum_connection_rule_count()
+            );
+        }
+        Err(error) => {
+            log::warn!("failed to load MCT rules from DB: {}", error);
         }
     }
 }
