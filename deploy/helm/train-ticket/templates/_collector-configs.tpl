@@ -27,6 +27,14 @@ receivers:
       http:
         endpoint: 0.0.0.0:4318
 
+{{- if .Values.otelCollector.prometheusExporter.enabled }}
+connectors:
+  # Branch after the shared enrichment pipeline. This avoids running
+  # k8sattributes twice for every OTLP batch while keeping the Prometheus-only
+  # filtering isolated from the complete ClickHouse copy.
+  forward/prometheus_application: {}
+{{- end }}
+
 processors:
   memory_limiter:
     check_interval: 5s
@@ -36,12 +44,65 @@ processors:
     limit_mib: {{ .Values.otelCollector.memoryLimitMiB }}
   {{- include "train-ticket.k8sattributes" . | nindent 2 }}
   {{- include "train-ticket.serviceNamespaceProcessor" . | nindent 2 }}
+  {{- if .Values.otelCollector.prometheusExporter.enabled }}
+  # Prometheus is the short-window operational query tier. It needs service
+  # metrics, but it must not inherit arbitrary attributes that can contain an
+  # order, user, request or exception value. ClickHouse keeps the complete OTLP
+  # signal in the primary metrics pipeline below; this branch is deliberately
+  # restricted to known runtime families and the train_ticket.* contract.
+  filter/prometheus_application:
+    error_mode: ignore
+    metrics:
+      metric:
+        - 'not IsMatch(name, "^(http[.](server[.](request[.]duration|active_requests)|client[.]request[.]duration)|db[.]client[.]connection[.].+|hikaricp[.]connections([.].*)?|jvm[.](memory[.].+|gc[.]pause|threads[.]live)|go[.].+|process[.].+|cpython[.]gc[.].+|v8js[.].+|nodejs[.].+|train_ticket[.].+)$")'
+        - 'resource.attributes["service.name"] == nil'
+  transform/prometheus_application:
+    error_mode: ignore
+    metric_statements:
+      - context: resource
+        statements:
+          # The exporter also synthesizes target_info from resource attributes.
+          # Trim the resource itself so rollout-specific pod/image attributes do
+          # not bypass the datapoint allowlist. One active pod identity is kept
+          # so counters from replicas do not collide inside the exporter; stale
+          # instances expire after prometheusExporter.metricExpiration.
+          - 'set(attributes["service.instance.id"], attributes["k8s.pod.uid"]) where attributes["service.instance.id"] == nil and attributes["k8s.pod.uid"] != nil'
+          - 'keep_keys(attributes, ["service.name", "service.namespace", "service.instance.id"])'
+      - context: datapoint
+        statements:
+          # Copy only the two bounded resource dimensions used in service-level
+          # dashboards. In particular, do not export pod UID/name, process id,
+          # command line or container image as labels on every metric.
+          - 'set(attributes["service"], resource.attributes["service.name"]) where resource.attributes["service.name"] != nil'
+          - 'set(attributes["namespace"], resource.attributes["service.namespace"]) where resource.attributes["service.namespace"] != nil'
+          # Normalize older HTTP SDK attributes before applying the allowlist.
+          - 'set(attributes["http.request.method"], attributes["http.method"]) where attributes["http.request.method"] == nil and attributes["http.method"] != nil'
+          - 'set(attributes["http.response.status_code"], attributes["http.status_code"]) where attributes["http.response.status_code"] == nil and attributes["http.status_code"] != nil'
+          # Keep only bounded enums, route templates and infrastructure names.
+          # error.type is intentionally absent: some runtimes record the full
+          # exception text, which can contain request-specific values.
+          - 'keep_keys(attributes, ["service", "namespace", "http.route", "http.request.method", "http.response.status_code", "network.protocol.version", "url.scheme", "db.client.connection.pool.name", "db.client.connection.state", "pool", "jvm.memory.pool.name", "jvm.memory.type", "jvm.gc.name", "jvm.gc.action", "jvm.gc.cause", "go.memory.type", "go.gc.type", "v8js.heap.space.name", "v8js.gc.type", "nodejs.eventloop.state", "workflow", "stage", "state", "outcome", "reason_code", "currency", "channel", "operation", "travel_class", "seat_mode", "ticket_type", "queue", "event_stream", "consumer_group", "event_type", "source_service", "target_service"])'
+  batch/prometheus_application:
+    timeout: 2s
+    send_batch_size: 1024
+  {{- end }}
   batch:
     timeout: 2s
     send_batch_size: 1024
 
 exporters:
   {{- include "train-ticket.clickhouseExporter" . | nindent 2 }}
+  {{- if .Values.otelCollector.prometheusExporter.enabled }}
+  prometheus/application:
+    endpoint: 0.0.0.0:{{ .Values.otelCollector.prometheusExporter.port }}
+    metric_expiration: {{ .Values.otelCollector.prometheusExporter.metricExpiration }}
+    enable_open_metrics: true
+    # Apply Prometheus counter and unit suffixes. The recording rules use these
+    # canonical names (for example *_total and *_seconds_bucket).
+    add_metric_suffixes: true
+    resource_to_telemetry_conversion:
+      enabled: false
+  {{- end }}
 
 extensions:
   health_check:
@@ -95,6 +156,21 @@ service:
         - batch
       exporters:
         - clickhouse
+        {{- if .Values.otelCollector.prometheusExporter.enabled }}
+        - forward/prometheus_application
+        {{- end }}
+    {{- if .Values.otelCollector.prometheusExporter.enabled }}
+    metrics/prometheus_application:
+      receivers:
+        - forward/prometheus_application
+      processors:
+        - memory_limiter
+        - filter/prometheus_application
+        - transform/prometheus_application
+        - batch/prometheus_application
+      exporters:
+        - prometheus/application
+    {{- end }}
     logs:
       receivers:
         - otlp
