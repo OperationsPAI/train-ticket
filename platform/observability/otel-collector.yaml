@@ -48,6 +48,8 @@ processors:
           - 'set(attributes["namespace"], resource.attributes["service.namespace"]) where resource.attributes["service.namespace"] != nil'
           - 'set(attributes["http.request.method"], attributes["http.method"]) where attributes["http.request.method"] == nil and attributes["http.method"] != nil'
           - 'set(attributes["http.response.status_code"], attributes["http.status_code"]) where attributes["http.response.status_code"] == nil and attributes["http.status_code"] != nil'
+          - 'set(attributes["reason_code"], attributes["failure.type"]) where attributes["reason_code"] == nil and attributes["failure.type"] != nil'
+          - 'set(attributes["reason_code"], attributes["reason"]) where attributes["reason_code"] == nil and attributes["reason"] != nil'
           - 'keep_keys(attributes, ["service", "namespace", "http.route", "http.request.method", "http.response.status_code", "network.protocol.version", "url.scheme", "db.client.connection.pool.name", "db.client.connection.state", "pool", "jvm.memory.pool.name", "jvm.memory.type", "jvm.gc.name", "jvm.gc.action", "jvm.gc.cause", "go.memory.type", "go.gc.type", "v8js.heap.space.name", "v8js.gc.type", "nodejs.eventloop.state", "workflow", "stage", "state", "outcome", "reason_code", "currency", "channel", "operation", "travel_class", "seat_mode", "ticket_type", "queue", "event_stream", "consumer_group", "event_type", "source_service", "target_service"])'
   batch/prometheus_application:
     timeout: 2s
