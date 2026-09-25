@@ -38,4 +38,23 @@ def register_exception_handlers(app: FastAPI) -> None:
             exc.code,
             exc,
         )
+        # A downstream that answered with a client error refused the request on
+        # its own terms -- "a refund or change case is already in progress for
+        # this order", for one -- and that is not an availability failure. The
+        # caller gets the downstream's status, narrowed to the contract's own
+        # vocabulary, with the downstream's code beside it. Anything else, a
+        # connection failure or a server error, stays 503.
+        if exc.status is not None and 400 <= exc.status < 500:
+            contract_code = {
+                409: "CONFLICT",
+                412: "PRECONDITION_FAILED",
+                422: "DOMAIN_RULE_VIOLATION",
+            }.get(exc.status, "VALIDATION_FAILED")
+            return error_response(
+                request,
+                contract_code,
+                str(exc),
+                exc.status,
+                {"domainCode": exc.code} if exc.code else {},
+            )
         return error_response(request, "UNAVAILABLE", "Downstream service unavailable", 503, {"domainCode": exc.code} if exc.code else {})
