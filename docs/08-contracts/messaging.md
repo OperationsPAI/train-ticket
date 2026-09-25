@@ -445,6 +445,12 @@ XACK events:<stream> <group> <entry-id>
    count in PEL), it is moved to the dead-letter stream
    `events:<context>:dlq` and XACKed from the main stream.
 
+Notification and Loyalty Membership add a stronger boundary: before the Redis
+DLQ write and XACK, they persist the original envelope, source identity, first
+and latest failure details, attempts and recovery state in PostgreSQL. A failed
+evidence write leaves the source entry pending. See
+[durable event recovery](durable-event-recovery.md).
+
 ### Deduplication
 
 Consumers MUST deduplicate by `eventId` (from the EventEnvelope). Each consumer
@@ -513,13 +519,13 @@ XADD events:<context> MAXLEN ~ 100000 * envelope "<JSON>"
 - `MAXLEN ~ 100000`: Each stream is capped at approximately 100,000 entries.
   Redis uses an efficient eviction strategy (`~` approximate trimming) that
   reclaims memory in batches rather than on every write.
-- **Phase-1 scope:** This cap is sufficient for the integration-testing and
-  initial production workload. For production scale-out, the retention policy
-  will be revisited (possibly time-based TTL via `XTRIM` or a separate
-  archival process).
+- This cap is a transport-memory policy, not a historical recovery guarantee.
+  The implemented compensation-related recovery scope uses a separate bounded
+  PostgreSQL archive with an explicit time retention policy.
 - **DLQ streams:** Dead-letter streams (`events:<context>:dlq`) have the same
-  `MAXLEN ~ 100000` cap. Poison messages that require investigation should be
-  consumed from the DLQ by an operational tool before they are trimmed.
+  `MAXLEN ~ 100000` cap. Notification and Loyalty Membership retain durable
+  database evidence before acknowledging a poison message, so Redis trimming
+  cannot erase the only copy of the failure.
 
 ---
 

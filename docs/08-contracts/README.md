@@ -5,6 +5,7 @@ Last updated: 2026-09-24.
 The [HTTP API index](api/README.md) and `events/` describe service requests, responses, published events and consumer behavior.
 [Shared primitives](shared-primitives.md) define identifiers, timestamps, envelopes and common values.
 [Messaging](messaging.md) and [persistence](persistence.md) document delivery and storage boundaries.
+[Durable event recovery](durable-event-recovery.md) defines the implemented recovery path after Redis history loss and the evidence required before dead-letter recovery.
 
 ## Accuracy and versioning
 
