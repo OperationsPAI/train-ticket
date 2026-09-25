@@ -36,7 +36,7 @@ test("concurrent relays publish recorded events without waiting on another publi
       await assert.rejects(pool.query("UPDATE outbox SET published_at = now() WHERE seq IN (1)"),
         (error: unknown) => (error as { code?: string }).code === "57014");
       const relay = new OutboxRelay(pool, redis, { batchSize: recorded.length });
-      assert.equal(await relay.runOnce(), recorded.length);
+      assert.equal(await relay.runOnce(), recorded.length - 1);
       const pending = await pool.query("SELECT seq FROM outbox WHERE published_at IS NULL");
       assert.deepEqual(pending.rows, [{ seq: "1" }]);
       await locker.query("ROLLBACK");
@@ -44,9 +44,10 @@ test("concurrent relays publish recorded events without waiting on another publi
       await locker.query("ROLLBACK");
       locker.release();
     }
-    const marked = await pool.query("SELECT seq,published_at::text FROM outbox WHERE published_at IS NOT NULL ORDER BY seq");
+    const marked = await pool.query("SELECT seq,published_at::text FROM outbox WHERE seq>1 AND published_at IS NOT NULL ORDER BY seq");
     const relays = Array.from({ length: 3 }, () => new OutboxRelay(pool, redis, { batchSize: recorded.length }));
-    await Promise.all(relays.map((relay) => relay.runOnce()));
+    const published = await Promise.all(relays.map((relay) => relay.runOnce()));
+    assert.equal(published.reduce((total, count) => total + count, 0), 1);
     assert.equal((await pool.query("SELECT count(*) FROM outbox WHERE published_at IS NULL")).rows[0].count, "0");
     assert.deepEqual((await pool.query("SELECT seq,published_at::text FROM outbox WHERE seq>1 ORDER BY seq")).rows, marked.rows);
     const deliveries = await redis.xrange(stream, "-", "+");
