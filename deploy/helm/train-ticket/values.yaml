@@ -1175,15 +1175,12 @@ services:
       SMTP_MAX_CONNECTIONS: "32"
       CONSUMER_BATCH_CONCURRENCY: "16"
       PG_MAX_POOL_SIZE: "48"
-      # 11 streams. Also had ~1000 pending messages against one thread, which is
-      # why e2e assertions on NotificationScheduled/NotificationDelivered timed
-      # out intermittently.
-      CONSUMER_THREADS: "4"
-    # 4 consumer threads do not fit in the default 500m CPU limit. Raising
-    # CONSUMER_THREADS without raising this caused a CrashLoopBackOff: the
-    # threads saturated half a core working through the backlog, the HTTP thread
-    # could not answer /healthz within the probe timeout, and kubelet restarted
-    # the pod every 64 seconds. Threads and CPU must be raised together.
+      # The TypeScript runtime creates one subscriber per configured stream;
+      # CONSUMER_BATCH_CONCURRENCY is the bounded parallelism within each one.
+      # Do not add the Java-only CONSUMER_THREADS setting here: it is ignored.
+    # Delivery and eleven stream consumers share this process, so leave enough
+    # CPU and memory for burst handling without forcing the HPA to its maximum
+    # during ordinary recovery.
     resources:
       requests: { cpu: 250m, memory: 256Mi }
       limits: { cpu: '2', memory: 3Gi }
