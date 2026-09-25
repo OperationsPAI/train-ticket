@@ -3,6 +3,8 @@ package com.trainticket.platformkit.messaging;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.trainticket.platformkit.observability.EventConsumerTracer;
+import com.trainticket.platformkit.observability.EventConsumerMetrics;
+import com.trainticket.platformkit.observability.GlobalEventConsumerMetrics;
 import com.trainticket.platformkit.observability.GlobalEventConsumerTracer;
 import io.lettuce.core.api.StatefulRedisConnection;
 import java.time.Instant;
@@ -92,6 +94,7 @@ public class RedisEventSubscriber implements EventSubscriber {
     private final AutoCloseable closeable;
     private final ConsumedEventStore consumedEvents;
     private final EventConsumerTracer eventConsumerTracer;
+    private final EventConsumerMetrics eventConsumerMetrics;
     private final long pruneIntervalMillis;
     /** Genuine handler failures per message, bounded LRU so a long-lived consumer cannot leak. */
     private final Map<MessageKey, FailureRecord> lastFailures = new LinkedHashMap<>(16, 0.75f, true) {
@@ -156,7 +159,16 @@ public class RedisEventSubscriber implements EventSubscriber {
         EventConsumerTracer eventConsumerTracer,
         int consumerThreads
     ) {
-        this(streams, objectMapper, closeable, consumedEvents, eventConsumerTracer, consumerThreads, PRUNE_INTERVAL_MS);
+        this(
+            streams,
+            objectMapper,
+            closeable,
+            consumedEvents,
+            eventConsumerTracer,
+            defaultEventConsumerMetrics(),
+            consumerThreads,
+            PRUNE_INTERVAL_MS
+        );
     }
 
     RedisEventSubscriber(
@@ -167,6 +179,31 @@ public class RedisEventSubscriber implements EventSubscriber {
         EventConsumerTracer eventConsumerTracer,
         int consumerThreads,
         // Injectable only so a test can observe the sweep RECURRING without
+        // sleeping a whole production interval. Production always gets
+        // PRUNE_INTERVAL_MS via the delegating constructor above.
+        long pruneIntervalMillis
+    ) {
+        this(
+            streams,
+            objectMapper,
+            closeable,
+            consumedEvents,
+            eventConsumerTracer,
+            defaultEventConsumerMetrics(),
+            consumerThreads,
+            pruneIntervalMillis
+        );
+    }
+
+    RedisEventSubscriber(
+        RedisStreamOperations streams,
+        ObjectMapper objectMapper,
+        AutoCloseable closeable,
+        ConsumedEventStore consumedEvents,
+        EventConsumerTracer eventConsumerTracer,
+        EventConsumerMetrics eventConsumerMetrics,
+        int consumerThreads,
+        // Injectable only so a test can observe the sweep recurring without
         // sleeping a whole production interval. Production always gets
         // PRUNE_INTERVAL_MS via the delegating constructor above.
         long pruneIntervalMillis
@@ -183,6 +220,7 @@ public class RedisEventSubscriber implements EventSubscriber {
         this.closeable = closeable;
         this.consumedEvents = Objects.requireNonNull(consumedEvents, "consumedEvents is required");
         this.eventConsumerTracer = Objects.requireNonNull(eventConsumerTracer, "eventConsumerTracer is required");
+        this.eventConsumerMetrics = Objects.requireNonNull(eventConsumerMetrics, "eventConsumerMetrics is required");
         this.pollExecutor = Executors.newCachedThreadPool(namedThreadFactory("redis-subscriber-poll"));
         // Processing overflow on the polling thread applies backpressure before the next read.
         // Every delivered entry is handled without waiting for the pending recovery interval.
@@ -368,7 +406,10 @@ public class RedisEventSubscriber implements EventSubscriber {
         int redeliveries = streams.deliveryCount(stream, group, message.id());
         String json = message.envelopeJson();
         if (json == null) {
-            moveToDlq(stream, group, consumerName, message.id(), "{}", "MissingEnvelope", redeliveries);
+            eventConsumerMetrics.recordFailure(EventConsumerMetrics.FailureType.MISSING_ENVELOPE);
+            moveToDlq(
+                stream, group, consumerName, message.id(), "{}", "MissingEnvelope", redeliveries,
+                EventConsumerMetrics.FailureType.MISSING_ENVELOPE);
             streams.ack(stream, group, message.id());
             return;
         }
@@ -376,7 +417,10 @@ public class RedisEventSubscriber implements EventSubscriber {
         try {
             envelope = deserialize(json);
         } catch (SubscribeFailedException exception) {
-            moveToDlq(stream, group, consumerName, message.id(), json, exception, redeliveries);
+            eventConsumerMetrics.recordFailure(EventConsumerMetrics.FailureType.INVALID_ENVELOPE);
+            moveToDlq(
+                stream, group, consumerName, message.id(), json, exception, redeliveries,
+                EventConsumerMetrics.FailureType.INVALID_ENVELOPE);
             streams.ack(stream, group, message.id());
             return;
         }
@@ -386,17 +430,23 @@ public class RedisEventSubscriber implements EventSubscriber {
         if (consumedEvents.alreadyConsumed(group, envelope.eventId())) {
             streams.ack(stream, group, message.id());
             forgetFailures(stream, message.id());
+            eventConsumerMetrics.recordOutcome(EventConsumerMetrics.Outcome.DUPLICATE);
             return;
         }
         // Crash backstop only. Redis' redelivery counter advances once per reclaim, so it measures
         // time spent pending rather than handler failures; it is deliberately not the primary
         // give-up signal. See MAX_REDELIVERY_ATTEMPTS.
         if (redeliveries >= MAX_REDELIVERY_ATTEMPTS) {
+            eventConsumerMetrics.recordFailure(EventConsumerMetrics.FailureType.REDELIVERY_EXHAUSTED);
             RuntimeException lastException = forgetFailures(stream, message.id());
             if (lastException != null) {
-                moveToDlq(stream, group, consumerName, message.id(), json, lastException, redeliveries);
+                moveToDlq(
+                    stream, group, consumerName, message.id(), json, lastException, redeliveries,
+                    EventConsumerMetrics.FailureType.REDELIVERY_EXHAUSTED);
             } else {
-                moveToDlq(stream, group, consumerName, message.id(), json, "MaxRedeliveriesWithoutCompletion", redeliveries);
+                moveToDlq(
+                    stream, group, consumerName, message.id(), json, "MaxRedeliveriesWithoutCompletion", redeliveries,
+                    EventConsumerMetrics.FailureType.REDELIVERY_EXHAUSTED);
             }
             streams.ack(stream, group, message.id());
             return;
@@ -419,21 +469,31 @@ public class RedisEventSubscriber implements EventSubscriber {
                 }
             } catch (RuntimeException exception) {
                 span.recordException(exception);
-                failed(stream, group, consumerName, message.id(), json, envelope, exception, null);
+                eventConsumerMetrics.recordFailure(EventConsumerMetrics.FailureType.HANDLER_EXCEPTION);
+                failed(
+                    stream, group, consumerName, message.id(), json, envelope, exception, null,
+                    EventConsumerMetrics.FailureType.HANDLER_EXCEPTION);
                 return;
             }
             if (result == HandlerResult.SUCCESS) {
                 consumedEvents.recordConsumed(group, envelope.eventId());
                 streams.ack(stream, group, message.id());
                 forgetFailures(stream, message.id());
+                eventConsumerMetrics.recordOutcome(EventConsumerMetrics.Outcome.SUCCESS);
             } else if (result == HandlerResult.FATAL_FAILURE) {
                 span.markError("HandlerResult.FATAL_FAILURE");
+                eventConsumerMetrics.recordFailure(EventConsumerMetrics.FailureType.FATAL_RESULT);
                 forgetFailures(stream, message.id());
-                moveToDlq(stream, group, consumerName, message.id(), json, "HandlerResult.FATAL_FAILURE", redeliveries);
+                moveToDlq(
+                    stream, group, consumerName, message.id(), json, "HandlerResult.FATAL_FAILURE", redeliveries,
+                    EventConsumerMetrics.FailureType.FATAL_RESULT);
                 streams.ack(stream, group, message.id());
             } else if (result == HandlerResult.TRANSIENT_FAILURE) {
                 span.markError("HandlerResult.TRANSIENT_FAILURE");
-                failed(stream, group, consumerName, message.id(), json, envelope, null, "HandlerResult.TRANSIENT_FAILURE");
+                eventConsumerMetrics.recordFailure(EventConsumerMetrics.FailureType.TRANSIENT_RESULT);
+                failed(
+                    stream, group, consumerName, message.id(), json, envelope, null, "HandlerResult.TRANSIENT_FAILURE",
+                    EventConsumerMetrics.FailureType.TRANSIENT_RESULT);
             }
         }
     }
@@ -451,10 +511,12 @@ public class RedisEventSubscriber implements EventSubscriber {
         String json,
         EventEnvelope envelope,
         RuntimeException exception,
-        String reason
+        String reason,
+        EventConsumerMetrics.FailureType failureType
     ) {
         int failures = recordFailure(stream, messageId, exception);
         if (failures < MAX_DELIVERY_ATTEMPTS) {
+            eventConsumerMetrics.recordOutcome(EventConsumerMetrics.Outcome.RETRY);
             LOGGER.warn(
                 "service={} stream={} eventId={} failures={}/{} handler failed; message stays pending for retry",
                 group, stream, envelope.eventId(), failures, MAX_DELIVERY_ATTEMPTS, exception);
@@ -462,15 +524,21 @@ public class RedisEventSubscriber implements EventSubscriber {
         }
         forgetFailures(stream, messageId);
         if (exception != null) {
-            moveToDlq(stream, group, consumerName, messageId, json, exception, failures);
+            moveToDlq(stream, group, consumerName, messageId, json, exception, failures, failureType);
         } else {
-            moveToDlq(stream, group, consumerName, messageId, json, Objects.toString(reason, "MaxHandlerFailures"), failures);
+            moveToDlq(
+                stream, group, consumerName, messageId, json, Objects.toString(reason, "MaxHandlerFailures"), failures,
+                failureType);
         }
         streams.ack(stream, group, messageId);
     }
 
     static EventConsumerTracer defaultEventConsumerTracer() {
         return new GlobalEventConsumerTracer(RedisEventSubscriber.class.getName());
+    }
+
+    static EventConsumerMetrics defaultEventConsumerMetrics() {
+        return new GlobalEventConsumerMetrics(RedisEventSubscriber.class.getName());
     }
 
     private static int consumerThreadsFromEnvironment() {
@@ -553,12 +621,30 @@ public class RedisEventSubscriber implements EventSubscriber {
     /** Genuine handler failures observed for one message, and the most recent exception. */
     private record FailureRecord(int failures, RuntimeException lastException) {}
 
-    private void moveToDlq(String stream, String group, String consumerName, String messageId, String envelopeJson, Throwable reason, int attempts) {
+    private void moveToDlq(
+        String stream,
+        String group,
+        String consumerName,
+        String messageId,
+        String envelopeJson,
+        Throwable reason,
+        int attempts,
+        EventConsumerMetrics.FailureType failureType
+    ) {
         String reasonText = reason.getClass().getSimpleName() + ": " + Objects.toString(reason.getMessage(), "");
-        moveToDlq(stream, group, consumerName, messageId, envelopeJson, reasonText, attempts);
+        moveToDlq(stream, group, consumerName, messageId, envelopeJson, reasonText, attempts, failureType);
     }
 
-    private void moveToDlq(String stream, String group, String consumerName, String messageId, String envelopeJson, String reason, int attempts) {
+    private void moveToDlq(
+        String stream,
+        String group,
+        String consumerName,
+        String messageId,
+        String envelopeJson,
+        String reason,
+        int attempts,
+        EventConsumerMetrics.FailureType failureType
+    ) {
         if (!markDeadLettered(stream, messageId)) {
             LOGGER.debug("service={} stream={} messageId={} already dead-lettered; skipping duplicate DLQ write", group, stream, messageId);
             return;
@@ -575,9 +661,12 @@ public class RedisEventSubscriber implements EventSubscriber {
         );
         try {
             streams.moveToDlq(stream, envelopeJson, new DlqMetadata(group, consumerName, truncatedReason, Math.max(1, attempts), Instant.now().toString()));
+            eventConsumerMetrics.recordDeadLetter(failureType);
+            eventConsumerMetrics.recordOutcome(EventConsumerMetrics.Outcome.DEAD_LETTER);
         } catch (RuntimeException exception) {
             // The write did not land, so allow a later delivery to retry the DLQ hand-off.
             forgetDeadLettered(stream, messageId);
+            eventConsumerMetrics.recordFailure(EventConsumerMetrics.FailureType.DLQ_WRITE);
             throw exception;
         }
     }
