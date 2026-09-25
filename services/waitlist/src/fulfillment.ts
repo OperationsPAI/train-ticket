@@ -289,6 +289,7 @@ export class WaitlistFulfillmentOrchestrator {
       entry.recordPayment(payment.paymentIntentId, payment.status);
     }
     if (payment?.status === "CAPTURED" || entry.fulfillment.travelers.some((traveler) => traveler.entitlementId)) {
+      if (reason === "WAITLIST_PAYMENT_AUTHORIZATION_EXPIRED" && payment?.status === "CAPTURED") return this.defer(entry);
       entry.suspend();
       return this.repository.save(entry);
     }
@@ -298,6 +299,7 @@ export class WaitlistFulfillmentOrchestrator {
         assertPayment(entry, cancelled);
         entry.recordPayment(cancelled.paymentIntentId, cancelled.status);
         if (cancelled.status === "CAPTURED") {
+          if (reason === "WAITLIST_PAYMENT_AUTHORIZATION_EXPIRED") return this.defer(entry);
           entry.suspend();
           return this.repository.save(entry);
         }
