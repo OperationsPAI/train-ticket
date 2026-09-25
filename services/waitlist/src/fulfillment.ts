@@ -34,7 +34,10 @@ export interface WaitlistFulfillmentClient {
 }
 
 export class HttpWaitlistFulfillmentClient implements WaitlistFulfillmentClient {
-  constructor(private readonly bases: Readonly<Record<string, string>> = {}) {}
+  constructor(
+    private readonly bases: Readonly<Record<string, string>> = {},
+    private readonly fetcher: typeof fetch = tracedFetch,
+  ) {}
 
   async getOrder(orderId: string, correlationId?: string): Promise<OrderFacts> {
     const body = await this.getRequired("journey-order", `/api/v1/journey-orders/${encodeURIComponent(orderId)}`, correlationId);
@@ -133,7 +136,7 @@ export class HttpWaitlistFulfillmentClient implements WaitlistFulfillmentClient 
   }
 
   private async get(service: string, path: string, correlationId?: string, allowNotFound = false): Promise<Record<string, unknown> | undefined> {
-    const response = await tracedFetch(`${this.base(service)}${path}`, { headers: correlationId ? { "x-correlation-id": correlationId } : undefined, signal: AbortSignal.timeout(5_000) });
+    const response = await this.fetcher(`${this.base(service)}${path}`, { headers: correlationId ? { "x-correlation-id": correlationId } : undefined, signal: AbortSignal.timeout(5_000) });
     if (allowNotFound && response.status === 404) return undefined;
     if (!response.ok) throw new Error(`Waitlist fulfillment ${service} request failed with status ${response.status}`);
     return responseObject(await response.json(), service);
@@ -148,7 +151,7 @@ export class HttpWaitlistFulfillmentClient implements WaitlistFulfillmentClient 
   private async post(service: string, path: string, key: string, body: unknown, correlationId?: string): Promise<Record<string, unknown>> {
     const headers: Record<string, string> = { "content-type": "application/json", "Idempotency-Key": key };
     if (correlationId) headers["x-correlation-id"] = correlationId;
-    const response = await tracedFetch(`${this.base(service)}${path}`, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(5_000) });
+    const response = await this.fetcher(`${this.base(service)}${path}`, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(5_000) });
     if (!response.ok) throw new Error(`Waitlist fulfillment ${service} request failed with status ${response.status}`);
     return responseObject(await response.json(), service);
   }
