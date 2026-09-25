@@ -13,9 +13,9 @@ Amount basis reads require both order and finance projections, a recorded expect
 Invoice creation applies the same check in its command transaction.
 Missing context returns HTTP 404 for the amount basis and HTTP 412 for invoice creation without writing a command result.
 `amount_basis_recorded` verifies missing order, absent total, partial financial totals, complete reads and idempotent invoice issuance using recorded production facts.
+For changed orders, the finance projection may contain the original fare, multiple `change-payment` recognitions and multiple refund reversals across those recognitions. The basis remains unavailable until their net amount matches the latest Journey Order total. Its hash is derived from the sorted recognition IDs, net total and complete reversal history, so valid event order, event-envelope replay IDs and service restarts do not change the result.
 
-The recorded test uses an isolated PostgreSQL schema and requires `TEST_DATABASE_URL` with the `--ignored` Cargo option.
-Its recorded run passes in 0.25 seconds.
+The recorded test uses an isolated PostgreSQL schema and requires `TEST_DATABASE_URL` with the `--ignored` Cargo option. It also verifies mixed fare-difference payments, repeated refunds, partial 404 behavior without command writes, stable replay and restart recovery.
 
 The Journey Order stream uses four consumers in the same group with distinct consumer names.
 Projection writes retain order scoped PostgreSQL locks and source event timestamps.
