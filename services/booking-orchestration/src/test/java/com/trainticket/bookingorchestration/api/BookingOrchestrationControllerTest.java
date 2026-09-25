@@ -52,6 +52,23 @@ class BookingOrchestrationControllerTest {
         bookingService.requestReservation(sagaId,
             new BookingOrchestrationService.RequestReservationCommand("seg-001", "tvl-user1", segmentBookingId),
             UUID.randomUUID().toString(), "corr-0194f2e0-7b3e-7610-8284-5c26e8b0a032");
+        // Capacity is held before the reservation can confirm: the hold and the
+        // provider's confirmation arrive on separate streams, and only both
+        // together make a reservation a caller can act on.
+        bookingService.handleUpstreamEvent(new com.trainticket.platformkit.messaging.EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0a030", "CapacityHeld",
+            Instant.parse("2026-07-05T10:00:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0a032", "evt-0194f2e0-7b3e-7610-8284-5c26e8b0a033",
+            "capacity-availability", 1,
+            Map.ofEntries(
+                Map.entry("segmentBookingId", segmentBookingId),
+                Map.entry("holdId", "hold-1"),
+                Map.entry("inventoryPoolId", "pool:seg-001:standard"),
+                Map.entry("capacityUnitRef", "su-hold-1"),
+                Map.entry("idempotencyKey", "ord-1:seg-001:tvl-user1:purchase"),
+                Map.entry("expiresAt", "2026-07-05T10:05:00Z"),
+                Map.entry("idempotentReplay", false),
+                Map.entry("interval", Map.of("fromSeq", 0, "toSeq", 1)))));
         bookingService.handleUpstreamEvent(new com.trainticket.platformkit.messaging.EventEnvelope(
             "evt-0194f2e0-7b3e-7610-8284-5c26e8b0a031", "ProviderReservationConfirmed",
             Instant.parse("2026-07-05T10:00:01Z"),

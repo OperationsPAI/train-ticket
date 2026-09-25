@@ -36,6 +36,18 @@ public final class SegmentBooking {
     private String scheduledServiceRef;
     private String serviceDate;
     private boolean standingAccepted;
+    /**
+     * A provider confirmation that arrived before the capacity Hold.
+     *
+     * <p>The two arrive on separate streams, and the reservation is only
+     * complete when both are recorded: everything that reads a segment booking
+     * reads `CONFIRMED` together with its hold reference, so a confirmation
+     * that outruns the hold is a state nobody can act on. It is held here until
+     * the hold arrives rather than applied immediately, and it is durable
+     * because a restart between the two events would otherwise lose it.
+     */
+    private ProviderReference pendingProviderReference;
+    private String pendingProviderEvidence;
     private long version;
 
     private SegmentBooking(String segmentBookingId, String journeyOrderId, String offerItemRef, String segmentRef,
@@ -202,17 +214,67 @@ public final class SegmentBooking {
             status = SegmentBookingStatus.HOLDING;
             record(new SegmentCapacityHolding(nextEventId(), segmentBookingId, now(), capacityHoldId));
         }
+        completeDeferredProviderConfirmation();
     }
 
-    public void confirmFromProvider(ProviderReservationConfirmed confirmation) {
+    /**
+     * Record the provider's confirmation, and confirm the reservation only when
+     * capacity is already held.
+     *
+     * @return whether the reservation is now confirmed
+     */
+    public boolean confirmFromProvider(ProviderReservationConfirmed confirmation) {
         if (!segmentBookingId.equals(confirmation.segmentBookingId())) {
             throw new IllegalArgumentException("provider confirmation belongs to a different segment booking");
         }
         if (isTerminalOrCancelling()) {
             registerLateProviderConfirmation(confirmation.providerReference());
-            return;
+            return false;
+        }
+        if (capacityHoldId == null) {
+            // Waiting here rather than confirming without a hold is what makes
+            // `CONFIRMED` mean a complete reservation. If the hold never comes,
+            // the saga's own reservation deadline is what fails it.
+            this.pendingProviderReference = confirmation.providerReference();
+            this.pendingProviderEvidence = requireText(confirmation.normalizedEvidence(), "evidence");
+            if (status == SegmentBookingStatus.REQUESTED) {
+                this.status = SegmentBookingStatus.HOLDING;
+            }
+            return false;
         }
         confirmReservation(Optional.of(confirmation.providerReference()), confirmation.normalizedEvidence());
+        return true;
+    }
+
+    private void completeDeferredProviderConfirmation() {
+        if (pendingProviderReference == null) {
+            return;
+        }
+        ProviderReference reference = pendingProviderReference;
+        String evidence = pendingProviderEvidence;
+        pendingProviderReference = null;
+        pendingProviderEvidence = null;
+        confirmReservation(Optional.of(reference), evidence);
+    }
+
+    public Optional<ProviderReference> pendingProviderReference() {
+        return Optional.ofNullable(pendingProviderReference);
+    }
+
+    public Optional<String> pendingProviderEvidence() {
+        return Optional.ofNullable(pendingProviderEvidence);
+    }
+
+    /** Restore a confirmation that was waiting for its capacity Hold. */
+    public SegmentBooking withPendingProviderConfirmation(ProviderReference reference, String evidence) {
+        if (reference == null) {
+            this.pendingProviderReference = null;
+            this.pendingProviderEvidence = null;
+            return this;
+        }
+        this.pendingProviderReference = reference;
+        this.pendingProviderEvidence = evidence;
+        return this;
     }
 
     public void confirmInternal(String evidence) {
@@ -239,14 +301,19 @@ public final class SegmentBooking {
     }
 
     public void failReservation(String reason) {
-        if (status == SegmentBookingStatus.CONFIRMED && capacityHoldId == null) {
-            if (providerReference != null) {
-                record(new ProviderCancellationRequired(nextEventId(), segmentBookingId, now(), providerReference,
-                    "capacity reservation failed"));
-            }
+        ProviderReference confirmedProvider = providerReference != null ? providerReference : pendingProviderReference;
+        if (confirmedProvider != null && capacityHoldId == null) {
+            // The provider reserved but the reservation never completed, so it
+            // has to be told to cancel -- whether the confirmation was applied
+            // before this change or is still waiting for a Hold that will now
+            // never arrive.
+            record(new ProviderCancellationRequired(nextEventId(), segmentBookingId, now(), confirmedProvider,
+                "capacity reservation failed"));
         } else {
             requireStatus(SegmentBookingStatus.REQUESTED, SegmentBookingStatus.HOLDING, SegmentBookingStatus.CANCEL_REQUESTED);
         }
+        this.pendingProviderReference = null;
+        this.pendingProviderEvidence = null;
         this.status = SegmentBookingStatus.FAILED;
         this.failureReason = requireText(reason, "reason");
         record(new SegmentReservationFailed(nextEventId(), segmentBookingId, now(), failureReason));
