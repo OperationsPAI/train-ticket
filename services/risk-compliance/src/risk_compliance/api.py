@@ -240,19 +240,19 @@ def configure_runtime_endpoints(app: FastAPI, tracer: TraceHook | None = None, o
 
 def _storage_ready(app: FastAPI) -> bool:
     gate = getattr(app.state, "readiness", None)
-    if gate is not None and not gate.ready:
-        return False
     pool = getattr(app.state, "database_pool", None)
     if pool is None:
-        return True
+        return gate is None or gate.ready
     try:
         with pool.connection() as conn:
             conn.execute("SELECT 1").fetchone()
-        return True
     except Exception:
         if gate is not None:
             gate.mark_failed("database readiness check failed")
         return False
+    if gate is not None:
+        gate.mark_ready()
+    return True
 
 
 def _configure_postgres(app: FastAPI) -> tuple[InMemoryAssessmentRepository, Any | None, IdempotencyStore | None, Any | None]:
