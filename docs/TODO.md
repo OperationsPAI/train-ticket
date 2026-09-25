@@ -40,16 +40,27 @@ in [current status](00-current-status.md#the-resident-cycle-is-not-yet-clean):
    run -- `plan_nodes` reached 907825 rows and `plan_segments` 748331 when this
    was measured. A covering index took one search from 1366 to 130-210
    milliseconds, which held for a few windows and then degraded again as the
-   corpus grew; the shape of the query, not only its index, is what has to
-   change.
-2. [ ] A change must be able to replace a reservation whose original hold is
+   corpus grew. Measured with the index in place: 56 searches a second, each
+   fetching about 20000 segment rows, which is 1.1 million tuples a second from
+   the plan tables alone.
+2. [ ] Cut the remaining databases over to their shards. The chart defines six
+   shards, but only six of the thirty-seven services set `pgInstance`; the other
+   thirty-one use `core`, including every read-heavy one, and the read shard's
+   copies of `trip_planning`, `offer_management`, `capacity_availability` and
+   `seat_assignment` hold no tables at all. Core is doing the whole system's
+   work: measured over 25 seconds it served 20886 fare-pricing transactions and
+   12304 trip-planning ones, and 45.4 million trip-planning tuple fetches. The
+   loads that need moving are the read shard's seven databases first, then the
+   transactional shard's five; `reporting` is the worked example of the copy,
+   verify and switch that this needs.
+3. [ ] A change must be able to replace a reservation whose original hold is
    still active. The replacement is refused with `OVERLAPPING_HOLD` and the
    case answers 422, which the load generator records as `failed_at_change-execute`.
-3. [ ] Disruption must not report a business conflict as an availability
+4. [ ] Disruption must not report a business conflict as an availability
    failure. Selecting an option for an order that already has a refund or change
    in progress answers 503 `UNAVAILABLE`; a conflict has its own status, and the
    flow has to decide what the honest terminal outcome for that case is.
-4. [ ] Re-measure the refund and change `case-status` groups once the above are
+5. [ ] Re-measure the refund and change `case-status` groups once the above are
    fixed; they wait on the reservations and cases in front of them.
 
 ## Open verification
