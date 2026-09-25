@@ -5,19 +5,26 @@ import (
 	"github.com/trainticket/greenfield/platform/go-kit/ids"
 	kitmsg "github.com/trainticket/greenfield/platform/go-kit/messaging"
 	"github.com/trainticket/greenfield/services/payment-channel/internal/domain"
+	"sync"
 	"testing"
 	"time"
 )
 
 type memRepo struct {
-	orders  map[string]*domain.ChannelOrder
-	refunds map[string]*domain.ChannelRefund
-	stmts   map[string]*domain.ChannelStatement
-	disc    map[string]*domain.ReconciliationDiscrepancy
+	orders        map[string]*domain.ChannelOrder
+	refunds       map[string]*domain.ChannelRefund
+	stmts         map[string]*domain.ChannelStatement
+	disc          map[string]*domain.ReconciliationDiscrepancy
+	refundUpdates int
 }
 
 func newMem() *memRepo {
-	return &memRepo{map[string]*domain.ChannelOrder{}, map[string]*domain.ChannelRefund{}, map[string]*domain.ChannelStatement{}, map[string]*domain.ReconciliationDiscrepancy{}}
+	return &memRepo{
+		orders:  map[string]*domain.ChannelOrder{},
+		refunds: map[string]*domain.ChannelRefund{},
+		stmts:   map[string]*domain.ChannelStatement{},
+		disc:    map[string]*domain.ReconciliationDiscrepancy{},
+	}
 }
 func (m *memRepo) SaveOrder(_ context.Context, o *domain.ChannelOrder) error {
 	m.orders[o.ChannelOrderID] = o
@@ -50,6 +57,7 @@ func (m *memRepo) SaveRefund(_ context.Context, o *domain.ChannelRefund) error {
 	return nil
 }
 func (m *memRepo) UpdateRefund(_ context.Context, o *domain.ChannelRefund, _ int64) error {
+	m.refundUpdates++
 	m.refunds[o.ChannelRefundID] = o
 	return nil
 }
@@ -59,6 +67,14 @@ func (m *memRepo) GetRefund(_ context.Context, id string) (*domain.ChannelRefund
 		return nil, assertErr{}
 	}
 	return o, nil
+}
+func (m *memRepo) FindRefundForOrder(_ context.Context, orderID, refundID string) (*domain.ChannelRefund, error) {
+	for _, refund := range m.refunds {
+		if refund.ChannelOrderID == orderID && refund.RefundID == refundID {
+			return refund, nil
+		}
+	}
+	return nil, nil
 }
 func (m *memRepo) ListRefundsForStatement(_ context.Context, channel, date, currency string) ([]domain.ChannelRefund, error) {
 	out := []domain.ChannelRefund{}
@@ -240,5 +256,93 @@ func TestStatementGenerationFiltersByStatementDate(t *testing.T) {
 	}
 	if st.LineCount != 1 {
 		t.Fatalf("expected one same-day line, got %d", st.LineCount)
+	}
+}
+
+func TestConcurrentRefundReplayReusesBusinessRefundAndTerminalSubmission(t *testing.T) {
+	repo := newMem()
+	publisher := &pub{}
+	var transaction sync.Mutex
+	svc := New(repo, publisher, func(ctx context.Context, work func(context.Context) error) error {
+		transaction.Lock()
+		defer transaction.Unlock()
+		return work(ctx)
+	})
+	ctx := context.Background()
+	commandID := ids.NewCommandID()
+	correlationID := ids.NewCorrelationID()
+	order, err := svc.CreateOrder(ctx, CreateOrderRequest{
+		PaymentIntentID: "pi-replay", BusinessRef: "ord-replay", Purpose: "purchase",
+		Channel: domain.ChannelAlipay, Amount: domain.Money{Currency: "CNY", MinorUnits: 8783},
+		IdempotencyKey: ids.NewUUIDv7(), SourceCommandID: commandID, CorrelationID: correlationID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	order, err = svc.SubmitOrder(ctx, order.ChannelOrderID, order.Version, order.RequestFingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := CreateRefundRequest{
+		RefundID: "rf-business-replay", PaymentIntentID: order.PaymentIntentID,
+		ChannelOrderID: order.ChannelOrderID, OriginalChannelTransactionID: order.ChannelTransactionID,
+		Channel: order.Channel, Amount: order.Amount, RefundReasonCode: "POST_SALES_APPROVED",
+		IdempotencyKey: ids.NewUUIDv7(), SourceCommandID: commandID, CorrelationID: correlationID,
+	}
+
+	const workers = 16
+	results := make(chan *domain.ChannelRefund, workers)
+	errors := make(chan error, workers)
+	for index := 0; index < workers; index++ {
+		go func() {
+			refund, createErr := svc.CreateRefund(ctx, request)
+			results <- refund
+			errors <- createErr
+		}()
+	}
+	var refund *domain.ChannelRefund
+	for index := 0; index < workers; index++ {
+		if createErr := <-errors; createErr != nil {
+			t.Fatalf("identical refund replay failed: %v", createErr)
+		}
+		result := <-results
+		if refund == nil {
+			refund = result
+		} else if result.ChannelRefundID != refund.ChannelRefundID {
+			t.Fatalf("replay created another channel refund: %s != %s", result.ChannelRefundID, refund.ChannelRefundID)
+		}
+	}
+	if len(repo.refunds) != 1 {
+		t.Fatalf("expected one channel refund, got %d", len(repo.refunds))
+	}
+
+	changed := request
+	changed.Amount.MinorUnits--
+	if _, err := svc.CreateRefund(ctx, changed); err == nil || err.Error() != "DOMAIN_RULE_VIOLATION: refund identity was reused with different request details" {
+		t.Fatalf("changed replay must be rejected by identity, got %v", err)
+	}
+	second := request
+	second.RefundID = "rf-another-business-refund"
+	second.IdempotencyKey = ids.NewUUIDv7()
+	if _, err := svc.CreateRefund(ctx, second); err == nil || err.Error() != "DOMAIN_RULE_VIOLATION: refund amount exceeds original order" {
+		t.Fatalf("a real second full refund must still be rejected, got %v", err)
+	}
+
+	createdVersion := refund.Version
+	refund, err = svc.SubmitRefund(ctx, refund.ChannelRefundID, createdVersion, refund.RequestFingerprint)
+	if err != nil || refund.Status != domain.StatusSucceeded {
+		t.Fatalf("initial refund submission failed: refund=%+v err=%v", refund, err)
+	}
+	for index := 0; index < workers; index++ {
+		replayed, replayErr := svc.SubmitRefund(ctx, refund.ChannelRefundID, createdVersion, refund.RequestFingerprint)
+		if replayErr != nil || replayed.Status != domain.StatusSucceeded || replayed.ChannelRefundTransactionID != refund.ChannelRefundTransactionID {
+			t.Fatalf("terminal submission replay changed outcome: refund=%+v err=%v", replayed, replayErr)
+		}
+	}
+	if repo.refundUpdates != 1 {
+		t.Fatalf("terminal submission replays must not update the refund, updates=%d", repo.refundUpdates)
+	}
+	if _, replayErr := svc.SubmitRefund(ctx, refund.ChannelRefundID, createdVersion, "changed-fingerprint"); replayErr == nil || replayErr.Error() != "DOMAIN_RULE_VIOLATION: request fingerprint mismatch" {
+		t.Fatalf("terminal replay with changed request must be rejected, got %v", replayErr)
 	}
 }
