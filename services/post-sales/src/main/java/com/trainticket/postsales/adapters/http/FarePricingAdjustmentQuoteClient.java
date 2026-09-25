@@ -66,8 +66,18 @@ public class FarePricingAdjustmentQuoteClient implements AdjustmentQuotePort {
             var travelers = asMap(target.get("passengerMix")).get("travelers");
             java.util.Set<String> targetTravelers = new java.util.HashSet<>();
             if (travelers instanceof java.util.List<?> list) for (Object traveler : list) targetTravelers.add(String.valueOf(asMap(traveler).get("travelerId")));
-            Object originalTravelers = order.get("travelerRefs");
-            if (!(originalTravelers instanceof java.util.List<?> list) || !targetTravelers.equals(new java.util.HashSet<>(list))) throw new IllegalStateException("target offer travelers differ from the original order");
+            // A change can cover one traveler of an order that carries several:
+            // the case and its target offer are built for the case's own scope,
+            // so comparing the offer against every traveler on the order fails
+            // a change that is exactly what the caller asked for. Measured on
+            // the resident cluster: 1637 evaluate calls answered 500 with
+            // "target offer travelers differ from the original order" in one
+            // window, every one of them a case scoped to a single traveler of a
+            // two-traveler order.
+            java.util.Set<String> expectedTravelers = expectedTravelers(request, order);
+            if (targetTravelers.isEmpty() || !targetTravelers.equals(expectedTravelers)) {
+                throw new IllegalStateException("target offer travelers differ from the case scope");
+            }
             Map<String, Object> targetPrice = asMap(target.get("priceSnapshot"));
             if (!(targetPrice.get("fareQuoteRef") instanceof String targetQuoteId) || targetQuoteId.isBlank()) throw new IllegalStateException("target offer has no fare quote");
             body.put("targetQuoteId",targetQuoteId);
@@ -98,6 +108,22 @@ public class FarePricingAdjustmentQuoteClient implements AdjustmentQuotePort {
     @SuppressWarnings("unchecked")
     private static Map<String, Object> asMap(Object value) {
         return value instanceof Map<?, ?> map ? (Map<String, Object>) map : Map.of();
+    }
+
+    /**
+     * The travelers a target offer has to cover.
+     *
+     * The case's own scope when it has one, because a change can be scoped to a
+     * subset of the order's travelers; the order's travelers otherwise.
+     */
+    static java.util.Set<String> expectedTravelers(AdjustmentQuoteRequest request, Map<String, Object> order) {
+        java.util.Set<String> expected = new java.util.HashSet<>();
+        if (request.travelerRefs() != null && !request.travelerRefs().isEmpty()) {
+            expected.addAll(request.travelerRefs());
+        } else if (order.get("travelerRefs") instanceof java.util.List<?> list) {
+            for (Object traveler : list) expected.add(String.valueOf(traveler));
+        }
+        return expected;
     }
 
     private static long minorUnits(Map<String, Object> money) {
