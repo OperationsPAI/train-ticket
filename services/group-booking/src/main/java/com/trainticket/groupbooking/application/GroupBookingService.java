@@ -19,6 +19,7 @@ import java.util.Map;
 import java.util.Objects;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class GroupBookingService {
@@ -41,6 +42,7 @@ public class GroupBookingService {
         this.envelopeFactory = new EventEnvelopeFactory(PRODUCER, clock);
     }
 
+    @Transactional
     public BookingDetail create(CreateGroupBookingCommand command, String correlationId) {
         Objects.requireNonNull(command, "command is required");
         GroupFare fare = new GroupFare(command.currency(), command.minorUnits(), command.discountBasisPoints(), command.negotiationRef());
@@ -57,9 +59,10 @@ public class GroupBookingService {
         return BookingDetail.from(booking);
     }
 
+    @Transactional
     public BookingDetail addMembers(String groupBookingId, AddMembersCommand command, String correlationId) {
         Objects.requireNonNull(command, "command is required");
-        GroupBooking booking = getAggregate(groupBookingId);
+        GroupBooking booking = getAggregateForUpdate(groupBookingId);
         Instant now = clock.instant();
         List<GroupMember> members = command.members().stream()
             .map(member -> GroupMember.active("gbm-" + UuidV7.generate(), member.travelerRef(), member.maskedDocumentRef(), now))
@@ -70,18 +73,20 @@ public class GroupBookingService {
         return BookingDetail.from(booking);
     }
 
+    @Transactional
     public BookingDetail confirm(String groupBookingId, ConfirmGroupBookingCommand command, String correlationId) {
         Objects.requireNonNull(command, "command is required");
-        GroupBooking booking = getAggregate(groupBookingId);
+        GroupBooking booking = getAggregateForUpdate(groupBookingId);
         booking.confirm(command.capacityHoldId(), clock.instant());
         repository.save(booking);
         publish(booking.pullEvents(), normalizedCorrelationId(correlationId), PrefixedIds.newCommandId());
         return BookingDetail.from(booking);
     }
 
+    @Transactional
     public BookingDetail cancel(String groupBookingId, CancelGroupBookingCommand command, String correlationId) {
         Objects.requireNonNull(command, "command is required");
-        GroupBooking booking = getAggregate(groupBookingId);
+        GroupBooking booking = getAggregateForUpdate(groupBookingId);
         booking.cancel(command.memberIds(), command.reason(), clock.instant());
         repository.save(booking);
         publish(booking.pullEvents(), normalizedCorrelationId(correlationId), PrefixedIds.newCommandId());
@@ -92,6 +97,7 @@ public class GroupBookingService {
         return BookingDetail.from(getAggregate(groupBookingId));
     }
 
+    @Transactional
     public void handleCapacityHoldConfirmed(EventEnvelope envelope) {
         if (!"CapacityHoldConfirmed".equals(envelope.eventType())) {
             return;
@@ -106,13 +112,18 @@ public class GroupBookingService {
         if (groupBookingId == null || holdId == null) {
             throw new IllegalArgumentException("CapacityHoldConfirmed requires groupBookingId/businessRef and holdId");
         }
-        GroupBooking booking = getAggregate(groupBookingId);
+        GroupBooking booking = getAggregateForUpdate(groupBookingId);
         booking.recordCapacityHoldConfirmed(holdId, quantity, clock.instant());
         repository.save(booking);
     }
 
     private GroupBooking getAggregate(String groupBookingId) {
         return repository.findById(groupBookingId)
+            .orElseThrow(() -> new NotFoundException("group booking not found: " + groupBookingId));
+    }
+
+    private GroupBooking getAggregateForUpdate(String groupBookingId) {
+        return repository.findByIdForUpdate(groupBookingId)
             .orElseThrow(() -> new NotFoundException("group booking not found: " + groupBookingId));
     }
 
