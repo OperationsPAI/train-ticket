@@ -142,6 +142,28 @@ class AgreementPriceRef:
 
 
 @dataclass(frozen=True, slots=True)
+class OnboardingTerms:
+    """The terms an agreement opened on the self-service path is held to.
+
+    The ceiling is the exposure the onboarding benchmark sized for an agreement
+    a corporate administrator opens without the finance desk pricing it in
+    person. A larger facility is not refused outright -- the finance desk opens
+    it with its own terms -- so the create path only has to recognise one and
+    hand it over.
+    """
+
+    max_monthly_credit_minor: int = 50_000_000
+
+    def __post_init__(self) -> None:
+        if self.max_monthly_credit_minor < 0:
+            raise CorporateTravelError("onboarding credit ceiling must be non-negative")
+
+    def admits(self, limit: Money) -> bool:
+        """Whether an agreement at this monthly credit may be opened here."""
+        return limit.minor_units <= self.max_monthly_credit_minor
+
+
+@dataclass(frozen=True, slots=True)
 class AuthorizedTraveler:
     authorization_id: str
     account_id: str

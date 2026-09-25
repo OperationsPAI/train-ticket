@@ -36,6 +36,7 @@ from .domain import (
     InvoiceLineItem,
     Money,
     MonthlyInvoice,
+    OnboardingTerms,
     PolicyChecker,
     PolicyDecision,
     PolicyResult,
@@ -51,6 +52,14 @@ from .domain import (
 
 PRODUCER = "corporate-travel"
 SCHEMA_VERSION = 1
+
+ONBOARDING_TERMS = OnboardingTerms()
+"""The terms an agreement opened on the self-service path is held to.
+
+Read once here rather than rebuilt per request, so the create path compares
+against one value. A deployment approved for a different ceiling states it
+where the rest of its settings live.
+"""
 
 
 @contextmanager
@@ -501,6 +510,14 @@ class CorporateTravelService:
                 ),
                 contact=dict(contact or {}),
             )
+            # A corporate administrator opens an agreement here on the
+            # self-service path, and its monthly credit is the exposure carried
+            # between two billing periods. Above what the onboarding benchmark
+            # sized, the facility is the finance desk's to open.
+            if not ONBOARDING_TERMS.admits(agreement.monthly_credit_limit):
+                raise CorporateTravelError(
+                    "monthly credit limit is above the self-service onboarding ceiling"
+                )
             created_event = _agreement_event("CorporateAgreementCreated", agreement, correlation_id, causation_id)
             if activate:
                 agreement = agreement.activate()
