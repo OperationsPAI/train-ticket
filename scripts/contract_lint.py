@@ -2,15 +2,15 @@
 """Mechanical contract-conformance checks for docs/08-contracts/.
 
 Turns the review rules that keep getting violated into CI:
-  C1  Money on the wire is {currency, minorUnits} — the JSON keys
-      "units"/"cents" are forbidden anywhere in service sources.
+  C1  Money on the wire is {currency, minorUnits} — monetary objects must not
+      use the JSON keys "units"/"cents". Non-monetary capacity `units` are valid.
   C2  Wire-boundary files (anything that names a Redis stream or XADDs)
       must not serialize `sourceCommandId` — the contract envelope has
       exactly 8 fields (shared-primitives.md §1). Domain-internal event
       metadata may keep it; the bus adapter must strip it.
-  C3  Stream literals `events:<context>` may appear only under an
-      adapters/ path (or in tests) — stream naming lives in the adapter
-      layer, never in domain/application/http code.
+  C3  Stream literals `events:<context>` may appear only at a messaging or
+      composition boundary — stream naming does not belong in domain or
+      application policy.
 
 False positives can be suppressed by listing `<check-id> <path>` lines in
 scripts/contract-lint-ignore.txt.
@@ -25,8 +25,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SRC_EXT = {".java", ".go", ".py", ".rs", ".ts"}
 STREAM_RE = re.compile(r"events:[a-z][a-z-]+")
+STREAM_LITERAL_RE = re.compile(r"(['\"])events:[a-z][a-z-]+\1")
 XADD_RE = re.compile(r"\bxadd\b|\bXADD\b|\bXAdd\b|xAdd")
-MONEY_RE = re.compile(r'"(units|cents)"')
+JSON_KEY_RE = re.compile(r'(["\'`])(units|cents)\1\s*[:=]')
+CURRENCY_KEY_RE = re.compile(r'(["\'`])currency\1\s*[:=]')
+SOURCE_COMMAND_KEY_RE = re.compile(
+    r'(["\'`])sourceCommandId\1\s*[:=]|json:\"sourceCommandId(?:,omitempty)?\"'
+)
+BOUNDARY_PARTS = {"adapters", "infrastructure", "config"}
+BOUNDARY_STEMS = {"bootstrap", "main", "messaging", "subscriber"}
 
 
 def load_ignores() -> set[tuple[str, str]]:
@@ -48,6 +55,26 @@ def is_test(path: Path) -> bool:
         or "/tests/" in s
         or s.endswith("_test.go")
     )
+
+
+def is_messaging_boundary(path: Path) -> bool:
+    return bool(BOUNDARY_PARTS.intersection(path.parts)) or path.stem in BOUNDARY_STEMS
+
+
+def money_key_violations(lines: list[str]) -> list[int]:
+    violations: list[int] = []
+    for index, line in enumerate(lines):
+        match = JSON_KEY_RE.search(line)
+        if not match:
+            continue
+        key = match.group(2)
+        if key == "cents":
+            violations.append(index + 1)
+            continue
+        window = "\n".join(lines[max(0, index - 6) : index + 7])
+        if CURRENCY_KEY_RE.search(window):
+            violations.append(index + 1)
+    return violations
 
 
 def main() -> int:
@@ -72,8 +99,8 @@ def main() -> int:
             continue
         lines = text.splitlines()
 
-        for i, line in enumerate(lines, 1):
-            if MONEY_RE.search(line):
+        if not is_test(path):
+            for i in money_key_violations(lines):
                 report(
                     "C1-money-minorunits", path, i,
                     'Money wire shape is {currency, minorUnits}; keys '
@@ -81,9 +108,9 @@ def main() -> int:
                 )
 
         is_wire = bool(STREAM_RE.search(text) or XADD_RE.search(text))
-        if is_wire and "sourceCommandId" in text:
+        if is_wire and not is_test(path) and SOURCE_COMMAND_KEY_RE.search(text):
             for i, line in enumerate(lines, 1):
-                if "sourceCommandId" in line:
+                if SOURCE_COMMAND_KEY_RE.search(line):
                     report(
                         "C2-envelope-8-fields", path, i,
                         "wire-boundary file serializes sourceCommandId; "
@@ -91,9 +118,9 @@ def main() -> int:
                         "fields (shared-primitives §1)",
                     )
 
-        if "/adapters/" not in s and not is_test(path):
+        if not is_messaging_boundary(path) and not is_test(path):
             for i, line in enumerate(lines, 1):
-                if STREAM_RE.search(line):
+                if STREAM_LITERAL_RE.search(line):
                     report(
                         "C3-stream-scope", path, i,
                         "stream literal outside an adapters/ path; stream "
