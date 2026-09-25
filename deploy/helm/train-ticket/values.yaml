@@ -883,6 +883,10 @@ services:
       limits: { cpu: '6', memory: 4Gi }
   journey-order:
     db: journey_order
+    # Orders and their account/identity projections share the hot transactional
+    # path with Booking Orchestration. Keeping both on the hot shard removes
+    # their high-volume snapshots and connection pools from postgres-core.
+    pgInstance: hot
     # Two replicas for the same reason as Booking Orchestration: eleven streams
     # share one handler pool, and the identity verification consumer alone
     # reached 29532 undelivered entries at the largest burst.
