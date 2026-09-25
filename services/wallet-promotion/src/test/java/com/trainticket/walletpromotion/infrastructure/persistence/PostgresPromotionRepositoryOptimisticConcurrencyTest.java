@@ -14,6 +14,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.trainticket.platformkit.persistence.OptimisticConcurrencyException;
 import com.trainticket.platformkit.persistence.OutboxAppender;
 import com.trainticket.walletpromotion.application.WalletPromotionServiceTest;
+import com.trainticket.walletpromotion.application.MutationArtifacts;
 import com.trainticket.walletpromotion.domain.Money;
 import com.trainticket.walletpromotion.domain.PromotionInstrument;
 import com.trainticket.walletpromotion.domain.ReasonType;
@@ -50,7 +51,7 @@ class PostgresPromotionRepositoryOptimisticConcurrencyTest {
         CapturingRepository repository = new CapturingRepository(jdbc, objectMapper);
         PromotionInstrument benefit = baseBenefit();
 
-        repository.saveMutation(benefit, wallet(benefit), event(benefit), null, null);
+        repository.saveMutation(benefit, wallet(benefit), event(benefit), MutationArtifacts.none());
 
         List<String> sql = repository.updateSql();
 
@@ -70,7 +71,7 @@ class PostgresPromotionRepositoryOptimisticConcurrencyTest {
         PromotionInstrument benefit = baseBenefit();
         WalletAccount wallet = wallet(benefit);
 
-        repository.saveMutation(benefit, wallet, event(benefit), null, null);
+        repository.saveMutation(benefit, wallet, event(benefit), MutationArtifacts.none());
 
         ArgumentCaptor<PreparedStatementSetter> setters = ArgumentCaptor.forClass(PreparedStatementSetter.class);
         verify(jdbc, atLeastOnce()).update(startsWith("INSERT INTO promotion_instrument_snapshots"), setters.capture());
@@ -100,7 +101,7 @@ class PostgresPromotionRepositoryOptimisticConcurrencyTest {
         );
         WalletAccount wallet = wallet(updated);
 
-        repository.saveMutation(updated, wallet, event(updated), null, null);
+        repository.saveMutation(updated, wallet, event(updated), MutationArtifacts.none());
 
         ArgumentCaptor<PreparedStatementSetter> setters = ArgumentCaptor.forClass(PreparedStatementSetter.class);
         verify(jdbc, atLeastOnce()).update(startsWith("UPDATE promotion_instrument_snapshots"), setters.capture());
@@ -127,7 +128,7 @@ class PostgresPromotionRepositoryOptimisticConcurrencyTest {
             WITHIN_VALIDITY
         );
 
-        assertThatThrownBy(() -> repository.saveMutation(stale, wallet(stale), event(stale), null, null))
+        assertThatThrownBy(() -> repository.saveMutation(stale, wallet(stale), event(stale), MutationArtifacts.none()))
             .isInstanceOf(OptimisticConcurrencyException.class);
     }
 

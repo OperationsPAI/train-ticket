@@ -5,6 +5,7 @@ import com.trainticket.platformkit.http.ApiErrorCode;
 import com.trainticket.platformkit.http.ApiException;
 import com.trainticket.walletpromotion.domain.BalanceType;
 import com.trainticket.walletpromotion.domain.BenefitRedemption;
+import com.trainticket.walletpromotion.domain.BenefitReservation;
 import com.trainticket.walletpromotion.domain.BenefitType;
 import com.trainticket.walletpromotion.domain.BenefitUseReference;
 import com.trainticket.walletpromotion.domain.BusinessReason;
@@ -13,6 +14,7 @@ import com.trainticket.walletpromotion.domain.Money;
 import com.trainticket.walletpromotion.domain.PromotionInstrument;
 import com.trainticket.walletpromotion.domain.PromotionStatus;
 import com.trainticket.walletpromotion.domain.ReasonType;
+import com.trainticket.walletpromotion.domain.ReservationRelease;
 import com.trainticket.walletpromotion.domain.ReversalRecord;
 import com.trainticket.walletpromotion.domain.WalletAccount;
 import com.trainticket.walletpromotion.domain.WalletBalance;
@@ -89,7 +91,7 @@ public class WalletPromotionService {
             zero,
             zero
         );
-        repository.saveMutation(benefit, wallet, EventFactory.issued(benefit, delta, now), null, null);
+        repository.saveMutation(benefit, wallet, EventFactory.issued(benefit, delta, now), MutationArtifacts.none());
         if(command.issuanceSource()==IssuanceSource.POST_SALES_COMP)repository.recordCompensationIssue(command,benefit.benefitId());
         return benefit;
     }
@@ -120,8 +122,27 @@ public class WalletPromotionService {
     public PromotionInstrument reserve(String id, ReserveBenefitCommand command) {
         Instant now = clock.instant();
         PromotionInstrument before = getBenefit(id);
-        scopeVerifier.verify(before, resolveUseReference(command.useReference(), command.reservationRef(), command.businessReason()), command.businessReason());
+        BenefitUseReference useReference = resolveUseReference(command.useReference(), command.reservationRef(), command.businessReason());
+        requireText(command.reservationRef(), "reservationRef");
+        if (command.reservationExpiresAt() == null || !command.reservationExpiresAt().isAfter(now)) {
+            throw new ApiException(ApiErrorCode.PRECONDITION_FAILED, "reservationExpiresAt must be in the future");
+        }
+        if (command.reservationExpiresAt().isAfter(before.validUntil())) {
+            throw new ApiException(ApiErrorCode.PRECONDITION_FAILED, "reservation cannot outlive the benefit");
+        }
+        Optional<BenefitReservation> existing = repository.findReservation(id, command.reservationRef());
+        if (existing.isPresent()) {
+            if (existing.get().sameRequest(command.amount(), command.reservationExpiresAt(), useReference, command.businessReason())) {
+                return before;
+            }
+            throw new ApiException(ApiErrorCode.CONFLICT, "reservationRef already has another reservation request");
+        }
+        scopeVerifier.verify(before, useReference, command.businessReason());
         PromotionInstrument after = mapDomain(() -> before.reserve(command.amount(), command.businessReason(), now));
+        BenefitReservation reservation = mapDomain(() -> BenefitReservation.reserve(
+            command.reservationRef(), before, command.amount(), command.reservationExpiresAt(), useReference,
+            command.businessReason(), now
+        ));
         Money availableDelta = command.amount().negate();
         Money redeemedDelta = Money.zero(command.amount().currency());
         WalletAccount wallet = getWallet(before.accountId()).applyLedger(
@@ -141,7 +162,7 @@ public class WalletPromotionService {
             command.amount(),
             redeemedDelta
         );
-        repository.saveMutation(after, wallet, EventFactory.reserved(after, command, delta, now), null, null);
+        repository.saveMutation(after, wallet, EventFactory.reserved(after, command, reservation, delta, now), MutationArtifacts.reservation(reservation));
         return after;
     }
 
@@ -149,17 +170,30 @@ public class WalletPromotionService {
     public RedeemResult redeem(String id, RedeemBenefitCommand command) {
         Instant now = clock.instant();
         PromotionInstrument before = getBenefit(id);
-        scopeVerifier.verify(before, resolveUseReference(command.useReference(), command.redemptionRef(), command.businessReason()), command.businessReason());
-        Optional<BenefitRedemption> existing = repository.findRedemptionByReason(id, command.businessReason());
+        requireText(command.redemptionRef(), "redemptionRef");
+        BenefitUseReference useReference = resolveUseReference(command.useReference(), command.redemptionRef(), command.businessReason());
+        Optional<BenefitRedemption> existing = repository.findRedemptionByReference(id, command.redemptionRef());
         if (existing.isPresent()) {
             BenefitRedemption redemption = existing.get();
-            if (redemption.amount().equals(command.amount()) && redemption.redemptionRef().equals(command.redemptionRef())) {
+            if (redemption.sameRequest(
+                command.amount(), command.redemptionRef(), command.reservationRef(), useReference, command.businessReason()
+            )) {
                 return new RedeemResult(before, redemption);
             }
-            throw new ApiException(ApiErrorCode.CONFLICT, "benefit already redeemed for businessReason");
+            throw new ApiException(ApiErrorCode.CONFLICT, "redemptionRef already has another redemption request");
         }
+        scopeVerifier.verify(before, useReference, command.businessReason());
 
         boolean fromReservation = command.reservationRef() != null && !command.reservationRef().isBlank();
+        BenefitReservation reservation = null;
+        if (fromReservation) {
+            BenefitReservation current = repository.findReservation(id, command.reservationRef())
+                .orElseThrow(() -> new ApiException(ApiErrorCode.PRECONDITION_FAILED, "reservation not found"));
+            if (!current.useReference().equals(useReference)) {
+                throw new ApiException(ApiErrorCode.PRECONDITION_FAILED, "redemption useReference differs from reservation");
+            }
+            reservation = mapDomain(() -> current.consume(command.amount(), now));
+        }
         PromotionInstrument after = mapDomain(
             () -> before.redeem(command.amount(), command.businessReason(), now, fromReservation)
         );
@@ -180,6 +214,8 @@ public class WalletPromotionService {
             before.accountId(),
             command.amount(),
             command.redemptionRef(),
+            command.reservationRef(),
+            useReference,
             command.businessReason(),
             now,
             0
@@ -196,8 +232,7 @@ public class WalletPromotionService {
             after,
             wallet,
             EventFactory.redeemed(after, redemption, command.reservationRef(), delta, now),
-            redemption,
-            null
+            MutationArtifacts.redemption(reservation, redemption)
         );
         return new RedeemResult(after, redemption);
     }
@@ -206,6 +241,16 @@ public class WalletPromotionService {
     public PromotionInstrument release(String id, ReleaseBenefitCommand command) {
         Instant now = clock.instant();
         PromotionInstrument before = getBenefit(id);
+        requireText(command.reservationRef(), "reservationRef");
+        String releaseRef = operationRef(command.releaseRef(), command.businessReason());
+        Optional<ReservationRelease> existing = repository.findReleaseByReference(id, releaseRef);
+        if (existing.isPresent()) {
+            if (existing.get().sameRequest(command.reservationRef(), command.amount(), command.businessReason())) return before;
+            throw new ApiException(ApiErrorCode.CONFLICT, "releaseRef already has another release request");
+        }
+        BenefitReservation current = repository.findReservation(id, command.reservationRef())
+            .orElseThrow(() -> new ApiException(ApiErrorCode.PRECONDITION_FAILED, "reservation not found"));
+        BenefitReservation reservation = mapDomain(() -> current.release(command.amount(), now));
         PromotionInstrument after = mapDomain(() -> before.release(command.amount(), command.businessReason(), now));
         Money reservedDelta = command.amount().negate();
         Money redeemedDelta = Money.zero(command.amount().currency());
@@ -226,7 +271,10 @@ public class WalletPromotionService {
             reservedDelta,
             redeemedDelta
         );
-        repository.saveMutation(after, wallet, EventFactory.released(after, command, delta, now), null, null);
+        ReservationRelease release = new ReservationRelease(
+            "brl-" + UUID.randomUUID(), id, command.reservationRef(), releaseRef, command.amount(), command.businessReason(), now
+        );
+        repository.saveMutation(after, wallet, EventFactory.released(after, command, release, delta, now), MutationArtifacts.release(reservation, release));
         return after;
     }
 
@@ -247,7 +295,7 @@ public class WalletPromotionService {
             now
         );
         WalletBalanceDelta delta = delta(wallet, before.balanceType(), removed.currency(), removed.negate(), zero, zero);
-        repository.saveMutation(after, wallet, EventFactory.revoked(after, removed, delta, now), null, null);
+        repository.saveMutation(after, wallet, EventFactory.revoked(after, removed, delta, now), MutationArtifacts.none());
         return after;
     }
 
@@ -257,16 +305,35 @@ public class WalletPromotionService {
         PromotionInstrument before = getBenefit(id);
         BenefitRedemption redemption = repository.findRedemption(command.redemptionId())
             .orElseThrow(() -> notFound("redemption not found"));
+        if (!redemption.benefitId().equals(id) || !redemption.accountId().equals(before.accountId())) {
+            throw new ApiException(ApiErrorCode.PRECONDITION_FAILED, "redemption does not belong to the benefit");
+        }
+        String reversalRef = operationRef(command.reversalRef(), command.businessReason());
+        Optional<ReversalRecord> existing = repository.findReversalByReference(command.redemptionId(), reversalRef);
+        if (existing.isPresent()) {
+            if (existing.get().sameRequest(command.amount(), command.businessReason())) {
+                return new ReverseResult(before, command.redemptionId(), existing.get().reversedAt());
+            }
+            throw new ApiException(ApiErrorCode.CONFLICT, "reversalRef already has another reversal request");
+        }
         if (command.amount().minorUnits() > redemption.unreversedMinorUnits()) {
             throw new ApiException(ApiErrorCode.PRECONDITION_FAILED, "reversal exceeds unreversed amount");
         }
         PromotionInstrument after = mapDomain(() -> before.reverse(command.amount(), command.businessReason(), now));
         Money zero = Money.zero(command.amount().currency());
+        Money availableDelta = new Money(
+            command.amount().currency(),
+            after.availableAmount().minorUnits() - before.availableAmount().minorUnits()
+        );
+        Money reservedDelta = new Money(
+            command.amount().currency(),
+            after.reservedAmount().minorUnits() - before.reservedAmount().minorUnits()
+        );
         WalletAccount wallet = getWallet(before.accountId()).applyLedger(
             before.balanceType(),
             command.amount().currency(),
-            command.amount(),
-            zero,
+            availableDelta,
+            reservedDelta,
             command.amount().negate(),
             ledgerId(),
             now
@@ -274,6 +341,7 @@ public class WalletPromotionService {
         ReversalRecord reversal = new ReversalRecord(
             "brr-" + UUID.randomUUID(),
             command.redemptionId(),
+            reversalRef,
             command.amount(),
             command.businessReason(),
             now
@@ -282,16 +350,15 @@ public class WalletPromotionService {
             wallet,
             before.balanceType(),
             command.amount().currency(),
-            command.amount(),
-            zero,
+            availableDelta,
+            reservedDelta,
             command.amount().negate()
         );
         repository.saveMutation(
             after,
             wallet,
-            EventFactory.reversed(after, command.redemptionId(), reversal.reversalId(), command.amount(), delta, now),
-            null,
-            reversal
+            EventFactory.reversed(after, command.redemptionId(), reversal.reversalId(), reversalRef, command.amount(), delta, now),
+            MutationArtifacts.reversal(reversal)
         );
         return new ReverseResult(after, command.redemptionId(), now);
     }
@@ -309,6 +376,14 @@ public class WalletPromotionService {
                     before.benefitId(), ex.getClass().getName(), ex.getMessage());
             }
         }
+        for (BenefitReservation reservation : repository.findExpiredReservations(now, 50)) {
+            try {
+                expireReservation(reservation, now);
+            } catch (RuntimeException ex) {
+                LOGGER.warn("reservation expiry skipped benefitId={} reservationRef={} exceptionClass={} message={}",
+                    reservation.benefitId(), reservation.reservationRef(), ex.getClass().getName(), ex.getMessage());
+            }
+        }
     }
 
     private void expireOne(PromotionInstrument before, Instant now) {
@@ -323,6 +398,9 @@ public class WalletPromotionService {
         Money reserved = before.reservedAmount();
         Money zero = Money.zero(available.currency());
         PromotionInstrument after = mapDomain(() -> before.expire(reason, now));
+        List<BenefitReservation> expiredReservations = repository.findActiveReservations(before.benefitId()).stream()
+            .map(reservation -> reservation.expireWithBenefit(now))
+            .toList();
         WalletAccount wallet = getWallet(before.accountId()).applyLedger(
             before.balanceType(),
             available.currency(),
@@ -340,7 +418,32 @@ public class WalletPromotionService {
             reserved.negate(),
             zero
         );
-        repository.saveMutation(after, wallet, EventFactory.expired(after, available.plus(reserved), delta, now), null, null);
+        repository.saveMutation(after, wallet, EventFactory.expired(after, available.plus(reserved), delta, now), MutationArtifacts.reservations(expiredReservations));
+    }
+
+    private void expireReservation(BenefitReservation candidate, Instant now) {
+        BenefitReservation current = repository.findReservation(candidate.benefitId(), candidate.reservationRef())
+            .orElseThrow(() -> notFound("reservation not found"));
+        if (current.status() != com.trainticket.walletpromotion.domain.BenefitReservationStatus.ACTIVE
+            || now.isBefore(current.expiresAt())) return;
+        PromotionInstrument before = getBenefit(current.benefitId());
+        Money amount = current.remainingAmount();
+        BusinessReason reason = new BusinessReason(
+            ReasonType.SYSTEM_EXPIRY, "RESERVATION_VALIDITY_ELAPSED", "ORDER", current.useReference().orderId(), null
+        );
+        PromotionInstrument after = mapDomain(() -> before.release(amount, reason, now));
+        BenefitReservation expired = mapDomain(() -> current.expire(now));
+        Money zero = Money.zero(amount.currency());
+        WalletAccount wallet = getWallet(before.accountId()).applyLedger(
+            before.balanceType(), amount.currency(), amount, amount.negate(), zero, ledgerId(), now
+        );
+        WalletBalanceDelta delta = delta(wallet, before.balanceType(), amount.currency(), amount, amount.negate(), zero);
+        String releaseRef = "reservation-expiry:" + current.reservationRef();
+        ReleaseBenefitCommand command = new ReleaseBenefitCommand(amount, current.reservationRef(), releaseRef, reason);
+        ReservationRelease release = new ReservationRelease(
+            "brl-" + UUID.randomUUID(), before.benefitId(), current.reservationRef(), releaseRef, amount, reason, now
+        );
+        repository.saveMutation(after, wallet, EventFactory.released(after, command, release, delta, now), MutationArtifacts.release(expired, release));
     }
 
     private WalletAccount wallet(String accountId, String walletId, Instant now) {
@@ -373,6 +476,17 @@ public class WalletPromotionService {
 
     private static String ledgerId() {
         return "wle-" + UUID.randomUUID();
+    }
+
+    private static String requireText(String value, String name) {
+        if (value == null || value.isBlank()) throw new ApiException(ApiErrorCode.VALIDATION_FAILED, name + " is required");
+        return value;
+    }
+
+    private static String operationRef(String explicit, BusinessReason reason) {
+        if (explicit != null && !explicit.isBlank()) return explicit.trim();
+        if (reason == null) throw new ApiException(ApiErrorCode.VALIDATION_FAILED, "businessReason is required");
+        return reason.key();
     }
 
     private static BenefitUseReference resolveUseReference(

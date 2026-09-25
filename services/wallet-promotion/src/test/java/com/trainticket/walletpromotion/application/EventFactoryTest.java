@@ -3,10 +3,12 @@ package com.trainticket.walletpromotion.application;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.trainticket.walletpromotion.domain.BenefitRedemption;
+import com.trainticket.walletpromotion.domain.BenefitReservation;
 import com.trainticket.walletpromotion.domain.Money;
 import com.trainticket.walletpromotion.domain.PromotionInstrument;
 import com.trainticket.walletpromotion.domain.PromotionStatus;
 import com.trainticket.walletpromotion.domain.ReasonType;
+import com.trainticket.walletpromotion.domain.ReservationRelease;
 import com.trainticket.walletpromotion.domain.WalletBalanceDelta;
 import com.trainticket.walletpromotion.domain.WalletPromotionEvent;
 import java.time.Instant;
@@ -68,13 +70,19 @@ class EventFactoryTest {
             new com.trainticket.walletpromotion.domain.BenefitUseReference("ord-1", null, java.util.List.of()),
             benefit.businessReason()
         );
-        WalletPromotionEvent event = EventFactory.reserved(benefit, command, delta(benefit, -25, 25, 0, 75, 25), AT);
+        BenefitReservation reservation = BenefitReservation.reserve(
+            command.reservationRef(), baseBenefit(), command.amount(), command.reservationExpiresAt(),
+            command.useReference(), command.businessReason(), AT
+        );
+        WalletPromotionEvent event = EventFactory.reserved(
+            benefit, command, reservation, delta(benefit, -25, 25, 0, 75, 25), AT
+        );
 
         assertCommon(event, "BenefitReserved", benefit, PromotionStatus.RESERVED);
         assertPayloadContainsExactly(event.payload(),
             "benefitId", "accountId", "walletAccountId", "benefitType", "balanceType", "reservedAmount",
             "reservationRef", "reservationExpiresAt", "availableAmount", "totalReservedAmount", "businessReason",
-            "walletBalanceDelta", "reservedAt", "status", "aggregateVersion"
+            "useReference", "walletBalanceDelta", "reservedAt", "status", "aggregateVersion"
         );
         assertThat(event.payload()).containsEntry("reservationRef", "ord-1");
     }
@@ -93,6 +101,8 @@ class EventFactoryTest {
             benefit.accountId(),
             new Money("USD", 100),
             "ord-2",
+            null,
+            WalletPromotionServiceTest.use("ord-2"),
             benefit.businessReason(),
             AT,
             0
@@ -109,7 +119,7 @@ class EventFactoryTest {
         assertPayloadContainsExactly(event.payload(),
             "benefitId", "accountId", "walletAccountId", "benefitType", "balanceType", "redemptionId",
             "redeemedAmount", "redemptionRef", "availableAmount", "reservedAmount", "totalRedeemedAmount",
-            "businessReason", "walletBalanceDelta", "redeemedAt", "status", "aggregateVersion"
+            "useReference", "businessReason", "walletBalanceDelta", "redeemedAt", "status", "aggregateVersion"
         );
         assertThat(event.payload()).containsEntry("redemptionId", "brd-1");
     }
@@ -119,13 +129,19 @@ class EventFactoryTest {
         PromotionInstrument benefit = baseBenefit()
             .reserve(new Money("USD", 30), WalletPromotionServiceTest.reason(ReasonType.ORDER_PURCHASE, "RESERVE", "ORDER", "ord-3"), AT)
             .release(new Money("USD", 30), WalletPromotionServiceTest.reason(ReasonType.RESERVATION_TIMEOUT, "TIMEOUT", "ORDER", "ord-3"), AT.plusSeconds(1));
-        ReleaseBenefitCommand command = new ReleaseBenefitCommand(new Money("USD", 30), "ord-3", benefit.businessReason());
-        WalletPromotionEvent event = EventFactory.released(benefit, command, delta(benefit, 30, -30, 0, 100, 0), AT);
+        ReleaseBenefitCommand command = new ReleaseBenefitCommand(new Money("USD", 30), "ord-3", "release-3", benefit.businessReason());
+        ReservationRelease release = new ReservationRelease(
+            "brl-3", benefit.benefitId(), command.reservationRef(), command.releaseRef(), command.amount(),
+            command.businessReason(), AT
+        );
+        WalletPromotionEvent event = EventFactory.released(
+            benefit, command, release, delta(benefit, 30, -30, 0, 100, 0), AT
+        );
 
         assertCommon(event, "BenefitReservationReleased", benefit, PromotionStatus.RELEASED);
         assertPayloadContainsExactly(event.payload(),
             "benefitId", "accountId", "walletAccountId", "benefitType", "balanceType", "releasedAmount",
-            "reservationRef", "availableAmount", "reservedAmount", "businessReason", "walletBalanceDelta",
+            "reservationRef", "releaseRef", "availableAmount", "reservedAmount", "businessReason", "walletBalanceDelta",
             "releasedAt", "status", "aggregateVersion"
         );
         assertThat(event.payload()).containsEntry("reservationRef", "ord-3");
@@ -174,6 +190,7 @@ class EventFactoryTest {
             benefit,
             "brd-4",
             "brr-4",
+            "reverse-4",
             new Money("USD", 100),
             delta(benefit, 100, 0, -100, 100, 0),
             AT
@@ -182,10 +199,11 @@ class EventFactoryTest {
         assertCommon(event, "BenefitRedemptionReversed", benefit, PromotionStatus.REVERSED);
         assertPayloadContainsExactly(event.payload(),
             "benefitId", "accountId", "walletAccountId", "benefitType", "balanceType", "redemptionId",
-            "reversalId", "reversedAmount", "availableAmount", "reservedAmount", "totalRedeemedAmount",
+            "reversalId", "reversalRef", "reversedAmount", "availableAmount", "reservedAmount", "totalRedeemedAmount",
             "businessReason", "walletBalanceDelta", "reversedAt", "status", "aggregateVersion"
         );
         assertThat(event.payload()).containsEntry("reversalId", "brr-4");
+        assertThat(event.payload()).containsEntry("reversalRef", "reverse-4");
     }
 
     private static PromotionInstrument baseBenefit() {
