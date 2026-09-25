@@ -1,6 +1,5 @@
 package com.trainticket.platformkit.observability;
 
-import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.OpenTelemetry;
 import java.time.Duration;
 
@@ -30,7 +29,7 @@ public final class GlobalOutboxMetrics implements OutboxMetrics {
     }
 
     private OutboxMetrics delegate() {
-        OpenTelemetry current = GlobalOpenTelemetry.get();
+        OpenTelemetry current = ProcessOpenTelemetry.get();
         OutboxMetrics currentDelegate = delegate;
         if (currentDelegate != null && current == boundOpenTelemetry) {
             return currentDelegate;
