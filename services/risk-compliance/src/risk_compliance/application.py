@@ -39,7 +39,6 @@ from .domain import (
 
 PRODUCER = "risk-compliance"
 SCHEMA_VERSION = 1
-IDENTITY_VERIFICATION_STREAM = "events:identity-verification"
 IDENTITY_PURCHASE_LIMIT_EVENT_TYPES = frozenset(
     {
         "PurchaseLimitFactRecorded",
@@ -367,30 +366,31 @@ class RiskComplianceService:
     def assessments(self) -> tuple[RiskAssessmentResult, ...]:
         return self.repository.values()
 
-    def handle_event(self, envelope: EventEnvelope) -> None:
+    def handle_event(self, envelope: EventEnvelope, source: str | None = None) -> None:
+        source = source or envelope.producer
         if envelope.eventType == "RiskAssessmentRequested":
-            self._handle_risk_assessment_requested(envelope)
+            self._handle_risk_assessment_requested(envelope, source)
             return
         if envelope.eventType in IDENTITY_PURCHASE_LIMIT_EVENT_TYPES:
-            self._handle_purchase_limit_fact(envelope)
+            self._handle_purchase_limit_fact(envelope, source)
             return
         if envelope.eventType != "JourneyOrderCreated":
             return
         transaction = getattr(self.repository, "transaction", None)
         context = transaction() if callable(transaction) else None
         if context is None:
-            self._handle_event_in_transaction(envelope)
+            self._handle_event_in_transaction(envelope, source)
             return
         with context:
-            self._handle_event_in_transaction(envelope)
+            self._handle_event_in_transaction(envelope, source)
 
-    def _handle_event_in_transaction(self, envelope: EventEnvelope) -> None:
+    def _handle_event_in_transaction(self, envelope: EventEnvelope, source: str) -> None:
         order_id = _required_payload_text(envelope.payload, "orderId")
         lock_order = getattr(self.repository, "lock_order", None)
         if callable(lock_order):
             lock_order(order_id)
         try_mark_processed = getattr(self.repository, "try_mark_processed", None)
-        if not _try_mark_processed(self.repository, envelope.eventId, "events:journey-order"):
+        if not _try_mark_processed(self.repository, envelope.eventId, source):
             return
         result, block = self._assess_journey_order_created(envelope)
         self.repository.save(result)
@@ -409,16 +409,16 @@ class RiskComplianceService:
         if try_mark_processed is None:
             self.repository.record_processed(envelope.eventId)
 
-    def _handle_risk_assessment_requested(self, envelope: EventEnvelope) -> None:
+    def _handle_risk_assessment_requested(self, envelope: EventEnvelope, source: str) -> None:
         transaction = getattr(self.repository, "transaction", None)
         context = transaction() if callable(transaction) else None
         if context is None:
-            self._handle_risk_assessment_requested_in_transaction(envelope)
+            self._handle_risk_assessment_requested_in_transaction(envelope, source)
             return
         with context:
-            self._handle_risk_assessment_requested_in_transaction(envelope)
+            self._handle_risk_assessment_requested_in_transaction(envelope, source)
 
-    def _handle_risk_assessment_requested_in_transaction(self, envelope: EventEnvelope) -> None:
+    def _handle_risk_assessment_requested_in_transaction(self, envelope: EventEnvelope, source: str) -> None:
         for key in ("sagaId", "journeyOrderId", "accountId"):
             _required_payload_text(envelope.payload, key)
         order_id = envelope.payload["journeyOrderId"]
@@ -426,7 +426,7 @@ class RiskComplianceService:
         if callable(lock_order):
             lock_order(order_id)
         try_mark_processed = getattr(self.repository, "try_mark_processed", None)
-        if not _try_mark_processed(self.repository, envelope.eventId, "events:booking-orchestration"):
+        if not _try_mark_processed(self.repository, envelope.eventId, source):
             return
         account = self.repository.account_for_order(order_id)
         if account is not None and account != envelope.payload["accountId"]:
@@ -467,19 +467,19 @@ class RiskComplianceService:
                         raise TransientHandlerError(f"order assessment is unavailable: {order_id}")
                     self._complete_booking_requests(result)
 
-    def _handle_purchase_limit_fact(self, envelope: EventEnvelope) -> None:
+    def _handle_purchase_limit_fact(self, envelope: EventEnvelope, source: str) -> None:
         transaction = getattr(self.repository, "transaction", None)
         context = transaction() if callable(transaction) else None
         if context is None:
-            self._handle_purchase_limit_fact_in_transaction(envelope)
+            self._handle_purchase_limit_fact_in_transaction(envelope, source)
             return
         with context:
-            self._handle_purchase_limit_fact_in_transaction(envelope)
+            self._handle_purchase_limit_fact_in_transaction(envelope, source)
 
-    def _handle_purchase_limit_fact_in_transaction(self, envelope: EventEnvelope) -> None:
+    def _handle_purchase_limit_fact_in_transaction(self, envelope: EventEnvelope, source: str) -> None:
         fact = _purchase_limit_fact_from_envelope(envelope)
         try_mark_processed = getattr(self.repository, "try_mark_processed", None)
-        if not _try_mark_processed(self.repository, envelope.eventId, IDENTITY_VERIFICATION_STREAM):
+        if not _try_mark_processed(self.repository, envelope.eventId, source):
             return
         fact_store = self.purchase_limit_fact_sink or self.repository
         try_mark_fact_processed = getattr(fact_store, "try_mark_purchase_limit_fact_processed", None)
