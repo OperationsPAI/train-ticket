@@ -477,10 +477,7 @@ class AnomalyRuleId(str, Enum):
 
 _ORDER_EVENT_TYPES = {
     "JourneyOrderCreated",
-    "JourneyOrderConfirmed",
     "OrderCreated",
-    "OrderConfirmed",
-    "BookingConfirmed",
 }
 _SEARCH_EVENT_TYPES = {"TripSearched", "SearchPerformed", "OfferSearchRequested"}
 _PAYMENT_CAPTURED_EVENT_TYPES = {"PaymentCaptured"}
@@ -972,14 +969,15 @@ class MetricAggregator:
 
     def snapshot(self, at: datetime | None = None) -> MetricSnapshot:
         now = at or datetime.now(UTC)
+        events_1h = self._since(now, timedelta(hours=1))
         orders_60s = [event for event in self._since(now, timedelta(seconds=60)) if event.is_order]
         revenue_1h = self._money_totals(
-            event for event in self._since(now, timedelta(hours=1)) if event.is_payment_captured
+            event for event in events_1h if event.is_payment_captured
         )
-        latencies = [event.booking_latency_ms for event in self.events if event.booking_latency_ms is not None]
+        latencies = [event.booking_latency_ms for event in events_1h if event.booking_latency_ms is not None]
         refund_events = [event for event in self._since(now, timedelta(hours=24)) if event.is_refund]
         order_events_24h = [event for event in self._since(now, timedelta(hours=24)) if event.is_order]
-        risk_events_1h = [event for event in self._since(now, timedelta(hours=1)) if event.is_scalper_block or event.is_order]
+        risk_events_1h = [event for event in events_1h if event.is_scalper_block or event.is_order]
         blocked_1h = [event for event in risk_events_1h if event.is_scalper_block]
         routes = self.route_metrics(at=now)
         return MetricSnapshot(
@@ -991,7 +989,7 @@ class MetricAggregator:
             refund_rate=self._rate(len(refund_events), len(order_events_24h)),
             scalper_block_rate=self._rate(len(blocked_1h), len(risk_events_1h)),
             route_metrics=routes,
-            context_rollups=self.context_rollups(),
+            context_rollups=self.context_rollups(self._since(now, timedelta(minutes=5))),
         )
 
     def route_metrics(self, at: datetime | None = None) -> tuple[RouteMetrics, ...]:
@@ -1035,9 +1033,9 @@ class MetricAggregator:
         metrics.sort(key=lambda item: (item.service_date, item.route_id))
         return tuple(metrics)
 
-    def context_rollups(self) -> tuple[ContextEventRollup, ...]:
+    def context_rollups(self, events: Any = None) -> tuple[ContextEventRollup, ...]:
         grouped: dict[tuple[str, str], dict[str, Any]] = {}
-        for event in self.events:
+        for event in self.events if events is None else events:
             context = event.source_context or "unknown"
             bucket = grouped.setdefault(
                 (context, event.event_type),

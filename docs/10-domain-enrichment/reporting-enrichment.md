@@ -11,7 +11,7 @@
 | `orders_per_second` | 最近60秒订单事件数除以60所得的平均每秒速率，保留四位小数。 |
 | `revenue_per_hour` | 最近1小时 `PaymentCaptured` 按币种分别求和，返回 Money 数组。 |
 | `fill_rate_by_route` | 路线和服务日期的 confirmed 与 capacity 比值。 |
-| `avg_booking_latency` | 已加载事件中存在 booking latency 的样本 p50、p95、p99。 |
+| `avg_booking_latency` | 最近1小时 booking latency 样本的 p50、p95、p99。 |
 | `refund_rate` | 最近24小时退款事件数量除以订单事件数量。 |
 | `scalper_block_rate` | 最近1小时拦截事件数量除以拦截与订单事件总数。 |
 | `routeRevenue` | 路线和服务日期下 `PaymentCaptured` 按币种分别求和，返回 Money 数组。 |
@@ -21,9 +21,10 @@
 缺少非零 confirmed 值时，当前代码使用订单事件数量，缺少 capacity 时使用零。
 这些指标依赖输入事件提供的维度与计数，不能代替 Capacity 的实时可售判断。
 
-PostgreSQL 的操作聚合最多加载最新10000条符合条件的事件。
-异常评估另加检测时间范围过滤，仍受条数限制。
-聚合器按币种独立汇总金额，绝不对不同币种执行相加或隐式换算；超出加载范围的事件不会贡献相应指标。
+PostgreSQL 在数据库内按时间索引聚合完整窗口，不使用行数上限。
+`/metrics/operational` 的订单速率为60秒、收入/延迟/风控为1小时、退款率为24小时、context rollup 为5分钟。
+异常评估也使用规则自身的完整时间范围，不受最新10000条事件限制。
+内存聚合器按币种独立汇总金额，绝不对不同币种执行相加或隐式换算。
 `trends` 当前返回 orders、gross captured 和 refund rate 的快照时间点，没有保存完整历史曲线。
 
 ## gross captured 报表

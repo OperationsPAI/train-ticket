@@ -138,7 +138,14 @@ def operational_snapshot_to_json(snapshot: MetricSnapshot) -> dict[str, object]:
         "avg_booking_latency": dict(snapshot.avg_booking_latency),
         "refund_rate": snapshot.refund_rate,
         "scalper_block_rate": snapshot.scalper_block_rate,
-        "routeMetrics": [route_metrics_to_json(route) for route in snapshot.route_metrics],
+        "windowsSeconds": {
+            "orders_per_second": 60,
+            "revenue_per_hour": 3600,
+            "avg_booking_latency": 3600,
+            "refund_rate": 86400,
+            "scalper_block_rate": 3600,
+            "contextRollups": 300,
+        },
         "contextRollups": [
             {
                 "sourceContext": rollup.source_context,
