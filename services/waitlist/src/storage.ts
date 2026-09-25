@@ -111,7 +111,9 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
         `UPDATE waitlist_capacity_credits SET remaining_slots=remaining_slots-$2
          WHERE capacity_release_ref=$1 AND remaining_slots >= $2`,
         [credit.capacity_release_ref, consumed],
-      );
+      ).then((result) => {
+        if ((result.rowCount ?? 0) !== 1) throw new OptimisticConcurrencyConflict(`Capacity credit ${credit.capacity_release_ref} changed while being claimed`);
+      });
       remaining -= consumed;
       allocations.push({ capacityReleaseRef: credit.capacity_release_ref, slots: consumed });
     }
@@ -170,7 +172,8 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
        WHERE (status = 'MATCHING' AND data->>'journeyOrderRef' IS NULL AND offer_expires_at <= $1)
           OR (status = 'QUEUED' AND (data->>'deadline')::timestamptz <= $1)
           OR (status = 'MATCHING' AND data->>'journeyOrderRef' IS NULL AND (data->>'deadline')::timestamptz <= $1)
-       ORDER BY COALESCE(offer_expires_at, (data->>'deadline')::timestamptz) ASC, entry_id ASC`,
+       ORDER BY COALESCE(offer_expires_at, (data->>'deadline')::timestamptz) ASC, entry_id ASC
+       FOR UPDATE SKIP LOCKED`,
       [now.toISOString()],
     ) as QueryResult<WaitlistRow>;
     return result.rows.map(entryFromRow);
