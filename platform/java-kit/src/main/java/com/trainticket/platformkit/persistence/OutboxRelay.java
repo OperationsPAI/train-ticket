@@ -4,6 +4,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import com.trainticket.platformkit.messaging.RedisStreamOperations;
 import com.trainticket.platformkit.messaging.RedisStreamOperations.StreamMessage;
+import com.trainticket.platformkit.observability.GlobalOutboxMetrics;
+import com.trainticket.platformkit.observability.OutboxMetrics;
 import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
@@ -16,6 +18,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 
 public class OutboxRelay implements AutoCloseable {
     private static final Logger LOGGER = LoggerFactory.getLogger(OutboxRelay.class);
+    private static final int PUBLISH_BATCH_SIZE = 100;
 
     private static final Duration DEFAULT_POLL_INTERVAL = Duration.ofMillis(
         Long.parseLong(System.getenv().getOrDefault("OUTBOX_POLL_INTERVAL_MS", "50")));
@@ -23,6 +26,7 @@ public class OutboxRelay implements AutoCloseable {
 
     private final JdbcOperations jdbc;
     private final RedisStreamOperations streams;
+    private final OutboxMetrics metrics;
     private final Duration pollInterval;
     private volatile boolean dependencyReady = true;
     private final ScheduledExecutorService executor;
@@ -36,8 +40,18 @@ public class OutboxRelay implements AutoCloseable {
     }
 
     public OutboxRelay(JdbcOperations jdbc, RedisStreamOperations streams, Duration pollInterval) {
+        this(
+            jdbc,
+            streams,
+            pollInterval,
+            new GlobalOutboxMetrics(OutboxRelay.class.getName())
+        );
+    }
+
+    OutboxRelay(JdbcOperations jdbc, RedisStreamOperations streams, Duration pollInterval, OutboxMetrics metrics) {
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc is required");
         this.streams = Objects.requireNonNull(streams, "streams are required");
+        this.metrics = Objects.requireNonNull(metrics, "metrics are required");
         this.pollInterval = Objects.requireNonNull(pollInterval, "pollInterval is required");
         if (pollInterval.toMillis() > 500) {
             throw new IllegalArgumentException("outbox relay poll interval must be <= 500ms");
@@ -62,33 +76,60 @@ public class OutboxRelay implements AutoCloseable {
 
     public int pollOnce() {
         long started = System.nanoTime();
-        List<OutboxRow> rows = jdbc.query(
-            "SELECT seq, stream, envelope::text AS envelope, created_at FROM outbox WHERE published_at IS NULL ORDER BY seq LIMIT 100",
-            (rs, rowNum) -> new OutboxRow(rs.getLong("seq"), rs.getString("stream"), rs.getString("envelope"), rs.getTimestamp("created_at").toInstant())
-        );
+        List<OutboxRow> rows;
+        try {
+            rows = jdbc.query(
+                "SELECT seq, stream, envelope::text AS envelope, created_at FROM outbox WHERE published_at IS NULL ORDER BY seq LIMIT "
+                    + PUBLISH_BATCH_SIZE,
+                (rs, rowNum) -> new OutboxRow(rs.getLong("seq"), rs.getString("stream"), rs.getString("envelope"), rs.getTimestamp("created_at").toInstant())
+            );
+        } catch (RuntimeException exception) {
+            metrics.recordFailure(OutboxMetrics.FailureStage.SELECT);
+            throw exception;
+        }
         long selected = System.nanoTime();
         if (rows.isEmpty()) {
+            metrics.observeUnpublishedSample(0, Duration.ZERO);
             if (elapsedMillis(started,selected) >= 250) LOGGER.warn("outbox empty poll queryMs={}",elapsedMillis(started,selected));
             return 0;
         }
 
-        streams.publishBatch(rows.stream()
-            .map(row -> new StreamMessage(row.stream(), row.envelope()))
-            .toList());
+        Duration oldestAge = nonNegativeAge(rows.getFirst().createdAt());
+        metrics.observeUnpublishedSample(rows.size(), oldestAge);
+
+        try {
+            streams.publishBatch(rows.stream()
+                .map(row -> new StreamMessage(row.stream(), row.envelope()))
+                .toList());
+        } catch (RuntimeException exception) {
+            metrics.recordFailure(OutboxMetrics.FailureStage.PUBLISH);
+            throw exception;
+        }
         dependencyReady = true;
+        metrics.recordPublished(rows.size());
         long published = System.nanoTime();
 
         String placeholders = String.join(", ", rows.stream().map(row -> "?").toList());
         Object[] seqs = rows.stream().map(OutboxRow::seq).toArray();
-        jdbc.update("UPDATE outbox SET published_at = now() WHERE seq IN (" + placeholders + ") AND published_at IS NULL", seqs);
+        try {
+            jdbc.update("UPDATE outbox SET published_at = now() WHERE seq IN (" + placeholders + ") AND published_at IS NULL", seqs);
+        } catch (RuntimeException exception) {
+            metrics.recordFailure(OutboxMetrics.FailureStage.MARK_PUBLISHED);
+            throw exception;
+        }
         long marked = System.nanoTime();
-        long oldestAge = Duration.between(rows.stream().map(OutboxRow::createdAt).min(java.time.Instant::compareTo).orElseThrow(), java.time.Instant.now()).toMillis();
-        if (elapsedMillis(started,marked) >= 250 || oldestAge >= 1000) {
+        long oldestAgeMillis = oldestAge.toMillis();
+        if (elapsedMillis(started,marked) >= 250 || oldestAgeMillis >= 1000) {
             LOGGER.warn("outbox batch rows={} firstSeq={} lastSeq={} stream={} queryMs={} publishMs={} markMs={} oldestAgeMs={}",
                 rows.size(), rows.getFirst().seq(), rows.getLast().seq(), rows.getFirst().stream(), elapsedMillis(started,selected),
-                elapsedMillis(selected,published), elapsedMillis(published,marked), oldestAge);
+                elapsedMillis(selected,published), elapsedMillis(published,marked), oldestAgeMillis);
         }
         return rows.size();
+    }
+
+    private static Duration nonNegativeAge(java.time.Instant createdAt) {
+        Duration age = Duration.between(createdAt, java.time.Instant.now());
+        return age.isNegative() ? Duration.ZERO : age;
     }
 
     private static long elapsedMillis(long start,long end) { return TimeUnit.NANOSECONDS.toMillis(end-start); }
