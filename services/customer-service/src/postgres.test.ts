@@ -8,6 +8,30 @@ import { PostgresCustomerServiceRepository } from "./adapters/storage/customer-s
 import { CustomerServiceApplication } from "./application/customer-service.js";
 import type { EventEnvelope } from "./application/messaging.js";
 
+it("bounds support-case reference lookup with indexed JSONB predicates", async () => {
+  const calls: Array<Readonly<{ text: string; values?: unknown[] }>> = [];
+  const client = {
+    query: async (text: string, values?: unknown[]) => {
+      calls.push({ text, values });
+      return { rows: [] };
+    },
+  };
+  const repository = new PostgresCustomerServiceRepository(client as never);
+  const references = [
+    { businessReferences: { journeyOrderId: "ord-bounded" } },
+    { requesterRef: "tvl-bounded" },
+  ];
+
+  assert.deepEqual(await repository.findCasesByReferences([]), []);
+  assert.equal(calls.length, 0);
+  assert.deepEqual(await repository.findCasesByReferences(references), []);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].text, /WHERE data @> \$1::jsonb OR data @> \$2::jsonb/);
+  assert.match(calls[0].text, /ORDER BY id/);
+  assert.doesNotMatch(calls[0].text, /FROM support_case_snapshots\s+ORDER BY/);
+  assert.deepEqual(calls[0].values, references.map((reference) => JSON.stringify(reference)));
+});
+
 it("queries related cases and evaluates disjoint bounded batches in PostgreSQL", { skip: !process.env.TEST_DATABASE_URL }, async () => {
   const pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
   const client = await pool.connect();
