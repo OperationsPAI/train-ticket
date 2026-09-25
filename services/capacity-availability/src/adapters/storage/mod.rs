@@ -329,7 +329,18 @@ impl PostgresCapacityService {
                     Some(req.traveler_ref.clone()),
                 )
                 .map_err(to_internal)?,
-            ),
+            ).with_supply_evidence(HoldSupplyEvidence::new(
+                &facts.class_ref,
+                &facts.class_ref,
+                &facts.scheduled_service_ref,
+                &facts.service_date,
+                &facts.source_type,
+                &facts.source_ref,
+                &supply.seat_map_id,
+                supply.seat_map_version,
+                &supply.composition_version,
+                &route.stop_sequence_version,
+            ).map_err(to_internal)?),
             IdempotencyKey::new(idempotency_key).map_err(to_internal)?,
             now,
             now + 300_000,
@@ -651,6 +662,7 @@ impl PostgresCapacityService {
             capacity_unit_ref: hold.scope.capacity_unit_ref.to_string(),
             from_seq: hold.scope.station_interval.from_seq(),
             to_seq: hold.scope.station_interval.to_seq(),
+            supply_evidence: hold.scope.supply_evidence.clone(),
         })
     }
 
@@ -951,6 +963,7 @@ impl PostgresCapacityService {
                 expires_at: now + 300_000, state: "Failed".to_string(),
                 confirmed_at: None, released_at: None, expired_at: None,
                 references: ReferenceMetadataSnapshot::from_domain(&failed.references),
+                supply_evidence: None,
             };
             self.hold_repo.save(&mut tx, &hold_id, None, &snapshot).await.map_err(inbound_transient)?;
             self.inventory_repo.save(&mut tx, &pool_id, expected_version, &InventoryPoolSnapshot::from_domain(&pool))
@@ -982,7 +995,18 @@ impl PostgresCapacityService {
                     Some(req.traveler_ref.clone()),
                 )
                 .map_err(inbound_fatal)?,
-            ),
+            ).with_supply_evidence(HoldSupplyEvidence::new(
+                &facts.class_ref,
+                &facts.class_ref,
+                &facts.scheduled_service_ref,
+                &facts.service_date,
+                &facts.source_type,
+                &facts.source_ref,
+                &supply.seat_map_id,
+                supply.seat_map_version,
+                &supply.composition_version,
+                &route.stop_sequence_version,
+            ).map_err(inbound_fatal)?),
             IdempotencyKey::new(idempotency_key).map_err(inbound_fatal)?,
             now,
             now + 300_000,
@@ -1879,6 +1903,8 @@ struct CapacityHoldSnapshot {
     released_at: Option<u64>,
     expired_at: Option<u64>,
     references: ReferenceMetadataSnapshot,
+    #[serde(default)]
+    supply_evidence: Option<HoldSupplyEvidence>,
 }
 
 impl CapacityHoldSnapshot {
@@ -1897,6 +1923,7 @@ impl CapacityHoldSnapshot {
             released_at: hold.released_at,
             expired_at: hold.expired_at,
             references: ReferenceMetadataSnapshot::from_domain(&hold.scope.references),
+            supply_evidence: hold.scope.supply_evidence.clone(),
         }
     }
 
@@ -1929,7 +1956,7 @@ impl CapacityHoldSnapshot {
                 CapacityUnitRef::new(self.capacity_unit_ref).map_err(to_internal)?,
                 StationInterval::new(self.from_seq, self.to_seq).map_err(to_internal)?,
                 self.references.try_into_domain()?,
-            ),
+            ).with_optional_supply_evidence(self.supply_evidence),
             IdempotencyKey::new(self.idempotency_key).map_err(to_internal)?,
             self.requested_at,
             self.expires_at,
@@ -2048,6 +2075,7 @@ fn replay_capacity_held_envelope(
             "interval": { "fromSeq": hold.from_seq, "toSeq": hold.to_seq },
             "idempotencyKey": idempotency_key,
             "expiresAt": unix_millis_to_rfc3339(hold.expires_at),
+            "supplyEvidence": hold.supply_evidence,
             "idempotentReplay": true,
         }),
     )
@@ -2078,6 +2106,7 @@ fn domain_event_to_wire(
                 "interval": { "fromSeq": e.interval.from_seq(), "toSeq": e.interval.to_seq() },
                 "idempotencyKey": e.idempotency_key.to_string(),
                 "expiresAt": unix_millis_to_rfc3339(e.expires_at),
+                "supplyEvidence": e.supply_evidence,
                 "idempotentReplay": e.idempotent_replay,
             }),
         ),
@@ -2089,6 +2118,7 @@ fn domain_event_to_wire(
                 "capacityUnitRef": e.capacity_unit_ref.to_string(),
                 "interval": { "fromSeq": e.interval.from_seq(), "toSeq": e.interval.to_seq() },
                 "confirmedAt": unix_millis_to_rfc3339(e.confirmed_at),
+                "supplyEvidence": e.supply_evidence,
             }),
         ),
         DomainEvent::CapacityReleased(e) => (
@@ -2107,6 +2137,7 @@ fn domain_event_to_wire(
                     "segmentBookingRef": e.references.segment_booking_ref,
                     "travelerRef": e.references.traveler_ref,
                 },
+                "supplyEvidence": e.supply_evidence,
             }),
         ),
         DomainEvent::CapacityHoldExpired(e) => (
@@ -2117,6 +2148,7 @@ fn domain_event_to_wire(
                 "capacityUnitRef": e.capacity_unit_ref.to_string(),
                 "interval": { "fromSeq": e.interval.from_seq(), "toSeq": e.interval.to_seq() },
                 "expiredAt": unix_millis_to_rfc3339(e.expired_at),
+                "supplyEvidence": e.supply_evidence,
             }),
         ),
         DomainEvent::CapacityHoldFailed(e) => {
