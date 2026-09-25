@@ -156,7 +156,7 @@ export const notificationTrailSchema = {
       status: { type: "string", enum: ["DELIVERED", "FAILED", "BOUNCED", "UNKNOWN"] },
     } } },
     delivery: { type: "object", additionalProperties: true, required: ["state", "messageId", "attempts", "evidence"], properties: {
-      state: { type: "string", enum: ["Ready", "Claimed", "Sending", "Unknown", "Delivered", "Failed"] },
+      state: { type: "string", enum: ["Ready", "Claimed", "Sending", "Unknown", "Delivered", "Failed", "Cancelled"] },
       messageId: { type: "string" }, attempts: { type: "array", items: { type: "object", additionalProperties: true } },
       evidence: { type: "array", items: { type: "object", additionalProperties: true } },
     } },
