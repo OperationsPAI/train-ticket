@@ -81,6 +81,8 @@ export class HttpJourneyOrderClient implements JourneyOrderClient {
 
 export class InMemoryWaitlistRepository implements WaitlistRepository {
   private readonly entries = new Map<string, WaitlistEntry>();
+  private readonly capacityCredits = new Map<string, WaitlistCapacityFreed & { remainingSlots: number; sequence: number }>();
+  private creditSequence = 0;
 
   async add(entry: WaitlistEntry): Promise<WaitlistEntrySnapshot> {
     if (this.hasActiveDuplicate(entry.travelerRefs[0] ?? "", entry.intentFingerprint)) {
@@ -97,6 +99,65 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
     this.entries.set(entry.entryId, entry);
     entry.markPersisted(entry.loadedVersion + 1);
     return this.snapshot(entry);
+  }
+
+  async recordCapacityCredit(event: WaitlistCapacityFreed): Promise<boolean> {
+    const existing = this.capacityCredits.get(event.capacityReleaseRef);
+    if (existing) {
+      if (!sameCapacityCredit(existing, event)) throw new DomainError("CONFLICT", "Capacity release reference was reused with different facts");
+      return false;
+    }
+    this.capacityCredits.set(event.capacityReleaseRef, { ...event, interval: { ...event.interval }, remainingSlots: event.freedSlots, sequence: this.creditSequence++ });
+    return true;
+  }
+
+  async claimNextPromotion(now: Date): Promise<WaitlistEntry | undefined> {
+    const candidates = [...this.entries.values()]
+      .filter((entry) => entry.status === "QUEUED" && new Date(entry.deadline) > now)
+      .sort(compareForPromotion);
+    for (const entry of candidates) {
+      const credits = [...this.capacityCredits.values()]
+        .filter((credit) => credit.remainingSlots > 0 && matchesCapacity(entry, {
+          segmentRef: credit.segmentRef,
+          scheduledServiceRef: credit.scheduledServiceRef,
+          departureDate: credit.departureDate,
+          seatClass: credit.seatClass,
+          interval: credit.interval,
+          stopSequenceVersion: credit.stopSequenceVersion,
+          maxTravelers: Number.MAX_SAFE_INTEGER,
+          intentFingerprint: credit.intentFingerprint,
+        }))
+        .sort((left, right) => left.sequence - right.sequence);
+      if (credits.reduce((sum, credit) => sum + credit.remainingSlots, 0) < entry.travelerRefs.length) continue;
+      let remaining = entry.travelerRefs.length;
+      const allocations: Array<{ capacityReleaseRef: string; slots: number }> = [];
+      for (const credit of credits) {
+        if (remaining === 0) break;
+        const consumed = Math.min(credit.remainingSlots, remaining);
+        credit.remainingSlots -= consumed;
+        remaining -= consumed;
+        allocations.push({ capacityReleaseRef: credit.capacityReleaseRef, slots: consumed });
+      }
+      entry.beginPromotion(allocations);
+      return entry;
+    }
+    return undefined;
+  }
+
+  async findRecoverablePromotion(): Promise<WaitlistEntry | undefined> {
+    return [...this.entries.values()]
+      .filter((entry) => entry.status === "MATCHING" && !entry.journeyOrderRef)
+      .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime() || left.entryId.localeCompare(right.entryId))[0];
+  }
+
+  async restoreCapacityCredits(entry: WaitlistEntry): Promise<void> {
+    for (const allocation of entry.matchedCapacityCredits) {
+      const credit = this.capacityCredits.get(allocation.capacityReleaseRef);
+      if (!credit || credit.remainingSlots + allocation.slots > credit.freedSlots) {
+        throw new DomainError("CONFLICT", "Capacity credit cannot be restored");
+      }
+      credit.remainingSlots += allocation.slots;
+    }
   }
 
   async findTopQueued(criteria: WaitlistMatchCriteria): Promise<WaitlistEntry | undefined> {
@@ -132,7 +193,7 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
       .map((entry) => this.snapshot(entry));
   }
 
-  clear(): void { this.entries.clear(); }
+  clear(): void { this.entries.clear(); this.capacityCredits.clear(); this.creditSequence = 0; }
 
   private hasActiveDuplicate(travelerRef: string, intentFingerprint: string): boolean {
     return [...this.entries.values()].some((entry) => isActiveStatus(entry.status) && entry.travelerRefs[0] === travelerRef && entry.intentFingerprint === intentFingerprint);
@@ -224,6 +285,14 @@ export class WaitlistApplicationService {
 
   async handleCapacityFreed(event: WaitlistCapacityFreed, correlationId?: string) {
     return this.promotion.onCapacityFreed(event, this.journeyOrder, correlationId);
+  }
+
+  async recordCapacityFreed(event: WaitlistCapacityFreed): Promise<boolean> {
+    return this.promotion.recordCapacityFreed(event);
+  }
+
+  async advanceNextPromotion(correlationId?: string): Promise<WaitlistEntrySnapshot | undefined> {
+    return this.promotion.advanceNextPromotion(this.journeyOrder, correlationId);
   }
 
   async handleJourneyOrderConfirmed(orderId: string, correlationId?: string): Promise<WaitlistRequestResource | undefined> {
@@ -380,4 +449,16 @@ function compareForPromotion(left: WaitlistEntry, right: WaitlistEntry): number 
   return right.priorityScore - left.priorityScore
     || left.createdAt.getTime() - right.createdAt.getTime()
     || left.entryId.localeCompare(right.entryId);
+}
+
+function sameCapacityCredit(left: WaitlistCapacityFreed, right: WaitlistCapacityFreed): boolean {
+  return left.segmentRef === right.segmentRef
+    && left.scheduledServiceRef === right.scheduledServiceRef
+    && left.departureDate === right.departureDate
+    && left.seatClass === right.seatClass
+    && left.interval.fromSeq === right.interval.fromSeq
+    && left.interval.toSeq === right.interval.toSeq
+    && left.stopSequenceVersion === right.stopSequenceVersion
+    && left.intentFingerprint === right.intentFingerprint
+    && left.freedSlots === right.freedSlots;
 }

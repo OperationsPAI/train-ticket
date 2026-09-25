@@ -45,6 +45,102 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
     return this.snapshot(entry);
   }
 
+  async recordCapacityCredit(event: import("./promotion.js").WaitlistCapacityFreed): Promise<boolean> {
+    const result = await this.db.query(
+      `INSERT INTO waitlist_capacity_credits (
+         capacity_release_ref, segment_ref, scheduled_service_ref, departure_date, seat_class,
+         from_seq, to_seq, stop_sequence_version, intent_fingerprint, released_slots, remaining_slots
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10)
+       ON CONFLICT (capacity_release_ref) DO NOTHING`,
+      [event.capacityReleaseRef, event.segmentRef, event.scheduledServiceRef, event.departureDate,
+        event.seatClass, event.interval.fromSeq, event.interval.toSeq, event.stopSequenceVersion,
+        event.intentFingerprint ?? null, event.freedSlots],
+    );
+    if ((result.rowCount ?? 0) > 0) return true;
+    const existing = await this.db.query(
+      `SELECT segment_ref, scheduled_service_ref, departure_date, seat_class, from_seq, to_seq,
+              stop_sequence_version, intent_fingerprint, released_slots
+       FROM waitlist_capacity_credits WHERE capacity_release_ref=$1`, [event.capacityReleaseRef],
+    ) as QueryResult<CapacityCreditRow>;
+    if (!existing.rows[0] || !capacityCreditMatches(existing.rows[0], event)) {
+      throw new DomainError("CONFLICT", "Capacity release reference was reused with different facts");
+    }
+    return false;
+  }
+
+  async claimNextPromotion(now: Date): Promise<WaitlistEntry | undefined> {
+    const candidate = await this.db.query(
+      `SELECT e.* FROM waitlist_entries e
+       WHERE e.status='QUEUED'
+         AND (e.data->>'deadline')::timestamptz > $1
+         AND COALESCE((
+           SELECT SUM(c.remaining_slots) FROM waitlist_capacity_credits c
+           WHERE c.remaining_slots > 0
+             AND c.segment_ref=e.segment_ref
+             AND c.scheduled_service_ref=e.data->>'scheduledServiceRef'
+             AND c.departure_date=e.departure_date
+             AND c.seat_class=e.seat_class
+             AND c.stop_sequence_version=e.data->>'stopSequenceVersion'
+             AND c.from_seq <= (e.data->'interval'->>'fromSeq')::integer
+             AND c.to_seq >= (e.data->'interval'->>'toSeq')::integer
+             AND (c.intent_fingerprint IS NULL OR c.intent_fingerprint=e.data->>'intentFingerprint')
+         ),0) >= jsonb_array_length(e.traveler_refs)
+       ORDER BY e.priority_score DESC,e.created_at ASC,e.entry_id ASC
+       LIMIT 1 FOR UPDATE OF e SKIP LOCKED`, [now.toISOString()],
+    ) as QueryResult<WaitlistRow>;
+    if (!candidate.rows[0]) return undefined;
+    const entry = entryFromRow(candidate.rows[0]);
+    const credits = await this.db.query(
+      `SELECT * FROM waitlist_capacity_credits
+       WHERE remaining_slots > 0
+         AND segment_ref=$1 AND scheduled_service_ref=$2 AND departure_date=$3 AND seat_class=$4
+         AND stop_sequence_version=$5 AND from_seq <= $6 AND to_seq >= $7
+         AND (intent_fingerprint IS NULL OR intent_fingerprint=$8)
+       ORDER BY created_at ASC,capacity_release_ref ASC
+       FOR UPDATE`,
+      [entry.segmentRef, entry.scheduledServiceRef, entry.departureDate, entry.seatClass,
+        entry.stopSequenceVersion, entry.interval.fromSeq, entry.interval.toSeq, entry.intentFingerprint],
+    ) as QueryResult<CapacityCreditRow>;
+    let remaining = entry.travelerRefs.length;
+    const allocations: Array<{ capacityReleaseRef: string; slots: number }> = [];
+    for (const credit of credits.rows) {
+      if (remaining === 0) break;
+      const consumed = Math.min(Number(credit.remaining_slots), remaining);
+      if (consumed <= 0) continue;
+      await this.db.query(
+        `UPDATE waitlist_capacity_credits SET remaining_slots=remaining_slots-$2
+         WHERE capacity_release_ref=$1 AND remaining_slots >= $2`,
+        [credit.capacity_release_ref, consumed],
+      );
+      remaining -= consumed;
+      allocations.push({ capacityReleaseRef: credit.capacity_release_ref, slots: consumed });
+    }
+    if (remaining !== 0) throw new OptimisticConcurrencyConflict(`Capacity credits changed while claiming ${entry.entryId}`);
+    entry.beginPromotion(allocations);
+    return entry;
+  }
+
+  async restoreCapacityCredits(entry: WaitlistEntry): Promise<void> {
+    for (const credit of entry.matchedCapacityCredits) {
+      const result = await this.db.query(
+        `UPDATE waitlist_capacity_credits SET remaining_slots=remaining_slots+$2
+         WHERE capacity_release_ref=$1 AND remaining_slots+$2 <= released_slots`,
+        [credit.capacityReleaseRef, credit.slots],
+      );
+      if ((result.rowCount ?? 0) !== 1) throw new OptimisticConcurrencyConflict(`Capacity credit ${credit.capacityReleaseRef} cannot be restored`);
+    }
+  }
+
+  async findRecoverablePromotion(): Promise<WaitlistEntry | undefined> {
+    const result = await this.db.query(
+      `SELECT * FROM waitlist_entries
+       WHERE status='MATCHING' AND data->>'journeyOrderRef' IS NULL
+       ORDER BY updated_at ASC,entry_id ASC LIMIT 1
+       FOR UPDATE SKIP LOCKED`,
+    ) as QueryResult<WaitlistRow>;
+    return result.rows[0] ? entryFromRow(result.rows[0]) : undefined;
+  }
+
   async findTopQueued(criteria: WaitlistMatchCriteria): Promise<WaitlistEntry | undefined> {
     const result = await this.db.query(
       `SELECT * FROM waitlist_entries
@@ -203,6 +299,7 @@ function entryFromRow(row: WaitlistRow): WaitlistEntry {
     paymentGuaranteeRef: typeof data.paymentGuaranteeRef === "string" ? data.paymentGuaranteeRef : `pi-legacy-${row.entry_id}`,
     paymentGuarantee: paymentGuaranteeFrom(data.paymentGuarantee, row),
     intentFingerprint: typeof data.intentFingerprint === "string" ? data.intentFingerprint : defaultIntentFingerprint(row.traveler_refs, row.segment_ref, dateString(row.departure_date), row.seat_class),
+    matchedCapacityCredits: capacityCreditAllocations(data.matchedCapacityCredits),
     journeyOrderRef: typeof data.journeyOrderRef === "string" ? data.journeyOrderRef : undefined,
     fareQuoteIdempotencyKey: typeof data.fareQuoteIdempotencyKey === "string" ? data.fareQuoteIdempotencyKey : undefined,
     offerIdempotencyKey: typeof data.offerIdempotencyKey === "string" ? data.offerIdempotencyKey : undefined,
@@ -273,6 +370,15 @@ function paymentGuaranteeFrom(value: unknown, row: WaitlistRow): WaitlistEntrySn
     verifiedAt: instantString(row.created_at),
   };
 }
+function capacityCreditAllocations(value: unknown): readonly { capacityReleaseRef: string; slots: number }[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const credit = item as Record<string, unknown>;
+    return typeof credit.capacityReleaseRef === "string" && Number.isSafeInteger(Number(credit.slots)) && Number(credit.slots) > 0
+      ? [{ capacityReleaseRef: credit.capacityReleaseRef, slots: Number(credit.slots) }] : [];
+  });
+}
 function isUniqueViolation(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;
   const pgError = error as { code?: unknown; constraint?: unknown };
@@ -297,3 +403,29 @@ type WaitlistRow = Readonly<{
   version: string | number | bigint;
   created_at: Date | string;
 }>;
+
+type CapacityCreditRow = Readonly<{
+  capacity_release_ref: string;
+  segment_ref: string;
+  scheduled_service_ref: string;
+  departure_date: Date | string;
+  seat_class: string;
+  from_seq: string | number;
+  to_seq: string | number;
+  stop_sequence_version: string;
+  intent_fingerprint: string | null;
+  released_slots: string | number;
+  remaining_slots: string | number;
+}>;
+
+function capacityCreditMatches(row: CapacityCreditRow, event: import("./promotion.js").WaitlistCapacityFreed): boolean {
+  return row.segment_ref === event.segmentRef
+    && row.scheduled_service_ref === event.scheduledServiceRef
+    && dateString(row.departure_date) === event.departureDate
+    && row.seat_class === event.seatClass
+    && Number(row.from_seq) === event.interval.fromSeq
+    && Number(row.to_seq) === event.interval.toSeq
+    && row.stop_sequence_version === event.stopSequenceVersion
+    && (row.intent_fingerprint ?? undefined) === event.intentFingerprint
+    && Number(row.released_slots) === event.freedSlots;
+}

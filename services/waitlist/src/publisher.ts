@@ -72,13 +72,14 @@ export function waitlistQueued(
 export function waitlistMatchStarted(
   entry: WaitlistEntrySnapshot,
   aggregateVersion: number,
-  matchedCapacityReleaseRef: string,
+  matchedCapacityReleaseRefs: readonly string[],
   correlationId: string | undefined,
   startedAt: string,
 ): EventEnvelope<WaitlistEventPayload> {
   return waitlistEnvelope("WaitlistMatchStarted", entry, aggregateVersion, {
     ...basePayload(entry),
-    matchedCapacityReleaseRef,
+    matchedCapacityReleaseRef: matchedCapacityReleaseRefs[0],
+    matchedCapacityReleaseRefs,
     journeyOrderIdempotencyKey: entry.journeyOrderIdempotencyKey,
     startedAt,
     status: "MATCHING",
