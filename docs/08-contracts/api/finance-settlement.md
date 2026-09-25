@@ -15,6 +15,7 @@ settlement views. It consumes upstream events and produces financial records.
 Finance Settlement consumes Payment Channel statement and discrepancy events, validates their fields and deduplicates by envelope `eventId`.
 Channel difference types are mapped to the existing Finance difference strings.
 HTTP writes include internal invoice generation and explicit change financial reconciliation.
+Post-sales reconciliation reads the exact refund list for the case and each referenced Payment intent's captured facts. Refunds may span the original payment and multiple fare-difference payments. The case sum must equal the approved amount, and the aggregate reversals assigned to one Payment must not exceed its authoritative refunded or captured amount. A persisted refund ID is replay-safe only with the same amount.
 Daily reconciliation and supplier settlement are automatically scheduled for closed UTC periods. The scheduler uses a persistent lease per logical period and stores attempts, terminal status and generated result IDs. Successful periods are not recomputed after restart; failed or expired leases can be recovered by another replica.
 The current endpoint inventory is documented in [Finance Settlement](../../02-domains/finance-settlement.md).
 
