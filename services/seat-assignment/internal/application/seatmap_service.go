@@ -145,16 +145,40 @@ func (s *Service) PublishSeatMap(ctx context.Context, id string, req PublishSeat
 		if seatMap.SeatMapVersion != req.ExpectedSeatMapVersion {
 			return derr("PRECONDITION_FAILED", "seatMapVersion does not match")
 		}
-		published, total, err := s.repo.FindSeatMaps(tx, seatMap.ScheduledServiceRef, seatMap.ServiceDate, domain.SeatMapStatusPublished, 2, 0)
+		published, total, err := s.repo.FindSeatMaps(tx, seatMap.ScheduledServiceRef, seatMap.ServiceDate, domain.SeatMapStatusPublished, 100, 0)
 		if err != nil {
 			return derr("UNAVAILABLE", err.Error())
 		}
-		if total > 1 {
-			return derr("CONFLICT", "published SeatMap selection is ambiguous")
+		if total > 100 {
+			return derr("CONFLICT", "published SeatMap count exceeds the publication selection limit")
+		}
+		candidateClasses := seatMapClassSet(seatMap)
+		currentByClass := map[string]string{}
+		overlapping := []domain.ContractSeatMap{}
+		for _, current := range published {
+			if current.SeatMapID == seatMap.SeatMapID {
+				continue
+			}
+			intersects := false
+			for classRef := range seatMapClassSet(&current) {
+				if previousID, exists := currentByClass[classRef]; exists && previousID != current.SeatMapID {
+					return derr("CONFLICT", "published SeatMap selection is ambiguous for class "+classRef)
+				}
+				currentByClass[classRef] = current.SeatMapID
+				if candidateClasses[classRef] {
+					intersects = true
+				}
+			}
+			if intersects {
+				overlapping = append(overlapping, current)
+			}
+		}
+		if len(overlapping) > 1 {
+			return derr("CONFLICT", "published SeatMap replacement spans multiple current compositions")
 		}
 		replaced := []string{}
-		if total == 1 && published[0].SeatMapID != seatMap.SeatMapID {
-			previous, previousVersion, err := s.repo.GetSeatMap(tx, published[0].SeatMapID)
+		if len(overlapping) == 1 {
+			previous, previousVersion, err := s.repo.GetSeatMap(tx, overlapping[0].SeatMapID)
 			if err != nil {
 				return derr("UNAVAILABLE", err.Error())
 			}
@@ -177,6 +201,16 @@ func (s *Service) PublishSeatMap(ctx context.Context, id string, req PublishSeat
 		return s.publish(tx, []domain.Event{{EventType: "SeatMapVersionPublished", AggregateID: seatMap.SeatMapID, Version: int64(seatMap.SeatMapVersion), OccurredAt: now, CorrelationID: req.CorrelationID, CausationID: req.CausationID, Payload: map[string]any{"seatMapId": seatMap.SeatMapID, "scheduledServiceRef": seatMap.ScheduledServiceRef, "serviceDate": seatMap.ServiceDate, "compositionVersion": seatMap.CompositionVersion, "seatMapVersion": seatMap.SeatMapVersion, "publishedAt": now, "operatorRef": req.OperatorRef, "status": seatMap.Status, "replacesSeatMapIds": replaced}}})
 	})
 	return out, err
+}
+
+func seatMapClassSet(seatMap *domain.ContractSeatMap) map[string]bool {
+	classes := map[string]bool{}
+	for _, coach := range seatMap.Coaches {
+		if coach.Assignable && len(coach.SeatUnits) > 0 {
+			classes[strings.ToUpper(strings.TrimSpace(coach.ClassRef))] = true
+		}
+	}
+	return classes
 }
 
 func (s *Service) RetireSeatMap(ctx context.Context, id string, req RetireSeatMapRequest) (*domain.ContractSeatMap, error) {
