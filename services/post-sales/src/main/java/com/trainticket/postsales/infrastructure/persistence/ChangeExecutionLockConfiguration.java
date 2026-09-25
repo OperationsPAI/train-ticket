@@ -1,7 +1,6 @@
 package com.trainticket.postsales.infrastructure.persistence;
 
 import com.trainticket.platformkit.persistence.DatabaseUrl;
-import com.trainticket.postsales.application.ChangeExecutionGuard;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import javax.sql.DataSource;
@@ -20,22 +19,15 @@ public class ChangeExecutionLockConfiguration {
         config.setJdbcUrl(parsed.jdbcUrl());
         config.setUsername(parsed.username());
         config.setPassword(parsed.password());
-        config.setPoolName("post-sales-change-locks");
-        config.setMaximumPoolSize(ChangeExecutionGuard.MAX_CONCURRENT_EXECUTIONS);
-        config.setMinimumIdle(ChangeExecutionGuard.MAX_CONCURRENT_EXECUTIONS);
+        config.setPoolName("post-sales-change-leases");
+        // Lease operations are one short statement. A small dedicated pool keeps them independent
+        // from business transactions without reserving one PostgreSQL connection per active case.
+        config.setMaximumPoolSize(4);
+        config.setMinimumIdle(1);
         config.setConnectionTimeout(3000);
         config.setValidationTimeout(1000);
         config.setKeepaliveTime(30000);
         config.setMaxLifetime(300000);
-        HikariDataSource pool=new HikariDataSource(config);
-        var connections=new java.util.ArrayList<java.sql.Connection>();
-        try {
-            for(int index=0;index<ChangeExecutionGuard.MAX_CONCURRENT_EXECUTIONS;index++)connections.add(pool.getConnection());
-            for(var connection:connections)connection.close();
-            return pool;
-        } catch(java.sql.SQLException error) {
-            pool.close();
-            throw new IllegalStateException("change execution lock pool initialization failed",error);
-        }
+        return new HikariDataSource(config);
     }
 }
