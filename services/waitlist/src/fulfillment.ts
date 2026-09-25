@@ -185,11 +185,13 @@ export class WaitlistFulfillmentOrchestrator {
     if (isTerminalOrder(order.status)) return this.cleanupAndRequeue(entry, order.orderId, correlationId);
     if (!entry.fulfillment.orderAmount) {
       if (!guaranteeCovers(entry, order.amount)) {
-        entry.suspend();
-        return this.repository.save(entry);
+        return this.abort(entry, "WAITLIST_GUARANTEE_INSUFFICIENT", correlationId);
       }
       entry.recordOrderAmount(order.amount);
       return this.repository.save(entry);
+    }
+    if (!entry.fulfillment.paymentIntentId && !paymentAuthorizationOpen(entry, this.now())) {
+      return this.abort(entry, "WAITLIST_PAYMENT_AUTHORIZATION_EXPIRED", correlationId);
     }
     const saga = await this.client.findSaga(order.orderId, correlationId);
     if (!saga) return this.defer(entry);
@@ -242,6 +244,7 @@ export class WaitlistFulfillmentOrchestrator {
     }
     if (currentPayment.status !== "CAPTURED") {
       if (["FAILED", "CANCELLED", "EXPIRED"].includes(currentPayment.status)) return this.abort(entry, "WAITLIST_PAYMENT_FAILED", correlationId);
+      if (!paymentAuthorizationOpen(entry, this.now())) return this.abort(entry, "WAITLIST_PAYMENT_AUTHORIZATION_EXPIRED", correlationId);
       const captured = await this.client.capturePayment(entry, correlationId);
       assertPayment(entry, captured);
       entry.recordPayment(captured.paymentIntentId, captured.status);
@@ -350,6 +353,10 @@ function assertOrder(entry: WaitlistEntry, order: OrderFacts): void {
 }
 function guaranteeCovers(entry: WaitlistEntry, amount: MoneySnapshot): boolean {
   return entry.paymentGuarantee.amount.currency === amount.currency && entry.paymentGuarantee.amount.minorUnits >= amount.minorUnits;
+}
+function paymentAuthorizationOpen(entry: WaitlistEntry, now: Date): boolean {
+  const authorizationEnd = Math.min(new Date(entry.paymentGuarantee.authorizedUntil).getTime(), new Date(entry.deadline).getTime());
+  return Number.isFinite(authorizationEnd) && now.getTime() < authorizationEnd;
 }
 function assertReservation(entry: WaitlistEntry, traveler: FulfillmentTraveler, reservation: ReservationFacts): void {
   if (reservation.segmentBookingId !== traveler.segmentBookingId || reservation.orderId !== entry.journeyOrderRef
