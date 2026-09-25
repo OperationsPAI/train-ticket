@@ -25,6 +25,19 @@ class FakeOutboxPool {
     }
     throw new Error(`Unexpected query ${sql}`);
   }
+
+  async connect() {
+    return {
+      query: (sql: string, params: unknown[] = []) => {
+        if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") {
+          this.calls.push({ sql, params });
+          return Promise.resolve({ rows: [], rowCount: 0 });
+        }
+        return this.query(sql, params);
+      },
+      release: () => {},
+    };
+  }
 }
 
 class FakeRedisPipeline {
@@ -272,10 +285,15 @@ describe("OutboxRelay", () => {
     assert.equal(redis.pipelineInstance.xadds.length, 2);
     assert.deepEqual(redis.pipelineInstance.xadds[0].slice(0, 5), ["events:order", "MAXLEN", "~", "50000", "*"]);
 
+    const select = pool.calls.find((call) => call.sql.includes("SELECT seq, stream, envelope"));
+    assert.ok(select);
+    assert.match(select.sql, /FOR UPDATE SKIP LOCKED/u);
+
     const update = pool.calls.find((call) => call.sql.includes("UPDATE outbox SET published_at"));
     assert.ok(update);
     assert.match(update.sql, /WHERE seq IN \(\$1, \$2\)/u);
     assert.deepEqual(update.params, ["1", "2"]);
+    assert.deepEqual(pool.calls.filter(call => ["BEGIN", "COMMIT", "ROLLBACK"].includes(call.sql)).map(call => call.sql), ["BEGIN", "COMMIT"]);
   });
 });
 
@@ -289,6 +307,19 @@ class FakeSweepPool {
       return { rows: [], rowCount: 0 };
     }
     return { rows: [], rowCount: 0 };
+  }
+
+  async connect() {
+    return {
+      query: (sql: string, params: unknown[] = []) => {
+        if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") {
+          this.calls.push({ sql, params });
+          return Promise.resolve({ rows: [], rowCount: 0 });
+        }
+        return this.query(sql, params);
+      },
+      release: () => {},
+    };
   }
 }
 
