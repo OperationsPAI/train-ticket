@@ -541,6 +541,7 @@ export type OutboxRelayOptions = Readonly<{
   pollIntervalMs?: number;
   batchSize?: number;
   streamMaxLen?: number;
+  processedEventRetentionMs?: number;
   onFailure?: (error: unknown) => void;
   /** Name used for the liveness component; defaults to "outbox-relay". */
   name?: string;
@@ -719,19 +720,19 @@ export class OutboxRelay {
        WHERE published_at IS NOT NULL AND published_at < now() - interval '30 seconds'
        LIMIT $1 FOR UPDATE SKIP LOCKED)`);
     await this.sweep("processed_events", `DELETE FROM processed_events WHERE ctid IN (SELECT ctid FROM processed_events
-       WHERE processed_at < now() - interval '5 minutes'
-       LIMIT $1 FOR UPDATE SKIP LOCKED)`);
+       WHERE processed_at < now() - ($2::bigint * interval '1 millisecond')
+       LIMIT $1 FOR UPDATE SKIP LOCKED)`, [CLEANUP_BATCH_SIZE, this.processedEventRetentionMs()]);
     await this.sweep("idempotency_records", `DELETE FROM idempotency_records WHERE ctid IN (SELECT ctid FROM idempotency_records
        WHERE created_at < now() - interval '10 minutes'
        LIMIT $1 FOR UPDATE SKIP LOCKED)`);
   }
 
-  private async sweep(table: string, batchedDelete: string): Promise<void> {
+  private async sweep(table: string, batchedDelete: string, parameters: readonly unknown[] = [CLEANUP_BATCH_SIZE]): Promise<void> {
     let removed = 0;
     for (let batch = 0; batch < CLEANUP_MAX_BATCHES; batch++) {
       let affected: number;
       try {
-        const result = await this.pool.query(batchedDelete, [CLEANUP_BATCH_SIZE]);
+        const result = await this.pool.query(batchedDelete, [...parameters]);
         affected = result.rowCount ?? 0;
       } catch (error) {
         // Logged, not swallowed. The silent version of this catch is why nobody
@@ -754,6 +755,11 @@ export class OutboxRelay {
       removed,
       message: "retention sweep hit its batch budget; the table is still above retention",
     });
+  }
+
+  private processedEventRetentionMs(): number {
+    const configured = this.options.processedEventRetentionMs;
+    return Number.isFinite(configured) && configured! > 0 ? Math.floor(configured!) : 5 * 60 * 1_000;
   }
 }
 
