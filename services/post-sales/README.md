@@ -135,6 +135,13 @@ The redrive does not repeat approval or reset execution evidence.
 Payment refund commands retain their `caseId` or `caseId:paymentIntentId` idempotency keys, entitlement voiding retains the same case reference and is a no-op after a successful void, and capacity release remains state-idempotent in its owning service.
 An `APPLIED` case is returned without publishing a redrive event.
 
+After the redrive consumers reach zero lag, call `POST /api/v1/internal/post-sales-cases/{caseId}/reconcile-execution` with a new UUID v7 HTTP idempotency key.
+This endpoint performs GETs only: it requires each scoped entitlement to be `VOIDED`, the linked booking to be `CANCELLED`, and their order, traveler, segment, entitlement, booking and Hold references to agree.
+A matching Hold in `RELEASED` is accepted; a Hold 404 is accepted only after the linked voided entitlement and cancelled booking have been verified, never by itself.
+Payment refunds must exactly match the frozen approved amount and allocation; a zero approved refund requires no refund records.
+When all evidence agrees, the service records the existing effects against the original execution plan, records the released booking references, moves the case to `APPLIED`, and emits one `PostSalesApplied` event.
+Repeated and concurrent reconciliation calls return the resulting `APPLIED` case without another downstream read or completion event.
+
 ## Check
 
 ```bash
