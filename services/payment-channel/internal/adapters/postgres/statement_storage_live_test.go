@@ -256,6 +256,108 @@ func TestLiveStatementGenerationUsesOneDatabaseSnapshotAcrossPages(t *testing.T)
 	}
 }
 
+func TestLiveStatementFreezeAndLineBoundDiscrepancyAreConsistent(t *testing.T) {
+	pool := newStatementTestPool(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	seedStatementFacts(t, ctx, pool, 1, 0)
+	transactor := NewTransactor(pool)
+	service := application.New(NewRepository(transactor), NewOutboxPublisher(transactor), transactor.Within)
+	statement, err := service.GenerateStatement(ctx, application.GenerateStatementRequest{
+		Channel: domain.ChannelAlipay, StatementDate: "2026-09-24", Currency: "CNY", SeedVersion: "discrepancy-v1",
+		ScenarioCodes: []string{"AMOUNT_MISMATCH"}, CorrelationID: ids.NewCorrelationID(), SourceCommandID: ids.NewCommandID(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := service.ListStatementLines(ctx, statement.ChannelStatementID, 0, 10)
+	if err != nil || len(page.Items) != 1 {
+		t.Fatalf("statement line page=%+v err=%v", page, err)
+	}
+	line := page.Items[0]
+
+	const workers = 16
+	errors := make(chan error, workers)
+	for index := 0; index < workers; index++ {
+		go func() {
+			_, freezeErr := service.FreezeStatement(ctx, statement.ChannelStatementID, statement.StatementHash, statement.Version, "ops", "daily-close", ids.NewCorrelationID(), ids.NewCommandID())
+			errors <- freezeErr
+		}()
+	}
+	for index := 0; index < workers; index++ {
+		if freezeErr := <-errors; freezeErr != nil {
+			t.Fatalf("concurrent freeze %d failed: %v", index, freezeErr)
+		}
+	}
+	var snapshotVersion, aggregateVersion int64
+	var frozenEvents int
+	if err := pool.QueryRow(ctx, `SELECT version, (data->>'version')::bigint FROM channel_statement_snapshots WHERE id=$1`, statement.ChannelStatementID).Scan(&snapshotVersion, &aggregateVersion); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM outbox WHERE envelope->>'eventType'='ChannelStatementFrozen'`).Scan(&frozenEvents); err != nil {
+		t.Fatal(err)
+	}
+	if snapshotVersion != 2 || aggregateVersion != 2 || frozenEvents != 1 {
+		t.Fatalf("freeze replay changed state more than once: row_version=%d aggregate_version=%d events=%d", snapshotVersion, aggregateVersion, frozenEvents)
+	}
+
+	valid := application.OpenDiscrepancyRequest{
+		ChannelStatementID: statement.ChannelStatementID, StatementLineID: line.StatementLineID,
+		DifferenceType: "AMOUNT_MISMATCH", ExpectedAmount: line.ExpectedAmount, ActualAmount: line.ActualAmount,
+		EvidenceRef: line.EvidenceHash, CorrelationID: ids.NewCorrelationID(), SourceCommandID: ids.NewCommandID(),
+	}
+	discrepancy, err := service.OpenDiscrepancy(ctx, valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if discrepancy.ChannelOrderID != line.ChannelOrderID {
+		t.Fatalf("line-bound discrepancy did not inherit order identity: %+v", discrepancy)
+	}
+	invalid := valid
+	invalid.ChannelOrderID = "cho-wrong"
+	if _, err := service.OpenDiscrepancy(ctx, invalid); err == nil {
+		t.Fatal("discrepancy with mismatched order was accepted")
+	}
+	invalid = valid
+	invalid.ExpectedAmount.MinorUnits++
+	if _, err := service.OpenDiscrepancy(ctx, invalid); err == nil {
+		t.Fatal("discrepancy with mismatched amount was accepted")
+	}
+	var discrepancies int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM channel_discrepancy_snapshots`).Scan(&discrepancies); err != nil {
+		t.Fatal(err)
+	}
+	if discrepancies != 1 {
+		t.Fatalf("invalid discrepancies were persisted: %d", discrepancies)
+	}
+
+	resolved, err := service.ResolveDiscrepancy(ctx, discrepancy.DiscrepancyID, "RESOLVED", "resolution-evidence", "ops", "MATCHED", discrepancy.Version, ids.NewCorrelationID(), ids.NewCommandID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < workers; index++ {
+		go func() {
+			_, resolveErr := service.ResolveDiscrepancy(ctx, discrepancy.DiscrepancyID, "RESOLVED", "resolution-evidence", "ops", "MATCHED", discrepancy.Version, ids.NewCorrelationID(), ids.NewCommandID())
+			errors <- resolveErr
+		}()
+	}
+	for index := 0; index < workers; index++ {
+		if resolveErr := <-errors; resolveErr != nil {
+			t.Fatalf("terminal discrepancy replay %d failed: %v", index, resolveErr)
+		}
+	}
+	var resolvedEvents int
+	if err := pool.QueryRow(ctx, `SELECT version, (data->>'version')::bigint FROM channel_discrepancy_snapshots WHERE id=$1`, discrepancy.DiscrepancyID).Scan(&snapshotVersion, &aggregateVersion); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM outbox WHERE envelope->>'eventType'='ReconciliationDiscrepancyResolved'`).Scan(&resolvedEvents); err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Status != "RESOLVED" || snapshotVersion != 2 || aggregateVersion != 2 || resolvedEvents != 1 {
+		t.Fatalf("resolve replay changed state more than once: row_version=%d aggregate_version=%d events=%d", snapshotVersion, aggregateVersion, resolvedEvents)
+	}
+}
+
 func TestLiveLegacyStatementBackfillPreservesIdentityAndFacts(t *testing.T) {
 	pool := newStatementTestPool(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
