@@ -1,6 +1,63 @@
 use super::*;
 use futures_util::{StreamExt, TryStreamExt, stream};
 
+/// The supply facts of a hold that is already occupying part of a pool.
+///
+/// `reservation_supply_facts` is a cache of what booking-orchestration answers,
+/// and the rows written before the purchase source was part of that answer are
+/// still the majority: measured on the resident database, 2576539 of 2590284
+/// rows carry no `bookingPurpose` and no `sourceType`. Treating such a row as
+/// an error made every new reservation into a pool that still holds one of them
+/// fail with "reservation has an unsupported purchase source", which is what
+/// the load generator reported as a reservation that never confirms.
+///
+/// The hold's own supply evidence is the authoritative record of the interval
+/// it occupies, and this service wrote it, so a hold that has that evidence
+/// does not need the cached row to be complete. A hold old enough to predate
+/// the evidence still has to come from the cache, and a cache row that cannot
+/// be trusted there stays an error.
+fn historical_hold_facts(
+    hold: &CapacityHoldSnapshot,
+    recorded: Value,
+) -> Result<ReservationSupply, AppError> {
+    let saved: ReservationSupply =
+        serde_json::from_value(recorded).map_err(|e| AppError::Internal(e.to_string()))?;
+    if saved.validate_source().is_ok() {
+        return Ok(saved);
+    }
+    let Some(evidence) = hold.supply_evidence.as_ref() else {
+        // No evidence and no usable cache: the hold cannot be attributed, and
+        // guessing would put an interval under a source nobody recorded.
+        saved.validate_source()?;
+        return Ok(saved);
+    };
+    let booking_purpose = match evidence.source_type.as_str() {
+        "PURCHASE_ORDER" => "purchase".to_owned(),
+        "CHANGE_CASE" => format!("change:{}", evidence.source_ref),
+        other => {
+            return Err(AppError::Unavailable(format!(
+                "recorded hold has an unsupported purchase source {other}"
+            )));
+        }
+    };
+    let facts = ReservationSupply {
+        segment_booking_id: saved.segment_booking_id,
+        journey_order_id: saved.journey_order_id,
+        traveler_ref: saved.traveler_ref,
+        segment_ref: saved.segment_ref,
+        scheduled_service_ref: evidence.scheduled_service_ref.clone(),
+        service_date: evidence.service_date.clone(),
+        class_ref: evidence.accepted_class_ref.clone(),
+        booking_purpose,
+        offer_item_ref: saved.offer_item_ref,
+        standing_accepted: evidence.accepted_class_ref != evidence.occupancy_class_ref,
+        source_type: evidence.source_type.clone(),
+        source_ref: evidence.source_ref.clone(),
+    };
+    facts.validate_source()?;
+    Ok(facts)
+}
+
 impl PostgresCapacityService {
     pub(super) async fn hold_for_reservation(
         &self,
@@ -226,9 +283,7 @@ impl PostgresCapacityService {
             let recorded = recorded.ok_or_else(|| {
                 AppError::Unavailable("active hold has no persisted supply facts".into())
             })?;
-            let hold_facts: ReservationSupply =
-                serde_json::from_value(recorded).map_err(|e| AppError::Internal(e.to_string()))?;
-            hold_facts.validate_source()?;
+            let hold_facts = historical_hold_facts(&hold, recorded)?;
             if hold.references.segment_booking_ref.as_deref()
                 != Some(hold_facts.segment_booking_id.as_str())
                 || hold.references.traveler_ref.as_deref() != Some(hold_facts.traveler_ref.as_str())
@@ -350,4 +405,146 @@ fn same_core_reservation(left: &ReservationSupply, right: &ReservationSupply) ->
         && left.scheduled_service_ref == right.scheduled_service_ref
         && left.service_date == right.service_date
         && left.class_ref == right.class_ref
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::HoldSupplyEvidence;
+
+    fn hold_with_evidence(evidence: Option<HoldSupplyEvidence>) -> CapacityHoldSnapshot {
+        CapacityHoldSnapshot {
+            hold_id: "hold-1".into(),
+            inventory_pool_id: "pool-1".into(),
+            capacity_unit_ref: "unit-1".into(),
+            from_seq: 0,
+            to_seq: 1,
+            idempotency_key: "key-1".into(),
+            requested_at: 1,
+            expires_at: 2,
+            state: "Confirmed".into(),
+            confirmed_at: Some(1),
+            released_at: None,
+            expired_at: None,
+            references: ReferenceMetadataSnapshot {
+                source_context: "journey-order".into(),
+                order_ref: Some("ord-1".into()),
+                segment_booking_ref: Some("sb-1".into()),
+                traveler_ref: Some("tvl-1".into()),
+                reason: "test".into(),
+            },
+            supply_evidence: evidence,
+        }
+    }
+
+    fn legacy_recorded() -> Value {
+        // What the majority of persisted rows look like: written before the
+        // purchase source became part of the facts, so it cannot validate.
+        serde_json::json!({
+            "segmentBookingId": "sb-1",
+            "journeyOrderId": "ord-1",
+            "travelerRef": "tvl-1",
+            "segmentRef": "seg-1",
+            "scheduledServiceRef": "ss-1",
+            "serviceDate": "2026-09-26",
+            "classRef": "SECOND_CLASS",
+            "bookingPurpose": "",
+            "offerItemRef": "offer-1",
+            "standingAccepted": false,
+            "sourceType": "",
+            "sourceRef": ""
+        })
+    }
+
+    fn evidence(
+        source_type: &str,
+        source_ref: &str,
+        accepted: &str,
+        occupancy: &str,
+    ) -> HoldSupplyEvidence {
+        HoldSupplyEvidence::new(
+            accepted,
+            occupancy,
+            "ss-1",
+            "2026-09-26",
+            source_type,
+            source_ref,
+            "seat-map-1",
+            1,
+            "composition-1",
+            "stops-1",
+        )
+        .expect("evidence")
+    }
+
+    #[test]
+    fn a_valid_cache_row_is_used_as_written() {
+        let mut recorded = legacy_recorded();
+        recorded["bookingPurpose"] = Value::String("purchase".into());
+        recorded["sourceType"] = Value::String("PURCHASE_ORDER".into());
+        recorded["sourceRef"] = Value::String("ord-1".into());
+
+        let facts = historical_hold_facts(&hold_with_evidence(None), recorded).expect("facts");
+
+        assert_eq!(facts.booking_purpose, "purchase");
+        assert_eq!(facts.source_type, "PURCHASE_ORDER");
+        assert_eq!(facts.source_ref, "ord-1");
+    }
+
+    #[test]
+    fn a_legacy_cache_row_is_resolved_from_the_holds_own_evidence() {
+        // The regression: this is the row that made every new reservation into
+        // the pool fail with "reservation has an unsupported purchase source".
+        let hold = hold_with_evidence(Some(evidence(
+            "PURCHASE_ORDER",
+            "ord-1",
+            "SECOND_CLASS",
+            "SECOND_CLASS",
+        )));
+
+        let facts = historical_hold_facts(&hold, legacy_recorded()).expect("facts");
+
+        assert_eq!(facts.booking_purpose, "purchase");
+        assert_eq!(facts.segment_booking_id, "sb-1");
+        assert_eq!(facts.journey_order_id, "ord-1");
+        assert_eq!(facts.traveler_ref, "tvl-1");
+        assert_eq!(facts.scheduled_service_ref, "ss-1");
+        assert_eq!(facts.service_date, "2026-09-26");
+        assert_eq!(facts.class_ref, "SECOND_CLASS");
+        assert_eq!(facts.source_type, "PURCHASE_ORDER");
+        assert_eq!(facts.source_ref, "ord-1");
+        assert!(!facts.standing_accepted);
+    }
+
+    #[test]
+    fn a_change_hold_resolves_to_its_case() {
+        let hold = hold_with_evidence(Some(evidence(
+            "CHANGE_CASE",
+            "case-1",
+            "SECOND_CLASS",
+            "STANDING",
+        )));
+
+        let facts = historical_hold_facts(&hold, legacy_recorded()).expect("facts");
+
+        assert_eq!(facts.booking_purpose, "change:case-1");
+        assert_eq!(facts.source_type, "CHANGE_CASE");
+        // An accepted class that differs from the occupancy class is the
+        // standing substitution, and it has to survive the resolution.
+        assert!(facts.standing_accepted);
+    }
+
+    #[test]
+    fn a_hold_without_evidence_still_refuses_an_unattributable_cache_row() {
+        // A hold old enough to predate the evidence has nothing authoritative
+        // left, and inventing a source for it is exactly what the check exists
+        // to prevent.
+        let error = historical_hold_facts(&hold_with_evidence(None), legacy_recorded())
+            .expect_err("must refuse");
+
+        assert!(
+            format!("{error:?}").contains("unsupported purchase source"),
+            "{error:?}"
+        );
+    }
 }
