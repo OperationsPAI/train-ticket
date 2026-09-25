@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import tempfile
 import time
 from collections.abc import Iterator, Mapping, Sequence
 from datetime import UTC, datetime
@@ -302,9 +303,19 @@ def _copy_target_requirements(
     source_statement: str,
     target_params: tuple[Any, ...] = (),
 ) -> None:
-    with target.cursor().copy(target_statement, target_params) as copy_out:
-        with source.cursor().copy(source_statement) as copy_in:
+    # Do not keep COPY OUT and COPY IN active on two independent PostgreSQL
+    # connections at the same time. With a large required-ID set, each server
+    # can fill its socket while the client is waiting on the other connection,
+    # producing a protocol-level backpressure deadlock. Spool the compact ID
+    # list to disk so the target COPY is fully drained before the source COPY
+    # starts. TemporaryFile keeps memory bounded and is removed automatically.
+    with tempfile.TemporaryFile() as spool:
+        with target.cursor().copy(target_statement, target_params) as copy_out:
             for block in copy_out:
+                spool.write(bytes(block))
+        spool.seek(0)
+        with source.cursor().copy(source_statement) as copy_in:
+            while block := spool.read(1024 * 1024):
                 copy_in.write(block)
 
 
