@@ -1181,6 +1181,7 @@ services:
       limits: { cpu: '6', memory: 3Gi }
   risk-compliance:
     db: risk_compliance
+    image: mirrors.tencent.com/microservice/risk-compliance:readiness-d1472815@sha256:195b0a3d2f685f6b3dbc464cdb846922e62b907e67e1c1d521d90dfbfb60ef0b
     strategy:
       type: RollingUpdate
       rollingUpdate:
