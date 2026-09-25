@@ -114,6 +114,27 @@ Payment uses the canonical case ID, or `caseId:paymentIntentId` for split refund
 Entitlement voiding carries the same case ID and is a no-op for an already voided entitlement; capacity release remains guarded by the owning booking/capacity state.
 An `APPLIED` case returns its existing response and publishes no approval or execution-start event.
 
+### Reconcile a redriven execution
+
+**POST** `/api/v1/internal/post-sales-cases/{caseId}/reconcile-execution`
+
+**Idempotency:** REQUIRED (`Idempotency-Key` as UUID v7).
+
+This recovery endpoint is for refund-like cases (`REFUND`, `CANCELLATION`, and the current refund-shaped `REBOOK`) that remain internally `EXECUTING` after redrive consumers have caught up.
+It performs only authoritative GET requests and never sends refund, entitlement void, booking cancellation, or capacity release commands.
+
+The endpoint requires complete linked evidence for every scoped booking:
+
+- Entitlement Ticketing reports the scoped entitlement as `VOIDED`, belonging to the case order, traveler, segment, and segment booking.
+- Booking Orchestration reports that same segment booking as `CANCELLED`, with matching order, traveler, segment, entitlement, and a nonempty `capacityHoldId`.
+- Capacity & Availability either reports that exact Hold as `RELEASED` with matching booking and segment, or reports HTTP 404 after the linked `VOIDED` entitlement and `CANCELLED` booking have already been verified. A Hold 404 by itself is never release evidence.
+- Payment refunds for the canonical case ID exactly match the frozen approved amount and, when present, the frozen `refundPayments` allocation. Accepted refund states are `REQUESTED`, `SUBMITTED`, and `SETTLED`, consistent with Post Sales `APPLIED` meaning that the refund request was applied rather than settled. A zero approved refund requires an empty refund list.
+
+After verification, Post Sales records the existing downstream effects against the persisted execution-plan steps, records each scoped booking in `releasedOrderItemRefs`, changes the case to `APPLIED`, and emits one `PostSalesApplied` event.
+Concurrent calls serialize on the order lock; calls that observe `APPLIED` return the existing case without reading downstream state or publishing again.
+
+Incomplete, inconsistent, active-Hold, or mismatched refund evidence returns `DOMAIN_RULE_VIOLATION` and leaves the case `EXECUTING`.
+
 ### Get Post-Sales Case
 
 **GET** `/api/v1/post-sales-cases/{caseId}`
