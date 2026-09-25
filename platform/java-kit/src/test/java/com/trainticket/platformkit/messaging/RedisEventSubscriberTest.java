@@ -14,6 +14,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -21,6 +23,59 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 
 class RedisEventSubscriberTest {
+    @Test
+    void advancesAndResetsRecoveryCursorPerStreamGroupAndConsumer() {
+        CursorRecordingStreams streams = new CursorRecordingStreams();
+        RedisEventSubscriber subscriber = new RedisEventSubscriber(
+            streams, new ObjectMapper().registerModule(new JavaTimeModule()), null);
+
+        subscriber.recoverOnce("events:payment", "journey-order", "consumer-1", ignored -> HandlerResult.SUCCESS);
+        subscriber.recoverOnce("events:payment", "journey-order", "consumer-1", ignored -> HandlerResult.SUCCESS);
+        subscriber.recoverOnce("events:booking", "journey-order", "consumer-1", ignored -> HandlerResult.SUCCESS);
+        subscriber.recoverOnce("events:payment", "reporting", "consumer-1", ignored -> HandlerResult.SUCCESS);
+        subscriber.recoverOnce("events:payment", "journey-order", "consumer-2", ignored -> HandlerResult.SUCCESS);
+        subscriber.recoverOnce("events:payment", "journey-order", "consumer-1", ignored -> HandlerResult.SUCCESS);
+        subscriber.close();
+
+        assertThat(streams.startIdsFor("events:payment", "journey-order", "consumer-1"))
+            .containsExactly("0-0", "100-0", "0-0");
+        assertThat(streams.startIdsFor("events:booking", "journey-order", "consumer-1"))
+            .containsExactly("0-0");
+        assertThat(streams.startIdsFor("events:payment", "reporting", "consumer-1"))
+            .containsExactly("0-0");
+        assertThat(streams.startIdsFor("events:payment", "journey-order", "consumer-2"))
+            .containsExactly("0-0");
+    }
+
+    @Test
+    void serializesCursorAdvancementForConcurrentRecoveryOfOneConsumer() throws Exception {
+        CursorRecordingStreams streams = new CursorRecordingStreams();
+        streams.blockFirstClaim = true;
+        RedisEventSubscriber subscriber = new RedisEventSubscriber(
+            streams, new ObjectMapper().registerModule(new JavaTimeModule()), null);
+
+        try (var callers = Executors.newFixedThreadPool(2)) {
+            Future<?> first = callers.submit(() -> subscriber.recoverOnce(
+                "events:payment", "journey-order", "consumer-1", ignored -> HandlerResult.SUCCESS));
+            assertThat(streams.firstClaimEntered.await(2, TimeUnit.SECONDS)).isTrue();
+            Future<?> second = callers.submit(() -> subscriber.recoverOnce(
+                "events:payment", "journey-order", "consumer-1", ignored -> HandlerResult.SUCCESS));
+
+            Thread.sleep(100);
+            assertThat(streams.maxConcurrentClaims.get()).isEqualTo(1);
+            streams.releaseFirstClaim.countDown();
+            first.get(2, TimeUnit.SECONDS);
+            second.get(2, TimeUnit.SECONDS);
+        } finally {
+            streams.releaseFirstClaim.countDown();
+            subscriber.close();
+        }
+
+        assertThat(streams.startIdsFor("events:payment", "journey-order", "consumer-1"))
+            .containsExactly("0-0", "100-0");
+        assertThat(streams.maxConcurrentClaims.get()).isEqualTo(1);
+    }
+
     @Test
     void recordsBoundedConsumerOutcomesAcrossSuccessRetryAndDeadLetter() throws Exception {
         ObjectMapper objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
@@ -596,9 +651,9 @@ class RedisEventSubscriberTest {
         }
 
         @Override
-        public List<StreamEntry> autoClaim(String stream, String group, String consumerName) {
+        public AutoClaimResult autoClaim(String stream, String group, String consumerName, String startId) {
             autoClaimCalls.incrementAndGet();
-            return acked.isEmpty() ? pending : List.of();
+            return new AutoClaimResult("0-0", acked.isEmpty() ? pending : List.of());
         }
 
         @Override
@@ -638,6 +693,54 @@ class RedisEventSubscriberTest {
                 .toList();
         }
     }
+
+    private static final class CursorRecordingStreams implements RedisStreamOperations {
+        private final Map<RecoveryCall, List<String>> starts = new java.util.concurrent.ConcurrentHashMap<>();
+        private final AtomicInteger activeClaims = new AtomicInteger();
+        private final AtomicInteger maxConcurrentClaims = new AtomicInteger();
+        private final CountDownLatch firstClaimEntered = new CountDownLatch(1);
+        private final CountDownLatch releaseFirstClaim = new CountDownLatch(1);
+        private volatile boolean blockFirstClaim;
+
+        @Override public void createGroup(String stream, String group) { }
+        @Override public String publish(String stream, String envelopeJson) { return "1-0"; }
+        @Override public List<StreamEntry> readGroup(String stream, String group, String consumerName) { return List.of(); }
+
+        @Override
+        public AutoClaimResult autoClaim(String stream, String group, String consumerName, String startId) {
+            int active = activeClaims.incrementAndGet();
+            maxConcurrentClaims.accumulateAndGet(active, Math::max);
+            try {
+                starts.computeIfAbsent(
+                    new RecoveryCall(stream, group, consumerName), ignored -> Collections.synchronizedList(new ArrayList<>())
+                ).add(startId);
+                if (blockFirstClaim && firstClaimEntered.getCount() > 0) {
+                    firstClaimEntered.countDown();
+                    try {
+                        if (!releaseFirstClaim.await(2, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("timed out waiting to release first claim");
+                        }
+                    } catch (InterruptedException exception) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(exception);
+                    }
+                }
+                return new AutoClaimResult("0-0".equals(startId) ? "100-0" : "0-0", List.of());
+            } finally {
+                activeClaims.decrementAndGet();
+            }
+        }
+
+        @Override public int deliveryCount(String stream, String group, String messageId) { return 1; }
+        @Override public void ack(String stream, String group, String messageId) { }
+        @Override public void moveToDlq(String stream, String envelopeJson, DlqMetadata metadata) { }
+
+        private List<String> startIdsFor(String stream, String group, String consumerName) {
+            return List.copyOf(starts.getOrDefault(new RecoveryCall(stream, group, consumerName), List.of()));
+        }
+    }
+
+    private record RecoveryCall(String stream, String group, String consumerName) { }
 
     private static final class RecordingEventConsumerMetrics implements EventConsumerMetrics {
         private final List<Outcome> outcomes = new ArrayList<>();
@@ -689,7 +792,7 @@ class RedisEventSubscriberTest {
             return successBatch;
         }
 
-        @Override public List<StreamEntry> autoClaim(String stream, String group, String consumerName) { return List.of(); }
+        @Override public AutoClaimResult autoClaim(String stream, String group, String consumerName, String startId) { return new AutoClaimResult("0-0", List.of()); }
         @Override public int deliveryCount(String stream, String group, String messageId) { return 1; }
         @Override public void ack(String stream, String group, String messageId) { acked.add(messageId); }
         @Override public void moveToDlq(String stream, String envelopeJson, DlqMetadata metadata) {}
@@ -731,7 +834,7 @@ class RedisEventSubscriberTest {
         }
 
         @Override
-        public List<StreamEntry> autoClaim(String stream, String group, String consumerName) {
+        public AutoClaimResult autoClaim(String stream, String group, String consumerName, String startId) {
             throw new RuntimeException("BUSYGROUP Consumer Group name already exists");
         }
 
@@ -831,7 +934,7 @@ class RedisEventSubscriberTest {
         @Override public void createGroup(String stream, String group) { }
         @Override public String publish(String stream, String envelopeJson) { return "1-0"; }
         @Override public List<StreamEntry> readGroup(String stream, String group, String consumerName) { return List.of(); }
-        @Override public List<StreamEntry> autoClaim(String stream, String group, String consumerName) { return List.of(); }
+        @Override public AutoClaimResult autoClaim(String stream, String group, String consumerName, String startId) { return new AutoClaimResult("0-0", List.of()); }
         @Override public int deliveryCount(String stream, String group, String messageId) { return 1; }
         @Override public void ack(String stream, String group, String messageId) { }
         @Override public void moveToDlq(String stream, String envelopeJson, DlqMetadata metadata) { }
@@ -870,12 +973,12 @@ class RedisEventSubscriberTest {
         }
 
         @Override
-        public List<StreamEntry> autoClaim(String stream, String group, String consumerName) {
+        public AutoClaimResult autoClaim(String stream, String group, String consumerName, String startId) {
             if (!autoClaimEnabled) {
-                return List.of();
+                return new AutoClaimResult("0-0", List.of());
             }
             autoClaimCalls++;
-            return autoClaimCalls <= 2 ? firstBatch : List.of();
+            return new AutoClaimResult("0-0", autoClaimCalls <= 2 ? firstBatch : List.of());
         }
 
         @Override
