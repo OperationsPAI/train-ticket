@@ -4,9 +4,11 @@ import com.trainticket.groupbooking.domain.GroupBooking;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.stereotype.Repository;
 
 @Repository
+@ConditionalOnExpression("'${DATABASE_URL:}' == ''")
 public class InMemoryGroupBookingRepository implements GroupBookingRepository {
     private final ConcurrentMap<String, GroupBooking> bookings = new ConcurrentHashMap<>();
 

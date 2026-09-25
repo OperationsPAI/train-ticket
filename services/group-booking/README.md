@@ -12,3 +12,5 @@ Java/Spring foundation for the Group Booking bounded context. It owns group rese
 - `GET /api/v1/group-bookings/{groupBookingId}`
 
 The domain stores only traveler references and masked document references; raw identity documents must not enter this service.
+
+When `DATABASE_URL` is configured, the owning API persists group bookings and roster members in PostgreSQL, writes domain events to the transactional outbox, and stores HTTP idempotency responses in the same database. A process restart therefore preserves `POST /api/v1/group-bookings`, roster updates and later confirmation through `GET`/`POST` owning endpoints. The in-memory repository is used only when no database is configured.
