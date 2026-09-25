@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta, timezone
+from threading import RLock
 from typing import Any
 
 from fare_pricing.domain import (
@@ -29,6 +30,10 @@ class EligibilityUnavailableError(RuntimeError):
     pass
 
 
+class ConsumedEventConflictError(PricingError):
+    """Raised when an event id is reused for different business content."""
+
+
 class AdjustmentQuoteNotFoundError(Exception):
     """Raised when an adjustment quote is not found."""
 
@@ -48,9 +53,29 @@ class InMemoryStore:
     capacity_snapshots: dict[tuple[str, str], CapacitySnapshot] = field(default_factory=dict)
     eligibility_certificates: dict[str, EligibilityCertificateSummary] = field(default_factory=dict)
     processed_events: set[str] = field(default_factory=set)
+    processed_event_fingerprints: dict[str, tuple[str | None, str]] = field(default_factory=dict)
+    _transaction_lock: RLock = field(default_factory=RLock, repr=False, compare=False)
 
+    @contextmanager
     def transaction(self) -> Any:
-        return nullcontext()
+        """Serialize in-memory consumers and roll back failed event handling."""
+        with self._transaction_lock:
+            before_capacity = self.capacity_snapshots.copy()
+            before_certificates = self.eligibility_certificates.copy()
+            before_processed = self.processed_events.copy()
+            before_fingerprints = self.processed_event_fingerprints.copy()
+            try:
+                yield
+            except Exception:
+                self.capacity_snapshots.clear()
+                self.capacity_snapshots.update(before_capacity)
+                self.eligibility_certificates.clear()
+                self.eligibility_certificates.update(before_certificates)
+                self.processed_events.clear()
+                self.processed_events.update(before_processed)
+                self.processed_event_fingerprints.clear()
+                self.processed_event_fingerprints.update(before_fingerprints)
+                raise
 
     def all_rule_sets(self) -> tuple[FareRuleSet, ...]:
         return tuple(self.fare_rule_sets.values())
@@ -104,10 +129,26 @@ class InMemoryStore:
             if (snapshot := self.capacity_snapshots.get((segment_ref, departure_date))) is not None
         )
 
-    def try_mark_processed(self, event_id: str, stream: str | None = None) -> bool:
+    def try_mark_processed(
+        self,
+        event_id: str,
+        stream: str | None = None,
+        event_fingerprint: str | None = None,
+    ) -> bool:
         if event_id in self.processed_events:
+            existing = self.processed_event_fingerprints.get(event_id)
+            if existing is not None:
+                existing_stream, existing_fingerprint = existing
+                if stream is not None and existing_stream is not None and stream != existing_stream:
+                    raise ConsumedEventConflictError(f"event id {event_id} was already consumed from {existing_stream}")
+                if event_fingerprint is not None and event_fingerprint != existing_fingerprint:
+                    raise ConsumedEventConflictError(f"event id {event_id} was replayed with different content")
+            elif event_fingerprint is not None:
+                self.processed_event_fingerprints[event_id] = (stream, event_fingerprint)
             return False
         self.processed_events.add(event_id)
+        if event_fingerprint is not None:
+            self.processed_event_fingerprints[event_id] = (stream, event_fingerprint)
         return True
 
     def upsert_eligibility_certificate(self, certificate: EligibilityCertificateSummary) -> None:
@@ -374,13 +415,16 @@ class FarePricingService:
             return lookup(segment_refs, departure_date)
         return ()
 
-    def mark_event_processed(self, event_id: str, stream: str) -> bool:
+    def mark_event_processed(self, event_id: str, stream: str, event_fingerprint: str | None = None) -> bool:
         mark = getattr(self._store, "try_mark_processed", None)
         if callable(mark):
             try:
-                return bool(mark(event_id, stream))
+                return bool(mark(event_id, stream, event_fingerprint))
             except TypeError:
-                return bool(mark(event_id))
+                try:
+                    return bool(mark(event_id, stream))
+                except TypeError:
+                    return bool(mark(event_id))
         processed = getattr(self._store, "processed_events", None)
         if processed is None:
             return True
