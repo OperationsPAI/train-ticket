@@ -12,6 +12,8 @@ The supplier schedule defaults to daily, a 5% platform commission and zero withh
 
 Schedule evidence is available from `GET /api/v1/settlement-schedule-runs` and `GET /api/v1/settlement-schedule-runs/{jobKey}`.
 
+Applied post-sales refunds are matched to the revenue recognition whose source event appears in each Payment intent's authoritative captured facts. A case may span the original payment and multiple fare-difference payments, and one payment may have multiple settled refunds. Finance requires the case refund sum to equal the approved total, aggregates new and previously recorded reversals per payment, and rejects amounts beyond Payment's persisted refunded total or captured amount. Refund IDs are durable reversal identities: an exact replay is a no-op, while reusing one with another amount is rejected.
+
 ## Owns
 
 - RevenueRecognition
