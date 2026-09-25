@@ -687,20 +687,20 @@ impl SeatSupply {
                     // that blocks the reservation behind it. Measured before
                     // this: "standing occupancy has no valid quota slot", 999
                     // times in four minutes across the replicas.
-                    let reference = if refs.iter().any(|candidate| candidate == value.3) {
-                        value.3.to_owned()
-                    } else {
-                        refs.iter()
-                            .find(|candidate| !occupied_refs.contains(candidate.as_str()))
-                            .or_else(|| refs.first())
-                            .cloned()
-                            .ok_or_else(|| {
-                                AppError::Unavailable(
-                                    "standing occupancy has no valid quota slot".into(),
-                                )
-                            })?
-                    };
-                    occupied_refs.insert(reference);
+                    let candidate = refs
+                        .iter()
+                        .find(|candidate| !occupied_refs.contains(candidate.as_str()))
+                        .or_else(|| refs.first());
+                    match candidate {
+                        // A quota that no longer exists at all leaves nothing to
+                        // subtract, so the hold cannot reduce availability --
+                        // there is none -- and refusing here would only put the
+                        // reservation into a retry loop.
+                        None => continue,
+                        Some(reference) => {
+                            occupied_refs.insert(reference.to_owned());
+                        }
+                    }
                 }
             }
             let available: Vec<String> = refs
