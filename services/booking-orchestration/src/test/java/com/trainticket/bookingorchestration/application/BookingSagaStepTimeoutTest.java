@@ -223,7 +223,7 @@ class BookingSagaStepTimeoutTest {
         var result = service.requestReservation(sagaId,
             new BookingOrchestrationService.RequestReservationCommand(SEGMENT, TRAVELER, segmentBookingId),
             new ReservationFactsResolver.Facts(ORDER, SEGMENT, TRAVELER, "ofi-1", "SECOND_CLASS",
-                "ss-01a0c65a-0000-7000-8000-000000000007", "2026-10-24"),
+                "ss-01a0c65a-0000-7000-8000-000000000007", "2026-10-24", false),
             CORRELATION);
         return result.segmentBookingId();
     }
