@@ -72,6 +72,12 @@ Capacity 事件使用独立 Redis subscriber 和处理线程，业务数据库�
 正金额在完成前再次读取权益并核验身份和金额，零金额记录验证后完成，不发放权益。
 Wallet Promotion 按 `caseId` 和完整请求去重，等价请求复用同一权益，内容冲突返回 HTTP 409。
 
+补偿执行前还会通过 Wallet 的内部只读接口按规范 `caseId` 查询既有权益。
+如果 Wallet 已经提交额度、但 Post Sales 在保存 `compensationOperations.issued` 前中断，执行器复用该权益并补齐本地证据，不再次调用发放接口。
+如果权威 2xx 响应证明同一补偿同时存在退款、原票或原容量已经释放、原支付不再完整保留、Wallet 权益缺失或与批准账户/金额/类型不一致，服务把首份完整证据写入 `compensation_mismatch_checkpoints`。
+该 checkpoint 不会被后续并发或重放覆盖；此后执行入口在任何下游调用前返回 HTTP 409 `COMPENSATION_MISMATCH`，并明确 `automaticReplayAllowed=false`。
+依赖超时和非 2xx 响应仍是可重试故障，不会被误写成终态 mismatch。
+
 Payment 跳过补偿审批的退款处理，Journey Order 和 Finance 跳过补偿完成事件的退款结果处理。
 补偿发放成本由 Wallet 的 `BenefitIssued` 提供。
 
@@ -85,6 +91,7 @@ Payment 跳过补偿审批的退款处理，Journey Order 和 Finance 跳过补�
 | `POST /api/v1/post-sales-cases/{caseId}/target-offer` | 选择改签目标。 |
 | `POST /api/v1/post-sales-cases/{caseId}/execute-change` | 推进改签操作。 |
 | `POST /api/v1/post-sales-cases/{caseId}/execute-compensation` | 推进钱包补偿操作。 |
+| `GET /api/v1/internal/compensation-mismatches/{caseId}` | 查询终态补偿不一致的完整冻结证据。 |
 | `GET /api/v1/post-sales-cases/{caseId}` | 读取决策、状态和执行证据。 |
 | `GET /api/v1/post-sales-cases/{caseId}/issue-authorization/{bookingId}` | 核验替代票签发条件。 |
 | `GET /api/v1/post-sales-cases/{caseId}/settlement` | 核验改签资金归属和结算总额。 |
@@ -94,5 +101,6 @@ Case 快照和事件保存在 PostgreSQL，事件通过事务 Outbox 发布，�
 改签和补偿共享执行锁，使用独立的16连接锁池和 PostgreSQL advisory lock，繁忙调用返回当前 Case。
 每次推进需要新的 HTTP 幂等键，重复同一键返回已保存的 HTTP 响应。
 操作证据支持重试和服务重启后的继续执行。
+事件归档、消费游标、DLQ 证据与补偿 mismatch 的统一恢复边界见[持久事件恢复契约](../08-contracts/durable-event-recovery.md)。
 
 实现入口见 [服务说明](../../services/post-sales/README.md)、[应用服务](../../services/post-sales/src/main/java/com/trainticket/postsales/application/PostSalesApplicationService.java)、[补偿执行器](../../services/post-sales/src/main/java/com/trainticket/postsales/application/CompensationExecutionService.java) 和 [HTTP API](../08-contracts/api/post-sales.md)。
