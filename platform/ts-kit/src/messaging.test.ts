@@ -78,6 +78,70 @@ describe("EventEnvelope factory", () => {
 
 describe("RedisEventSubscriber DLQ observability", () => {
 
+  it("persists attributable evidence before writing Redis DLQ and ACK", async () => {
+    const operations: string[] = [];
+    const evidence: unknown[] = [];
+    const redis = {
+      xadd: async () => { operations.push("redis-dlq"); return "1-1"; },
+      xack: async () => { operations.push("ack"); return 1; },
+    };
+    const sink = {
+      recordDeadLetter: async (record: unknown) => { operations.push("evidence"); evidence.push(record); },
+    };
+    const subscriber = new RedisEventSubscriber(redis as never, undefined, { deadLetterEvidenceSink: sink });
+    const envelope = createEventEnvelope({ eventType: "Poisoned", producer: "payment", payload: { refundId: "ref-1" } });
+    const entry: [string, string[]] = ["7-0", ["envelope", JSON.stringify(envelope)]];
+    const originalWarn = console.warn;
+    console.warn = () => undefined;
+    try {
+      await (subscriber as unknown as { processEntry: (stream: string, group: string, consumerName: string, entry: [string, string[]], handler: () => unknown) => Promise<void> })
+        .processEntry("events:payment", "notification", "notification-a", entry, () => { throw new HandlerError("fatal", "invalid recipient"); });
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.deepEqual(operations, ["evidence", "redis-dlq", "ack"]);
+    assert.deepEqual(evidence[0], {
+      sourceStream: "events:payment",
+      sourceMessageId: "7-0",
+      consumerGroup: "notification",
+      consumerName: "notification-a",
+      eventId: envelope.eventId,
+      eventType: envelope.eventType,
+      producer: envelope.producer,
+      originalEnvelope: JSON.stringify(envelope),
+      failureKind: "FATAL_HANDLER",
+      failureReason: "HandlerError: invalid recipient",
+      attempts: 1,
+      deadLetteredAt: (evidence[0] as { deadLetteredAt: string }).deadLetteredAt,
+    });
+  });
+
+  it("keeps the source pending when durable evidence cannot be recorded", async () => {
+    const redisWrites: string[] = [];
+    const redis = {
+      xadd: async () => { redisWrites.push("dlq"); return "1-1"; },
+      xack: async () => { redisWrites.push("ack"); return 1; },
+    };
+    const subscriber = new RedisEventSubscriber(redis as never, undefined, {
+      deadLetterEvidenceSink: { recordDeadLetter: async () => { throw new Error("postgres unavailable"); } },
+    });
+    const envelope = createEventEnvelope({ eventType: "Poisoned", producer: "payment", payload: {} });
+    const entry: [string, string[]] = ["8-0", ["envelope", JSON.stringify(envelope)]];
+    const originalWarn = console.warn;
+    console.warn = () => undefined;
+    try {
+      await assert.rejects(
+        (subscriber as unknown as { processEntry: (stream: string, group: string, consumerName: string, entry: [string, string[]], handler: () => unknown) => Promise<void> })
+          .processEntry("events:payment", "notification", "notification-a", entry, () => { throw new HandlerError("fatal", "invalid recipient"); }),
+        /postgres unavailable/u,
+      );
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.deepEqual(redisWrites, []);
+  });
+
   it("uses pending delivery count as DLQ attempts for claimed poison entries", async () => {
     const xadds: unknown[][] = [];
     const redis = {

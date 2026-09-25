@@ -54,6 +54,25 @@ export type EventBatchHandlerOutput = EventHandlerOutput | readonly EventHandler
 export type EventBatchHandler = (envelopes: readonly EventEnvelope[]) => Promise<EventBatchHandlerOutput> | EventBatchHandlerOutput;
 export type EventHandler = ((envelope: EventEnvelope) => Promise<any> | any) & { handleBatch?: EventBatchHandler };
 
+export type DeadLetterEvidence = Readonly<{
+  sourceStream: string;
+  sourceMessageId: string;
+  consumerGroup: string;
+  consumerName: string;
+  eventId?: string;
+  eventType?: string;
+  producer?: string;
+  originalEnvelope?: string;
+  failureKind: "INVALID_ENVELOPE" | "FATAL_HANDLER" | "RETRY_EXHAUSTED";
+  failureReason: string;
+  attempts: number;
+  deadLetteredAt: string;
+}>;
+
+export interface DeadLetterEvidenceSink {
+  recordDeadLetter(evidence: DeadLetterEvidence): Promise<void>;
+}
+
 export interface EventPublisher {
   publish(envelope: EventEnvelope): Promise<void>;
 }
@@ -440,7 +459,10 @@ export class RedisEventSubscriber implements EventSubscriber {
   constructor(
     private readonly redis: Redis = createRedisClient(redisUrl(), {}, "subscriber"),
     private readonly onLoopFailure: SubscriberLoopFailureHandler = defaultLoopFailureHandler,
-    private readonly options: Readonly<{ thrownHandlerErrors?: "retry" | "dlq" }> = {},
+    private readonly options: Readonly<{
+      thrownHandlerErrors?: "retry" | "dlq";
+      deadLetterEvidenceSink?: DeadLetterEvidenceSink;
+    }> = {},
   ) {
     this.startedPromise = new Promise((resolve, reject) => {
       this.resolveStarted = resolve;
@@ -859,16 +881,30 @@ export class RedisEventSubscriber implements EventSubscriber {
     const failureReason = truncateFailureReason(reason);
     const safeAttempts = Math.max(1, attempts);
     const deadLetteredAt = new Date().toISOString();
+    const identity = deadLetterIdentity(envelopeJson);
+    const failureKind = deadLetterFailureKind(reason, safeAttempts);
     console.warn({
       service: group,
       stream,
-      eventId: eventIdForLog(envelopeJson),
+      eventId: identity.eventId ?? "unknown",
       deliveries: safeAttempts,
       consumerGroup: group,
       failureReason,
       attempts: safeAttempts,
       deadLetteredAt,
       message: "moving message to DLQ",
+    });
+    await this.options.deadLetterEvidenceSink?.recordDeadLetter({
+      sourceStream: stream,
+      sourceMessageId: entry[0],
+      consumerGroup: group,
+      consumerName,
+      ...identity,
+      originalEnvelope: fieldValue(entry[1], "envelope"),
+      failureKind,
+      failureReason,
+      attempts: safeAttempts,
+      deadLetteredAt,
     });
     await this.redis.xadd(
       dlqForStream(stream),
@@ -943,6 +979,30 @@ export class RedisEventSubscriber implements EventSubscriber {
       await this.redis.connect();
     }
   }
+}
+
+function deadLetterIdentity(envelopeJson: string): Pick<DeadLetterEvidence, "eventId" | "eventType" | "producer"> {
+  try {
+    const parsed = JSON.parse(envelopeJson) as Record<string, unknown>;
+    return {
+      ...(typeof parsed.eventId === "string" && parsed.eventId.length > 0 ? { eventId: parsed.eventId } : {}),
+      ...(typeof parsed.eventType === "string" && parsed.eventType.length > 0 ? { eventType: parsed.eventType } : {}),
+      ...(typeof parsed.producer === "string" && parsed.producer.length > 0 ? { producer: parsed.producer } : {}),
+    };
+  } catch {
+    return {};
+  }
+}
+
+function deadLetterFailureKind(reason: unknown, attempts: number): DeadLetterEvidence["failureKind"] {
+  const text = truncateFailureReason(reason);
+  if (text.includes("MissingEnvelope") || text.includes("could not be deserialized") || text.includes("JSON")) {
+    return "INVALID_ENVELOPE";
+  }
+  if (attempts >= MAX_HANDLER_FAILURES && !(reason instanceof HandlerError && reason.kind === "fatal")) {
+    return "RETRY_EXHAUSTED";
+  }
+  return "FATAL_HANDLER";
 }
 
 export class RedisStreamEventSubscriber extends RedisEventSubscriber {}
