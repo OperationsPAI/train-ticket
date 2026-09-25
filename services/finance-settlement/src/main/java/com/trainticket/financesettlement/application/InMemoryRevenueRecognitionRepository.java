@@ -38,6 +38,19 @@ public class InMemoryRevenueRecognitionRepository implements RevenueRecognitionR
     }
 
     @Override
+    public List<String> findSupplierIdsForPeriod(LocalDate startDate, LocalDate endDate) {
+        return revenueRecognitions.values().stream()
+            .filter(recognition -> recognition.componentCode().equals("fare"))
+            .filter(recognition -> !recognition.orderItemId().equals(recognition.orderId()))
+            .filter(recognition -> !recognition.recognizedAt().atZone(ZoneOffset.UTC).toLocalDate().isBefore(startDate))
+            .filter(recognition -> !recognition.recognizedAt().atZone(ZoneOffset.UTC).toLocalDate().isAfter(endDate))
+            .map(RevenueRecognition::orderItemId)
+            .distinct()
+            .sorted()
+            .toList();
+    }
+
+    @Override
     public void save(RevenueRecognition recognition) {
         revenueRecognitions.put(recognition.revenueRecognitionId(), recognition);
     }

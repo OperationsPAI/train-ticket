@@ -10,6 +10,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.trainticket.financesettlement.application.BenefitCostEntry;
 import com.trainticket.financesettlement.application.FinanceSettlementApplicationService;
 import com.trainticket.financesettlement.application.FinanceSettlementProjectionRepository;
+import com.trainticket.financesettlement.application.SettlementScheduleRunRepository;
 import com.trainticket.financesettlement.domain.Money;
 import com.trainticket.financesettlement.domain.ReconciliationCase;
 import com.trainticket.financesettlement.domain.RevenueRecognition;
@@ -34,6 +35,9 @@ class FinanceSettlementControllerTest {
 
     @Autowired
     FinanceSettlementProjectionRepository projections;
+
+    @Autowired
+    SettlementScheduleRunRepository scheduleRuns;
 
     private RevenueRecognition recognition;
     private ReconciliationCase reconciliationCase;
@@ -166,5 +170,24 @@ class FinanceSettlementControllerTest {
                 .content("{\"orderId\":\"" + orderId + "\"}"))
             .andExpect(status().isBadRequest())
             .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
+    }
+
+    @Test
+    void exposesPersistedSettlementScheduleRuns() throws Exception {
+        Instant now = Instant.parse("2026-09-25T06:00:00Z");
+        String key = "daily-reconciliation:2026-09-24:" + UUID.randomUUID();
+        scheduleRuns.acquire(key, "DAILY_RECONCILIATION", java.time.LocalDate.parse("2026-09-24"), java.time.LocalDate.parse("2026-09-24"),
+            "test", now, java.time.Duration.ofMinutes(1)).orElseThrow();
+        scheduleRuns.complete(key, "test", java.util.List.of("rb-test"), now.plusSeconds(1));
+
+        mockMvc.perform(get("/api/v1/settlement-schedule-runs/{key}", key))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.jobKey").value(key))
+            .andExpect(jsonPath("$.status").value("SUCCEEDED"))
+            .andExpect(jsonPath("$.resultRefs[0]").value("rb-test"));
+
+        mockMvc.perform(get("/api/v1/settlement-schedule-runs").param("limit", "20").param("offset", "0"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.total").isNumber());
     }
 }
