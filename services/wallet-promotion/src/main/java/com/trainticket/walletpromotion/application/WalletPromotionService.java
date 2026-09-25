@@ -6,6 +6,7 @@ import com.trainticket.platformkit.http.ApiException;
 import com.trainticket.walletpromotion.domain.BalanceType;
 import com.trainticket.walletpromotion.domain.BenefitRedemption;
 import com.trainticket.walletpromotion.domain.BenefitType;
+import com.trainticket.walletpromotion.domain.BenefitUseReference;
 import com.trainticket.walletpromotion.domain.BusinessReason;
 import com.trainticket.walletpromotion.domain.DomainException;
 import com.trainticket.walletpromotion.domain.Money;
@@ -29,15 +30,17 @@ import org.springframework.transaction.annotation.Transactional;
 public class WalletPromotionService {
     private static final org.slf4j.Logger LOGGER = org.slf4j.LoggerFactory.getLogger(WalletPromotionService.class);
     private final PromotionRepository repository;
+    private final BenefitScopeVerifier scopeVerifier;
     private final Clock clock;
 
     @org.springframework.beans.factory.annotation.Autowired
-    public WalletPromotionService(PromotionRepository repository) {
-        this(repository, Clock.systemUTC());
+    public WalletPromotionService(PromotionRepository repository, BenefitScopeVerifier scopeVerifier) {
+        this(repository, scopeVerifier, Clock.systemUTC());
     }
 
-    WalletPromotionService(PromotionRepository repository, Clock clock) {
+    WalletPromotionService(PromotionRepository repository, BenefitScopeVerifier scopeVerifier, Clock clock) {
         this.repository = repository;
+        this.scopeVerifier = scopeVerifier;
         this.clock = clock;
     }
 
@@ -117,6 +120,7 @@ public class WalletPromotionService {
     public PromotionInstrument reserve(String id, ReserveBenefitCommand command) {
         Instant now = clock.instant();
         PromotionInstrument before = getBenefit(id);
+        scopeVerifier.verify(before, resolveUseReference(command.useReference(), command.reservationRef(), command.businessReason()), command.businessReason());
         PromotionInstrument after = mapDomain(() -> before.reserve(command.amount(), command.businessReason(), now));
         Money availableDelta = command.amount().negate();
         Money redeemedDelta = Money.zero(command.amount().currency());
@@ -145,6 +149,7 @@ public class WalletPromotionService {
     public RedeemResult redeem(String id, RedeemBenefitCommand command) {
         Instant now = clock.instant();
         PromotionInstrument before = getBenefit(id);
+        scopeVerifier.verify(before, resolveUseReference(command.useReference(), command.redemptionRef(), command.businessReason()), command.businessReason());
         Optional<BenefitRedemption> existing = repository.findRedemptionByReason(id, command.businessReason());
         if (existing.isPresent()) {
             BenefitRedemption redemption = existing.get();
@@ -368,6 +373,24 @@ public class WalletPromotionService {
 
     private static String ledgerId() {
         return "wle-" + UUID.randomUUID();
+    }
+
+    private static BenefitUseReference resolveUseReference(
+        BenefitUseReference explicit,
+        String operationReference,
+        BusinessReason reason
+    ) {
+        if (explicit != null) return explicit;
+        if (reason != null
+            && "ORDER".equals(reason.referenceType())
+            && reason.referenceId() != null
+            && reason.referenceId().equals(operationReference)) {
+            return new BenefitUseReference(reason.referenceId(), null, List.of());
+        }
+        throw new ApiException(
+            ApiErrorCode.PRECONDITION_FAILED,
+            "useReference is required unless the operation and businessReason identify the same order"
+        );
     }
 
     private static ApiException notFound(String message) {

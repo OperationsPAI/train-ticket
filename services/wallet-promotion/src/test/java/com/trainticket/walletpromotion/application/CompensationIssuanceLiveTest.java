@@ -16,6 +16,7 @@ import com.trainticket.platformkit.persistence.OutboxAppender;
 import com.trainticket.walletpromotion.adapters.http.WalletPromotionController;
 import com.trainticket.walletpromotion.domain.ApplicableScope;
 import com.trainticket.walletpromotion.domain.BalanceType;
+import com.trainticket.walletpromotion.domain.BenefitScopeType;
 import com.trainticket.walletpromotion.domain.BenefitType;
 import com.trainticket.walletpromotion.domain.BusinessReason;
 import com.trainticket.walletpromotion.domain.IssuanceSource;
@@ -200,7 +201,7 @@ class CompensationIssuanceLiveTest {
         // Anchor validity to the recorded quote and the executor's 30 day policy.
         Instant validFrom = Instant.parse(text(decision, "quotedAt"));
         return new IssueBenefitCommand(accountId, BenefitType.COMPENSATION_CREDIT, BalanceType.PROMOTION_CREDIT,
-            money, IssuanceSource.POST_SALES_COMP, caseId, new ApplicableScope("ANY_TRIP", null, money.currency()),
+            money, IssuanceSource.POST_SALES_COMP, caseId, new ApplicableScope(BenefitScopeType.ANY_TRIP, null, money.currency()),
             new RedemptionRule(false, null, false), new RevocationRule(null), validFrom, validFrom.plus(Duration.ofDays(30)),
             new BusinessReason(ReasonType.POST_SALES_COMP, text(recorded, "reasonCode"), "POST_SALES_CASE", caseId, null));
     }
@@ -405,7 +406,7 @@ class CompensationIssuanceLiveTest {
 
         @Bean
         WalletPromotionService walletPromotionService(PromotionRepository repository) {
-            return new WalletPromotionService(repository);
+            return new WalletPromotionService(repository, (benefit, useReference, businessReason) -> { });
         }
 
         @Bean
