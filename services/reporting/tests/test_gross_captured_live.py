@@ -21,6 +21,7 @@ from reporting.domain import MetricAggregator, Money
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / "migrations/005_gross_captured_revenue.sql"
+CURRENT_MIGRATION = ROOT / "migrations/006_exclude_incomplete_captures.sql"
 RECORDING = json.loads((ROOT / "tests/fixtures/gross_captured_recorded.json").read_text())
 VIEWS = (
     "reporting_revenue_by_route",
@@ -81,7 +82,7 @@ def database():
             }) as pool:
                 with pool.connection() as conn:
                     for migration in sorted((ROOT / "migrations").glob("*.sql")):
-                        if migration != MIGRATION:
+                        if migration not in {MIGRATION, CURRENT_MIGRATION}:
                             conn.execute(migration.read_text())
                 yield pool
         finally:
@@ -99,6 +100,11 @@ def migrate(conn):
     started = time.perf_counter()
     conn.execute(MIGRATION.read_text())
     return time.perf_counter() - started
+
+
+def migrate_current(conn):
+    conn.execute("SET LOCAL reporting.allow_revenue_rebuild = 'on'")
+    conn.execute(CURRENT_MIGRATION.read_text())
 
 
 def shape(conn):
@@ -221,6 +227,40 @@ def test_real_null_dimensions_hour_boundary_and_refunds(database):
     assert aggregator.snapshot(last.occurred_at + timedelta(hours=1, microseconds=1)).revenue_per_hour == ()
 
 
+def test_incomplete_capture_is_retained_but_excluded_consistently(database):
+    incomplete = dict(RECORDING["linked_rows"][0])
+    incomplete.update({
+        "event_id": "evt-incomplete-capture",
+        "event_type": "PaymentCaptured",
+        "amount": None,
+        "currency": "CNY",
+        "channel": "WECHAT_PAY",
+    })
+    rows = [*RECORDING["linked_rows"], incomplete]
+    with database.connection() as conn:
+        insert_rows(conn, rows)
+        migrate(conn)
+        assert conn.execute(
+            "SELECT sum(payment_count),sum(revenue) FROM reporting_revenue_breakdowns WHERE dimension='channel'"
+        ).fetchone() == (21, Decimal("1928.59"))
+        before = source_rows(conn)
+        migrate_current(conn)
+        assert source_rows(conn) == before
+        assert conn.execute(
+            "SELECT sum(payment_count),sum(revenue) FROM reporting_revenue_breakdowns WHERE dimension='channel'"
+        ).fetchone() == (20, Decimal("1928.59"))
+        assert conn.execute(
+            "SELECT count(*) FROM reporting_metric_events WHERE event_id='evt-incomplete-capture'"
+        ).fetchone()[0] == 1
+
+    aggregator = MetricAggregator()
+    for event in recorded_events(rows):
+        aggregator.record(event)
+    report = aggregator.revenue_report("channel")
+    assert sum(item.count for item in report.items) == 20
+    assert report.total_revenue == (Money("1928.59", "CNY"),)
+
+
 def test_empty_install_and_active_refresh_guard(database):
     with database.connection() as holder:
         assert holder.execute(LOCK).fetchone()[0]
@@ -308,15 +348,15 @@ def test_coordinated_runner_records_exact_version_and_skips_rebuild(database):
         schema = conn.execute("SELECT current_schema()").fetchone()[0]
         conn.execute("CREATE TABLE schema_migrations (version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())")
         for path in sorted((ROOT / "migrations").glob("*.sql")):
-            if path != MIGRATION:
+            if path not in {MIGRATION, CURRENT_MIGRATION}:
                 conn.execute("INSERT INTO schema_migrations(version) VALUES (%s)", (path.name,))
     result = module.migrate_revenue(os.environ["REPORTING_TEST_DATABASE_URL"], schema, 30)
-    assert result["version"] == MIGRATION.name
+    assert result["version"] == CURRENT_MIGRATION.name
     assert any("Reporting revenue swap took" in notice for notice in result["notices"])
     print(json.dumps(result))
     with database.connection() as conn:
         oids = conn.execute("SELECT oid FROM pg_class WHERE oid=ANY(%s::regclass[]) ORDER BY oid", (list(VIEWS),)).fetchall()
-        assert conn.execute("SELECT count(*) FROM schema_migrations WHERE version=%s", (MIGRATION.name,)).fetchone()[0] == 1
+        assert conn.execute("SELECT count(*) FROM schema_migrations WHERE version=ANY(%s)", ([MIGRATION.name, CURRENT_MIGRATION.name],)).fetchone()[0] == 2
         assert_reference(conn)
     again = module.migrate_revenue(os.environ["REPORTING_TEST_DATABASE_URL"], schema, 30)
     assert again["applied_at"] == result["applied_at"]
