@@ -39,12 +39,14 @@ public record PromotionInstrument(
         if (!issuedAmount.currency().equals(applicableScope.currency())) throw new DomainException("scope currency must match issuedAmount");
         long accounted = Math.addExact(Math.addExact(availableAmount.minorUnits(), reservedAmount.minorUnits()), redeemedAmount.minorUnits());
         if (accounted > issuedAmount.minorUnits()) throw new DomainException("benefit balances exceed issuedAmount");
-        if (issuanceSource == IssuanceSource.POST_SALES_COMP && (caseId == null || caseId.isBlank())) throw new DomainException("caseId is required for POST_SALES_COMP");
+        if (issuanceSource != IssuanceSource.MANUAL_OPS && (caseId == null || caseId.isBlank())) {
+            throw new DomainException("caseId is required for compensation issuance");
+        }
     }
 
     public static PromotionInstrument issue(String id, String accountId, String walletAccountId, BenefitType benefitType, BalanceType balanceType, Money amount, IssuanceSource source, String caseId, ApplicableScope scope, RedemptionRule redemptionRule, RevocationRule revocationRule, Instant validFrom, Instant validUntil, BusinessReason reason, Instant now) {
         amount.requirePositive("amount");
-        return new PromotionInstrument(id, accountId, walletAccountId, benefitType, balanceType, PromotionStatus.ISSUED, amount, amount, Money.zero(amount.currency()), Money.zero(amount.currency()), source, source == IssuanceSource.POST_SALES_COMP ? caseId : null, scope, redemptionRule, revocationRule, validFrom, validUntil, reason, now, now, 1);
+        return new PromotionInstrument(id, accountId, walletAccountId, benefitType, balanceType, PromotionStatus.ISSUED, amount, amount, Money.zero(amount.currency()), Money.zero(amount.currency()), source, source == IssuanceSource.MANUAL_OPS ? null : caseId, scope, redemptionRule, revocationRule, validFrom, validUntil, reason, now, now, 1);
     }
 
     public PromotionInstrument reserve(Money amount, BusinessReason reason, Instant now) {
@@ -82,6 +84,7 @@ public record PromotionInstrument(
     }
 
     public PromotionInstrument release(Money amount, BusinessReason reason, Instant now) {
+        requireUsable(now);
         amount.requirePositive("amount"); issuedAmount.requireSameCurrency(amount);
         requireActive("released");
         if (reservedAmount.minorUnits() < amount.minorUnits()) throw new DomainException("insufficient reserved benefit amount");

@@ -41,20 +41,33 @@ This duration is supplied by the compensation executor; the wallet issuance API 
 The business reason uses `reasonType=POST_SALES_COMP`, the case `reasonCode`, `referenceType=POST_SALES_CASE` and `referenceId=caseId`.
 Zero approved compensation amounts complete in Post Sales without calling wallet issuance.
 
-## Case deduplication
+## Issuance deduplication and concurrency
 
-For `issuanceSource=POST_SALES_COMP`, the service checks the complete `IssueBenefitCommand` against any issuance recorded for the same `caseId`.
-An identical command returns the existing benefit, including when the caller supplies a different HTTP idempotency key.
-A command differing in account, amount, types, rules, validity timestamps or business reason returns HTTP 409 `CONFLICT`.
-An accepted replay adds no benefit, wallet credit, ledger entry or `BenefitIssued` event.
+Every issuance has a durable business identity. `POST_SALES_COMP` and
+`DISRUPTION_COMP` use their canonical `caseId`; a caller may provide
+`issuanceRef` explicitly; legacy manual issuance derives the key from account
+and the complete business reason. An identical command returns the existing
+benefit even with another HTTP idempotency key. Reusing an issuance identity
+with different account, amount, types, rules, validity timestamps or reason
+returns HTTP 409 `CONFLICT`. A replay adds no benefit, wallet credit, ledger
+entry or `BenefitIssued` event.
 An existing compensation benefit without its recorded issuance request returns HTTP 409 `CONFLICT` and remains unchanged.
 The database also enforces one compensation benefit per case through a unique partial index.
 The HTTP filter separately returns `IDEMPOTENCY_KEY_REUSED` when a stored idempotency key is reused for a different request.
 
-The PostgreSQL repository acquires transaction advisory locks for the case and receiving account before checking or creating the issuance.
-Migration `005_compensation_issuance.sql` defines `compensation_issuances` with `case_id` as its primary key, a unique `benefit_id` and the original request as JSONB.
+The PostgreSQL repository acquires a transaction advisory lock for the receiving
+account before reading or writing any wallet mutation. It then rereads the
+current benefit, wallet and operation record inside the lock. Different
+benefits owned by one account therefore cannot race on the shared wallet
+snapshot, and equal issuance/reservation/redemption/release/reversal replays
+converge instead of surfacing a snapshot version conflict.
+
+Migration `007_durable_issuance_identity.sql` upgrades the compensation table to
+`benefit_issuances`, keys it by the durable issuance identity and backfills
+existing benefit snapshots. The table retains a unique `benefit_id` and the
+original request as JSONB.
 The issuance record, benefit snapshot, wallet snapshot, ledger entry and event outbox are written in the issuance transaction.
-The in memory repository also compares recorded commands by case.
+The in-memory repository applies the same business-key comparison.
 
 ## Execution evidence
 
@@ -84,6 +97,11 @@ Java represents benefit commands, monetary values and transaction boundaries exp
 ```bash
 mvn test
 ```
+
+Set `TEST_DATABASE_URL` to execute `WalletMutationConcurrencyLiveTest`. It runs
+16-way concurrent same-operation replay, distinct issuance to one account,
+mixed redeem/release, reservation expiry and reversal, asserting snapshots,
+ledger rows, outbox rows and business-operation records after every phase.
 
 `CompensationIssuanceLiveTest` uses a recorded approved case and its actual order account with an isolated PostgreSQL schema.
 It verifies eight concurrent requests, service reconstruction, amount conflict and refusal when a benefit exists without its issuance record.
