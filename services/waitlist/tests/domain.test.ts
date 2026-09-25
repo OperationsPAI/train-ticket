@@ -49,6 +49,17 @@ test("a requeued entry rotates fulfillment effect keys for the next promotion", 
   assert.deepEqual(WaitlistEntry.fromSnapshot(entry.toSnapshot()).fulfillment, second);
 });
 
+test("an authoritative confirmed order fulfills a suspended linked request", () => {
+  const entry = WaitlistEntry.create({ entryId: "wl-confirm-suspended", accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", priority: {} });
+  entry.offer("offer-1", 1, "fare-1", undefined, new Date("2026-01-01T00:00:00.000Z"), new Date("2026-01-01T00:15:00.000Z"));
+  entry.linkJourneyOrder(new Date("2026-01-01T00:01:00.000Z"), "ord-1", { currency: "CNY", minorUnits: 100 });
+  entry.suspend();
+
+  entry.confirmJourneyOrder("ord-1");
+
+  assert.equal(entry.status, "FULFILLED");
+});
+
 test("offer acceptance rejects the exact expiry instant", () => {
   const entry = WaitlistEntry.create({ entryId: "wl-expiry", accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND_CLASS", priority: {} });
   const now = new Date("2026-01-01T00:00:00.000Z");
