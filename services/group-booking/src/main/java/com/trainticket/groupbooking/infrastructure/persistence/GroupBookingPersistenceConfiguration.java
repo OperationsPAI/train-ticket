@@ -1,7 +1,13 @@
 package com.trainticket.groupbooking.infrastructure.persistence;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.trainticket.platformkit.idempotency.IdempotencyStore;
+import com.trainticket.platformkit.messaging.EventPublisher;
 import com.trainticket.platformkit.persistence.DataSources;
+import com.trainticket.platformkit.persistence.DbIdempotencyStore;
+import com.trainticket.platformkit.persistence.LazyRedisOutboxRelayLifecycle;
 import com.trainticket.platformkit.persistence.MigrationRunner;
+import com.trainticket.platformkit.persistence.OutboxAppender;
 import java.nio.file.Path;
 import javax.sql.DataSource;
 import org.springframework.beans.factory.annotation.Value;
@@ -58,6 +64,28 @@ public class GroupBookingPersistenceConfiguration {
         MigrationRunner runner = new MigrationRunner(dataSource, transactionManager);
         runner.run(migrationsDirectory(migrationsDirectory));
         return runner;
+    }
+
+    @Bean
+    @Primary
+    IdempotencyStore groupBookingIdempotencyStore(DataSource dataSource, ObjectMapper mapper) {
+        return new DbIdempotencyStore(dataSource, mapper);
+    }
+
+    @Bean
+    @Primary
+    EventPublisher groupBookingOutboxPublisher(DataSource dataSource, ObjectMapper mapper) {
+        OutboxAppender outbox = new OutboxAppender(dataSource, mapper);
+        return outbox::append;
+    }
+
+    @Bean(destroyMethod = "close")
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(
+        name = "group-booking.outbox-relay.enabled", havingValue = "true", matchIfMissing = true)
+    LazyRedisOutboxRelayLifecycle groupBookingOutboxRelay(DataSource dataSource, @Value("${REDIS_URL:redis://localhost:6379}") String redisUrl) {
+        LazyRedisOutboxRelayLifecycle relay = new LazyRedisOutboxRelayLifecycle(dataSource, redisUrl);
+        relay.start();
+        return relay;
     }
 
     static Path migrationsDirectory(String configuredDirectory) {
