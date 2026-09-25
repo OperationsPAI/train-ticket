@@ -160,8 +160,8 @@ impl PostgresCapacityService {
     ) -> Result<(), AppError> {
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
             .bind(format!(
-                "capacity-supply:{}:{}:{}",
-                supply.scheduled_service_ref, supply.service_date, supply.class_ref
+                "capacity-supply:{}:{}",
+                supply.scheduled_service_ref, supply.service_date
             ))
             .execute(&mut **tx)
             .await
@@ -176,7 +176,7 @@ impl PostgresCapacityService {
         segments: &PreparedSupply,
         correlation: &str,
         now: u64,
-    ) -> Result<(SeatSupply, usize), AppError> {
+    ) -> Result<(SeatSupply, Vec<String>), AppError> {
         let rows: Vec<(Value, Option<Value>)> = sqlx::query_as(
             "SELECT hold, facts.data FROM inventory_pool_snapshots pool
              CROSS JOIN LATERAL jsonb_array_elements(pool.data->'holds') hold
@@ -203,10 +203,12 @@ impl PostgresCapacityService {
                     "active hold differs from its persisted reservation".into(),
                 ));
             }
+            let occupancy_class = hold.supply_evidence.as_ref()
+                .map(|evidence| evidence.occupancy_class_ref.as_str())
+                .unwrap_or(hold_facts.class_ref.as_str());
             if hold_facts.scheduled_service_ref != facts.scheduled_service_ref
                 || hold_facts.service_date != facts.service_date
-                || hold_facts.class_ref != facts.class_ref
-            {
+                || occupancy_class != facts.class_ref {
                 continue;
             }
             let route = segments.route(&hold_facts.segment_ref)?;
@@ -223,6 +225,7 @@ impl PostgresCapacityService {
                 segment_booking_id: hold_facts.segment_booking_id,
                 journey_order_id: hold_facts.journey_order_id,
                 traveler_ref: hold_facts.traveler_ref,
+                capacity_unit_ref: hold.capacity_unit_ref,
                 interval: SupplyInterval {
                     from_seq: hold.from_seq,
                     to_seq: hold.to_seq,
@@ -236,12 +239,30 @@ impl PostgresCapacityService {
             ));
         }
         let supply = self.supply_client.seats(facts, correlation).await?;
-        let available = supply.remaining(&route.interval, &occupancy)?;
+        let available = supply.available_refs(&route.interval, &occupancy)?;
         sqlx::query("INSERT INTO capacity_supply_observations(inventory_pool_id,seat_map_id,seat_map_version,sellable_capacity,data) VALUES($1,$2,$3,$4,$5) ON CONFLICT(inventory_pool_id) DO UPDATE SET seat_map_id=EXCLUDED.seat_map_id,seat_map_version=EXCLUDED.seat_map_version,sellable_capacity=EXCLUDED.sellable_capacity,data=EXCLUDED.data,observed_at=now()")
             .bind(pool_id_for(&facts.segment_ref,&facts.class_ref)).bind(&supply.seat_map_id).bind(supply.seat_map_version as i64)
             .bind(supply.capacity() as i32).bind(serde_json::to_value(&supply).map_err(|e| AppError::Internal(e.to_string()))?)
             .execute(&mut **tx).await.map_err(to_app_storage)?;
         Ok((supply, available))
+    }
+
+    pub(super) async fn admission_supply(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        accepted: &ReservationSupply,
+        segments: &PreparedSupply,
+        correlation: &str,
+        now: u64,
+    ) -> Result<(ReservationSupply, SeatSupply, Vec<String>), AppError> {
+        let (supply, available) = self.available_supply(tx, accepted, segments, correlation, now).await?;
+        if !available.is_empty() || accepted.class_ref == "STANDING" || !accepted.standing_accepted {
+            return Ok((accepted.clone(), supply, available));
+        }
+        let mut standing = accepted.clone();
+        standing.class_ref = "STANDING".into();
+        let (supply, available) = self.available_supply(tx, &standing, segments, correlation, now).await?;
+        Ok((standing, supply, available))
     }
 }
 
