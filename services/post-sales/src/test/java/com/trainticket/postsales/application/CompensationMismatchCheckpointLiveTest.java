@@ -44,6 +44,7 @@ class CompensationMismatchCheckpointLiveTest {
                     var first=execution(repository,new PostgresCompensationMismatchStore(pool,fixture.mapper()),fixture.mapper(),server.base());
                     var failure=assertThrows(CompensationMismatchException.class,()->first.advance(fixture.caseId(),"corr-first"));
                     assertEquals("REFUND_AND_WALLET_CONFLICT",failure.checkpoint().mismatchCode());
+                    assertEquals(1000,failure.checkpoint().approvedMinorUnits());
                     assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM compensation_mismatch_checkpoints",Integer.class));
                     assertEquals("ref-settled",jdbc.queryForObject("SELECT refund_evidence->'items'->0->>'refundId' FROM compensation_mismatch_checkpoints",String.class));
                     assertEquals(0,posts.get(),"mismatch detection must never issue another refund or wallet credit");
@@ -54,6 +55,7 @@ class CompensationMismatchCheckpointLiveTest {
                     var restarted=execution(new PostgresPostSalesRepository(pool,fixture.mapper()),new PostgresCompensationMismatchStore(pool,fixture.mapper()),fixture.mapper(),server.base());
                     var replay=assertThrows(CompensationMismatchException.class,()->restarted.advance(fixture.caseId(),"corr-replay"));
                     assertEquals(failure.checkpoint().detectedAt(),replay.checkpoint().detectedAt());
+                    assertEquals(failure.checkpoint().refundEvidence(),replay.checkpoint().refundEvidence());
                     assertEquals(requestsBefore,server.requestCount());
 
                     var original=new PostgresCompensationMismatchStore(pool,fixture.mapper()).find(fixture.caseId()).orElseThrow();
