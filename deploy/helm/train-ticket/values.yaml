@@ -545,7 +545,9 @@ mailpit:
 
 loadgen:
   enabled: true
-  replicas: 1
+  # Synthetic traffic stays paused while backlog recovery and shard cutovers
+  # are in progress. Final acceptance enables it for one bounded run.
+  replicas: 0
   # NOTE: customer concurrency is set by run.workers in
   # deploy/helm/train-ticket/loadgen-config.yaml, not from here -- the
   # template has no way to inject it into the mounted config file.
