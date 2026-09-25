@@ -48,10 +48,8 @@ public class WalletPromotionService {
 
     @Transactional
     public PromotionInstrument issue(IssueBenefitCommand command) {
-        if(command.issuanceSource()==IssuanceSource.POST_SALES_COMP) {
-            var existing=repository.findCompensationIssue(command);
-            if(existing.isPresent())return existing.get();
-        }
+        var existing = repository.findIssue(command);
+        if (existing.isPresent()) return existing.get();
         Instant now = clock.instant();
         String walletAccountId = repository.findWalletByAccountId(command.accountId())
             .map(WalletAccount::walletAccountId)
@@ -92,7 +90,7 @@ public class WalletPromotionService {
             zero
         );
         repository.saveMutation(benefit, wallet, EventFactory.issued(benefit, delta, now), MutationArtifacts.none());
-        if(command.issuanceSource()==IssuanceSource.POST_SALES_COMP)repository.recordCompensationIssue(command,benefit.benefitId());
+        repository.recordIssue(command, benefit.benefitId());
         return benefit;
     }
 
@@ -121,23 +119,27 @@ public class WalletPromotionService {
     @Transactional
     public PromotionInstrument reserve(String id, ReserveBenefitCommand command) {
         Instant now = clock.instant();
-        PromotionInstrument before = getBenefit(id);
+        PromotionInstrument candidate = getBenefit(id);
         BenefitUseReference useReference = resolveUseReference(command.useReference(), command.reservationRef(), command.businessReason());
         requireText(command.reservationRef(), "reservationRef");
+        Optional<BenefitReservation> prior = repository.findReservation(id, command.reservationRef());
+        if (prior.isPresent()) {
+            PromotionInstrument current = lockedBenefit(id);
+            BenefitReservation persisted = repository.findReservation(id, command.reservationRef()).orElse(prior.get());
+            return replayedReservation(current, persisted, command, useReference);
+        }
         if (command.reservationExpiresAt() == null || !command.reservationExpiresAt().isAfter(now)) {
             throw new ApiException(ApiErrorCode.PRECONDITION_FAILED, "reservationExpiresAt must be in the future");
         }
-        if (command.reservationExpiresAt().isAfter(before.validUntil())) {
+        if (command.reservationExpiresAt().isAfter(candidate.validUntil())) {
             throw new ApiException(ApiErrorCode.PRECONDITION_FAILED, "reservation cannot outlive the benefit");
         }
+        scopeVerifier.verify(candidate, useReference, command.businessReason());
+        PromotionInstrument before = lockedBenefit(id);
         Optional<BenefitReservation> existing = repository.findReservation(id, command.reservationRef());
         if (existing.isPresent()) {
-            if (existing.get().sameRequest(command.amount(), command.reservationExpiresAt(), useReference, command.businessReason())) {
-                return before;
-            }
-            throw new ApiException(ApiErrorCode.CONFLICT, "reservationRef already has another reservation request");
+            return replayedReservation(before, existing.get(), command, useReference);
         }
-        scopeVerifier.verify(before, useReference, command.businessReason());
         PromotionInstrument after = mapDomain(() -> before.reserve(command.amount(), command.businessReason(), now));
         BenefitReservation reservation = mapDomain(() -> BenefitReservation.reserve(
             command.reservationRef(), before, command.amount(), command.reservationExpiresAt(), useReference,
@@ -169,20 +171,19 @@ public class WalletPromotionService {
     @Transactional
     public RedeemResult redeem(String id, RedeemBenefitCommand command) {
         Instant now = clock.instant();
-        PromotionInstrument before = getBenefit(id);
+        PromotionInstrument candidate = getBenefit(id);
         requireText(command.redemptionRef(), "redemptionRef");
         BenefitUseReference useReference = resolveUseReference(command.useReference(), command.redemptionRef(), command.businessReason());
-        Optional<BenefitRedemption> existing = repository.findRedemptionByReference(id, command.redemptionRef());
-        if (existing.isPresent()) {
-            BenefitRedemption redemption = existing.get();
-            if (redemption.sameRequest(
-                command.amount(), command.redemptionRef(), command.reservationRef(), useReference, command.businessReason()
-            )) {
-                return new RedeemResult(before, redemption);
-            }
-            throw new ApiException(ApiErrorCode.CONFLICT, "redemptionRef already has another redemption request");
+        Optional<BenefitRedemption> prior = repository.findRedemptionByReference(id, command.redemptionRef());
+        if (prior.isPresent()) {
+            PromotionInstrument current = lockedBenefit(id);
+            BenefitRedemption persisted = repository.findRedemptionByReference(id, command.redemptionRef()).orElse(prior.get());
+            return replayedRedemption(current, persisted, command, useReference);
         }
-        scopeVerifier.verify(before, useReference, command.businessReason());
+        scopeVerifier.verify(candidate, useReference, command.businessReason());
+        PromotionInstrument before = lockedBenefit(id);
+        Optional<BenefitRedemption> existing = repository.findRedemptionByReference(id, command.redemptionRef());
+        if (existing.isPresent()) return replayedRedemption(before, existing.get(), command, useReference);
 
         boolean fromReservation = command.reservationRef() != null && !command.reservationRef().isBlank();
         BenefitReservation reservation = null;
@@ -240,7 +241,7 @@ public class WalletPromotionService {
     @Transactional
     public PromotionInstrument release(String id, ReleaseBenefitCommand command) {
         Instant now = clock.instant();
-        PromotionInstrument before = getBenefit(id);
+        PromotionInstrument before = lockedBenefit(id);
         requireText(command.reservationRef(), "reservationRef");
         String releaseRef = operationRef(command.releaseRef(), command.businessReason());
         Optional<ReservationRelease> existing = repository.findReleaseByReference(id, releaseRef);
@@ -281,7 +282,7 @@ public class WalletPromotionService {
     @Transactional
     public PromotionInstrument revoke(String id, RevokeBenefitCommand command) {
         Instant now = command.effectiveAt() == null ? clock.instant() : command.effectiveAt();
-        PromotionInstrument before = getBenefit(id);
+        PromotionInstrument before = lockedBenefit(id);
         Money removed = before.availableAmount();
         Money zero = Money.zero(removed.currency());
         PromotionInstrument after = mapDomain(() -> before.revoke(command.businessReason(), now));
@@ -302,7 +303,7 @@ public class WalletPromotionService {
     @Transactional
     public ReverseResult reverse(String id, ReverseRedemptionCommand command) {
         Instant now = clock.instant();
-        PromotionInstrument before = getBenefit(id);
+        PromotionInstrument before = lockedBenefit(id);
         BenefitRedemption redemption = repository.findRedemption(command.redemptionId())
             .orElseThrow(() -> notFound("redemption not found"));
         if (!redemption.benefitId().equals(id) || !redemption.accountId().equals(before.accountId())) {
@@ -386,7 +387,9 @@ public class WalletPromotionService {
         }
     }
 
-    private void expireOne(PromotionInstrument before, Instant now) {
+    private void expireOne(PromotionInstrument candidate, Instant now) {
+        PromotionInstrument before = lockedBenefit(candidate.benefitId());
+        if (before.status().terminal() || now.isBefore(before.validUntil())) return;
         BusinessReason reason = new BusinessReason(
             ReasonType.SYSTEM_EXPIRY,
             "VALIDITY_ELAPSED",
@@ -422,11 +425,12 @@ public class WalletPromotionService {
     }
 
     private void expireReservation(BenefitReservation candidate, Instant now) {
+        PromotionInstrument before = lockedBenefit(candidate.benefitId());
         BenefitReservation current = repository.findReservation(candidate.benefitId(), candidate.reservationRef())
             .orElseThrow(() -> notFound("reservation not found"));
         if (current.status() != com.trainticket.walletpromotion.domain.BenefitReservationStatus.ACTIVE
             || now.isBefore(current.expiresAt())) return;
-        PromotionInstrument before = getBenefit(current.benefitId());
+        if (before.status().terminal()) return;
         Money amount = current.remainingAmount();
         BusinessReason reason = new BusinessReason(
             ReasonType.SYSTEM_EXPIRY, "RESERVATION_VALIDITY_ELAPSED", "ORDER", current.useReference().orderId(), null
@@ -448,6 +452,10 @@ public class WalletPromotionService {
 
     private WalletAccount wallet(String accountId, String walletId, Instant now) {
         return repository.findWalletByAccountId(accountId).orElseGet(() -> WalletAccount.create(walletId, accountId, now));
+    }
+
+    private PromotionInstrument lockedBenefit(String benefitId) {
+        return repository.lockBenefit(benefitId).orElseThrow(() -> notFound("benefit not found"));
     }
 
     private static WalletBalanceDelta delta(
@@ -487,6 +495,32 @@ public class WalletPromotionService {
         if (explicit != null && !explicit.isBlank()) return explicit.trim();
         if (reason == null) throw new ApiException(ApiErrorCode.VALIDATION_FAILED, "businessReason is required");
         return reason.key();
+    }
+
+    private static PromotionInstrument replayedReservation(
+        PromotionInstrument benefit,
+        BenefitReservation reservation,
+        ReserveBenefitCommand command,
+        BenefitUseReference useReference
+    ) {
+        if (reservation.sameRequest(command.amount(), command.reservationExpiresAt(), useReference, command.businessReason())) {
+            return benefit;
+        }
+        throw new ApiException(ApiErrorCode.CONFLICT, "reservationRef already has another reservation request");
+    }
+
+    private static RedeemResult replayedRedemption(
+        PromotionInstrument benefit,
+        BenefitRedemption redemption,
+        RedeemBenefitCommand command,
+        BenefitUseReference useReference
+    ) {
+        if (redemption.sameRequest(
+            command.amount(), command.redemptionRef(), command.reservationRef(), useReference, command.businessReason()
+        )) {
+            return new RedeemResult(benefit, redemption);
+        }
+        throw new ApiException(ApiErrorCode.CONFLICT, "redemptionRef already has another redemption request");
     }
 
     private static BenefitUseReference resolveUseReference(
