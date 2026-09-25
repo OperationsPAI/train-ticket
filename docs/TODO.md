@@ -233,6 +233,12 @@ that was made safe rather than fast.
    reservation never confirmed has fewer tickets than the order has travelers.
    Re-measure once the reservation path is clean, and if it still occurs, decide
    whether the check belongs at offer creation or at evaluation.
+7. [ ] `events:booking-orchestration:dlq` holds about eight thousand entries
+   that exhausted their delivery attempts while capacity rejected reservation
+   sources, which is a defect that is now fixed. They can never succeed and they
+   are currently the largest dead-letter population in the release; decide
+   whether to keep them as evidence or retire them before using that number as
+   an alarm.
 
 ## Handoff rules
 
