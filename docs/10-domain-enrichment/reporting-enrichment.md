@@ -8,7 +8,7 @@
 
 | 字段 | 当前计算 |
 |---|---|
-| `orders_per_second` | 最近60秒的订单事件数量，未除以60。 |
+| `orders_per_second` | 最近60秒订单事件数除以60所得的平均每秒速率，保留四位小数。 |
 | `revenue_per_hour` | 最近1小时 `PaymentCaptured` 按币种分别求和，返回 Money 数组。 |
 | `fill_rate_by_route` | 路线和服务日期的 confirmed 与 capacity 比值。 |
 | `avg_booking_latency` | 已加载事件中存在 booking latency 的样本 p50、p95、p99。 |
