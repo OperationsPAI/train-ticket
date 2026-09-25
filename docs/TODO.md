@@ -64,9 +64,9 @@ in [current status](00-current-status.md#the-resident-cycle-is-not-yet-clean):
    so the shards would fill again at the same rate. Decide what a useful
    retention for each of them is, the way the outbox and `processed_events`
    sweeps already do.
-4. [ ] A change must be able to replace a reservation whose original hold is
-   still active. The replacement is refused with `OVERLAPPING_HOLD` and the
-   case answers 422, which the load generator records as `failed_at_change-execute`.
+4. [ ] Attribute the change executions that still answer 422. Reservations no
+   longer fail, so the replacement is reaching capacity and the refusal now
+   comes from somewhere else in the case; the last window carried 403 of them.
 5. [ ] Disruption must not report a business conflict as an availability
    failure. Selecting an option for an order that already has a refund or change
    in progress answers 503 `UNAVAILABLE`; a conflict has its own status, and the
