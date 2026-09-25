@@ -1259,6 +1259,7 @@ services:
       limits: { cpu: '1', memory: 2Gi }
   customer-service:
     db: customer_service
+    image: mirrors.tencent.com/microservice/customer-service:recovery-442ab7b4@sha256:423fd7d99cd341ab91e0fbaea2c820ed6f899cbdd72531c40f93bd6fee45a867
     strategy:
       type: RollingUpdate
       rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
