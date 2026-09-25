@@ -71,7 +71,7 @@ func main() {
 			if !application.HandlesSubscribedEvent(env.EventType) {
 				return nil
 			}
-			return tx.Within(eventCtx, func(txCtx context.Context) error { return svc.HandleSubscribedEvent(txCtx, env) })
+			return kitstorage.ProcessedEventHandler(tx, tx, kitmsg.StreamFromContext(eventCtx), svc.HandleSubscribedEvent)(eventCtx, env)
 		}); err != nil {
 			log.Fatal(err)
 		}

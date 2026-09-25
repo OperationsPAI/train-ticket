@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -83,6 +84,88 @@ func TestConcurrentSeatAllocationEventReplaysConvergeWithoutConflicts(t *testing
 	}
 }
 
+func TestProcessedEventReplayIsAtomicAndPersistent(t *testing.T) {
+	databaseURL := os.Getenv("TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("TEST_DATABASE_URL is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := newSeatAssignmentTestPool(t, ctx, databaseURL, "seat_event_dedup")
+	defer pool.Close()
+
+	tx := NewTransactor(pool)
+	repo := NewRepository(tx)
+	svc := application.New(repo, NewOutboxPublisher(tx), tx.Within)
+	now := time.Now().UTC().Truncate(time.Second)
+	allocation := newEventTestAllocation("salloc-same-event", "hold-same-event", now)
+	if err := repo.SaveSeatAllocation(ctx, allocation); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(map[string]any{"seatAllocationId": allocation.SeatAllocationID, "entitlementId": "ent-same-event"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := kitmsg.EventEnvelope{EventID: ids.NewEventID(), EventType: "EntitlementIssued", CorrelationID: ids.NewCorrelationID(), Payload: payload}
+	eventCtx := kitmsg.MessageContext(ctx, "events:entitlement-ticketing", "seat-assignment")
+	var calls atomic.Int64
+	handler := kitstorage.ProcessedEventHandler(tx, tx, kitmsg.StreamFromContext(eventCtx), func(ctx context.Context, event kitmsg.EventEnvelope) error {
+		calls.Add(1)
+		return svc.HandleSubscribedEvent(ctx, event)
+	})
+	runConcurrentEvents(t, 32, func(int) error { return handler(eventCtx, event) })
+	if calls.Load() != 1 {
+		t.Fatalf("same event reached business handler %d times, want 1", calls.Load())
+	}
+	assertProcessedEvent(t, ctx, pool, event.EventID, "events:entitlement-ticketing", 1)
+	assertAllocationState(t, ctx, pool, repo, allocation.SeatAllocationID, domain.AllocationStatusConfirmed, 2)
+	assertOutboxEventCount(t, ctx, pool, allocation.SeatAllocationID, "SeatAllocationConfirmed", 1)
+
+	// A newly constructed handler represents a restarted consumer with no in-memory
+	// dedup state. The durable record must still suppress the replay.
+	restarted := kitstorage.ProcessedEventHandler(tx, tx, kitmsg.StreamFromContext(eventCtx), func(ctx context.Context, event kitmsg.EventEnvelope) error {
+		calls.Add(1)
+		return svc.HandleSubscribedEvent(ctx, event)
+	})
+	if err := restarted(eventCtx, event); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("persistent replay reached business handler after restart; calls=%d", calls.Load())
+	}
+
+	retryAllocation := newEventTestAllocation("salloc-failed-event", "hold-failed-event", now)
+	if err := repo.SaveSeatAllocation(ctx, retryAllocation); err != nil {
+		t.Fatal(err)
+	}
+	retryPayload, err := json.Marshal(map[string]any{"seatAllocationId": retryAllocation.SeatAllocationID, "entitlementId": "ent-failed-event"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	retryEvent := kitmsg.EventEnvelope{EventID: ids.NewEventID(), EventType: "EntitlementIssued", CorrelationID: ids.NewCorrelationID(), Payload: retryPayload}
+	forcedFailure := fmt.Errorf("forced downstream failure")
+	failing := kitstorage.ProcessedEventHandler(tx, tx, kitmsg.StreamFromContext(eventCtx), func(ctx context.Context, event kitmsg.EventEnvelope) error {
+		if err := svc.HandleSubscribedEvent(ctx, event); err != nil {
+			return err
+		}
+		return forcedFailure
+	})
+	if err := failing(eventCtx, retryEvent); err == nil || err.Error() != forcedFailure.Error() {
+		t.Fatalf("first attempt error=%v want %v", err, forcedFailure)
+	}
+	assertProcessedEvent(t, ctx, pool, retryEvent.EventID, "events:entitlement-ticketing", 0)
+	assertAllocationState(t, ctx, pool, repo, retryAllocation.SeatAllocationID, domain.AllocationStatusAllocated, 1)
+	assertOutboxEventCount(t, ctx, pool, retryAllocation.SeatAllocationID, "SeatAllocationConfirmed", 0)
+
+	retrying := kitstorage.ProcessedEventHandler(tx, tx, kitmsg.StreamFromContext(eventCtx), svc.HandleSubscribedEvent)
+	if err := retrying(eventCtx, retryEvent); err != nil {
+		t.Fatal(err)
+	}
+	assertProcessedEvent(t, ctx, pool, retryEvent.EventID, "events:entitlement-ticketing", 1)
+	assertAllocationState(t, ctx, pool, repo, retryAllocation.SeatAllocationID, domain.AllocationStatusConfirmed, 2)
+	assertOutboxEventCount(t, ctx, pool, retryAllocation.SeatAllocationID, "SeatAllocationConfirmed", 1)
+}
+
 func newEventTestAllocation(id, holdID string, now time.Time) *domain.ContractSeatAllocation {
 	return &domain.ContractSeatAllocation{
 		SeatAllocationID: id, SegmentBookingID: "sb-" + id, JourneyOrderID: "ord-" + id,
@@ -144,6 +227,17 @@ func assertOutboxEventCount(t *testing.T, ctx context.Context, pool *pgxpool.Poo
 	}
 	if count != want {
 		t.Fatalf("%s events for %s=%d want %d", eventType, allocationID, count, want)
+	}
+}
+
+func assertProcessedEvent(t *testing.T, ctx context.Context, pool *pgxpool.Pool, eventID, stream string, want int) {
+	t.Helper()
+	var count int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM processed_events WHERE event_id=$1 AND stream=$2", eventID, stream).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != want {
+		t.Fatalf("processed event %s/%s count=%d want %d", stream, eventID, count, want)
 	}
 }
 
