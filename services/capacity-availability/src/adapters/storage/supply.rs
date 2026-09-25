@@ -403,7 +403,16 @@ impl PostgresCapacityService {
                         // the identity does not. Backfilling the binding from
                         // the owning composition is recorded in docs/TODO.md.
                         match free_unit_for(&supply.units, &occupancy) {
-                            Some(reference) => reference,
+                            Some(reference) => {
+                                log::warn!(
+                                    "unresolved historical hold {hold_id} counted against {reference} instead of {requested}: {error}",
+                                    hold_id = hold.hold_id,
+                                    reference = reference,
+                                    requested = hold.capacity_unit_ref,
+                                    error = format!("{error:?}")
+                                );
+                                reference
+                            }
                             None => return Err(error),
                         }
                     } else {
