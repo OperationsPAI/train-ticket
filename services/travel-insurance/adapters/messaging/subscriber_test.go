@@ -21,6 +21,12 @@ func (p *capturePublisher) Publish(_ context.Context, e kitmsg.EventEnvelope) er
 	return nil
 }
 
+type payoutExecutor struct{}
+
+func (payoutExecutor) Disburse(_ context.Context, policy domain.Policy, _ domain.Claim, advice domain.PayoutAdvice, _ string) (application.PayoutReceipt, error) {
+	return application.PayoutReceipt{ExecutionRef: "ben-test", AccountID: policy.AccountID, Amount: advice.Amount, Target: domain.PayoutWalletBenefit}, nil
+}
+
 func sequentialIDs() func(string) string {
 	counters := map[string]int{}
 	return func(prefix string) string {
@@ -32,9 +38,10 @@ func sequentialIDs() func(string) string {
 func newTestService(t *testing.T, now time.Time, pub *capturePublisher) *application.InsuranceService {
 	t.Helper()
 	return application.NewInsuranceService(application.ServiceConfig{
-		Publisher:   pub,
-		Clock:       fixedClock{now},
-		IDGenerator: sequentialIDs(),
+		Publisher:      pub,
+		Clock:          fixedClock{now},
+		IDGenerator:    sequentialIDs(),
+		PayoutExecutor: payoutExecutor{},
 	})
 }
 
