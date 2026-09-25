@@ -6,6 +6,12 @@ Language: java
 
 The service records revenue, fees, reconciliation and benefit costs through PostgreSQL repositories and event processing.
 
+Daily reconciliation and supplier settlements run automatically for the latest closed UTC period. A persisted schedule-run row leases each logical period to one replica, records attempts and stores the resulting reconciliation batch or supplier settlement IDs. A failed or expired lease is retryable; a successful run is not recalculated after restart.
+
+The supplier schedule defaults to daily, a 5% platform commission and zero withholding. Configure `finance.supplier-settlement.frequency` (`DAILY`, `WEEKLY`, `MONTHLY`), `finance.supplier-settlement.commission-pct`, `finance.supplier-settlement.withholding-pct`, and the scheduler timing properties when another policy is required. Only ordinary fare revenue carrying a supplier reference distinct from the order ID is automatically settled; missing supplier attribution remains visible instead of being paid to an order identifier.
+
+Schedule evidence is available from `GET /api/v1/settlement-schedule-runs` and `GET /api/v1/settlement-schedule-runs/{jobKey}`.
+
 ## Owns
 
 - RevenueRecognition

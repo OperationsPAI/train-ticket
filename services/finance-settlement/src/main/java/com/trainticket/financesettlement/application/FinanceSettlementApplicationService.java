@@ -145,6 +145,13 @@ public class FinanceSettlementApplicationService {
             .orElseThrow(() -> new ResourceNotFoundException("supplier settlement not found"));
     }
 
+    public List<String> findSupplierIdsForPeriod(LocalDate startDate, LocalDate endDate) {
+        Objects.requireNonNull(startDate, "startDate is required");
+        Objects.requireNonNull(endDate, "endDate is required");
+        if (endDate.isBefore(startDate)) throw new ValidationException("endDate must not be before startDate");
+        return revenueRecognitions.findSupplierIdsForPeriod(startDate, endDate);
+    }
+
     List<RevenueRecognition> findRevenueRecognitionsByOrderId(String orderId) {
         return revenueRecognitions.findByOrderId(orderId);
     }
@@ -280,6 +287,7 @@ public class FinanceSettlementApplicationService {
         });
     }
 
+    @org.springframework.transaction.annotation.Transactional
     public ReconciliationBatch runDailyReconciliation(LocalDate settlementDate, String correlationId) {
         LocalDate date = settlementDate == null ? LocalDate.now(clock).minusDays(1) : settlementDate;
         return reconciliationBatches.findBySettlementDate(date).orElseGet(() -> {
@@ -324,6 +332,7 @@ public class FinanceSettlementApplicationService {
         });
     }
 
+    @org.springframework.transaction.annotation.Transactional
     public SupplierSettlement calculateSupplierSettlement(String supplierId, LocalDate startDate, LocalDate endDate, SettlementFrequency frequency,
                                                           BigDecimal commissionPct, BigDecimal withholdingPct, String correlationId) {
         requireText(supplierId, "supplierId");

@@ -6,6 +6,10 @@ import com.trainticket.financesettlement.application.ChannelStatementProjection;
 import com.trainticket.financesettlement.application.DomainEventEnvelopeMapper;
 import com.trainticket.financesettlement.application.FinanceSettlementApplicationService;
 import com.trainticket.financesettlement.application.FinanceSettlementApplicationService.Page;
+import com.trainticket.financesettlement.application.ResourceNotFoundException;
+import com.trainticket.financesettlement.application.SettlementScheduleRun;
+import com.trainticket.financesettlement.application.SettlementScheduleRunRepository;
+import com.trainticket.financesettlement.application.ValidationException;
 import com.trainticket.financesettlement.domain.Invoice;
 import com.trainticket.financesettlement.domain.Money;
 import com.trainticket.financesettlement.domain.ReconciliationBatch;
@@ -30,9 +34,11 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 public class FinanceSettlementController {
     private final FinanceSettlementApplicationService service;
+    private final SettlementScheduleRunRepository scheduleRuns;
 
-    public FinanceSettlementController(FinanceSettlementApplicationService service) {
+    public FinanceSettlementController(FinanceSettlementApplicationService service, SettlementScheduleRunRepository scheduleRuns) {
         this.service = service;
+        this.scheduleRuns = scheduleRuns;
     }
 
     @GetMapping("/api/v1/revenue-recognitions/{revenueRecognitionId}")
@@ -94,6 +100,23 @@ public class FinanceSettlementController {
     @GetMapping("/api/v1/settlements/reconciliation/{batchId}")
     public ReconciliationBatchResponse getReconciliationBatch(@PathVariable String batchId) {
         return ReconciliationBatchResponse.from(service.getReconciliationBatch(batchId));
+    }
+
+    @GetMapping("/api/v1/settlement-schedule-runs/{jobKey}")
+    public SettlementScheduleRunResponse getSettlementScheduleRun(@PathVariable String jobKey) {
+        return SettlementScheduleRunResponse.from(scheduleRuns.findByKey(jobKey)
+            .orElseThrow(() -> new ResourceNotFoundException("settlement schedule run not found")));
+    }
+
+    @GetMapping("/api/v1/settlement-schedule-runs")
+    public PagedResponse<SettlementScheduleRunResponse> listSettlementScheduleRuns(
+        @RequestParam(defaultValue = "20") int limit,
+        @RequestParam(defaultValue = "0") int offset
+    ) {
+        if (limit < 1 || limit > 100) throw new ValidationException("limit must be between 1 and 100");
+        if (offset < 0) throw new ValidationException("offset must not be negative");
+        return new PagedResponse<>(scheduleRuns.find(limit, offset).stream().map(SettlementScheduleRunResponse::from).toList(),
+            scheduleRuns.count(), limit, offset);
     }
 
     @GetMapping("/api/v1/benefit-costs")
@@ -303,6 +326,25 @@ public class FinanceSettlementController {
                 DomainEventEnvelopeMapper.moneyPayload(settlement.supplierPayable()),
                 DomainEventEnvelopeMapper.moneyPayload(settlement.adjustments())
             );
+        }
+    }
+
+    public record SettlementScheduleRunResponse(
+        String jobKey,
+        String jobType,
+        String startDate,
+        String endDate,
+        String status,
+        int attempts,
+        List<String> resultRefs,
+        String failure,
+        Instant startedAt,
+        Instant completedAt,
+        Instant updatedAt
+    ) {
+        static SettlementScheduleRunResponse from(SettlementScheduleRun run) {
+            return new SettlementScheduleRunResponse(run.jobKey(), run.jobType(), run.startDate().toString(), run.endDate().toString(),
+                run.status(), run.attempts(), run.resultRefs(), run.failure(), run.startedAt(), run.completedAt(), run.updatedAt());
         }
     }
 

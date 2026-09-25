@@ -1,6 +1,6 @@
 # Finance Settlement 计算与对账
 
-更新日期：2026年9月24日。
+更新日期：2026年9月25日。
 本文描述 Helm revision 279 文档核对时的 Java 实现。
 领域边界见 [Finance Settlement](../02-domains/finance-settlement.md)，统一待办见 [TODO](../TODO.md)。
 
@@ -20,7 +20,8 @@
 | `CHANNEL_ONLY` | 仅渠道存在。 |
 | `AMOUNT_MISMATCH` | 两侧存在且金额不同。 |
 
-当前源码没有调用该方法的生产定时器。
+内置调度器默认每分钟检查一次，自动处理前一个已闭合 UTC 日期。
+`settlement_schedule_runs` 持久化逻辑周期、租约 owner、尝试次数、状态、失败原因和生成的 batch ID；成功后不重复计算，失败或租约过期可由另一副本接管。
 `GET /api/v1/settlements/daily/{date}` 和 `GET /api/v1/settlements/reconciliation/{batchId}` 读取已保存结果，不触发计算。
 批次采用单币种总差额，跨币种自动换算未实现。
 
@@ -34,7 +35,9 @@
 金额按币种小数位使用 `HALF_UP` 舍入。
 
 同一供应商与期间已有结果时复用保存的 `SupplierSettlement`。
-当前生产代码没有自动调用这一计算方法的流程，佣金参数也没有自动读取供应商协议的适配器。
+内置调度器自动计算最新已闭合的 daily、weekly 或 monthly 周期，频率和佣金/代扣比例来自服务配置。
+自动发现只包含普通 `fare` 收入中已归一化且不等于订单号的 supplier reference；缺少 supplier 归属的数据不进入自动付款口径。
+每个周期的供应商 settlement IDs 与运行状态一并持久化，可在重启后查询和恢复。
 查询入口为 `GET /api/v1/settlements/suppliers/{supplierId}/period?startDate=...&endDate=...`。
 该结果表示内部结算计算，不表示供应商款项已支付。
 
