@@ -3,6 +3,7 @@
 更新日期：2026 年 9 月 24 日。
 
 本表按事实所有者定位服务和已经注册的接口。
+“已注册接口示例”只表示对应 method/path 能在链接源码中定位，不表示该接口的全部业务场景、下游协作或生产负载已经验收；这些结论仍以 [TODO](../TODO.md) 和[当前项目状态](../00-current-status.md)为准。
 路径与语言见[语言及源码目录](../05-service-architecture/language-selection.md)，跨域规则见[设计决策](decision-record.md)。
 部署基线为 Helm revision 279，发布证据见[当前项目状态](../00-current-status.md)。
 工作进度及未完成能力统一见 [TODO](../TODO.md)。
