@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"github.com/trainticket/greenfield/platform/go-kit/idempotency"
 	kitmessaging "github.com/trainticket/greenfield/platform/go-kit/messaging"
 	"github.com/trainticket/greenfield/platform/go-kit/storage"
@@ -13,6 +14,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 )
 
@@ -47,6 +49,12 @@ func main() {
 	if err := runner.Run(ctx, mig); err != nil {
 		log.Fatal(err)
 	}
+	if len(os.Args) > 1 && os.Args[1] == "backfill-statement-lines" {
+		if err := backfillStatementLines(ctx, adapterpg.NewRepository(adapterpg.NewTransactor(pool))); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	redis, err := kitmessaging.NewRedisClient(os.Getenv("REDIS_URL"))
 	if err != nil {
 		log.Fatal(err)
@@ -73,5 +81,31 @@ func main() {
 	server := goruntime.NewHTTPServer(goruntime.ServerConfig{Address: ":" + port, Handler: router})
 	if err := goruntime.RunHTTPServer(ctx, server); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func backfillStatementLines(ctx context.Context, repository *adapterpg.Repository) error {
+	batchSize := 10
+	if raw := os.Getenv("STATEMENT_BACKFILL_BATCH_SIZE"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 || parsed > 100 {
+			return fmt.Errorf("STATEMENT_BACKFILL_BATCH_SIZE must be between 1 and 100")
+		}
+		batchSize = parsed
+	}
+	var totalStatements int
+	var totalLines int64
+	for {
+		result, err := repository.BackfillLegacyStatementLines(ctx, batchSize)
+		if err != nil {
+			return err
+		}
+		totalStatements += result.Statements
+		totalLines += result.Lines
+		log.Printf("statement line backfill progress: statements=%d lines=%d", totalStatements, totalLines)
+		if result.Complete {
+			log.Printf("statement line backfill complete: statements=%d lines=%d", totalStatements, totalLines)
+			return nil
+		}
 	}
 }

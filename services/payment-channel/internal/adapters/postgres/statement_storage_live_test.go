@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"sync"
@@ -197,6 +198,127 @@ func TestLiveConcurrentStatementGenerationReplaysOneIdentity(t *testing.T) {
 	changed.ScenarioCodes = nil
 	if _, err := service.GenerateStatement(ctx, changed); err == nil || err.Error() != "DOMAIN_RULE_VIOLATION: statement identity was reused with different generation scenarios" {
 		t.Fatalf("changed generation replay was accepted: %v", err)
+	}
+}
+
+func TestLiveLegacyStatementBackfillPreservesIdentityAndFacts(t *testing.T) {
+	pool := newStatementTestPool(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	transactor := NewTransactor(pool)
+	repository := NewRepository(transactor)
+	identity := domain.StatementIdentityKey(domain.ChannelAlipay, "2026-09-23", "CNY", "legacy-v1")
+	first := domain.FinalizeStatementLine(identity, 0, domain.StatementLine{
+		LineType: "PAYMENT", LineStatus: "AMOUNT_MISMATCH", ChannelOrderID: "cho-legacy",
+		PaymentIntentID: "pi-legacy", ChannelTransactionID: "ctx-legacy",
+		ExpectedAmount: domain.Money{Currency: "CNY", MinorUnits: 100},
+		ActualAmount:   domain.Money{Currency: "CNY", MinorUnits: 101},
+		OccurredAt:     time.Date(2026, time.September, 23, 12, 0, 0, 0, time.UTC),
+		FaultInjected:  true, FaultSeedRef: "legacy-v1:AMOUNT_MISMATCH",
+	})
+	second := domain.FinalizeStatementLine(identity, 0, domain.StatementLine{
+		LineType: "REFUND", LineStatus: "PRESENT", ChannelOrderID: "cho-legacy",
+		ChannelRefundID: "chr-legacy", PaymentIntentID: "pi-legacy", RefundID: "rf-legacy",
+		ChannelRefundTransactionID: "rtx-legacy",
+		ExpectedAmount:             domain.Money{Currency: "CNY", MinorUnits: 40},
+		ActualAmount:               domain.Money{Currency: "CNY", MinorUnits: 40},
+		OccurredAt:                 time.Date(2026, time.September, 23, 13, 0, 0, 0, time.UTC),
+	})
+	legacy, err := domain.NewStatement("chs-legacy", domain.ChannelAlipay, "2026-09-23", "CNY", "legacy-v1", []domain.StatementLine{first, second}, time.Date(2026, time.September, 24, 0, 0, 0, 0, time.UTC), ids.NewCorrelationID(), ids.NewCommandID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy.Status = "FROZEN"
+	frozenAt := legacy.GeneratedAt.Add(time.Minute)
+	legacy.FrozenAt = &frozenAt
+	legacy.Version = 2
+	legacy.UpdatedAt = frozenAt
+	legacyBytes, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO channel_statement_snapshots(id,version,data) VALUES($1,$2,$3)`, legacy.ChannelStatementID, legacy.Version, legacyBytes); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO channel_discrepancy_snapshots(id,version,data) VALUES('pcd-legacy',1,$1)`, fmt.Sprintf(`{"discrepancyId":"pcd-legacy","channelStatementId":"%s","statementLineId":"%s","differenceType":"AMOUNT_MISMATCH","expectedAmount":{"currency":"CNY","minorUnits":100},"actualAmount":{"currency":"CNY","minorUnits":101},"status":"OPENED","evidenceRef":"%s","openedAt":"2026-09-24T00:01:00Z","updatedAt":"2026-09-24T00:01:00Z","version":1}`, legacy.ChannelStatementID, first.StatementLineID, first.EvidenceHash)); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := repository.BackfillLegacyStatementLines(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Statements != 1 || result.Lines != 2 || result.Complete {
+		t.Fatalf("unexpected first backfill result: %+v", result)
+	}
+	complete, err := repository.BackfillLegacyStatementLines(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !complete.Complete || complete.Statements != 0 {
+		t.Fatalf("backfill was not resumably complete: %+v", complete)
+	}
+	var dataHasLines bool
+	var lineStorage, generationFingerprint, statementHash, discrepancyLineID string
+	var version int64
+	if err := pool.QueryRow(ctx, `SELECT data ? 'lines', data->>'lineStorage', data->>'generationFingerprint', data->>'statementHash', version FROM channel_statement_snapshots WHERE id=$1`, legacy.ChannelStatementID).Scan(&dataHasLines, &lineStorage, &generationFingerprint, &statementHash, &version); err != nil {
+		t.Fatal(err)
+	}
+	if dataHasLines || lineStorage != domain.StatementLineStorageNormalized || statementHash != legacy.StatementHash || version != legacy.Version {
+		t.Fatalf("backfill changed statement identity/facts: has_lines=%t storage=%s hash=%s version=%d", dataHasLines, lineStorage, statementHash, version)
+	}
+	wantFingerprint := domain.Hash("statement-generation-v1", []string{"AMOUNT_MISMATCH"})
+	if generationFingerprint != wantFingerprint {
+		t.Fatalf("legacy scenario fingerprint=%s want %s", generationFingerprint, wantFingerprint)
+	}
+	if err := pool.QueryRow(ctx, `SELECT data->>'statementLineId' FROM channel_statement_lines WHERE statement_id=$1 ORDER BY line_ordinal LIMIT 1`, legacy.ChannelStatementID).Scan(&discrepancyLineID); err != nil {
+		t.Fatal(err)
+	}
+	if discrepancyLineID != first.StatementLineID {
+		t.Fatalf("statement line identity changed: got %s want %s", discrepancyLineID, first.StatementLineID)
+	}
+	if err := pool.QueryRow(ctx, `SELECT data->>'statementLineId' FROM channel_discrepancy_snapshots WHERE id='pcd-legacy'`).Scan(&discrepancyLineID); err != nil {
+		t.Fatal(err)
+	}
+	if discrepancyLineID != first.StatementLineID {
+		t.Fatalf("discrepancy reference changed: got %s want %s", discrepancyLineID, first.StatementLineID)
+	}
+	var canonicalID string
+	if err := pool.QueryRow(ctx, `SELECT statement_id FROM channel_statement_identities WHERE identity_key=$1`, identity).Scan(&canonicalID); err != nil {
+		t.Fatal(err)
+	}
+	if canonicalID != legacy.ChannelStatementID {
+		t.Fatalf("legacy statement identity was not claimed: %s", canonicalID)
+	}
+	loaded, err := repository.GetStatementLine(ctx, legacy.ChannelStatementID, first.StatementLineID)
+	if err != nil || loaded.EvidenceHash != first.EvidenceHash {
+		t.Fatalf("normalized line was not queryable: line=%+v err=%v", loaded, err)
+	}
+}
+
+func TestLiveLegacyStatementBackfillRollsBackInvalidContent(t *testing.T) {
+	pool := newStatementTestPool(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	transactor := NewTransactor(pool)
+	repository := NewRepository(transactor)
+	invalid := `{"channelStatementId":"chs-invalid","channel":"ALIPAY_SIM","statementDate":"2026-09-23","currency":"CNY","seedVersion":"v1","status":"GENERATED","lineCount":1,"statementHash":"kept","lines":[{"statementLineId":"csl-invalid","lineType":"PAYMENT","lineStatus":"PRESENT","channelOrderId":"cho-invalid","expectedAmount":{"currency":"CNY","minorUnits":100},"actualAmount":{"currency":"CNY","minorUnits":100},"occurredAt":"not-a-time","faultInjected":false,"evidenceHash":"hash"}],"createdAt":"2026-09-24T00:00:00Z","updatedAt":"2026-09-24T00:00:00Z","version":1}`
+	if _, err := pool.Exec(ctx, `INSERT INTO channel_statement_snapshots(id,version,data) VALUES('chs-invalid',1,$1)`, invalid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.BackfillLegacyStatementLines(ctx, 1); err == nil {
+		t.Fatal("invalid legacy line was migrated")
+	}
+	var hasLines bool
+	var normalized int
+	if err := pool.QueryRow(ctx, `SELECT data ? 'lines' FROM channel_statement_snapshots WHERE id='chs-invalid'`).Scan(&hasLines); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM channel_statement_lines WHERE statement_id='chs-invalid'`).Scan(&normalized); err != nil {
+		t.Fatal(err)
+	}
+	if !hasLines || normalized != 0 {
+		t.Fatalf("failed backfill was not atomic: has_lines=%t normalized=%d", hasLines, normalized)
 	}
 }
 
