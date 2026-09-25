@@ -77,6 +77,10 @@ spec:
               containerPort: 55679
             - name: metrics
               containerPort: 8888
+            {{- if .Values.otelCollector.prometheusExporter.enabled }}
+            - name: app-metrics
+              containerPort: {{ .Values.otelCollector.prometheusExporter.port }}
+            {{- end }}
           {{- with .Values.otelCollector.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -128,6 +132,11 @@ spec:
     - name: metrics
       port: 8888
       targetPort: metrics
+    {{- if .Values.otelCollector.prometheusExporter.enabled }}
+    - name: app-metrics
+      port: {{ .Values.otelCollector.prometheusExporter.port }}
+      targetPort: app-metrics
+    {{- end }}
     - name: zpages
       port: 55679
       targetPort: zpages
