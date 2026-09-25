@@ -736,15 +736,44 @@ impl SeatSupply {
             }
             if let Some(a) = allocated_holds.get(&hold.hold_id) {
                 let effective_allocation_unit = self.resolve_allocation_unit(a)?;
-                require(
-                    a.segment_booking_id == hold.segment_booking_id
-                        && a.journey_order_id == hold.journey_order_id
-                        && a.traveler_ref == hold.traveler_ref
-                        && effective_allocation_unit == hold.effective_capacity_unit_ref
-                        && a.interval.from_seq == hold.interval.from_seq
-                        && a.interval.to_seq == hold.interval.to_seq,
-                    "seat allocation differs from its capacity hold",
-                )?;
+                // Named field by field rather than as one boolean: this fires
+                // under load, which is exactly when the values behind it are
+                // hard to reconstruct afterwards.
+                if a.segment_booking_id != hold.segment_booking_id {
+                    return Err(AppError::Unavailable(format!(
+                        "seat allocation differs from its capacity hold: segment booking {} vs {}",
+                        a.segment_booking_id, hold.segment_booking_id
+                    )));
+                }
+                if a.journey_order_id != hold.journey_order_id {
+                    return Err(AppError::Unavailable(format!(
+                        "seat allocation differs from its capacity hold: order {} vs {}",
+                        a.journey_order_id, hold.journey_order_id
+                    )));
+                }
+                if a.traveler_ref != hold.traveler_ref {
+                    return Err(AppError::Unavailable(format!(
+                        "seat allocation differs from its capacity hold: traveler {} vs {}",
+                        a.traveler_ref, hold.traveler_ref
+                    )));
+                }
+                if effective_allocation_unit != hold.effective_capacity_unit_ref {
+                    return Err(AppError::Unavailable(format!(
+                        "seat allocation differs from its capacity hold: unit {} vs {}",
+                        effective_allocation_unit, hold.effective_capacity_unit_ref
+                    )));
+                }
+                if a.interval.from_seq != hold.interval.from_seq
+                    || a.interval.to_seq != hold.interval.to_seq
+                {
+                    return Err(AppError::Unavailable(format!(
+                        "seat allocation differs from its capacity hold: interval {}-{} vs {}-{}",
+                        a.interval.from_seq,
+                        a.interval.to_seq,
+                        hold.interval.from_seq,
+                        hold.interval.to_seq
+                    )));
+                }
             } else {
                 require(
                     self.units
