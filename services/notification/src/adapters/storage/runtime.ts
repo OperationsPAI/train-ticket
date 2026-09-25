@@ -5,6 +5,7 @@ import {
   OptimisticConcurrencyConflict,
   OutboxAppender,
   OutboxRelay,
+  PostgresDeadLetterEvidenceStore,
   ProcessedEventsGuard,
   connectRedisWithRetry,
   createPostgresPool,
@@ -15,6 +16,7 @@ import {
   streamForProducer,
   withTransaction,
   type EventEnvelope,
+  type DeadLetterEvidenceSink,
   type MigrationSupervisor,
 } from "@trainticket/ts-kit";
 
@@ -32,6 +34,7 @@ export type NotificationStorageRuntime = Readonly<{
   schema: () => ReturnType<MigrationSupervisor["detail"]>;
   getNotificationTrail: (notificationId: string) => Promise<NotificationTrailResponse | undefined>;
   handleExternalTrigger: (envelope: EventEnvelope, stream?: string) => Promise<"ack" | "retry" | "dlq">;
+  deadLetterEvidenceSink: DeadLetterEvidenceSink;
   stop: () => Promise<void>;
 }>;
 
@@ -73,6 +76,7 @@ export async function startNotificationStorage(channelGateway: NotificationChann
     failure: () => migrations.failure(),
     schema: () => migrations.detail(),
     getNotificationTrail: notificationId => getNotificationTrail(pool, notificationId),
+    deadLetterEvidenceSink: new PostgresDeadLetterEvidenceStore(pool),
     handleExternalTrigger: async (original, stream) => {
       if (!templateCodeFor(original)) return "ack";
       return withTransaction(pool, async (client) => {

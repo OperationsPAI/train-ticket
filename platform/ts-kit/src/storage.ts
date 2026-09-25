@@ -8,7 +8,7 @@ import type { Pool, PoolClient, PoolConfig, QueryResult } from "pg";
 import { type IdempotencyRecord, type IdempotencyStore } from "./http.js";
 import { registerLivenessComponent, type Clock, type LivenessComponent } from "./liveness.js";
 import { registerPoolMetricsFromEnv } from "./metrics.js";
-import { configuredStreamMaxLen, type EventEnvelope, redisRetryStrategy, streamForProducer } from "./messaging.js";
+import { configuredStreamMaxLen, type DeadLetterEvidence, type DeadLetterEvidenceSink, type EventEnvelope, redisRetryStrategy, streamForProducer } from "./messaging.js";
 
 export type Database = Pool | PoolClient;
 
@@ -795,6 +795,45 @@ export class ProcessedEventsGuard {
       return undefined;
     }
     return handler();
+  }
+}
+
+/** PostgreSQL evidence sink used before a Redis DLQ write and XACK. */
+export class PostgresDeadLetterEvidenceStore implements DeadLetterEvidenceSink {
+  constructor(private readonly db: Database) {}
+
+  async recordDeadLetter(evidence: DeadLetterEvidence): Promise<void> {
+    const evidenceKey = evidence.eventId ?? `redis:${evidence.sourceMessageId}`;
+    const result = await this.db.query(
+      `INSERT INTO event_dead_letters (
+         consumer_group, source_stream, evidence_key, source_message_id,
+         consumer_name, event_id, event_type, producer, original_envelope,
+         first_failure_kind, first_failure_reason, failure_kind, failure_reason,
+         attempts, first_dead_lettered_at,
+         last_dead_lettered_at, recovery_status
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$10,$11,$12,$13,$13,'OPEN')
+       ON CONFLICT (consumer_group, source_stream, evidence_key) DO UPDATE SET
+         source_message_id=EXCLUDED.source_message_id,
+         consumer_name=EXCLUDED.consumer_name,
+         failure_kind=EXCLUDED.failure_kind,
+         failure_reason=EXCLUDED.failure_reason,
+         attempts=greatest(event_dead_letters.attempts,EXCLUDED.attempts),
+         last_dead_lettered_at=EXCLUDED.last_dead_lettered_at
+       WHERE event_dead_letters.original_envelope IS NOT DISTINCT FROM EXCLUDED.original_envelope
+         AND event_dead_letters.event_id IS NOT DISTINCT FROM EXCLUDED.event_id
+         AND event_dead_letters.event_type IS NOT DISTINCT FROM EXCLUDED.event_type
+         AND event_dead_letters.producer IS NOT DISTINCT FROM EXCLUDED.producer
+       RETURNING evidence_key`,
+      [
+        evidence.consumerGroup, evidence.sourceStream, evidenceKey, evidence.sourceMessageId,
+        evidence.consumerName, evidence.eventId ?? null, evidence.eventType ?? null,
+        evidence.producer ?? null, evidence.originalEnvelope ?? null,
+        evidence.failureKind, evidence.failureReason, evidence.attempts, evidence.deadLetteredAt,
+      ],
+    );
+    if ((result.rowCount ?? 0) !== 1) {
+      throw new Error(`dead-letter evidence identity changed for ${evidence.consumerGroup}/${evidence.sourceStream}/${evidenceKey}`);
+    }
   }
 }
 
