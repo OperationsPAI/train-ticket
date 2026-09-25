@@ -105,6 +105,65 @@ fn free_unit_for(
 }
 
 impl PostgresCapacityService {
+    /// Which physical unit a hold that is already occupying a pool stands for.
+    ///
+    /// Seat Assignment owns the physical units, so its allocation is the
+    /// authoritative answer when one exists for the interval being admitted: a
+    /// change allocates a replacement seat and the hold keeps the unit it was
+    /// originally admitted against, which made the two disagree and failed
+    /// admission with "seat allocation differs from its capacity hold" -- 3458
+    /// times in three minutes across the replicas while the load generator was
+    /// running, each one consuming five delivery attempts before the dead
+    /// letter stream.
+    ///
+    /// Without an allocation, the hold's own unit is next, resolved through the
+    /// composition its evidence names or through a replacement lineage. A hold
+    /// old enough to predate that evidence cannot name it, and a unit that
+    /// appears in more than one lineage is ambiguous rather than wrong: the
+    /// hold still occupies one unit of its class, so it is counted against one
+    /// that is free in this snapshot rather than dropped. Admissions for one
+    /// service and date are serialized by the supply advisory lock, so two of
+    /// them cannot choose the same unit and the occupied count stays exact even
+    /// where the identity does not. Backfilling the binding from the owning
+    /// composition is recorded in docs/TODO.md.
+    fn effective_hold_unit(
+        supply: &SeatSupply,
+        hold_id: &str,
+        capacity_unit_ref: &str,
+        evidence: Option<&HoldSupplyEvidence>,
+        occupancy: &[PendingOccupancy],
+        interval: &crate::supply_facts::Interval,
+    ) -> Result<String, AppError> {
+        let overlapping: Vec<&crate::supply_facts::Allocation> = supply
+            .allocations
+            .iter()
+            .filter(|allocation| {
+                allocation.capacity_hold_id == hold_id && allocation.interval.overlaps(interval)
+            })
+            .collect();
+        if let [allocation] = overlapping.as_slice()
+            && let Ok(reference) = supply.resolve_allocation_unit(allocation)
+        {
+            return Ok(reference);
+        }
+        match supply.resolve_capacity_unit(capacity_unit_ref, evidence) {
+            Ok(reference) => Ok(reference),
+            Err(error) => match free_unit_for(&supply.units, occupancy) {
+                Some(reference) => {
+                    log::warn!(
+                        "unresolved historical hold {hold_id} counted against {reference} instead of {requested}: {error}",
+                        hold_id = hold_id,
+                        reference = reference,
+                        requested = capacity_unit_ref,
+                        error = format!("{error:?}")
+                    );
+                    Ok(reference)
+                }
+                None => Err(error),
+            },
+        }
+    }
+
     pub(super) async fn hold_for_reservation(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -373,63 +432,14 @@ impl PostgresCapacityService {
                     ));
                 }
             }
-            let effective_capacity_unit_ref = match supply
-                .resolve_capacity_unit(&hold.capacity_unit_ref, hold.supply_evidence.as_ref())
-            {
-                Ok(reference) => reference,
-                Err(error) => {
-                    // The same overlap filter the availability fold applies, so
-                    // both read the same allocation. A hold can carry more than
-                    // one allocation -- a replacement seat is a second one --
-                    // and a hold whose allocations include one outside this
-                    // interval used to look ambiguous here while the fold picked
-                    // the overlapping one, which made the two disagree about a
-                    // hold neither of them had a reason to doubt.
-                    let allocations: Vec<_> = supply
-                        .allocations
-                        .iter()
-                        .filter(|allocation| {
-                            allocation.capacity_hold_id == hold.hold_id
-                                && allocation.interval.overlaps(&route.interval)
-                        })
-                        .collect();
-                    if allocations.len() != 1 {
-                        // A hold that predates the supply evidence has no way to
-                        // say which composition its unit came from, so a unit
-                        // that appears in more than one replacement lineage is
-                        // ambiguous rather than wrong. Measured: 2560980 of
-                        // 2562487 live holds carry no evidence, and failing the
-                        // admission on one of them blocked every reservation
-                        // into the pool it occupies -- which is what the load
-                        // generator reported, thousands of times, as a
-                        // reservation that never confirms.
-                        //
-                        // The hold still occupies one unit of its class, so it
-                        // is counted against one that is free in this snapshot
-                        // rather than dropped. Admissions for one service and
-                        // date are serialized by the supply advisory lock, so
-                        // two admissions cannot choose the same unit here, and
-                        // the count of occupied units stays exact even though
-                        // the identity does not. Backfilling the binding from
-                        // the owning composition is recorded in docs/TODO.md.
-                        match free_unit_for(&supply.units, &occupancy) {
-                            Some(reference) => {
-                                log::warn!(
-                                    "unresolved historical hold {hold_id} counted against {reference} instead of {requested}: {error}",
-                                    hold_id = hold.hold_id,
-                                    reference = reference,
-                                    requested = hold.capacity_unit_ref,
-                                    error = format!("{error:?}")
-                                );
-                                reference
-                            }
-                            None => return Err(error),
-                        }
-                    } else {
-                        supply.resolve_allocation_unit(allocations[0])?
-                    }
-                }
-            };
+            let effective_capacity_unit_ref = Self::effective_hold_unit(
+                &supply,
+                &hold.hold_id,
+                &hold.capacity_unit_ref,
+                hold.supply_evidence.as_ref(),
+                &occupancy,
+                &route.interval,
+            )?;
             occupancy.push(PendingOccupancy {
                 hold_id: hold.hold_id,
                 segment_booking_id: hold_facts.segment_booking_id,
