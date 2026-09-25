@@ -89,19 +89,14 @@ fn structural_hold_facts(facts: &ReservationSupply) -> Result<(), AppError> {
 /// Used only for a historical hold whose own unit cannot be resolved, so that
 /// the hold still reduces availability by one unit instead of blocking the
 /// reservation that is being admitted.
-fn free_unit_for(
-    units: &[crate::supply_facts::PhysicalUnit],
-    occupancy: &[PendingOccupancy],
-) -> Option<String> {
+fn free_unit_for(refs: &[String], occupancy: &[PendingOccupancy]) -> Option<String> {
     let taken: std::collections::HashSet<&str> = occupancy
         .iter()
         .map(|pending| pending.effective_capacity_unit_ref.as_str())
         .collect();
-    units
-        .iter()
-        .map(|unit| unit.seat_unit_ref.as_str())
-        .find(|reference| !taken.contains(reference))
-        .map(str::to_owned)
+    refs.iter()
+        .find(|reference| !taken.contains(reference.as_str()))
+        .cloned()
 }
 
 impl PostgresCapacityService {
@@ -148,19 +143,31 @@ impl PostgresCapacityService {
         }
         match supply.resolve_capacity_unit(capacity_unit_ref, evidence) {
             Ok(reference) => Ok(reference),
-            Err(error) => match free_unit_for(&supply.units, occupancy) {
-                Some(reference) => {
-                    log::warn!(
-                        "unresolved historical hold {hold_id} counted against {reference} instead of {requested}: {error}",
-                        hold_id = hold_id,
-                        reference = reference,
-                        requested = capacity_unit_ref,
-                        error = format!("{error:?}")
-                    );
-                    Ok(reference)
+            Err(error) => {
+                // `capacity_refs` is the physical units for a concrete class and
+                // the quota slots for standing, which is the same list the
+                // availability fold subtracts from.
+                let refs = supply.capacity_refs();
+                // A standing hold whose slot the current quota no longer names
+                // still occupies one slot, and when every slot is already taken
+                // the honest answer is that standing has no availability left --
+                // the ordinary no-capacity outcome -- rather than a retry that
+                // blocks the reservation behind it.
+                let chosen = free_unit_for(&refs, occupancy).or_else(|| refs.first().cloned());
+                match chosen {
+                    Some(reference) => {
+                        log::warn!(
+                            "unresolved historical hold {hold_id} counted against {reference} instead of {requested}: {error}",
+                            hold_id = hold_id,
+                            reference = reference,
+                            requested = capacity_unit_ref,
+                            error = format!("{error:?}")
+                        );
+                        Ok(reference)
+                    }
+                    None => Err(error),
                 }
-                None => Err(error),
-            },
+            }
         }
     }
 
