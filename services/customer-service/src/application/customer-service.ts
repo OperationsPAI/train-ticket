@@ -27,6 +27,7 @@ import {
   type CaseContextSnapshot,
   type CaseContextType,
 } from "../domain.js";
+import { resolveHandoffLane } from "../desk-lanes.js";
 import { newCommandId, newCorrelationId, toEventEnvelope, type EventEnvelope, type EventPublisher } from "./messaging.js";
 import { OptimisticConcurrencyConflict, uuidV7 } from "@trainticket/ts-kit";
 import { type CustomerServiceRepository } from "./ports/customer-service-repository.js";
@@ -208,6 +209,16 @@ export class CustomerServiceApplication {
     const { aggregate: current, version } = await this.requireVersionedCase(caseId);
     const snapshot = current.toSnapshot();
     if (snapshot.ownerQueue === request.ownerQueue && snapshot.assignedTo === request.assignedTo) return snapshot;
+    // The lanes a handoff may reach belong to the release, because a queue no console polls is a
+    // lane the case disappears into rather than a case the desk is working. The counter resolves
+    // the queue against the statement before the aggregate takes it, so a handoff this deployment
+    // cannot pick up is turned away here instead of leaving the case with nobody owning it.
+    if (resolveHandoffLane(request.ownerQueue) === undefined) {
+      throw new DomainError(
+        "CASE_NOT_STAFFED",
+        `SupportCase ${caseId} cannot be handed to ${request.ownerQueue}: this release's desk staffs no lane that polls it`,
+      );
+    }
     const { case: updated, event } = current.assign({
       caseId,
       ownerQueue: request.ownerQueue,
