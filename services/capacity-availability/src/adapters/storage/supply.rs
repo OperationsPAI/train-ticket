@@ -65,8 +65,13 @@ impl PostgresCapacityService {
             }
             sqlx::query("UPDATE reservation_supply_facts SET data=$2 WHERE segment_booking_id=$1")
                 .bind(booking)
-                .bind(serde_json::to_value(&resolved).map_err(|e| AppError::Internal(e.to_string()))?)
-                .execute(self.pool()).await.map_err(to_app_storage)?;
+                .bind(
+                    serde_json::to_value(&resolved)
+                        .map_err(|e| AppError::Internal(e.to_string()))?,
+                )
+                .execute(self.pool())
+                .await
+                .map_err(to_app_storage)?;
             return Ok(resolved);
         }
         let facts = self.supply_client.reservation(booking, correlation).await?;
@@ -194,14 +199,30 @@ impl PostgresCapacityService {
         for (hold, recorded) in rows {
             let hold: CapacityHoldSnapshot =
                 serde_json::from_value(hold).map_err(|e| AppError::Internal(e.to_string()))?;
-            let state = if hold.state == "Held" && hold.expires_at <= now { "Expired".to_owned() } else { hold.state.clone() };
+            let state = if hold.state == "Held" && hold.expires_at <= now {
+                "Expired".to_owned()
+            } else {
+                hold.state.clone()
+            };
             if matches!(state.as_str(), "Released" | "Expired" | "Failed") {
-                occupancy.push(PendingOccupancy { hold_id: hold.hold_id, segment_booking_id: String::new(),
-                    journey_order_id: String::new(), traveler_ref: String::new(), capacity_unit_ref: hold.capacity_unit_ref.clone(),
-                    effective_capacity_unit_ref: hold.capacity_unit_ref, state, interval: SupplyInterval { from_seq: hold.from_seq, to_seq: hold.to_seq } });
+                occupancy.push(PendingOccupancy {
+                    hold_id: hold.hold_id,
+                    segment_booking_id: String::new(),
+                    journey_order_id: String::new(),
+                    traveler_ref: String::new(),
+                    capacity_unit_ref: hold.capacity_unit_ref.clone(),
+                    effective_capacity_unit_ref: hold.capacity_unit_ref,
+                    state,
+                    interval: SupplyInterval {
+                        from_seq: hold.from_seq,
+                        to_seq: hold.to_seq,
+                    },
+                });
                 continue;
             }
-            if state != "Held" && state != "Confirmed" { continue; }
+            if state != "Held" && state != "Confirmed" {
+                continue;
+            }
             let recorded = recorded.ok_or_else(|| {
                 AppError::Unavailable("active hold has no persisted supply facts".into())
             })?;
@@ -217,12 +238,15 @@ impl PostgresCapacityService {
                     "active hold differs from its persisted reservation".into(),
                 ));
             }
-            let occupancy_class = hold.supply_evidence.as_ref()
+            let occupancy_class = hold
+                .supply_evidence
+                .as_ref()
                 .map(|evidence| evidence.occupancy_class_ref.as_str())
                 .unwrap_or(hold_facts.class_ref.as_str());
             if hold_facts.scheduled_service_ref != facts.scheduled_service_ref
                 || hold_facts.service_date != facts.service_date
-                || occupancy_class != facts.class_ref {
+                || occupancy_class != facts.class_ref
+            {
                 continue;
             }
             let route = segments.route(&hold_facts.segment_ref)?;
@@ -241,15 +265,26 @@ impl PostgresCapacityService {
                     || evidence.service_date != hold_facts.service_date
                     || evidence.source_type != hold_facts.source_type
                     || evidence.source_ref != hold_facts.source_ref
-                    || evidence.stop_sequence_version != route.stop_sequence_version {
-                    return Err(AppError::Unavailable("active Hold supply evidence differs from authoritative facts".into()));
+                    || evidence.stop_sequence_version != route.stop_sequence_version
+                {
+                    return Err(AppError::Unavailable(
+                        "active Hold supply evidence differs from authoritative facts".into(),
+                    ));
                 }
             }
-            let effective_capacity_unit_ref = match supply.resolve_capacity_unit(&hold.capacity_unit_ref, hold.supply_evidence.as_ref()) {
+            let effective_capacity_unit_ref = match supply
+                .resolve_capacity_unit(&hold.capacity_unit_ref, hold.supply_evidence.as_ref())
+            {
                 Ok(reference) => reference,
                 Err(error) => {
-                    let allocations: Vec<_> = supply.allocations.iter().filter(|allocation| allocation.capacity_hold_id == hold.hold_id).collect();
-                    if allocations.len() != 1 { return Err(error); }
+                    let allocations: Vec<_> = supply
+                        .allocations
+                        .iter()
+                        .filter(|allocation| allocation.capacity_hold_id == hold.hold_id)
+                        .collect();
+                    if allocations.len() != 1 {
+                        return Err(error);
+                    }
                     supply.resolve_allocation_unit(allocations[0])?
                 }
             };
@@ -282,14 +317,27 @@ impl PostgresCapacityService {
         segments: &PreparedSupply,
         correlation: &str,
         now: u64,
-    ) -> Result<(ReservationSupply, SeatSupply, Vec<String>, Vec<PendingOccupancy>), AppError> {
-        let (supply, available, occupancy) = self.available_supply(tx, accepted, segments, correlation, now).await?;
-        if !available.is_empty() || accepted.class_ref == "STANDING" || !accepted.standing_accepted {
+    ) -> Result<
+        (
+            ReservationSupply,
+            SeatSupply,
+            Vec<String>,
+            Vec<PendingOccupancy>,
+        ),
+        AppError,
+    > {
+        let (supply, available, occupancy) = self
+            .available_supply(tx, accepted, segments, correlation, now)
+            .await?;
+        if !available.is_empty() || accepted.class_ref == "STANDING" || !accepted.standing_accepted
+        {
             return Ok((accepted.clone(), supply, available, occupancy));
         }
         let mut standing = accepted.clone();
         standing.class_ref = "STANDING".into();
-        let (supply, available, occupancy) = self.available_supply(tx, &standing, segments, correlation, now).await?;
+        let (supply, available, occupancy) = self
+            .available_supply(tx, &standing, segments, correlation, now)
+            .await?;
         Ok((standing, supply, available, occupancy))
     }
 }
