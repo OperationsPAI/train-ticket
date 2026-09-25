@@ -42,6 +42,7 @@ from .domain import (
     RouteRestriction,
     SeatClass,
     SeatClassLimit,
+    SelfServiceFacility,
     AdvanceBookingRule,
     BudgetLimit,
     StatementLine,
@@ -51,6 +52,14 @@ from .domain import (
 
 PRODUCER = "corporate-travel"
 SCHEMA_VERSION = 1
+
+
+SELF_SERVICE_FACILITY = SelfServiceFacility()
+"""The facility an agreement opened from self-service is held to.
+
+Read once here rather than rebuilt per request, so the create path compares
+against one value.
+"""
 
 
 @contextmanager
@@ -501,6 +510,13 @@ class CorporateTravelService:
                 ),
                 contact=dict(contact or {}),
             )
+            # Self-service opens the credit before the desk reads the agreement,
+            # so the path holds it inside the facility underwriting approves; an
+            # account that wants more is a desk agreement, not this one.
+            if not SELF_SERVICE_FACILITY.admits(agreement.monthly_credit_limit):
+                raise CorporateTravelError(
+                    "monthly credit limit is above the self-service credit facility this deployment opens"
+                )
             created_event = _agreement_event("CorporateAgreementCreated", agreement, correlation_id, causation_id)
             if activate:
                 agreement = agreement.activate()

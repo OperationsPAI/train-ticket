@@ -142,6 +142,28 @@ class AgreementPriceRef:
 
 
 @dataclass(frozen=True, slots=True)
+class SelfServiceFacility:
+    """The credit an agreement opened from self-service is held inside.
+
+    Underwriting states the monthly credit an account may travel on before the
+    desk sees an agreement; the number is theirs and outlives any one create
+    path, so it is a value here rather than a literal at the comparison.
+    """
+
+    max_monthly_credit_minor: int = 50_000_000
+
+    def __post_init__(self) -> None:
+        if self.max_monthly_credit_minor < 0:
+            raise CorporateTravelError("facility credit must be non-negative")
+
+    def admits(self, limit: Money) -> bool:
+        return limit.minor_units <= self.max_monthly_credit_minor
+
+    def to_dict(self) -> dict[str, int]:
+        return {"maxMonthlyCreditMinor": self.max_monthly_credit_minor}
+
+
+@dataclass(frozen=True, slots=True)
 class AuthorizedTraveler:
     authorization_id: str
     account_id: str
