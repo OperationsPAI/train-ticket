@@ -105,6 +105,49 @@ fn recorded_amount_basis_requires_order_and_matching_total() {
             assert_eq!(response(service.clone(), net_order).await.0, StatusCode::OK);
             println!("Recorded adjusted order {net_order}: incomplete net amount returns 404; matching net amount returns 200");
 
+            let mixed_order = format!("ord-mixed-{}", uuid::Uuid::now_v7());
+            let mixed_account = format!("acc-mixed-{}", uuid::Uuid::now_v7());
+            service.handle_subscribed_event(projection_event("JourneyOrderPostSalesAdjusted", "journey-order", serde_json::json!({
+                "orderId": mixed_order, "accountId": mixed_account, "segmentRefs": ["seg-changed"],
+                "monetarySummary": {"total": {"currency": "CNY", "minorUnits": 11500}}
+            }))).await.unwrap();
+            let original = recognition_event(&mixed_order, "rr-original", 10000);
+            let change_one = recognition_event(&mixed_order, "rr-change-1", 2000);
+            let change_two = recognition_event(&mixed_order, "rr-change-2", 3000);
+            let original_refund_one = reversal_event(&mixed_order, "rr-original", "rf-original-1", 1000);
+            let original_refund_two = reversal_event(&mixed_order, "rr-original", "rf-original-2", 500);
+            let change_refund = reversal_event(&mixed_order, "rr-change-1", "rf-change-1", 2000);
+            assert!(service.handle_subscribed_event(change_refund.clone()).await.is_err());
+            assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM processed_events WHERE event_id=$1")
+                .bind(&change_refund.event_id).fetch_one(service.pool()).await.unwrap(), 0);
+            for event in [&original, &original_refund_one, &change_one, &original_refund_two, &change_refund] {
+                service.handle_subscribed_event(event.clone()).await.unwrap();
+            }
+            assert_eq!(response(service.clone(), &mixed_order).await.0, StatusCode::NOT_FOUND);
+            assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM invoicing_command_rows WHERE order_id=$1")
+                .bind(&mixed_order).fetch_one(service.pool()).await.unwrap(), 0);
+            let outbox_before_completion = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM outbox").fetch_one(service.pool()).await.unwrap();
+            service.handle_subscribed_event(change_two.clone()).await.unwrap();
+            let mixed_basis = service.get_amount_basis(mixed_order.clone()).await.unwrap();
+            assert_eq!(mixed_basis.total_amount.minor_units, 11500);
+            assert_eq!(mixed_basis.revenue_recognition_ids, vec!["rr-change-1", "rr-change-2", "rr-original"]);
+            let history: Value = sqlx::query_scalar("SELECT data FROM invoicing_projection_rows WHERE kind='amount_history' AND id=$1")
+                .bind(&mixed_order).fetch_one(service.pool()).await.unwrap();
+            assert_eq!(history["recognitions"].as_object().unwrap().len(), 3);
+            assert_eq!(history["reversals"].as_object().unwrap().len(), 3);
+            let mixed_restarted = Arc::new(PostgresInvoicingService::from_env().await.unwrap());
+            assert_eq!(mixed_restarted.get_amount_basis(mixed_order.clone()).await.unwrap(), mixed_basis);
+            for event in [&original, &original_refund_one, &change_one, &original_refund_two, &change_refund, &change_two] {
+                let mut replay = event.clone(); replay.event_id = format!("evt-{}", uuid::Uuid::now_v7());
+                mixed_restarted.handle_subscribed_event(replay).await.unwrap();
+            }
+            assert_eq!(mixed_restarted.get_amount_basis(mixed_order.clone()).await.unwrap(), mixed_basis);
+            let replayed_history: Value = sqlx::query_scalar("SELECT data FROM invoicing_projection_rows WHERE kind='amount_history' AND id=$1")
+                .bind(&mixed_order).fetch_one(mixed_restarted.pool()).await.unwrap();
+            assert_eq!(replayed_history, history);
+            assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM outbox").fetch_one(mixed_restarted.pool()).await.unwrap(), outbox_before_completion);
+            println!("Mixed changed-order basis: partial projection returns 404 without commands; three recognitions and three cross-payment reversals converge to one stable hash across restart and business replay");
+
             let title = &source["legacy"]["title"];
             sqlx::query("INSERT INTO invoicing_command_rows(kind,id,account_id,data) VALUES('titles',$1,$2,$3)")
                 .bind(title["titleId"].as_str().unwrap()).bind(title["accountId"].as_str().unwrap())
@@ -149,6 +192,7 @@ fn recorded_amount_basis_requires_order_and_matching_total() {
             println!("Recorded legacy projection: missing order or total gives GET 404 and request PRECONDITION_FAILED with no writes; complete record issues once and replays");
             let restarted = Arc::new(PostgresInvoicingService::from_env().await.unwrap());
             assert_eq!(restarted.get_amount_basis(order.into()).await.unwrap(), basis);
+            mixed_restarted.pool().close().await;
             restarted.pool().close().await;
             service.pool().close().await;
         });
@@ -157,4 +201,16 @@ fn recorded_amount_basis_requires_order_and_matching_total() {
         admin.close().await;
         result.unwrap();
     });
+}
+
+fn projection_event(event_type: &str, producer: &str, payload: Value) -> EventEnvelope {
+    EventEnvelope::new(event_type, rust_kit::messaging::now_rfc3339_utc(), rust_kit::messaging::correlation_id(), None::<String>, producer, payload)
+}
+
+fn recognition_event(order: &str, recognition: &str, minor_units: i64) -> EventEnvelope {
+    projection_event("RevenueRecognized", "finance-settlement", serde_json::json!({"orderId":order,"revenueRecognitionId":recognition,"amount":{"currency":"CNY","minorUnits":minor_units}}))
+}
+
+fn reversal_event(order: &str, recognition: &str, refund: &str, minor_units: i64) -> EventEnvelope {
+    projection_event("RevenueRecognitionReversed", "finance-settlement", serde_json::json!({"orderId":order,"revenueRecognitionId":recognition,"sourceEventId":refund,"amount":{"currency":"CNY","minorUnits":minor_units}}))
 }
