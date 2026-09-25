@@ -190,14 +190,14 @@ impl PostgresCapacityService {
             let (supply,available) = self.available_supply(&mut tx,&facts,&segments,&correlation,now).await?;
             tx.commit().await.map_err(to_app_storage)?;
             total_units += supply.capacity();
-            available_count += available;
-            sellable |= available>0;
-            if available>2 && available*4>supply.capacity() { status="AVAILABLE".into(); }
-            else if available>0 && status!="AVAILABLE" { status="LIMITED".into(); }
+            available_count += available.len();
+            sellable |= !available.is_empty();
+            if available.len()>2 && available.len()*4>supply.capacity() { status="AVAILABLE".into(); }
+            else if !available.is_empty() && status!="AVAILABLE" { status="LIMITED".into(); }
             remaining_by_class.push(crate::application::RemainingByClass {
                 class_ref,
                 total: supply.capacity(),
-                available,
+                available: available.len(),
             });
         }
         let response = AvailabilitySnapshotResponse {
@@ -279,7 +279,6 @@ impl PostgresCapacityService {
         let segments = self.prepare_supply_history(&facts.scheduled_service_ref,&facts.segment_ref,correlation_id).await?;
         let now = now_millis();
         let hold_id = format!("hold-{}", uuid::Uuid::now_v7());
-        let pool_id = pool_id_for(&req.segment_ref, &req.class_ref);
         let mut tx = self.pool().begin().await.map_err(to_app_storage)?;
         Self::lock_booking(&mut tx, &req.segment_booking_id).await.map_err(to_app_storage)?;
         if let Some(resp) = self
@@ -296,9 +295,10 @@ impl PostgresCapacityService {
             self.finish_idempotency(&mut tx,idempotency_key,fingerprint,201,serde_json::to_value(&response).map_err(to_internal)?).await?;
             tx.commit().await.map_err(to_app_storage)?;return Ok(response);
         }
+        let (occupancy_facts, supply, available) = self.admission_supply(&mut tx, facts, &segments, correlation_id, now).await?;
+        if available.is_empty() { return Err(AppError::DomainRuleViolation("NO_AVAILABLE_CAPACITY".into())); }
+        let pool_id = pool_id_for(&req.segment_ref, &occupancy_facts.class_ref);
         Self::lock_inventory(&mut tx, &pool_id).await.map_err(to_app_storage)?;
-        let (supply, available) = self.available_supply(&mut tx, facts, &segments, correlation_id, now).await?;
-        if available == 0 { return Err(AppError::DomainRuleViolation("NO_AVAILABLE_CAPACITY".into())); }
         let loaded = self
             .inventory_repo
             .get::<InventoryPoolSnapshot>(&mut *tx, &pool_id)
@@ -306,15 +306,13 @@ impl PostgresCapacityService {
             .map_err(to_app_storage)?;
         let (mut pool, expected_version) = match loaded {
             Some(snapshot) => (snapshot.data.try_into_domain()?, Some(snapshot.version)),
-            None => (new_pool(&pool_id, facts, &supply)?, None),
+            None => (new_pool(&pool_id, &occupancy_facts, &supply)?, None),
         };
-        apply_supply(&mut pool, facts, &supply)?;
+        apply_supply(&mut pool, &occupancy_facts, &supply)?;
         let route=segments.route(&facts.segment_ref)?;
         pool.identity.stop_sequence_version=route.stop_sequence_version.clone();
         let interval = StationInterval::new(route.interval.from_seq, route.interval.to_seq).map_err(to_internal)?;
-        let unit_ref = pool
-            .find_available_unit(&interval, now)
-            .ok_or_else(|| AppError::DomainRuleViolation("NO_AVAILABLE_CAPACITY".into()))?;
+        let unit_ref = CapacityUnitRef::new(available[0].clone()).map_err(to_internal)?;
         let hold = CapacityHold::request(
             HoldId::new(&hold_id).map_err(to_internal)?,
             HoldScope::new(
@@ -331,7 +329,7 @@ impl PostgresCapacityService {
                 .map_err(to_internal)?,
             ).with_supply_evidence(HoldSupplyEvidence::new(
                 &facts.class_ref,
-                &facts.class_ref,
+                &occupancy_facts.class_ref,
                 &facts.scheduled_service_ref,
                 &facts.service_date,
                 &facts.source_type,
@@ -858,7 +856,6 @@ impl PostgresCapacityService {
             .await.map_err(inbound_from_app_error)?;
         let now = now_millis();
         let hold_id = format!("hold-{}", uuid::Uuid::now_v7());
-        let pool_id = pool_id_for(&req.segment_ref, &req.class_ref);
         let mut tx = self.pool().begin().await.map_err(inbound_transient)?;
         Self::lock_booking(&mut tx, &req.segment_booking_id).await.map_err(inbound_transient)?;
         if !mark_event_processing(&mut tx, &envelope.event_id, stream)
@@ -898,8 +895,9 @@ impl PostgresCapacityService {
             return Ok(());
         }
         Self::lock_supply(&mut tx, facts).await.map_err(inbound_from_app_error)?;
+        let (occupancy_facts, supply, available) = self.admission_supply(&mut tx, facts, &segments, &envelope.correlation_id, now).await.map_err(inbound_from_app_error)?;
+        let pool_id = pool_id_for(&req.segment_ref, &occupancy_facts.class_ref);
         Self::lock_inventory(&mut tx, &pool_id).await.map_err(inbound_transient)?;
-        let (supply, available) = self.available_supply(&mut tx, facts, &segments, &envelope.correlation_id, now).await.map_err(inbound_from_app_error)?;
         let loaded = self
             .inventory_repo
             .get::<InventoryPoolSnapshot>(&mut *tx, &pool_id)
@@ -914,15 +912,15 @@ impl PostgresCapacityService {
                 Some(snapshot.version),
             ),
             None => (
-                new_pool(&pool_id, facts, &supply).map_err(inbound_from_app_error)?,
+                new_pool(&pool_id, &occupancy_facts, &supply).map_err(inbound_from_app_error)?,
                 None,
             ),
         };
-        apply_supply(&mut pool, facts, &supply).map_err(inbound_from_app_error)?;
+        apply_supply(&mut pool, &occupancy_facts, &supply).map_err(inbound_from_app_error)?;
         let route=segments.route(&facts.segment_ref).map_err(inbound_from_app_error)?;
         pool.identity.stop_sequence_version=route.stop_sequence_version.clone();
         let interval = StationInterval::new(route.interval.from_seq, route.interval.to_seq).map_err(inbound_fatal)?;
-        let unit_ref = if available > 0 { pool.find_available_unit(&interval, now) } else { None };
+        let unit_ref = available.first().cloned().map(CapacityUnitRef::new).transpose().map_err(inbound_fatal)?;
         let Some(unit_ref) = unit_ref else {
             // Sold out is a business outcome, not an infrastructure failure:
             // retrying can never conjure a seat. Emit CapacityHoldFailed so the
@@ -997,7 +995,7 @@ impl PostgresCapacityService {
                 .map_err(inbound_fatal)?,
             ).with_supply_evidence(HoldSupplyEvidence::new(
                 &facts.class_ref,
-                &facts.class_ref,
+                &occupancy_facts.class_ref,
                 &facts.scheduled_service_ref,
                 &facts.service_date,
                 &facts.source_type,

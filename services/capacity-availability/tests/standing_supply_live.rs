@@ -21,6 +21,7 @@ async fn standing_quota_is_validated_counted_and_persisted_without_physical_seat
             segment_booking_id: a.segment_booking_id.clone(),
             journey_order_id: a.journey_order_id.clone(),
             traveler_ref: a.traveler_ref.clone(),
+            capacity_unit_ref: a.capacity_unit_ref.clone(),
             interval: a.interval.clone(),
         })
         .collect();
