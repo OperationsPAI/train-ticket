@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { OptimisticConcurrencyConflict, OutboxAppender, OutboxRelay, PostgresIdempotencyStore, connectRedisWithRetry, createPostgresPool, createRedisClient, migrationsAwareReadiness, redisClientLiveness, startMigrations, streamForProducer, withTransaction, type EventEnvelope, type SchemaDetail } from "@trainticket/ts-kit";
 import type { Pool, PoolClient, QueryResult } from "pg";
 import { DomainError, WaitlistEntry, normalizeFareClass, type TravelInterval, type WaitlistEntrySnapshot } from "./domain.js";
+import { travelClassLabel, waitlistIntentState, type WaitlistIntentMetricSample } from "./metrics.js";
 import type { WaitlistMatchCriteria, WaitlistRepository } from "./promotion.js";
 
 export class PostgresWaitlistRepository implements WaitlistRepository {
@@ -230,6 +231,27 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
     return entries.map((entry) => entry.toSnapshot(positionIn(entries, entry.entryId)));
   }
 
+  /**
+   * One row per persisted (status, seat_class) combination. Counting and
+   * `min(created_at)` happen in the database so the gauges reflect durable rows
+   * on every scrape rather than any counter this process accumulated.
+   */
+  async intentMetricSamples(): Promise<readonly WaitlistIntentMetricSample[]> {
+    const result = await this.db.query(
+      `SELECT status, seat_class, count(*)::int AS intent_count, min(created_at) AS oldest_created_at
+       FROM waitlist_entries
+       GROUP BY status, seat_class`,
+    ) as QueryResult<IntentMetricRow>;
+    return result.rows.map((row) => ({
+      state: waitlistIntentState(row.status),
+      travelClass: travelClassLabel(row.seat_class),
+      count: Number(row.intent_count),
+      oldestCreatedAt: row.oldest_created_at === null || row.oldest_created_at === undefined
+        ? null
+        : instantString(row.oldest_created_at),
+    }));
+  }
+
   private async snapshot(entry: WaitlistEntry): Promise<WaitlistEntrySnapshot> {
     const queue = await this.queueFor(entry.segmentRef, entry.departureDate, entry.seatClass);
     return queue.find((candidate) => candidate.entryId === entry.entryId) ?? entry.toSnapshot(0);
@@ -257,6 +279,8 @@ export type WaitlistStorageRuntime = Readonly<{
   idempotencyStore: PostgresIdempotencyStore;
   runCommand: <T>(operation: (repository: WaitlistRepository, publisher: TransactionalOutboxPublisher) => Promise<T>) => Promise<T>;
   runConsumedEvent: <T>(eventId: string, stream: string, operation: (repository: WaitlistRepository, publisher: TransactionalOutboxPublisher) => Promise<T>) => Promise<T | undefined>;
+  /** Durable intent population/age buckets backing the business gauges. */
+  intentMetricSamples: () => Promise<readonly WaitlistIntentMetricSample[]>;
   stop: () => Promise<void>;
 }>;
 
@@ -278,6 +302,7 @@ export async function startWaitlistStorage(redisUrl = process.env.REDIS_URL ?? "
       if (!await new ProcessedEventRepository(client).record(eventId, stream)) return undefined;
       return operation(new PostgresWaitlistRepository(client), new TransactionalOutboxPublisher(new OutboxAppender(client)));
     }),
+    intentMetricSamples: () => new PostgresWaitlistRepository(pool).intentMetricSamples(),
     // Stop the migration retry first: otherwise a shutdown during the retry window leaves a backoff timer running and can issue queries against a pool that is being torn down.
     stop: async () => { await migrations.stop(); await relay.stop(); redisClientLiveness(redis)?.dispose(); await Promise.allSettled([redis.quit(), pool.end()]); },
   };
@@ -485,6 +510,13 @@ type CapacityCreditRow = Readonly<{
   intent_fingerprint: string | null;
   released_slots: string | number;
   remaining_slots: string | number;
+}>;
+
+type IntentMetricRow = Readonly<{
+  status: string;
+  seat_class: string;
+  intent_count: string | number;
+  oldest_created_at: Date | string | null;
 }>;
 
 function capacityCreditMatches(row: CapacityCreditRow, event: import("./promotion.js").WaitlistCapacityFreed): boolean {
