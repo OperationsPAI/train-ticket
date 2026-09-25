@@ -18,6 +18,8 @@
 
 import { newEventId, uuidV7 } from "@trainticket/ts-kit";
 
+import { deskPollsQueue } from "./handoff-queues.js";
+
 // ─── Error ────────────────────────────────────────────────────────────────────
 
 export class DomainError extends Error {
@@ -838,6 +840,15 @@ export class SupportCase {
       throw new DomainError(
         "CASE_NOT_ASSIGNABLE",
         `SupportCase ${this.id} in ${this.status} cannot be assigned`,
+      );
+    }
+
+    // The desk only takes a queue its consoles poll, and which queues those are
+    // is the release's statement rather than the caller's choice.
+    if (!deskPollsQueue(command.ownerQueue)) {
+      throw new DomainError(
+        "CASE_NOT_ROUTABLE",
+        `SupportCase ${this.id} cannot be handed to ${command.ownerQueue}: the desk does not poll that queue`,
       );
     }
 
