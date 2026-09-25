@@ -103,6 +103,17 @@ The same amount fields appear in the case details under `decision`.
 Approval starts compensation execution internally as `EXECUTING` and returns public status `APPROVED`.
 The caller advances the approved case through `execute-compensation`.
 
+For an existing case already in internal status `EXECUTING`, a new approval request is an execution redrive.
+The service rebuilds `PostSalesApproved` from the frozen decision, scope, refund payment allocation and approved actions, and rebuilds `PostSalesExecutionStarted` from the persisted execution plan.
+The first redrive stores one stable event identity pair in the case snapshot; every repeated or concurrent redrive reuses the same pair.
+This allows the pair to be put back into the outbox after Redis and published-outbox retention have removed the original messages without creating distinct approval facts.
+Use a new HTTP `Idempotency-Key` for each redrive attempt because repeating a completed HTTP key returns its stored response without entering the application service.
+
+Redrive does not change the case state or approved amount.
+Payment uses the canonical case ID, or `caseId:paymentIntentId` for split refunds, as its refund idempotency key.
+Entitlement voiding carries the same case ID and is a no-op for an already voided entitlement; capacity release remains guarded by the owning booking/capacity state.
+An `APPLIED` case returns its existing response and publishes no approval or execution-start event.
+
 ### Get Post-Sales Case
 
 **GET** `/api/v1/post-sales-cases/{caseId}`
