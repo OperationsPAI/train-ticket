@@ -192,8 +192,10 @@ class EndpointTest(unittest.TestCase):
 
     def test_revenue_endpoint_returns_route_breakdown(self) -> None:
         service = ReportingApplicationService()
-        service.handle_event(EventEnvelope(eventId="evt-r-a", eventType="PaymentCaptured", occurredAt="2026-07-05T10:30:00.000Z", correlationId="corr-1", producer="payment", schemaVersion=1, payload={"routeId": "A", "amount": "50.00", "currency": "USD"}, causationId="evt-source"))
-        service.handle_event(EventEnvelope(eventId="evt-r-b", eventType="PaymentCaptured", occurredAt="2026-07-05T10:30:00.000Z", correlationId="corr-1", producer="payment", schemaVersion=1, payload={"routeId": "B", "amount": "75.00", "currency": "CNY"}, causationId="evt-source"))
+        for order_id, route in (("ord-a", "A"), ("ord-b", "B")):
+            service.handle_event(EventEnvelope(eventId=f"evt-{order_id}", eventType="JourneyOrderCreated", occurredAt="2026-07-05T10:29:00.000Z", correlationId="corr-1", producer="journey-order", schemaVersion=1, payload={"orderId": order_id, "segments": [{"segmentRef": route, "departureTime": "2026-07-06T10:00:00Z"}], "travelerRefs": []}, causationId="evt-source"))
+        service.handle_event(EventEnvelope(eventId="evt-r-a", eventType="PaymentCaptured", occurredAt="2026-07-05T10:30:00.000Z", correlationId="corr-1", producer="payment", schemaVersion=1, payload={"businessRef": "ord-a", "routeId": "forged", "amount": "50.00", "currency": "USD"}, causationId="evt-source"))
+        service.handle_event(EventEnvelope(eventId="evt-r-b", eventType="PaymentCaptured", occurredAt="2026-07-05T10:30:00.000Z", correlationId="corr-1", producer="payment", schemaVersion=1, payload={"businessRef": "ord-b", "routeId": "forged", "amount": "75.00", "currency": "CNY"}, causationId="evt-source"))
 
         response = TestClient(create_app(service=service)).get("/api/v1/metrics/revenue?groupBy=route&limit=1&offset=1")
 
@@ -207,6 +209,77 @@ class EndpointTest(unittest.TestCase):
             {key: response.json()[key] for key in ("total", "limit", "offset")},
             {"total": 2, "limit": 1, "offset": 1},
         )
+
+    def test_late_authoritative_facts_replace_untrusted_payment_dimensions(self) -> None:
+        service = ReportingApplicationService()
+        service.handle_event(EventEnvelope(
+            eventId="evt-capture", eventType="PaymentCaptured", occurredAt="2026-07-05T10:30:00.000Z",
+            correlationId="corr-1", producer="payment", schemaVersion=1,
+            payload={
+                "businessRef": "ord-1",
+                "capturedAmount": {"currency": "CNY", "minorUnits": 1001},
+                "routeId": "forged-route", "seatClass": "forged-class", "travelerType": "forged-type",
+                "ancillaryAttached": True, "insuranceAttached": True,
+            },
+            causationId="evt-source",
+        ))
+        client = TestClient(create_app(service=service))
+        self.assertEqual(client.get("/api/v1/metrics/revenue?groupBy=route").json()["items"][0]["value"], "unknown")
+
+        service.handle_event(EventEnvelope(
+            eventId="evt-order", eventType="JourneyOrderCreated", occurredAt="2026-07-05T10:31:00.000Z",
+            correlationId="corr-1", producer="journey-order", schemaVersion=1,
+            payload={
+                "orderId": "ord-1",
+                "segments": [
+                    {"segmentRef": "seg-b", "departureTime": "2026-07-07T09:00:00Z"},
+                    {"segmentRef": "seg-a", "departureTime": "2026-07-06T09:00:00Z"},
+                ],
+                "travelerRefs": [
+                    {"travelerId": "tvl-1", "travelerType": "ADULT"},
+                    {"travelerId": "tvl-2", "travelerType": "ADULT"},
+                    {"travelerId": "tvl-3", "travelerType": "CHILD"},
+                ],
+            }, causationId="evt-source",
+        ))
+        for index, (traveler, seat_class) in enumerate((("tvl-1", "SECOND_CLASS"), ("tvl-2", "SECOND_CLASS"), ("tvl-3", "FIRST_CLASS"))):
+            service.handle_event(EventEnvelope(
+                eventId=f"evt-booking-{index}", eventType="SegmentReservationRequested", occurredAt="2026-07-05T10:32:00.000Z",
+                correlationId="corr-1", producer="booking-orchestration", schemaVersion=1,
+                payload={"journeyOrderId": "ord-1", "segmentRef": "seg-a", "travelerRef": traveler, "classRef": seat_class},
+                causationId="evt-source",
+            ))
+        service.handle_event(EventEnvelope(
+            eventId="evt-ancillary", eventType="AncillaryOrderItemConfirmed", occurredAt="2026-07-05T10:33:00.000Z",
+            correlationId="corr-1", producer="ancillary-service", schemaVersion=1,
+            payload={"ancillaryOrderItemId": "aoi-1", "journeyOrderId": "ord-1", "travelerRef": "tvl-1", "segmentRef": "seg-a", "serviceType": "MEAL", "paymentIntentId": "pi-aoi-1"},
+            causationId="evt-source",
+        ))
+        service.handle_event(EventEnvelope(
+            eventId="evt-insurance", eventType="InsurancePolicyIssued", occurredAt="2026-07-05T10:34:00.000Z",
+            correlationId="corr-1", producer="travel-insurance", schemaVersion=1,
+            payload={"policyId": "pol-1", "journeyOrderId": "ord-1", "travelerRef": "tvl-2", "segmentRefs": ["seg-b"]},
+            causationId="evt-source",
+        ))
+
+        route = client.get("/api/v1/metrics/revenue?groupBy=route").json()
+        traveler = client.get("/api/v1/metrics/revenue?groupBy=traveler_type").json()
+        seat = client.get("/api/v1/metrics/revenue?groupBy=seat_class").json()
+        route_items = {item["value"]: item for item in route["items"]}
+        self.assertEqual(route_items["seg-a"]["revenue"], {"amount": "5.01", "currency": "CNY"})
+        self.assertEqual(route_items["seg-b"]["revenue"], {"amount": "5.00", "currency": "CNY"})
+        self.assertEqual(route_items["seg-a"]["ancillaryAttachRate"], 1.0)
+        self.assertEqual(route_items["seg-a"]["insuranceAttachRate"], 1.0)
+        self.assertEqual(
+            {item["value"]: item["revenue"]["amount"] for item in traveler["items"]},
+            {"ADULT": "6.68", "CHILD": "3.33"},
+        )
+        self.assertEqual(
+            {item["value"]: item["revenue"]["amount"] for item in seat["items"]},
+            {"SECOND_CLASS": "6.67", "FIRST_CLASS": "3.34"},
+        )
+        self.assertEqual(route["totalRevenue"], [{"amount": "10.01", "currency": "CNY"}])
+        self.assertEqual(client.get("/api/v1/metrics/revenue?groupBy=passenger_type").status_code, 422)
 
     def test_new_context_events_increment_context_rollup_and_anomaly_signal(self) -> None:
         service = ReportingApplicationService()
@@ -380,7 +453,7 @@ class MessagingTest(unittest.TestCase):
         self.assertEqual(result.status.value, "TRANSIENT_ERROR")
         self.assertIn("projection store unavailable", result.message)
 
-    def test_unmodeled_event_is_ack_skipped_without_projection(self) -> None:
+    def test_seat_allocation_is_consumed_as_authoritative_dimension_fact(self) -> None:
         publisher = FakePublisher()
         service = ReportingApplicationService(publisher=publisher)
 
@@ -391,14 +464,14 @@ class MessagingTest(unittest.TestCase):
             correlationId="corr-1",
             producer="seat-assignment",
             schemaVersion=1,
-            payload={"seatAllocationId": "salloc-1", "segmentBookingId": "sb-1"},
+            payload={"seatAllocationId": "salloc-1", "segmentBookingId": "sb-1", "journeyOrderId": "ord-1", "segmentRef": "seg-1", "travelerRef": "tvl-1", "requestedClassRef": "SECOND_CLASS"},
             causationId="evt-source",
         ))
 
         self.assertEqual(result.status.value, "SUCCESS")
-        self.assertFalse(service.repository.consumed_events.has_consumed("evt-seat-assignment-skip"))
-        self.assertEqual(service.repository.metric_aggregator.events, [])
-        self.assertEqual(publisher.published, [])
+        self.assertTrue(service.repository.consumed_events.has_consumed("evt-seat-assignment-skip"))
+        fact = service.repository.metric_aggregator.revenue_facts.seat_classes[("ord-1", "seg-1", "tvl-1")]
+        self.assertEqual(fact.seat_class, "SECOND_CLASS")
 
     def test_revenue_event_rebuilds_dashboard_and_publishes_read_model_fact(self) -> None:
         publisher = FakePublisher()
