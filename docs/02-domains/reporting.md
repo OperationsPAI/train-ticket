@@ -51,7 +51,7 @@ SQL 保留源事件表，物化视图是可重新计算的派生结果。
 操作指标、路线指标和异常规则使用 `MetricAggregator`。
 PostgreSQL 加载聚合器时最多读取符合条件的最新10000条事件；聚合器按币种独立保存金额。
 其时间窗口结果受这一输入数量限制，不能据此保证覆盖高流量下完整历史窗口。
-`orders_per_second` 当前字段返回最近60秒订单事件数量。
+`orders_per_second` 为最近60秒订单事件数除以60所得的平均每秒速率，保留四位小数。
 `trends` 返回当前快照的单个时间点。
 完整计算口径见 [指标与投影](../10-domain-enrichment/reporting-enrichment.md)。
 

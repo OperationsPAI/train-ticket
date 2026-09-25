@@ -442,7 +442,7 @@ class RealTimeMetricsEnrichmentTest(unittest.TestCase):
         # to absorb a slow or noisy machine and still fail the scan.
         self.assertLess(large, max(small, 1e-4) * 48)
 
-    def test_ten_orders_are_reflected_in_orders_per_second(self) -> None:
+    def test_orders_per_second_is_the_sixty_second_average_rate(self) -> None:
         aggregator = MetricAggregator()
         for index in range(10):
             aggregator.record(
@@ -457,7 +457,7 @@ class RealTimeMetricsEnrichmentTest(unittest.TestCase):
 
         snapshot = aggregator.snapshot(NOW + timedelta(seconds=30))
 
-        self.assertEqual(snapshot.orders_per_second, 10)
+        self.assertEqual(snapshot.orders_per_second, 0.1667)
         self.assertEqual(snapshot.avg_booking_latency["p50"], 104.5)
 
     def test_revenue_by_route_returns_top_routes(self) -> None:
