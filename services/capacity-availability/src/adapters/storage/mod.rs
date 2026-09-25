@@ -418,16 +418,22 @@ impl PostgresCapacityService {
             &fingerprint,
             200,
             |pool, now| {
-                pool.confirm_hold(&HoldId::new(hold_id).map_err(to_internal)?, now)
+                pool.confirm_or_expire_hold(&HoldId::new(hold_id).map_err(to_internal)?, now)
+                    .map(|(events, _)| events)
                     .map_err(map_hold_mutation_error)
             },
-            |_| ConfirmHoldResponse {
+            |events| ConfirmHoldResponse {
                 hold_id: hold_id.to_string(),
-                status: "CONFIRMED".to_string(),
+                status: if events.iter().any(|event| matches!(event, DomainEvent::CapacityHoldExpired(_))) {
+                    "EXPIRED".to_string()
+                } else { "CONFIRMED".to_string() },
             },
             correlation_id,
         )
         .await
+        .and_then(|response| if response.status == "EXPIRED" {
+            Err(AppError::PreconditionFailed("Hold expired before confirmation".into()))
+        } else { Ok(response) })
     }
 
     pub async fn release_hold(
@@ -1271,8 +1277,8 @@ impl PostgresCapacityService {
             return Ok(());
         }
         let now = now_millis();
-        let events = pool
-            .confirm_hold(&hold_id_value, now)
+        let (events, expired) = pool
+            .confirm_or_expire_hold(&hold_id_value, now)
             .map_err(map_hold_mutation_error)
             .map_err(inbound_from_app_error)?;
         let outbound = domain_events_to_wire(&events, &envelope.correlation_id)
@@ -1303,7 +1309,7 @@ impl PostgresCapacityService {
         }
         let resp = ConfirmHoldResponse {
             hold_id,
-            status: "CONFIRMED".to_string(),
+            status: if expired { "EXPIRED".to_string() } else { "CONFIRMED".to_string() },
         };
         self.finish_idempotency(
             &mut tx,
