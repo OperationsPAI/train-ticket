@@ -15,6 +15,8 @@ Monthly invoice generation calculates totals and discounts from submitted line i
 [Domain](../../services/corporate-travel/src/corporate_travel/domain.py), [application service and persistence](../../services/corporate-travel/src/corporate_travel/application.py) and [event handler](../../services/corporate-travel/src/corporate_travel/messaging.py) define policy, approval, budget and billing behavior.
 [Service README](../../services/corporate-travel/README.md) describes agreement and billing ownership.
 
+With `DATABASE_URL` configured, startup applies the service migrations, uses the PostgreSQL repository and stores HTTP idempotency records in the same database. The canonical `/api/v1/agreements` owning API is therefore the bootstrap path: an agreement created through it remains readable and can receive authorization and policy-check commands after a full application restart. No hidden agreement seed or direct database bootstrap is required.
+
 ## Boundaries
 
 The approval model supports decisions and escalation, while the HTTP routes expose policy checks and creation of approval records.
