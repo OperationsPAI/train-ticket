@@ -150,7 +150,7 @@ model instead of treating terminal state as an error.
 | `financeInvoiceId` | string | no | Finance Settlement invoice/reference when `basisType=FINANCE_INVOICE`. |
 | `taxLines` | array[object] | yes | Tax line snapshots with `taxCode`, `taxRateBasisPoints`, `taxableAmount` Money, and `taxAmount` Money. |
 | `totalAmount` | Money | yes | Total positive invoice amount. |
-| `amountBasisHash` | string | yes | SHA-256 of the canonical Finance Settlement amount snapshot. |
+| `amountBasisHash` | string | yes | SHA-256 of the canonical Finance Settlement amount snapshot. For `REVENUE_RECOGNITION`, the material contains sorted recognition IDs, net total and the complete reversal history keyed by recognition and refund identity. |
 
 ### EInvoice
 
@@ -337,6 +337,7 @@ Clients obtain the consumed Finance Settlement amount snapshot from `GET /api/v1
 The response is the `AmountBasis` object defined above, including its original financial references and digest.
 The endpoint returns `200` only when the order projection is present, its `expected_total` is available, and both currency and minor units match the Finance Settlement amount projection.
 It returns `404 NOT_FOUND` when either projection or the expected total is unavailable, or when the totals differ, and propagates storage failures as errors.
+For changed orders, the amount projection may combine the original fare and multiple `change-payment` recognitions with repeated or cross-payment reversals. Replayed business facts with new envelope event IDs do not add recognition IDs or reversal history, and valid arrival order does not change the final hash.
 Order projection presence and matching totals do not establish lifecycle confirmation because creation events also contain a total.
 Invoice requests enforce the same projection and total requirements and return `412 PRECONDITION_FAILED` when they are unmet.
 Invoice creation loads order and amount projections using its existing PostgreSQL transaction connection.
