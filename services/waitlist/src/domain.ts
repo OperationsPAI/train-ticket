@@ -17,6 +17,10 @@ export type PaymentGuaranteeSnapshot = Readonly<{
   verifiedAt: string;
   preferredChannel?: string;
 }>;
+export type CapacityCreditAllocation = Readonly<{
+  capacityReleaseRef: string;
+  slots: number;
+}>;
 export type SpecialStatus = "MILITARY" | "DISABLED" | "STUDENT" | "NONE";
 
 export type PriorityInput = Readonly<{
@@ -48,6 +52,7 @@ export type WaitlistEntrySnapshot = Readonly<{
   paymentGuaranteeRef: string;
   paymentGuarantee?: PaymentGuaranteeSnapshot;
   intentFingerprint: string;
+  matchedCapacityCredits?: readonly CapacityCreditAllocation[];
   fareQuoteId?: string;
   capacityHoldId?: string;
   offerId?: string;
@@ -78,6 +83,7 @@ export type CreateWaitlistEntry = Readonly<{
   paymentGuaranteeRef?: string;
   paymentGuarantee?: PaymentGuaranteeSnapshot;
   intentFingerprint?: string;
+  matchedCapacityCredits?: readonly CapacityCreditAllocation[];
   createdAt?: Date;
 }>;
 
@@ -113,6 +119,7 @@ export class WaitlistEntry {
     public readonly paymentGuaranteeRef: string = `pi-${uuidV7()}`,
     public readonly paymentGuarantee: PaymentGuaranteeSnapshot = testPaymentGuarantee(paymentGuaranteeRef, accountId, deadline),
     public readonly intentFingerprint: string = defaultIntentFingerprint(travelerRefs, scheduledServiceRef, departureDate, seatClass, interval),
+    private _matchedCapacityCredits: readonly CapacityCreditAllocation[] = [],
     private _journeyOrderRef?: string,
     private _fareQuoteIdempotencyKey: string = uuidV7(),
     private _offerIdempotencyKey: string = uuidV7(),
@@ -162,6 +169,7 @@ export class WaitlistEntry {
       command.paymentGuaranteeRef ?? `pi-${uuidV7()}`,
       command.paymentGuarantee ?? testPaymentGuarantee(command.paymentGuaranteeRef ?? "pi-test", command.accountId, command.deadline ?? deadlineFromDepartureDate(command.departureDate)),
       command.intentFingerprint ?? defaultIntentFingerprint(command.travelerRefs, scheduledServiceRef, command.departureDate, seatClass, interval),
+      command.matchedCapacityCredits ?? [],
     );
   }
 
@@ -190,6 +198,7 @@ export class WaitlistEntry {
       snapshot.paymentGuaranteeRef,
       snapshot.paymentGuarantee ?? testPaymentGuarantee(snapshot.paymentGuaranteeRef, snapshot.accountId, snapshot.deadline),
       snapshot.intentFingerprint,
+      snapshot.matchedCapacityCredits ?? [],
       snapshot.journeyOrderRef,
       snapshot.fareQuoteIdempotencyKey,
       snapshot.offerIdempotencyKey,
@@ -208,6 +217,7 @@ export class WaitlistEntry {
   get offerId(): string | undefined { return this._offerId; }
   get offerVersion(): number | undefined { return this._offerVersion; }
   get journeyOrderRef(): string | undefined { return this._journeyOrderRef; }
+  get matchedCapacityCredits(): readonly CapacityCreditAllocation[] { return this._matchedCapacityCredits.map((credit) => ({ ...credit })); }
   get fareQuoteIdempotencyKey(): string { return this._fareQuoteIdempotencyKey; }
   get offerIdempotencyKey(): string { return this._offerIdempotencyKey; }
   get capacityHoldIdempotencyKey(): string { return this._capacityHoldIdempotencyKey; }
@@ -222,9 +232,9 @@ export class WaitlistEntry {
   }
 
   offer(offerId: string, offerVersion: number, fareQuoteId: string, capacityHoldId: string | undefined, now: Date, expiresAt: Date): void {
-    this.assertStatus("QUEUED", "Only queued waitlist entries can begin matching");
+    if (this._status === "QUEUED") this._status = "MATCHING";
+    else if (this._status !== "MATCHING" || this._offerId) throw new DomainError("INVALID_TRANSITION", "Only an unoffered matching waitlist entry can receive an offer");
     if (expiresAt <= now) throw new DomainError("VALIDATION_FAILED", "Offer expiry must be in the future");
-    this._status = "MATCHING";
     this._offeredAt = now;
     this._offerExpiresAt = expiresAt;
     if (!Number.isInteger(offerVersion) || offerVersion < 1) throw new DomainError("VALIDATION_FAILED", "offerVersion must be positive");
@@ -232,6 +242,24 @@ export class WaitlistEntry {
     this._capacityHoldId = capacityHoldId;
     this._offerId = offerId;
     this._offerVersion = offerVersion;
+  }
+
+  recordFareQuote(fareQuoteId: string): void {
+    this.assertStatus("MATCHING", "Only matching waitlist entries can record a fare quote");
+    assertNonEmpty(fareQuoteId, "fareQuoteId");
+    if (this._fareQuoteId && this._fareQuoteId !== fareQuoteId) throw new DomainError("CONFLICT", "Waitlist promotion already references a different fare quote");
+    this._fareQuoteId = fareQuoteId;
+  }
+
+  beginPromotion(capacityCredits: readonly CapacityCreditAllocation[]): void {
+    this.assertStatus("QUEUED", "Only queued waitlist entries can claim released capacity");
+    if (capacityCredits.length === 0
+        || capacityCredits.some((credit) => credit.capacityReleaseRef.trim().length === 0 || !Number.isSafeInteger(credit.slots) || credit.slots < 1)
+        || capacityCredits.reduce((total, credit) => total + credit.slots, 0) !== this.travelerRefs.length) {
+      throw new DomainError("VALIDATION_FAILED", "capacity credits must exactly cover the traveler group");
+    }
+    this._status = "MATCHING";
+    this._matchedCapacityCredits = capacityCredits.map((credit) => ({ ...credit }));
   }
 
   linkJourneyOrder(now: Date, journeyOrderRef: string): void {
@@ -267,6 +295,7 @@ export class WaitlistEntry {
     this._offerId = undefined;
     this._offerVersion = undefined;
     this._journeyOrderRef = undefined;
+    this._matchedCapacityCredits = [];
     this._fareQuoteIdempotencyKey = uuidV7();
     this._offerIdempotencyKey = uuidV7();
     this._journeyOrderIdempotencyKey = uuidV7();
@@ -307,6 +336,7 @@ export class WaitlistEntry {
       paymentGuaranteeRef: this.paymentGuaranteeRef,
       paymentGuarantee: { ...this.paymentGuarantee, amount: { ...this.paymentGuarantee.amount } },
       intentFingerprint: this.intentFingerprint,
+      matchedCapacityCredits: this._matchedCapacityCredits.map((credit) => ({ ...credit })),
       fareQuoteId: this._fareQuoteId,
       capacityHoldId: this._capacityHoldId,
       offerId: this._offerId,
