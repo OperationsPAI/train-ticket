@@ -23,7 +23,7 @@ from fare_pricing import (
     calculate_fare_quote,
 )
 from fare_pricing.api import create_app
-from fare_pricing.handlers import handle_identity_verification_event
+from fare_pricing.adapters.messaging.handlers import handle_identity_verification_event
 from fare_pricing.application import deterministic_rule_set_event_id
 from fare_pricing.ids import uuid7
 from fare_pricing.application.service import InMemoryStore
