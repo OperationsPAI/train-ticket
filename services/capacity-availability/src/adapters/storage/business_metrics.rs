@@ -12,16 +12,34 @@
 //! path reads back after a restart.
 
 use super::*;
-use crate::metrics::{CapacityBusinessMetrics, DurableHoldFact, DurablePoolFact, build_snapshot};
+use crate::metrics::{CapacityBusinessMetrics, DurableHoldFact, DurablePoolFact, SnapshotFold};
+use futures_util::TryStreamExt;
 use serde::Deserialize;
 use std::time::Duration;
 
 /// Mirrors `PRODUCER`; the gauge belongs to this service, not to a consumer.
 pub const SERVICE_NAME: &str = "capacity-availability";
 
-/// How often the levels are rebuilt. A hold has a five minute life, so a
-/// one-minute cadence is well inside the resolution the levels are read at.
-const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+/// How often the levels are rebuilt when nothing overrides it.
+///
+/// The rebuild must read every pool document, holds inline, to compute the
+/// sellable part of the level. On this cluster that is seven hundred thousand
+/// documents and about five seconds of work, so the cadence is set against the
+/// read rather than against the hold lifetime: five minutes of staleness is
+/// well inside the resolution a capacity level is read at.
+const DEFAULT_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
+
+/// The rebuild cadence, overridable from the environment so the chart owns it.
+/// A value below ten seconds is ignored rather than honoured: it would put the
+/// full-table read on top of the request path continuously.
+fn refresh_interval() -> Duration {
+    std::env::var("CAPACITY_METRICS_REFRESH_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|millis| *millis >= 10_000)
+        .map(Duration::from_millis)
+        .unwrap_or(DEFAULT_REFRESH_INTERVAL)
+}
 
 const POOL_FACTS_SQL: &str = r#"
 SELECT
@@ -68,58 +86,71 @@ type PoolFactRow = (String, String, String, i64, f64, Value);
 
 impl PostgresCapacityService {
     /// Rebuild both gauges from the durable pool documents and publish them.
+    ///
+    /// The rows are folded as they arrive rather than collected first. Every
+    /// pool document carries its holds inline and the table is seven gigabytes
+    /// on this cluster, so `fetch_all` held the whole expansion in memory and
+    /// the pod was OOM-killed at its four gigabyte limit about a minute after
+    /// starting. The fold state is bounded by the number of label
+    /// combinations, so streaming keeps a refresh at constant memory no matter
+    /// how many pools exist.
     pub async fn refresh_business_metrics(&self) -> Result<(), sqlx::Error> {
         let now = now_millis();
-        let pool_rows: Vec<PoolFactRow> = sqlx::query_as(POOL_FACTS_SQL)
-            .fetch_all(self.pool())
-            .await?;
-
-        let pools: Vec<DurablePoolFact> = pool_rows
-            .into_iter()
-            .map(
-                |(pool_id, class_ref, sellable_unit_type_ref, physical_unit_count, max_overbooking_pct, holds)| {
-                    // A document that cannot be decoded is skipped rather than
-                    // failing the refresh: one malformed pool must not blank the
-                    // level for every other pool.
-                    let holds: Vec<HoldRow> = serde_json::from_value(holds).unwrap_or_default();
-                    DurablePoolFact {
-                        pool_id,
-                        class_ref,
-                        sellable_unit_type_ref,
-                        physical_unit_count: u64::try_from(physical_unit_count).unwrap_or(0),
-                        max_overbooking_pct,
-                        holds: holds
-                            .into_iter()
-                            .map(|hold| DurableHoldFact {
-                                hold_id: hold.hold_id,
-                                state: hold.state,
-                                requested_at_millis: hold.requested_at,
-                                expires_at_millis: hold.expires_at,
-                                confirmed_at_millis: hold.confirmed_at,
-                                accepted_class_ref: hold
-                                    .supply_evidence
-                                    .as_ref()
-                                    .map(|evidence| evidence.accepted_class_ref.clone()),
-                                occupancy_class_ref: hold
-                                    .supply_evidence
-                                    .as_ref()
-                                    .map(|evidence| evidence.occupancy_class_ref.clone()),
-                            })
-                            .collect(),
-                    }
+        let mut fold = SnapshotFold::new();
+        let mut rows = sqlx::query_as::<_, PoolFactRow>(POOL_FACTS_SQL).fetch(self.pool());
+        while let Some(row) = rows.try_next().await? {
+            let (
+                pool_id,
+                class_ref,
+                sellable_unit_type_ref,
+                physical_unit_count,
+                max_overbooking_pct,
+                holds,
+            ) = row;
+            // A document that cannot be decoded is skipped rather than failing
+            // the refresh: one malformed pool must not blank the level for
+            // every other pool.
+            let holds: Vec<HoldRow> = serde_json::from_value(holds).unwrap_or_default();
+            fold.absorb(
+                &DurablePoolFact {
+                    pool_id,
+                    class_ref,
+                    sellable_unit_type_ref,
+                    physical_unit_count: u64::try_from(physical_unit_count).unwrap_or(0),
+                    max_overbooking_pct,
+                    holds: holds
+                        .into_iter()
+                        .map(|hold| DurableHoldFact {
+                            hold_id: hold.hold_id,
+                            state: hold.state,
+                            requested_at_millis: hold.requested_at,
+                            expires_at_millis: hold.expires_at,
+                            confirmed_at_millis: hold.confirmed_at,
+                            accepted_class_ref: hold
+                                .supply_evidence
+                                .as_ref()
+                                .map(|evidence| evidence.accepted_class_ref.clone()),
+                            occupancy_class_ref: hold
+                                .supply_evidence
+                                .as_ref()
+                                .map(|evidence| evidence.occupancy_class_ref.clone()),
+                        })
+                        .collect(),
                 },
-            )
-            .collect();
+                now,
+            );
+        }
 
-        self.business_metrics.record(build_snapshot(&pools, now));
+        self.business_metrics.record(fold.finish());
         Ok(())
     }
 
     /// Refresh on a timer. A failed refresh keeps the previous level rather than
     /// publishing zero: an unreadable table is unknown, not empty.
     pub fn spawn_business_metrics_refresh(self: std::sync::Arc<Self>) {
+        let interval = refresh_interval();
         tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(REFRESH_INTERVAL);
+            let mut ticker = tokio::time::interval(interval);
             loop {
                 ticker.tick().await;
                 if let Err(error) = self.refresh_business_metrics().await {
