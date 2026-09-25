@@ -70,6 +70,16 @@ The totals say the projection is complete: 3033370 entitlements against 3028056 
 The 404 is therefore a race or a key mismatch rather than a missing projection: the load generator boards immediately after issuance and retries a 404 nine times over about nine seconds, and the five freshly issued entitlements sampled for a record did not have one fifteen seconds later, which points at the lookup key rather than at the delay.
 Revision 329 gives Fulfillment eight reader loops per stream (`CONSUMER_WORKERS` in the Go kit, one loop per stream until now) on the theory that one loop could not keep up with the entitlement stream; the boarding 404 rate did not change, so the next step is the lookup key itself: `FindByEntitlementSegment` matches entitlement, segment booking and segment, and the boarding request carries the values the load generator recorded at purchase time.
 
+Retention audit on 2026-09-25 found the largest tables on the single PostgreSQL instance: 660GB across 38 databases, led by Notification Task snapshots at 68GB, the Notification outbox at 34GB with 36.4 million live rows, and Customer Service `processed_events` at 12.2 million rows.
+The outbox and `processed_events` growth is a defect, not the workload: the TypeScript retention sweep deletes one batch of a thousand rows every twenty polls, which is a ceiling of two hundred rows per second, and Notification publishes two hundred and twelve rows per second into its outbox while Customer Service consumes about two hundred events per second.
+Revision 331 raises that ceiling to a thousand rows per second and adds the retention index both services lacked, `idx_outbox_published_at` on `published_at IS NOT NULL`; the backlog drains at the new rate rather than growing.
+The same audit found no dead-letter entries on any of the 37 streams, and every consumer group within a hundred events of the stream head between bursts.
+
+Horizontal scaling was evaluated the same night and is not the right lever for these bursts: the cluster runs metrics-server and could carry HPAs, but the service CPU requests are 100 to 500 millicores against measured peaks of 0.6 to 1.4 cores, so a utilisation target would sit permanently above a hundred percent and scale every service to its maximum.
+The bursts that fail last twenty to ninety seconds, while an HPA reacts in thirty to sixty and a new Java pod needs another thirty to sixty to become ready.
+Every added replica also adds connections and write traffic to the single PostgreSQL instance, which is already at 29.6 of 32 cores, 1015 connections and 457 sessions waiting on LWLocks.
+The levers that address the measured limit are the per event write cost, the retention defects above, and sharding the database, which the production profile used to define and which now lives in a cluster's own values file.
+
 ## Notification
 
 ### T02: Finish and release durable notification delivery
