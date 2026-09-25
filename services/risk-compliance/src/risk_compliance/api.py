@@ -438,6 +438,7 @@ def create_app(
             RedisEventPublisher,
             RedisEventSubscriber,
             risk_compliance_consumer_name,
+            source_stream_for,
         )
 
         app.state.publisher = postgres_publisher or RedisEventPublisher()
@@ -468,7 +469,8 @@ def create_app(
         app.state.risk_service.idempotency_store = store
 
     def handle_risk_event(envelope: Any) -> None:
-        app.state.risk_service.handle_event(envelope)
+        source = source_stream_for(envelope) if service is None else envelope.producer
+        app.state.risk_service.handle_event(envelope, source)
         app.state.risk_evaluation_service.handle_event(envelope)
 
     app.state.handle_risk_event = handle_risk_event
