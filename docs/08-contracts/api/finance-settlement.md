@@ -1,6 +1,6 @@
 # Finance & Settlement — HTTP API
 
-Last updated: 2026-09-24.
+Last updated: 2026-09-25.
 
 Runtime baseline: Helm revision 279.
 Remaining work is tracked in [TODO](../../TODO.md).
@@ -15,7 +15,7 @@ settlement views. It consumes upstream events and produces financial records.
 Finance Settlement consumes Payment Channel statement and discrepancy events, validates their fields and deduplicates by envelope `eventId`.
 Channel difference types are mapped to the existing Finance difference strings.
 HTTP writes include internal invoice generation and explicit change financial reconciliation.
-Daily reconciliation and supplier settlement queries read saved results; their calculation methods have no production scheduler or automatic caller in this service.
+Daily reconciliation and supplier settlement are automatically scheduled for closed UTC periods. The scheduler uses a persistent lease per logical period and stores attempts, terminal status and generated result IDs. Successful periods are not recomputed after restart; failed or expired leases can be recovered by another replica.
 The current endpoint inventory is documented in [Finance Settlement](../../02-domains/finance-settlement.md).
 
 ## Commands
@@ -112,6 +112,18 @@ Item fields:
 | `occurredAt` | RFC3339 UTC | Event payload timestamp parsed from wallet RFC3339 fields. |
 
 **Error codes:** `VALIDATION_FAILED`
+
+### Get settlement schedule runs
+
+**GET** `/api/v1/settlement-schedule-runs?limit=20&offset=0`
+
+Returns persisted automatic-run history. `limit` is 1–100 and `offset` is non-negative.
+
+**GET** `/api/v1/settlement-schedule-runs/{jobKey}`
+
+Returns one exact automatic run. Fields include `jobKey`, `jobType`, `startDate`, `endDate`, `status` (`RUNNING`, `SUCCEEDED`, `FAILED`), `attempts`, `resultRefs`, `failure`, `startedAt`, `completedAt` and `updatedAt`.
+
+`DAILY_RECONCILIATION` produces one reconciliation batch reference. `SUPPLIER_SETTLEMENT` produces zero or more supplier settlement references for suppliers with attributed ordinary fare revenue in the closed period.
 
 ### Get Invoice
 
