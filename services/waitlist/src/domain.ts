@@ -227,7 +227,7 @@ export class WaitlistEntry {
       snapshot.paymentGuarantee ?? testPaymentGuarantee(snapshot.paymentGuaranteeRef, snapshot.accountId, snapshot.deadline),
       snapshot.intentFingerprint,
       snapshot.matchedCapacityCredits ?? [],
-      snapshot.fulfillment ?? newFulfillmentProgress(snapshot.entryId, snapshot.travelerRefs),
+      snapshot.fulfillment ?? newFulfillmentProgress(snapshot.entryId, snapshot.travelerRefs, snapshot.journeyOrderIdempotencyKey ?? "initial"),
       snapshot.journeyOrderRef,
       snapshot.fareQuoteIdempotencyKey,
       snapshot.offerIdempotencyKey,
@@ -384,10 +384,10 @@ export class WaitlistEntry {
     this._offerVersion = undefined;
     this._journeyOrderRef = undefined;
     this._matchedCapacityCredits = [];
-    this._fulfillment = newFulfillmentProgress(this.entryId, this.travelerRefs);
     this._fareQuoteIdempotencyKey = uuidV7();
     this._offerIdempotencyKey = uuidV7();
     this._journeyOrderIdempotencyKey = uuidV7();
+    this._fulfillment = newFulfillmentProgress(this.entryId, this.travelerRefs, this._journeyOrderIdempotencyKey);
   }
 
   cancel(): void {
@@ -614,19 +614,20 @@ function testPaymentGuarantee(paymentIntentId: string, payerRef: string, authori
   };
 }
 
-function newFulfillmentProgress(entryId: string, travelerRefs: readonly string[]): FulfillmentProgress {
+function newFulfillmentProgress(entryId: string, travelerRefs: readonly string[], attemptRef = "initial"): FulfillmentProgress {
+  const attempt = `${entryId}:${attemptRef}`;
   return {
     travelers: travelerRefs.map((travelerRef) => ({
       travelerRef,
-      segmentBookingId: `sb-${stableUuidV7(`${entryId}:booking:${travelerRef}`)}`,
-      reservationIdempotencyKey: stableUuidV7(`${entryId}:reservation:${travelerRef}`),
-      capacityReleaseIdempotencyKey: stableUuidV7(`${entryId}:capacity:release:${travelerRef}`),
-      entitlementIdempotencyKey: stableUuidV7(`${entryId}:entitlement:${travelerRef}`),
+      segmentBookingId: `sb-${stableUuidV7(`${attempt}:booking:${travelerRef}`)}`,
+      reservationIdempotencyKey: stableUuidV7(`${attempt}:reservation:${travelerRef}`),
+      capacityReleaseIdempotencyKey: stableUuidV7(`${attempt}:capacity:release:${travelerRef}`),
+      entitlementIdempotencyKey: stableUuidV7(`${attempt}:entitlement:${travelerRef}`),
     })),
-    paymentCreateIdempotencyKey: stableUuidV7(`${entryId}:payment:create`),
-    paymentCaptureIdempotencyKey: stableUuidV7(`${entryId}:payment:capture`),
-    paymentCancelIdempotencyKey: stableUuidV7(`${entryId}:payment:cancel`),
-    orderCancelIdempotencyKey: stableUuidV7(`${entryId}:order:cancel`),
+    paymentCreateIdempotencyKey: stableUuidV7(`${attempt}:payment:create`),
+    paymentCaptureIdempotencyKey: stableUuidV7(`${attempt}:payment:capture`),
+    paymentCancelIdempotencyKey: stableUuidV7(`${attempt}:payment:cancel`),
+    orderCancelIdempotencyKey: stableUuidV7(`${attempt}:order:cancel`),
   };
 }
 
