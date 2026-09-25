@@ -25,6 +25,7 @@ from reporting.domain import (
     MetricStatus,
     Money,
     OperationalEvent,
+    RevenueFactIndex,
     ReadModelSnapshot,
     ReadModelStatus,
     RevenueReport,
@@ -50,6 +51,19 @@ REVENUE_DASHBOARD_SOURCE_EVENTS = (
     "BoardingVerified",
     "FulfillmentCompleted",
     "NoShowRecorded",
+    "JourneyOrderCreated",
+    "PostSalesCaseOpened",
+    "PostSalesRequested",
+    "SegmentReservationRequested",
+    "SeatAllocated",
+    "StandingAssigned",
+    "AncillaryOrderItemSelected",
+    "AncillaryOrderItemConfirmed",
+    "AncillaryOrderItemFulfilled",
+    "AncillaryOrderItemCancelled",
+    "AncillaryOrderItemRefunded",
+    "InsurancePolicyIssued",
+    "InsurancePolicyCancelled",
 )
 
 _REVENUE_RELEVANT_EVENT_TYPES = frozenset(REVENUE_DASHBOARD_SOURCE_EVENTS)
@@ -78,8 +92,18 @@ _REPORTING_APPLIED_EVENT_TYPES = frozenset(
         "DispatchRequested",
         "DispatchFailed",
         "AncillaryQuoted",
+        "AncillaryOrderItemSelected",
+        "AncillaryOrderItemConfirmed",
+        "AncillaryOrderItemFulfilled",
+        "AncillaryOrderItemCancelled",
         "AncillaryOrderItemRefunded",
         "InsurancePolicyIssued",
+        "InsurancePolicyCancelled",
+        "PostSalesCaseOpened",
+        "PostSalesRequested",
+        "SegmentReservationRequested",
+        "SeatAllocated",
+        "StandingAssigned",
         "ChannelOrderFailed",
         "ChannelRefundFailed",
         "ChannelRefundSucceeded",
@@ -163,6 +187,7 @@ class ReportingReadRepository:
             )
         )
         normalized = operational_event_from_envelope(envelope)
+        project_revenue_facts(self.metric_aggregator.revenue_facts, envelope)
         self.metric_aggregator.record(normalized)
         for dashboard_id, dashboard in list(self.dashboards.items()):
             if dashboard_consumes_event(dashboard, envelope.eventType):
@@ -272,6 +297,113 @@ def _parse_bool(value: Any) -> bool:
     return bool(value)
 
 
+def _text(value: Any) -> str:
+    return "" if value is None else str(value).strip()
+
+
+def _string_values(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    return tuple(item for item in (_text(item) for item in value) if item)
+
+
+def _scope_values(payload: Mapping[str, Any], key: str) -> tuple[str, ...]:
+    scope = payload.get("scope")
+    return _string_values(scope.get(key)) if isinstance(scope, Mapping) else ()
+
+
+def project_revenue_facts(index: Any, envelope: EventEnvelope) -> bool:
+    """Project authoritative business dimensions from their owning contexts."""
+    payload = envelope.payload or {}
+    occurred_at = _parse_occurred_at(envelope.occurredAt)
+    event_type = envelope.eventType
+
+    if event_type == "PaymentCaptured":
+        index.record_capture(
+            envelope.eventId,
+            _text(payload.get("businessRef") or payload.get("orderId")),
+            _text(payload.get("paymentIntentId") or payload.get("intentId")),
+            _text(payload.get("purpose")),
+            occurred_at,
+        )
+        return True
+
+    if event_type == "JourneyOrderCreated":
+        routes = []
+        for segment in payload.get("segments", ()):
+            if not isinstance(segment, Mapping):
+                continue
+            routes.append((_text(segment.get("segmentRef")), _parse_date(segment.get("departureTime"))))
+        if not routes:
+            routes = [(segment_ref, None) for segment_ref in _string_values(payload.get("segmentRefs"))]
+        travelers = []
+        for traveler in payload.get("travelerRefs", ()):
+            if not isinstance(traveler, Mapping):
+                continue
+            travelers.append((_text(traveler.get("travelerId")), _text(traveler.get("travelerType"))))
+        index.record_order(_text(payload.get("orderId")), routes, travelers, occurred_at)
+        return True
+
+    if event_type in {"PostSalesCaseOpened", "PostSalesRequested"}:
+        index.record_business_order(
+            _text(payload.get("caseId") or payload.get("postSalesCaseId")),
+            _text(payload.get("journeyOrderId") or payload.get("orderId")),
+            _scope_values(payload, "segmentRefs"),
+            _scope_values(payload, "travelerRefs"),
+            occurred_at,
+        )
+        return True
+
+    if event_type in {"SegmentReservationRequested", "SeatAllocated", "StandingAssigned"}:
+        seat_class = _text(payload.get("requestedClassRef") or payload.get("classRef"))
+        index.record_seat_class(
+            _text(payload.get("journeyOrderId") or payload.get("orderId")),
+            _text(payload.get("segmentRef")),
+            _text(payload.get("travelerRef")),
+            seat_class,
+            occurred_at,
+            2 if event_type in {"SeatAllocated", "StandingAssigned"} else 1,
+        )
+        return True
+
+    ancillary_events = {
+        "AncillaryOrderItemSelected",
+        "AncillaryOrderItemConfirmed",
+        "AncillaryOrderItemFulfilled",
+        "AncillaryOrderItemCancelled",
+        "AncillaryOrderItemRefunded",
+    }
+    if event_type in ancillary_events:
+        attachment_ref = _text(payload.get("ancillaryOrderItemId"))
+        order_id = _text(payload.get("journeyOrderId") or payload.get("orderId"))
+        segment_refs = (_text(payload.get("segmentRef")),) if _text(payload.get("segmentRef")) else ()
+        traveler_refs = (_text(payload.get("travelerRef")),) if _text(payload.get("travelerRef")) else ()
+        snapshot = payload.get("catalogSnapshot")
+        service_type = _text(payload.get("serviceType"))
+        if not service_type and isinstance(snapshot, Mapping):
+            service_type = _text(snapshot.get("serviceType"))
+        attachment_type = "INSURANCE" if service_type.upper() == "INSURANCE" else "ANCILLARY"
+        index.record_business_order(attachment_ref, order_id, segment_refs, traveler_refs, occurred_at)
+        if event_type in {"AncillaryOrderItemConfirmed", "AncillaryOrderItemFulfilled", "AncillaryOrderItemRefunded"}:
+            index.record_attachment(order_id, attachment_type, occurred_at)
+        return True
+
+    if event_type in {"InsurancePolicyIssued", "InsurancePolicyCancelled"}:
+        policy_id = _text(payload.get("policyId"))
+        ancillary_ref = _text(payload.get("ancillaryOrderItemId"))
+        order_id = _text(payload.get("journeyOrderId") or payload.get("orderId"))
+        segment_refs = _string_values(payload.get("segmentRefs"))
+        traveler_ref = _text(payload.get("travelerRef"))
+        traveler_refs = (traveler_ref,) if traveler_ref else ()
+        index.record_business_order(policy_id, order_id, segment_refs, traveler_refs, occurred_at)
+        index.record_attachment(order_id, "INSURANCE", occurred_at)
+        if ancillary_ref:
+            index.record_business_order(ancillary_ref, order_id, segment_refs, traveler_refs, occurred_at)
+        return True
+
+    return False
+
+
 _FAILURE_EVENT_WORDS = (
     "Failed",
     "Rejected",
@@ -300,12 +432,12 @@ def operational_event_from_envelope(envelope: EventEnvelope) -> OperationalEvent
         event_id=envelope.eventId,
         event_type=envelope.eventType,
         occurred_at=_parse_occurred_at(envelope.occurredAt),
-        route_id=_payload_value(payload, "routeId", "route_id", "route", "segmentRef", "serviceSegmentRef"),
+        route_id=None if envelope.eventType == "PaymentCaptured" else _payload_value(payload, "routeId", "route_id", "route", "segmentRef", "serviceSegmentRef"),
         service_date=_parse_date(_payload_value(payload, "serviceDate", "travelDate", "departureDate", "requestedAt", "validFrom")),
-        seat_class=_payload_value(payload, "seatClass", "seat_class", "class", "berthType"),
+        seat_class=None if envelope.eventType == "PaymentCaptured" else _payload_value(payload, "seatClass", "seat_class", "classRef", "requestedClassRef", "berthType"),
         amount=_parse_money(payload),
         channel=_payload_value(payload, "channel", "salesChannel", "channelId", "sourceChannel"),
-        passenger_type=_payload_value(payload, "passengerType", "passenger_type", "travelerType"),
+        passenger_type=None if envelope.eventType == "PaymentCaptured" else _payload_value(payload, "passengerType", "passenger_type", "travelerType"),
         capacity=_parse_int(_payload_value(payload, "capacity", "totalCapacity", "seatsAvailable", "availableSeats", "availableUnits")),
         confirmed=_parse_int(_payload_value(payload, "confirmed", "confirmedSeats", "bookedSeats", "usedSeats", "allocatedSeats")),
         booking_latency_ms=_parse_int(_payload_value(payload, "bookingLatencyMs", "latencyMs", "elapsedMs")),
@@ -313,10 +445,13 @@ def operational_event_from_envelope(envelope: EventEnvelope) -> OperationalEvent
         refunded=_parse_bool(_payload_value(payload, "refunded") or envelope.eventType in {"RefundSettled", "RefundCompleted", "RefundIssued", "RevenueRecognitionReversed", "ChannelRefundSucceeded", "AncillaryOrderItemRefunded"}),
         scalper_blocked=_parse_bool(_payload_value(payload, "scalperBlocked", "blockedByRisk") or envelope.eventType in {"ScalperBlocked", "RiskBookingBlocked", "RiskBlockApplied"}),
         distance_km=_parse_decimal(_payload_value(payload, "distanceKm", "distance_km")),
-        ancillary_attached=_parse_bool(_payload_value(payload, "ancillaryAttached", "ancillary_attach") or envelope.eventType.startswith("Ancillary")),
-        insurance_attached=_parse_bool(_payload_value(payload, "insuranceAttached", "insurance_attach") or envelope.eventType.startswith("Insurance")),
+        ancillary_attached=False if envelope.eventType == "PaymentCaptured" else _parse_bool(_payload_value(payload, "ancillaryAttached", "ancillary_attach") or envelope.eventType.startswith("Ancillary")),
+        insurance_attached=False if envelope.eventType == "PaymentCaptured" else _parse_bool(_payload_value(payload, "insuranceAttached", "insurance_attach") or envelope.eventType.startswith("Insurance")),
         source_context=envelope.producer,
         anomaly_signal=anomaly_signal,
+        business_ref=_text(_payload_value(payload, "businessRef", "orderId")) if envelope.eventType == "PaymentCaptured" else None,
+        payment_intent_id=_text(_payload_value(payload, "paymentIntentId", "intentId")) if envelope.eventType == "PaymentCaptured" else None,
+        payment_purpose=_text(payload.get("purpose")) if envelope.eventType == "PaymentCaptured" else None,
     )
 
 
