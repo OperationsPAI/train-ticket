@@ -72,12 +72,16 @@ type PayoutAdvice struct {
 	ID              string       `json:"payoutAdviceId"`
 	ClaimID         string       `json:"claimId"`
 	PolicyID        string       `json:"policyId"`
+	AccountID       string       `json:"accountId"`
 	PayoutTarget    PayoutTarget `json:"payoutTarget"`
 	Amount          Money        `json:"amount"`
 	ReasonCode      string       `json:"reasonCode"`
 	IdempotencyKey  string       `json:"idempotencyKey"`
 	DecisionVersion string       `json:"decisionVersion"`
+	ExecutionRef    string       `json:"executionRef,omitempty"`
 	Status          string       `json:"status"`
+	RequestedAt     time.Time    `json:"requestedAt"`
+	CompletedAt     *time.Time   `json:"completedAt,omitempty"`
 }
 
 func OpenClaim(id string, policy Policy, claimType ClaimType, triggerFactKey string, delayFact *DelayFact, supportCaseID string, evidenceRefs []string, claimedAmount Money, now time.Time) (Claim, error) {
@@ -169,24 +173,62 @@ func (c *Claim) Reject(reason string) error {
 	return nil
 }
 
-func (c *Claim) Settle(adviceID string, target PayoutTarget, reasonCode string) (PayoutAdvice, error) {
+func (c Claim) PreparePayout(adviceID, accountID string, target PayoutTarget, reasonCode, idempotencyKey string, now time.Time) (PayoutAdvice, error) {
 	if c.Status != ClaimApproved {
 		return PayoutAdvice{}, fmt.Errorf("claim must be approved before payout advice")
 	}
-	if target != PayoutWalletBenefit && target != PayoutPaymentRefund && target != PayoutManualReview {
+	if target != PayoutWalletBenefit {
 		return PayoutAdvice{}, fmt.Errorf("unsupported payout target: %q", target)
 	}
 	if strings.TrimSpace(reasonCode) == "" {
 		reasonCode = "INSURANCE_CLAIM_APPROVED"
 	}
-	advice := PayoutAdvice{ID: strings.TrimSpace(adviceID), ClaimID: c.ID, PolicyID: c.PolicyID, PayoutTarget: target, Amount: c.ApprovedAmount, ReasonCode: reasonCode, IdempotencyKey: hashText(strings.Join([]string{c.ID, c.PolicyID, c.ApprovedAmount.Currency, fmt.Sprint(c.ApprovedAmount.MinorUnits), string(target), reasonCode, "v1"}, "|")), DecisionVersion: "v1", Status: "COMPLETED"}
-	if strings.TrimSpace(advice.ID) == "" {
-		return PayoutAdvice{}, fmt.Errorf("payout advice id is required")
+	advice := PayoutAdvice{ID: strings.TrimSpace(adviceID), ClaimID: c.ID, PolicyID: c.PolicyID, AccountID: strings.TrimSpace(accountID), PayoutTarget: target, Amount: c.ApprovedAmount, ReasonCode: reasonCode, IdempotencyKey: strings.TrimSpace(idempotencyKey), DecisionVersion: "v1", Status: "REQUESTED", RequestedAt: now.UTC()}
+	if strings.TrimSpace(advice.ID) == "" || advice.AccountID == "" || advice.IdempotencyKey == "" {
+		return PayoutAdvice{}, fmt.Errorf("payout advice id, account id and idempotency key are required")
+	}
+	return advice, nil
+}
+
+func (c *Claim) CompletePayout(advice PayoutAdvice) error {
+	if c.Status == ClaimPaidOut && c.PayoutAdviceID == advice.ID {
+		return nil
+	}
+	if c.Status != ClaimApproved {
+		return fmt.Errorf("claim must be approved before payout completion")
+	}
+	if advice.ClaimID != c.ID || advice.Status != "COMPLETED" || strings.TrimSpace(advice.ExecutionRef) == "" {
+		return fmt.Errorf("completed payout evidence does not match claim")
 	}
 	c.PayoutAdviceID = advice.ID
 	c.Status = ClaimPaidOut
 	c.AggregateVersion++
-	return advice, nil
+	return nil
+}
+
+func (p PayoutAdvice) SameDecision(target PayoutTarget, amount Money, reasonCode string) bool {
+	if strings.TrimSpace(reasonCode) == "" {
+		reasonCode = "INSURANCE_CLAIM_APPROVED"
+	}
+	return p.PayoutTarget == target && p.Amount == amount && p.ReasonCode == reasonCode
+}
+
+func (p PayoutAdvice) Complete(executionRef string, at time.Time) (PayoutAdvice, error) {
+	executionRef = strings.TrimSpace(executionRef)
+	if p.Status == "COMPLETED" {
+		if p.ExecutionRef != executionRef {
+			return PayoutAdvice{}, fmt.Errorf("payout execution reference changed")
+		}
+		return p, nil
+	}
+	if p.Status != "REQUESTED" || executionRef == "" {
+		return PayoutAdvice{}, fmt.Errorf("requested payout and execution reference are required")
+	}
+	p.Status = "COMPLETED"
+	p.ExecutionRef = executionRef
+	completed := at.UTC()
+	p.CompletedAt = &completed
+	return p, nil
 }
 
 func SupportedClaimType(claimType ClaimType) bool {

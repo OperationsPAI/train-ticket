@@ -10,11 +10,12 @@ import (
 )
 
 var (
-	ErrNotFound   = errors.New("not found")
-	ErrConflict   = errors.New("conflict")
-	ErrValidation = errors.New("validation failed")
-	ErrDomainRule = errors.New("domain rule violation")
-	ErrPublish    = errors.New("publish failed")
+	ErrNotFound          = errors.New("not found")
+	ErrConflict          = errors.New("conflict")
+	ErrValidation        = errors.New("validation failed")
+	ErrDomainRule        = errors.New("domain rule violation")
+	ErrPublish           = errors.New("publish failed")
+	ErrPayoutUnavailable = errors.New("payout unavailable")
 )
 
 type Repository interface {
@@ -28,8 +29,22 @@ type Repository interface {
 	FindPoliciesByAncillaryItem(context.Context, string) ([]domain.Policy, error)
 	SaveClaim(context.Context, domain.Claim) error
 	FindClaim(context.Context, string) (domain.Claim, error)
+	LockClaim(context.Context, string) error
 	FindActiveClaim(context.Context, string, domain.ClaimType, string) (domain.Claim, error)
 	SavePayoutAdvice(context.Context, domain.PayoutAdvice) error
+	FindPayoutAdvice(context.Context, string) (domain.PayoutAdvice, error)
+	FindPayoutAdviceByClaim(context.Context, string) (domain.PayoutAdvice, error)
+}
+
+type PayoutReceipt struct {
+	ExecutionRef string
+	AccountID    string
+	Amount       domain.Money
+	Target       domain.PayoutTarget
+}
+
+type PayoutExecutor interface {
+	Disburse(context.Context, domain.Policy, domain.Claim, domain.PayoutAdvice, string) (PayoutReceipt, error)
 }
 
 type EventPublisher interface {
