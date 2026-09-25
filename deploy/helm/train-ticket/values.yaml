@@ -68,8 +68,8 @@ postgres:
       maxWorkerProcesses: 24
       maxLogicalReplicationWorkers: 20
       maxSyncWorkersPerSubscription: 8
-      nodeSelector: &database_target_node
-        kubernetes.io/hostname: vm-197-212-tencentos
+      nodeSelector:
+        kubernetes.io/hostname: vm-197-246-tencentos
       resources:
         requests: { cpu: '2', memory: 4Gi }
         limits: { cpu: '20', memory: 20Gi }
@@ -90,7 +90,8 @@ postgres:
       maxWorkerProcesses: 24
       maxLogicalReplicationWorkers: 20
       maxSyncWorkersPerSubscription: 8
-      nodeSelector: *database_target_node
+      nodeSelector:
+        kubernetes.io/hostname: vm-197-246-tencentos
       resources:
         requests: { cpu: '2', memory: 4Gi }
         limits: { cpu: '24', memory: 24Gi }
@@ -113,7 +114,8 @@ postgres:
       maxWorkerProcesses: 24
       maxLogicalReplicationWorkers: 20
       maxSyncWorkersPerSubscription: 8
-      nodeSelector: *database_target_node
+      nodeSelector: &database_target_node
+        kubernetes.io/hostname: vm-197-212-tencentos
       resources:
         requests: { cpu: '3', memory: 8Gi }
         limits: { cpu: '32', memory: 40Gi }
