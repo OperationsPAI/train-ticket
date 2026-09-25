@@ -539,7 +539,7 @@ mailpit:
     tag: "v1.22.3"
   resources:
     requests: { cpu: 250m, memory: 256Mi }
-    limits: { cpu: 2000m, memory: 1Gi }
+    limits: { cpu: '4', memory: 2Gi }
 
 # -- Loadgen -----------------------------------------------------------------
 
