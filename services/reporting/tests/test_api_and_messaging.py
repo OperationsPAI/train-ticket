@@ -283,10 +283,11 @@ class EndpointTest(unittest.TestCase):
 
     def test_new_context_events_increment_context_rollup_and_anomaly_signal(self) -> None:
         service = ReportingApplicationService()
+        observed_at = datetime.now(UTC)
         service.handle_event(EventEnvelope(
             eventId="evt-waitlist-queued",
             eventType="WaitlistQueued",
-            occurredAt="2026-07-05T10:30:00.000Z",
+            occurredAt=(observed_at - timedelta(minutes=2)).isoformat(),
             correlationId="corr-1",
             producer="waitlist",
             schemaVersion=1,
@@ -296,7 +297,7 @@ class EndpointTest(unittest.TestCase):
         service.handle_event(EventEnvelope(
             eventId="evt-waitlist-expired",
             eventType="WaitlistExpired",
-            occurredAt="2026-07-05T10:31:00.000Z",
+            occurredAt=(observed_at - timedelta(minutes=1)).isoformat(),
             correlationId="corr-1",
             producer="waitlist",
             schemaVersion=1,
@@ -307,6 +308,7 @@ class EndpointTest(unittest.TestCase):
         response = TestClient(create_app(service=service)).get("/api/v1/metrics/operational")
 
         self.assertEqual(response.status_code, 200)
+        self.assertNotIn("routeMetrics", response.json())
         rollups = {(item["sourceContext"], item["eventType"]): item for item in response.json()["contextRollups"]}
         self.assertEqual(rollups[("waitlist", "WaitlistQueued")]["count"], 1)
         self.assertEqual(rollups[("waitlist", "WaitlistExpired")]["anomalyCount"], 1)

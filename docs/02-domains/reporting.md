@@ -48,10 +48,11 @@ SQL 保留源事件表，物化视图是可重新计算的派生结果。
 2026年9月25日只读核对生产源表时，2,904,448 条 `PaymentCaptured` 均有 amount 和 currency，币种均为 CNY；缺失规则通过录制生产数据追加对照样本验证。
 默认目录说明只用于初始化缺失指标，已有数据库指标描述保留原值。
 
-操作指标、路线指标和异常规则使用 `MetricAggregator`。
-PostgreSQL 加载聚合器时最多读取符合条件的最新10000条事件；聚合器按币种独立保存金额。
-其时间窗口结果受这一输入数量限制，不能据此保证覆盖高流量下完整历史窗口。
+内存实现使用 `MetricAggregator`；PostgreSQL 生产实现直接在带索引的时间范围内聚合，不再加载或截断“最新10000条事件”。
+`/metrics/operational` 不嵌入无分页的路线明细，路线数据由 `/metrics/routes` 独立分页返回。
 `orders_per_second` 为最近60秒订单事件数除以60所得的平均每秒速率，保留四位小数。
+该速率只统计订单创建事实，不重复计算确认事件。
+captured 金额、预订延迟和风控拦截率使用最近1小时，退款率使用最近24小时，context rollup 使用最近5分钟。
 `trends` 返回当前快照的单个时间点。
 完整计算口径见 [指标与投影](../10-domain-enrichment/reporting-enrichment.md)。
 

@@ -154,3 +154,10 @@ For the 40 recorded linked rows, migration SQL took 33.38 milliseconds; the coor
 Reads of all three original views completed in 2.67 milliseconds while the replacement build was deliberately blocked on the local source relation.
 A retained reader transaction caused the final swap to fail and roll back after 2.03 seconds.
 These local measurements establish lock behavior and correctness; they do not estimate production rebuild duration.
+
+## Operational windows
+
+PostgreSQL computes operational metrics directly over indexed timestamp ranges; it does not load or truncate an arbitrary latest-event sample.
+The windows are 60 seconds for `orders_per_second`, one hour for captured revenue, booking latency and scalper block rate, 24 hours for refund rate, and five minutes for context rollups.
+`/api/v1/metrics/operational` intentionally excludes route rows; use the paginated `/api/v1/metrics/routes` endpoint for route detail.
+On a populated database, run `scripts/prepare_operational_indexes.py` before registering migration 009 so the supporting indexes are built concurrently.

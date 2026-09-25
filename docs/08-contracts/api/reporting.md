@@ -103,9 +103,11 @@ PostgreSQL and the in-memory implementation both exclude a capture whose amount 
 Requests using `source_context` or `event_type` return event count reports with zero monetary fields.
 For those reports, `total` is the number of grouped values and `eventCount` is the complete number of source events before pagination.
 
-Operational, route and anomaly calculations currently load at most the latest 10000 matching events; monetary calculations preserve currencies independently.
-Their time windows are limited by that loaded input.
+Operational metrics are calculated by PostgreSQL over complete indexed time ranges and are not capped by a row count.
+The operational response does not embed route rows; route detail is available from the independently paginated `/api/v1/metrics/routes` endpoint.
 `orders_per_second` is the rolling average order-event rate over the preceding 60 seconds: matching event count divided by 60, rounded to four decimal places.
+It counts order creation facts (`JourneyOrderCreated` and `OrderCreated`) and does not double count later confirmation facts.
+`revenue_per_hour`, booking latency percentiles, and `scalper_block_rate` use the preceding hour; `refund_rate` uses the preceding 24 hours; `contextRollups` use the preceding five minutes.
 The trends endpoint returns one current point per metric.
 
 ## Bus-only commands
