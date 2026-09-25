@@ -84,9 +84,17 @@ pub async fn build_runtime() -> Router {
     log::info!("capacity-availability initializing Redis subscriber");
     let subscriber = rust_kit::messaging::redis_runtime::RedisEventSubscriber::new(&redis_url)
         .expect("failed to initialize Redis event subscriber")
-        .with_event_filter(|event| matches!(event.event_type.as_str(),
-            "SegmentReservationRequested" | "SegmentReservationConfirmed" | "SegmentBookingCancelled"
-            | "SegmentTicketed" | "PostSalesApplied" | "EntitlementVoided"));
+        .with_event_filter(|event| {
+            matches!(
+                event.event_type.as_str(),
+                "SegmentReservationRequested"
+                    | "SegmentReservationConfirmed"
+                    | "SegmentBookingCancelled"
+                    | "SegmentTicketed"
+                    | "PostSalesApplied"
+                    | "EntitlementVoided"
+            )
+        });
 
     log::info!("capacity-availability initializing Postgres storage");
     let service = std::sync::Arc::new(
@@ -102,24 +110,41 @@ pub async fn build_runtime() -> Router {
         selected_streams.join(",")
     );
     let workers: usize = std::env::var("CONSUMER_THREADS")
-        .unwrap_or_else(|_| "4".to_string()).parse().expect("CONSUMER_THREADS must be a positive integer");
-    assert!(workers > 0 && workers <= 32, "CONSUMER_THREADS must be between 1 and 32");
+        .unwrap_or_else(|_| "4".to_string())
+        .parse()
+        .expect("CONSUMER_THREADS must be a positive integer");
+    assert!(
+        workers > 0 && workers <= 32,
+        "CONSUMER_THREADS must be between 1 and 32"
+    );
     for index in 0..workers {
         let subscriber = subscriber.clone();
         let streams = selected_streams.clone();
         let service = service.clone();
         let consumer = format!("{}-{index}", consumer_name());
         tokio::spawn(async move {
-            subscriber.subscribe(streams, CONSUMER_GROUP.to_string(), consumer, Box::new(move |event| {
-                let service = service.clone();
-                Box::pin(async move {
-                    match service.handle_inbound_event(event).await {
-                        rust_kit::messaging::HandlerResult::Success => Ok(()),
-                        rust_kit::messaging::HandlerResult::TransientError(message) => Err(rust_kit::messaging::HandlerError::Transient(message)),
-                        rust_kit::messaging::HandlerResult::FatalError(message) => Err(rust_kit::messaging::HandlerError::Fatal(message)),
-                    }
-                })
-            })).await.expect("capacity subscriber stopped");
+            subscriber
+                .subscribe(
+                    streams,
+                    CONSUMER_GROUP.to_string(),
+                    consumer,
+                    Box::new(move |event| {
+                        let service = service.clone();
+                        Box::pin(async move {
+                            match service.handle_inbound_event(event).await {
+                                rust_kit::messaging::HandlerResult::Success => Ok(()),
+                                rust_kit::messaging::HandlerResult::TransientError(message) => {
+                                    Err(rust_kit::messaging::HandlerError::Transient(message))
+                                }
+                                rust_kit::messaging::HandlerResult::FatalError(message) => {
+                                    Err(rust_kit::messaging::HandlerError::Fatal(message))
+                                }
+                            }
+                        })
+                    }),
+                )
+                .await
+                .expect("capacity subscriber stopped");
         });
     }
     log::info!("capacity-availability Redis subscriber started");
