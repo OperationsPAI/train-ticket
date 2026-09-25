@@ -27,23 +27,25 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.PreparedStatementSetter;
 
 public class PostgresPromotionRepository implements PromotionRepository {
-    @Override public Optional<PromotionInstrument> findCompensationIssue(com.trainticket.walletpromotion.application.IssueBenefitCommand command) {
-        if(command.caseId()==null || command.caseId().isBlank())throw new IllegalArgumentException("compensation caseId is required");
-        jdbc.query("SELECT pg_advisory_xact_lock(hashtextextended(?,0))",rs->{},"wallet-compensation:"+command.caseId());
-        jdbc.query("SELECT pg_advisory_xact_lock(hashtextextended(?,0))",rs->{},"wallet-account:"+command.accountId());
-        var rows=jdbc.query("SELECT request::text,benefit_id FROM compensation_issuances WHERE case_id=?",(rs,index)->new String[]{rs.getString(1),rs.getString(2)},command.caseId());
+    @Override public Optional<PromotionInstrument> findIssue(com.trainticket.walletpromotion.application.IssueBenefitCommand command) {
+        if(command.accountId()==null || command.accountId().isBlank())throw new IllegalArgumentException("accountId is required");
+        lock("wallet-account:"+command.accountId());
+        lock("wallet-issuance:"+command.issuanceKey());
+        var rows=jdbc.query("SELECT request::text,benefit_id FROM benefit_issuances WHERE issuance_key=?",(rs,index)->new String[]{rs.getString(1),rs.getString(2)},command.issuanceKey());
         if(rows.isEmpty()){
-            var existing=jdbc.queryForList("SELECT id FROM promotion_instrument_snapshots WHERE data->>'issuanceSource'='POST_SALES_COMP' AND data->>'caseId'=?",String.class,command.caseId());
-            if(!existing.isEmpty())throw new com.trainticket.platformkit.http.ApiException(com.trainticket.platformkit.http.ApiErrorCode.CONFLICT,"compensation benefit exists without its issuance request");
+            if(command.issuanceSource()==com.trainticket.walletpromotion.domain.IssuanceSource.POST_SALES_COMP){
+                var orphan=jdbc.queryForList("SELECT id FROM promotion_instrument_snapshots WHERE data->>'issuanceSource'='POST_SALES_COMP' AND data->>'caseId'=?",String.class,command.caseId());
+                if(!orphan.isEmpty())throw new com.trainticket.platformkit.http.ApiException(com.trainticket.platformkit.http.ApiErrorCode.CONFLICT,"compensation benefit exists without its issuance request");
+            }
             return Optional.empty();
         }
         var original=read(rows.getFirst()[0],com.trainticket.walletpromotion.application.IssueBenefitCommand.class);
-        if(!original.equals(command))throw new com.trainticket.platformkit.http.ApiException(com.trainticket.platformkit.http.ApiErrorCode.CONFLICT,"compensation case already has another issuance request");
-        return Optional.of(findBenefit(rows.getFirst()[1]).orElseThrow(()->new IllegalStateException("compensation issuance has no benefit")));
+        if(!original.equals(command))throw new com.trainticket.platformkit.http.ApiException(com.trainticket.platformkit.http.ApiErrorCode.CONFLICT,"issuance key already has another request");
+        return Optional.of(findBenefit(rows.getFirst()[1]).orElseThrow(()->new IllegalStateException("issuance has no benefit")));
     }
 
-    @Override public void recordCompensationIssue(com.trainticket.walletpromotion.application.IssueBenefitCommand command,String benefitId) {
-        jdbc.update("INSERT INTO compensation_issuances(case_id,benefit_id,request) VALUES(?,?,?::jsonb)",command.caseId(),benefitId,json(command));
+    @Override public void recordIssue(com.trainticket.walletpromotion.application.IssueBenefitCommand command,String benefitId) {
+        jdbc.update("INSERT INTO benefit_issuances(issuance_key,benefit_id,request) VALUES(?,?,?::jsonb)",command.issuanceKey(),benefitId,json(command));
     }
     private final JdbcOperations jdbc;
     private final ObjectMapper mapper;
@@ -66,6 +68,18 @@ public class PostgresPromotionRepository implements PromotionRepository {
             rs -> rs.next() ? Optional.of(read(rs.getString(1), PromotionInstrument.class)) : Optional.empty(),
             id
         );
+    }
+
+    @Override
+    public Optional<PromotionInstrument> lockBenefit(String id) {
+        Optional<String> accountId = jdbc.query(
+            "SELECT data->>'accountId' FROM promotion_instrument_snapshots WHERE id=?",
+            rs -> rs.next() ? Optional.ofNullable(rs.getString(1)) : Optional.empty(),
+            id
+        );
+        if (accountId.isEmpty()) return Optional.empty();
+        lock("wallet-account:" + accountId.get());
+        return findBenefit(id);
     }
 
     @Override
@@ -382,6 +396,10 @@ public class PostgresPromotionRepository implements PromotionRepository {
             1,
             event.payload()
         );
+    }
+
+    private void lock(String key) {
+        jdbc.query("SELECT pg_advisory_xact_lock(hashtextextended(?,0))", rs -> { }, key);
     }
 
     private <T> T read(String json, Class<T> type) {
