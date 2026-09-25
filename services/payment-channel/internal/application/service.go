@@ -36,6 +36,7 @@ type Repository interface {
 	SaveStatement(context.Context, *domain.ChannelStatement) error
 	UpdateStatement(context.Context, *domain.ChannelStatement, int64) error
 	GetStatement(context.Context, string) (*domain.ChannelStatement, error)
+	LockStatement(context.Context, string) (*domain.ChannelStatement, error)
 	ClaimStatementForGeneration(context.Context, string, string, string, string, string) (*domain.ChannelStatement, error)
 	SaveStatementLines(context.Context, string, int64, []domain.StatementLine) error
 	ListStatementLines(context.Context, string, int64, int) ([]domain.StatementLine, error)
@@ -467,7 +468,7 @@ func (s *Service) FreezeStatement(ctx context.Context, id, hash string, expected
 	var st *domain.ChannelStatement
 	err := s.tx(ctx, func(tx context.Context) error {
 		var err error
-		st, err = s.repo.GetStatement(tx, id)
+		st, err = s.repo.LockStatement(tx, id)
 		if err != nil {
 			return derr("NOT_FOUND", "channel statement not found")
 		}
@@ -535,14 +536,33 @@ type OpenDiscrepancyRequest struct {
 }
 
 func (s *Service) OpenDiscrepancy(ctx context.Context, r OpenDiscrepancyRequest) (*domain.ReconciliationDiscrepancy, error) {
-	if _, err := s.repo.GetStatement(ctx, r.ChannelStatementID); err != nil {
-		return nil, derr("NOT_FOUND", "channel statement not found")
-	}
-	d, err := domain.NewDiscrepancy("", r.ChannelStatementID, r.StatementLineID, r.ChannelOrderID, r.ChannelRefundID, r.FinanceReconciliationCaseID, r.DifferenceType, r.ExpectedAmount, r.ActualAmount, r.EvidenceRef, time.Now().UTC(), r.CorrelationID, r.SourceCommandID)
-	if err != nil {
-		return nil, derr("VALIDATION_FAILED", err.Error())
-	}
-	err = s.tx(ctx, func(tx context.Context) error {
+	var d *domain.ReconciliationDiscrepancy
+	err := s.tx(ctx, func(tx context.Context) error {
+		if _, err := s.repo.GetStatement(tx, r.ChannelStatementID); err != nil {
+			return derr("NOT_FOUND", "channel statement not found")
+		}
+		if r.StatementLineID != "" {
+			line, err := s.repo.GetStatementLine(tx, r.ChannelStatementID, r.StatementLineID)
+			if err != nil {
+				return derr("NOT_FOUND", "statement line not found in channel statement")
+			}
+			if r.ChannelOrderID != "" && r.ChannelOrderID != line.ChannelOrderID {
+				return derr("DOMAIN_RULE_VIOLATION", "channel order does not match statement line")
+			}
+			if r.ChannelRefundID != "" && r.ChannelRefundID != line.ChannelRefundID {
+				return derr("DOMAIN_RULE_VIOLATION", "channel refund does not match statement line")
+			}
+			if r.ExpectedAmount != line.ExpectedAmount || r.ActualAmount != line.ActualAmount {
+				return derr("DOMAIN_RULE_VIOLATION", "discrepancy amounts do not match statement line")
+			}
+			r.ChannelOrderID = line.ChannelOrderID
+			r.ChannelRefundID = line.ChannelRefundID
+		}
+		var err error
+		d, err = domain.NewDiscrepancy("", r.ChannelStatementID, r.StatementLineID, r.ChannelOrderID, r.ChannelRefundID, r.FinanceReconciliationCaseID, r.DifferenceType, r.ExpectedAmount, r.ActualAmount, r.EvidenceRef, time.Now().UTC(), r.CorrelationID, r.SourceCommandID)
+		if err != nil {
+			return derr("VALIDATION_FAILED", err.Error())
+		}
 		if err := s.repo.SaveDiscrepancy(tx, d); err != nil {
 			return derr("CONFLICT", err.Error())
 		}
@@ -554,15 +574,21 @@ func (s *Service) OpenDiscrepancy(ctx context.Context, r OpenDiscrepancyRequest)
 	return d, nil
 }
 func (s *Service) ResolveDiscrepancy(ctx context.Context, id, status, ref, operator, reason string, expected int64, corr, cause string) (*domain.ReconciliationDiscrepancy, error) {
-	d, err := s.repo.GetDiscrepancy(ctx, id)
-	if err != nil {
-		return nil, derr("NOT_FOUND", "discrepancy not found")
-	}
-	old := d.Version
-	if err := d.Resolve(status, ref, operator, reason, expected, time.Now().UTC(), corr, cause); err != nil {
-		return nil, mapRule(err)
-	}
-	err = s.tx(ctx, func(tx context.Context) error {
+	var d *domain.ReconciliationDiscrepancy
+	err := s.tx(ctx, func(tx context.Context) error {
+		var err error
+		d, err = s.repo.GetDiscrepancy(tx, id)
+		if err != nil {
+			return derr("NOT_FOUND", "discrepancy not found")
+		}
+		terminal := d.Status == "RESOLVED" || d.Status == "REJECTED"
+		old := d.Version
+		if err := d.Resolve(status, ref, operator, reason, expected, time.Now().UTC(), corr, cause); err != nil {
+			return mapRule(err)
+		}
+		if terminal {
+			return nil
+		}
 		if err := s.repo.UpdateDiscrepancy(tx, d, old); err != nil {
 			return derr("CONFLICT", err.Error())
 		}
