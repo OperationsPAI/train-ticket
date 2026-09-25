@@ -222,6 +222,10 @@ build:
       context: .
       docker:
         dockerfile: deploy/docker/wallet-promotion/Dockerfile
+    - image: redis-state-collector
+      context: .
+      docker:
+        dockerfile: deploy/docker/redis-state-collector/Dockerfile
 
 # There is no deploy stage at the top level, so `skaffold build` builds and
 # pushes and installs nothing. Installing is a profile, because the two things
@@ -292,6 +296,7 @@ profiles:
               services.waitlist.image: "{{.IMAGE_FULLY_QUALIFIED_waitlist}}"
               services.wallet-promotion.image: "{{.IMAGE_FULLY_QUALIFIED_wallet_promotion}}"
               loadgen.image: "{{.IMAGE_FULLY_QUALIFIED_loadgen}}"
+              transportCollector.image: "{{.IMAGE_FULLY_QUALIFIED_redis_state_collector}}"
 
   # One case: a release installed to be measured over one window and then
   # thrown away.

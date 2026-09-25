@@ -485,6 +485,29 @@ otelCollector:
       requests: { cpu: 100m, memory: 256Mi }
       limits: { cpu: '1', memory: 2Gi }
 
+# -- Event transport reporter ------------------------------------------------
+#
+# One process publishes the Redis Streams transport state -- consumer lag,
+# pending entries, the age of the oldest owed entry and the dead-letter
+# population -- for every stream. It is a separate workload rather than a copy
+# of the read inside each subscriber because these are absolute counts: a
+# consumer importing its own numbers would publish the same stream once per
+# replica and could not report on a stream its own service does not consume.
+# See templates/transport-collector.yaml.
+
+transportCollector:
+  enabled: true
+  # Empty uses the chart's normal image composition (registry/org/name:tag);
+  # a build writes the fully-qualified reference here, exactly as it does for a
+  # service.
+  image: ""
+  # Bounds how stale a sample can be. A poll is a SCAN of the stream namespace
+  # plus one XINFO GROUPS per stream and one bounded XPENDING/XRANGE per group.
+  pollIntervalSeconds: 15
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { cpu: 500m, memory: 256Mi }
+
 # -- Prometheus tier ---------------------------------------------------------
 #
 # Scrapes what has no OTel receiver (cAdvisor's container_*, kube-state's

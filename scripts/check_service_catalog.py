@@ -23,7 +23,10 @@ RUNTIMES = {
     "rust": "rust",
     "typescript": "node",
 }
-NON_BUSINESS_IMAGES = {"loadgen"}
+# Containers the chart builds that are not business services: the load
+# generator drives the system from outside, and the transport collector is one
+# observability process that reports on Redis rather than serving a domain.
+NON_BUSINESS_IMAGES = {"loadgen", "redis-state-collector"}
 
 
 def service_source_directories() -> set[str]:
