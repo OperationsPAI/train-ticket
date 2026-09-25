@@ -40,8 +40,8 @@ final class LazyLettuceRedisStreamOperations implements RedisStreamOperations, A
     }
 
     @Override
-    public List<StreamEntry> autoClaim(String stream, String group, String consumerName) {
-        return operations().autoClaim(stream, group, consumerName);
+    public AutoClaimResult autoClaim(String stream, String group, String consumerName, String startId) {
+        return operations().autoClaim(stream, group, consumerName, startId);
     }
 
     @Override
