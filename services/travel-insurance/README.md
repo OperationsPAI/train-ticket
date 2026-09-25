@@ -33,6 +33,8 @@ An approved claim is paid as Wallet stored value through Wallet / Promotion's ow
 
 The downstream URL template defaults to `http://%s:8080` and can be overridden with `INSURANCE_PAYOUT_URL_TEMPLATE`.
 
+The service also consumes `JourneyOrderPostSalesAdjusted`. It resolves the applied change and current order through their owning APIs, then updates each affected issued policy to the replacement segment and travel window. It never guesses dates from event time, and it does not rewrite terminal policies.
+
 ## Tests
 
 ```bash
