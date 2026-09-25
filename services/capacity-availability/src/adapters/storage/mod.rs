@@ -182,7 +182,9 @@ impl PostgresCapacityService {
         let mut remaining_by_class = Vec::new();
         for class_ref in classes {
             let facts = ReservationSupply { segment_booking_id: String::new(), journey_order_id: String::new(), traveler_ref: String::new(),
-                segment_ref:segment_ref.to_owned(), scheduled_service_ref:scheduled_service_ref.to_owned(), service_date:date.clone(),class_ref:class_ref.clone() };
+                segment_ref:segment_ref.to_owned(), scheduled_service_ref:scheduled_service_ref.to_owned(), service_date:date.clone(),class_ref:class_ref.clone(),
+                booking_purpose:"purchase".into(), offer_item_ref:"availability-query".into(), standing_accepted:false,
+                source_type:"PURCHASE_ORDER".into(), source_ref:"availability-query".into() };
             let mut tx = self.pool().begin().await.map_err(to_app_storage)?;
             Self::lock_supply(&mut tx,&facts).await?;
             let (supply,available) = self.available_supply(&mut tx,&facts,&segments,&correlation,now).await?;
@@ -2303,7 +2305,9 @@ mod tests {
         let facts = ReservationSupply { segment_booking_id: allocation.segment_booking_id.clone(),
             journey_order_id: allocation.journey_order_id.clone(), traveler_ref: allocation.traveler_ref.clone(),
             segment_ref: std::env::var("TEST_SUPPLY_SEGMENT").unwrap(), scheduled_service_ref: supply.scheduled_service_ref.clone(),
-            service_date: supply.service_date.clone(), class_ref: supply.class_ref.clone() };
+            service_date: supply.service_date.clone(), class_ref: supply.class_ref.clone(), booking_purpose:"purchase".into(),
+            offer_item_ref:"ofi-recorded".into(), standing_accepted:false, source_type:"PURCHASE_ORDER".into(),
+            source_ref:allocation.journey_order_id.clone() };
         new_pool(&pool_id_for(&facts.segment_ref, &facts.class_ref), &facts, &supply).unwrap()
     }
 
