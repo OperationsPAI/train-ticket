@@ -11,6 +11,7 @@ import (
 	"github.com/trainticket/greenfield/services/payment-channel/internal/application"
 	"github.com/trainticket/greenfield/services/payment-channel/internal/domain"
 	apphttp "github.com/trainticket/greenfield/services/payment-channel/internal/http"
+	paymentmetrics "github.com/trainticket/greenfield/services/payment-channel/internal/metrics"
 	"log"
 	"os"
 	"os/signal"
@@ -66,8 +67,12 @@ func main() {
 	defer func() { _ = redis.Close() }()
 	go storage.NewOutboxRelay(pool, redis).Run(ctx)
 	tx := adapterpg.NewTransactor(pool)
-	svc := application.New(adapterpg.NewRepository(tx), adapterpg.NewOutboxPublisher(tx), tx.Within)
 	profile := domain.Profile()
+	businessMetrics, err := paymentmetrics.New(goruntime.MeterFromEnv(profile.ServiceID))
+	if err != nil {
+		log.Fatalf("failed to build payment business metrics: %v", err)
+	}
+	svc := application.NewWithMetrics(adapterpg.NewRepository(tx), adapterpg.NewOutboxPublisher(tx), tx.Within, businessMetrics)
 	httpMetrics, err := goruntime.HTTPMetricsFromEnv(profile.ServiceID)
 	if err != nil {
 		log.Fatalf("failed to build HTTP server metrics: %v", err)
