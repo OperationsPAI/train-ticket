@@ -256,7 +256,8 @@ class FarePricingService:
         journey_date = departure_date or now.date().isoformat()
         eligibility_usages = self._eligibility_usages(rule_set, traveler_refs, journey_date)
         active_discount_types = {usage["eligibilityType"] for usage in eligibility_usages}
-        capacity_snapshots = self.capacity_snapshots_for(segment_refs or [], departure_date)
+        seat_class_code = normalize_capacity_class_ref(seat_class or "SECOND_CLASS")
+        capacity_snapshots = self.capacity_snapshots_for(segment_refs or [], departure_date, seat_class_code)
         quote = calculate_fare_quote(
             quote_id=quote_id,
             input_hash=input_hash,
@@ -267,7 +268,7 @@ class FarePricingService:
             quoted_at=now,
             ttl=ttl,
             active_discount_types=active_discount_types,
-            seat_class=seat_class,
+            seat_class=seat_class_code,
             distance_km=distance_km,
             departure_time=departure_time,
             capacity_snapshots=capacity_snapshots,

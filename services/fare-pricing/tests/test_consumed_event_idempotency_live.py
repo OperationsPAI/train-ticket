@@ -209,6 +209,19 @@ def test_capacity_classes_same_version_changes_and_out_of_order_events_converge_
                         ("SECOND_CLASS", 68, "3", "evt-0199c26b-7000-7000-8000-000000000032"),
                     ]
                     assert conn.execute("SELECT count(*) FROM processed_events").fetchone()[0] == 34
+
+                first_class = service.capacity_snapshots_for(
+                    [segment_ref], departure_date.isoformat(), "FIRST_CLASS"
+                )
+                second_class = service.capacity_snapshots_for(
+                    [segment_ref], departure_date.isoformat(), "standard"
+                )
+                assert [(item.class_ref, item.remaining_capacity) for item in first_class] == [
+                    ("FIRST_CLASS", 30)
+                ]
+                assert [(item.class_ref, item.remaining_capacity) for item in second_class] == [
+                    ("SECOND_CLASS", 68)
+                ]
         finally:
             admin.execute(psycopg.sql.SQL("DROP SCHEMA {} CASCADE").format(psycopg.sql.Identifier(schema)))
 

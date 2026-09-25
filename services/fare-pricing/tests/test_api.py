@@ -1097,6 +1097,77 @@ class FarePricingMessagingTest(unittest.TestCase):
         self.assertEqual(first.remaining_capacity, 20)
         self.assertEqual(len(store.processed_events), 3)
 
+    def test_quote_uses_only_requested_seat_class_capacity(self) -> None:
+        store = InMemoryStore()
+        rule_set = published_rule_set()
+        store.fare_rule_sets[rule_set.rule_set_id] = rule_set
+        service = FarePricingService(store)
+        departure = NOW + timedelta(days=4)
+        payload = capacity_payload(
+            "seg-class-priced",
+            departure.date().isoformat(),
+            [
+                capacity_class("SECOND_CLASS", 80),
+                capacity_class("FIRST_CLASS", 5),
+            ],
+            "3",
+        )
+        handle_capacity_snapshot_updated(
+            service,
+            EventEnvelope(
+                event_id="evt-capacity-class-priced",
+                event_type="CapacitySnapshotUpdated",
+                producer="capacity-availability",
+                correlation_id="corr-capacity-class-priced",
+                occurred_at=NOW,
+                payload=payload,
+            ),
+        )
+
+        second_class = service.compute_fare_quote(
+            "fq-second-class-capacity",
+            "input-second-class-capacity",
+            ["tvl-class-priced"],
+            "web",
+            rule_set.rule_set_id,
+            "CNY",
+            ["seg-class-priced"],
+            NOW,
+            seat_class="standard",
+            departure_time=departure,
+        )
+        first_class = service.compute_fare_quote(
+            "fq-first-class-capacity",
+            "input-first-class-capacity",
+            ["tvl-class-priced"],
+            "web",
+            rule_set.rule_set_id,
+            "CNY",
+            ["seg-class-priced"],
+            NOW,
+            seat_class="FIRST_CLASS",
+            departure_time=departure,
+        )
+
+        assert second_class.breakdown is not None
+        assert first_class.breakdown is not None
+        second_capacity = second_class.breakdown.pricing_components["dynamicCapacityAdjustment"]
+        first_capacity = first_class.breakdown.pricing_components["dynamicCapacityAdjustment"]
+        self.assertEqual(second_capacity, {
+            "segmentRef": "seg-class-priced",
+            "classRef": "SECOND_CLASS",
+            "remainingPct": "80.00",
+            "adjustmentPct": 0,
+        })
+        self.assertEqual(first_capacity, {
+            "segmentRef": "seg-class-priced",
+            "classRef": "FIRST_CLASS",
+            "remainingPct": "5.00",
+            "adjustmentPct": 50,
+        })
+        self.assertEqual(len(first_class.breakdown.dynamic_adjustments), 1)
+        self.assertEqual(second_class.breakdown.dynamic_adjustments, ())
+
     def test_usage_before_certificate_rolls_back_dedup_for_retry(self) -> None:
         store = InMemoryStore()
         service = FarePricingService(store)
