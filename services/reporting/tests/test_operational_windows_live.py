@@ -63,11 +63,18 @@ def test_operational_windows_are_complete_beyond_previous_ten_thousand_cap(datab
             )
 
     snapshot = PostgresReportingApplicationService(database).operational_metrics(observed_at)
+    trends = PostgresReportingApplicationService(database).trends(observed_at)
 
     assert snapshot.orders_per_second == 200.0167
     rollup = next(item for item in snapshot.context_rollups if item.event_type == "JourneyOrderCreated")
     assert rollup.count == 12_001
     assert snapshot.route_metrics == ()
+    assert trends["window"]["pointCount"] == 60
+    order_points = next(item["points"] for item in trends["series"] if item["metric"] == "orders_per_second")
+    assert len(order_points) == 60
+    # The rolling operational window includes 05:30:00, while trends excludes
+    # the current incomplete minute. 201 events landed exactly at 05:30:00.
+    assert round(sum(point["value"] for point in order_points), 4) == 196.6667
 
 
 def test_operational_windows_use_explicit_boundaries(database):
