@@ -7,3 +7,7 @@ channel statements, and reconciliation discrepancies for `ALIPAY_SIM`,
 `WECHAT_SIM`, and `UNIONPAY_SIM`. It persists aggregate snapshots with the shared
 Go kit tables (`outbox`, `idempotency_records`, `processed_events`) and publishes
 contract envelopes to `events:payment-channel` through the outbox relay.
+
+Daily statement membership uses the immutable successful payment/refund
+`completedAt` UTC date. Later channel status queries may update an aggregate
+snapshot, but cannot move the settled fact into a different statement day.
