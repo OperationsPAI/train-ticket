@@ -31,7 +31,7 @@ Java services:
 | --- | --- | --- | --- | --- |
 | `train_ticket.event.consumer.messages` | Counter | `outcome` | `success`, `duplicate`, `retry`, `dead_letter` | Final or intermediate disposition of a delivered message |
 | `train_ticket.event.consumer.failures` | Counter | `failure.type` | `handler_exception`, `transient_result`, `fatal_result`, `missing_envelope`, `invalid_envelope`, `redelivery_exhausted`, `dlq_write` | A bounded classification of the failure observed by the subscriber |
-| `train_ticket.event.consumer.dead_letters` | Counter | `reason` | the same bounded failure classes except normal success outcomes | Messages successfully written to the Redis DLQ |
+| `train_ticket.event.consumer.dead_letters` | Counter | `reason` | `handler_exception`, `transient_result`, `fatal_result`, `missing_envelope`, `invalid_envelope`, `redelivery_exhausted` | Messages successfully written to the Redis DLQ |
 
 Semantics:
 
