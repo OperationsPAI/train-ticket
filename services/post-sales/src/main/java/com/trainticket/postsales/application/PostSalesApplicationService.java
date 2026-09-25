@@ -256,12 +256,14 @@ public class PostSalesApplicationService {
         if (isTerminalNonRefundable(postSalesCase)) {
             throw new OrderNotRefundableException();
         }
-        // Approval is convergent: a case already executing or applied is done, and a case
-        // left in APPROVED by an earlier call still needs to be pushed into EXECUTING.
-        // Previously APPROVED returned immediately without starting execution, so the
-        // case never emitted PostSalesExecutionStarted and the choreography stalled.
-        if (postSalesCase.status() == PostSalesCaseStatus.EXECUTING || postSalesCase.status() == PostSalesCaseStatus.APPLIED) {
+        // An applied case is terminal. An executing case may be historical and have lost
+        // its approval trigger to transport retention, so a new approval command redrives
+        // the persisted decision and plan without repeating the state transition.
+        if (postSalesCase.status() == PostSalesCaseStatus.APPLIED) {
             return postSalesCase;
+        }
+        if (postSalesCase.status() == PostSalesCaseStatus.EXECUTING) {
+            return redriveApprovedExecution(postSalesCase.caseId(), sourceCommandId, correlationId);
         }
         if (requiresExclusiveRefundSlot(postSalesCase.caseType())) rejectAlreadyAppliedScope(postSalesCase.journeyOrderId(), postSalesCase.scope(), postSalesCase.caseId());
         if (postSalesCase.status() == PostSalesCaseStatus.APPROVED) {
@@ -281,6 +283,26 @@ public class PostSalesApplicationService {
         postSalesCase.startExecution(clock.instant(), sourceCommandId, sourceCommandId, correlationId);
         repository.save(postSalesCase);
         publishNewEvents(postSalesCase);
+    }
+
+    private PostSalesCase redriveApprovedExecution(String caseId, String sourceCommandId, String correlationId) {
+        PostSalesCase initial = get(caseId);
+        repository.lockOrder(initial.journeyOrderId());
+        PostSalesCase current = get(caseId);
+        if (current.status() == PostSalesCaseStatus.APPLIED) {
+            return current;
+        }
+        boolean prepared = current.prepareExecutionRedrive(
+            clock.instant(), sourceCommandId, sourceCommandId, correlationId);
+        if (prepared) {
+            repository.save(current);
+        }
+        for (PostSalesEvent event : current.executionRedriveEvents()) {
+            // The same redrive event identity is deliberately reusable after outbox and
+            // consumer retention expire. Trace context therefore cannot vary per HTTP call.
+            eventPublisher.publish(PostSalesMapper.toEnvelope(event, current).withTraceContext(null, null));
+        }
+        return current;
     }
 
     public PostSalesCase get(String caseId) {
