@@ -5,6 +5,8 @@ import { createWaitlistEventHandler, SUBSCRIBED_STREAMS, CONSUMER_GROUP, consume
 import { startWaitlistStorage } from "./storage.js";
 import type { WaitlistCapacityFreed } from "./promotion.js";
 import { superviseWaitlistSubscribe, subscribeWaitlistOnce, type WaitlistSubscribeSupervisor } from "./subscriber-retry.js";
+import { HttpWaitlistIntentResolver } from "./intent.js";
+import { HttpCapacityReleaseResolver } from "./capacity-release.js";
 
 export type BootstrapOptions = Readonly<{ host?: string; port?: number; redisUrl?: string; instanceId?: string }>;
 
@@ -19,7 +21,8 @@ function consumedStream(envelope: EventEnvelope): string {
 export async function bootstrap(options: BootstrapOptions = {}) {
   const messaging = await createRedisMessagingAdapters(runtimeRedisUrl(options));
   const storage = process.env.DATABASE_URL ? await startWaitlistStorage(runtimeRedisUrl(options)) : undefined;
-  const applicationService = storage ? undefined : new WaitlistApplicationService(undefined, messaging.publisher);
+  const intentResolver = new HttpWaitlistIntentResolver();
+  const applicationService = storage ? undefined : new WaitlistApplicationService(undefined, messaging.publisher, undefined, undefined, undefined, undefined, undefined, intentResolver);
   // Assigned just below, once `app.log` exists for the supervisor's logger.
   // Until then "retrying" is the truthful answer: nothing is consuming yet.
   let consumption: WaitlistSubscribeSupervisor | undefined;
@@ -28,6 +31,7 @@ export async function bootstrap(options: BootstrapOptions = {}) {
     idempotencyStore: storage?.idempotencyStore,
     storage,
     applicationService,
+    intentResolver,
     eventConsumption: () => consumption?.state() ?? "retrying",
   });
   const abortController = new AbortController();
@@ -70,7 +74,7 @@ export async function bootstrap(options: BootstrapOptions = {}) {
   // healthy consumer component over loops that exit immediately. Once an
   // attempt lands, ts-kit registers the consumer component and the existing
   // liveness path catches any LATER wedge.
-  const handler = createWaitlistEventHandler(eventService);
+  const handler = createWaitlistEventHandler(eventService, new HttpCapacityReleaseResolver());
   const consumer = consumerName(options.instanceId ?? process.env.HOSTNAME);
   let firstAttempt = true;
   consumption = superviseWaitlistSubscribe({

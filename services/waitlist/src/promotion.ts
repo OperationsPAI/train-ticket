@@ -1,13 +1,28 @@
 import { isPrefixedUuidV7, tracedFetch, type EventPublisher } from "@trainticket/ts-kit";
-import { DomainError, type WaitlistEntry, type WaitlistEntrySnapshot } from "./domain.js";
+import { DomainError, normalizeFareClass, type FareClass, type TravelInterval, type WaitlistEntry, type WaitlistEntrySnapshot } from "./domain.js";
 import { publishAll, waitlistExpired, waitlistMatchStarted } from "./publisher.js";
 
 export type WaitlistCapacityFreed = Readonly<{
   segmentRef: string;
+  scheduledServiceRef: string;
   departureDate: string;
-  seatClass?: string;
+  seatClass: FareClass;
+  interval: TravelInterval;
+  stopSequenceVersion: string;
+  intentFingerprint?: string;
   freedSlots: number;
   capacityReleaseRef: string;
+}>;
+
+export type WaitlistMatchCriteria = Readonly<{
+  segmentRef: string;
+  scheduledServiceRef: string;
+  departureDate: string;
+  seatClass: FareClass;
+  interval: TravelInterval;
+  stopSequenceVersion: string;
+  maxTravelers: number;
+  intentFingerprint?: string;
 }>;
 
 export type WaitlistOffer = Readonly<{
@@ -30,7 +45,7 @@ export interface WaitlistRepository {
   add(entry: WaitlistEntry): Promise<WaitlistEntrySnapshot> | WaitlistEntrySnapshot;
   get(entryId: string): Promise<WaitlistEntry | undefined> | WaitlistEntry | undefined;
   save(entry: WaitlistEntry): Promise<WaitlistEntrySnapshot> | WaitlistEntrySnapshot;
-  findTopQueued(segmentRef: string, departureDate: string, seatClass?: string): Promise<WaitlistEntry | undefined> | WaitlistEntry | undefined;
+  findTopQueued(criteria: WaitlistMatchCriteria): Promise<WaitlistEntry | undefined> | WaitlistEntry | undefined;
   findByJourneyOrderRef?(journeyOrderRef: string): Promise<WaitlistEntry | undefined> | WaitlistEntry | undefined;
   findExpiredOffers(now: Date): Promise<readonly WaitlistEntry[]> | readonly WaitlistEntry[];
   findArchivable(): Promise<readonly WaitlistEntry[]> | readonly WaitlistEntry[];
@@ -71,6 +86,7 @@ export class HttpFarePricingClient implements FarePricingClient {
         travelerRefs: entry.travelerRefs,
         channel: this.channel,
         segmentRefs: [entry.segmentRef],
+        seatClass: entry.seatClass,
         productCode: "rail-standard",
       }),
     });
@@ -154,15 +170,23 @@ export class PromotionOrchestrator {
     assertCapacityReleaseRef(event.capacityReleaseRef);
     const promoted: PromotedWaitlistRequest[] = [];
     const offers: WaitlistOffer[] = [];
-    const slots = Math.max(0, Math.floor(event.freedSlots));
-    for (let index = 0; index < slots; index++) {
-      const entry = await this.repository.findTopQueued(event.segmentRef, event.departureDate, event.seatClass);
+    let remainingSlots = Math.max(0, Math.floor(event.freedSlots));
+    while (remainingSlots > 0) {
+      const entry = await this.repository.findTopQueued({
+        segmentRef: event.segmentRef,
+        scheduledServiceRef: event.scheduledServiceRef,
+        departureDate: event.departureDate,
+        seatClass: normalizeFareClass(event.seatClass),
+        interval: event.interval,
+        stopSequenceVersion: event.stopSequenceVersion,
+        maxTravelers: remainingSlots,
+        intentFingerprint: event.intentFingerprint,
+      });
       if (!entry) break;
       if (new Date(entry.deadline) <= this.now()) {
         entry.expire();
         const expired = await this.repository.save(entry);
         await publishAll(this.publisher, [waitlistExpired(expired, entry.loadedVersion, correlationId, this.now().toISOString())]);
-        index--;
         continue;
       }
       const quote = await this.farePricing.quote(entry);
@@ -179,6 +203,7 @@ export class PromotionOrchestrator {
       snapshot = await this.repository.save(entry);
       promoted.push({ ...snapshot, waitlistRequestId: snapshot.entryId });
       offers.push(offer);
+      remainingSlots -= entry.travelerRefs.length;
     }
     return { promoted, offers };
   }

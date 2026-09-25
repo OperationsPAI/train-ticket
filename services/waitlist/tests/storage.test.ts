@@ -74,6 +74,31 @@ test("PostgresWaitlistRepository queue queries exclude CLOSED archival rows", as
   await repository.queueFor("seg-1", "2026-07-20", "SECOND");
 
   assert.match(db.calls[0].sql, /status <> 'CLOSED'/u);
+  assert.match(db.calls[0].sql, /departure_date = \$2/u);
+});
+
+test("PostgresWaitlistRepository locks and matches the complete released-capacity partition", async () => {
+  const db = new FakeDb();
+  const repository = new PostgresWaitlistRepository(db as never);
+
+  await repository.findTopQueued({
+    segmentRef: "seg-1",
+    scheduledServiceRef: "ss-1",
+    departureDate: "2026-07-20",
+    seatClass: "SECOND_CLASS",
+    interval: { fromSeq: 1, toSeq: 3 },
+    stopSequenceVersion: "sha256:route-v1",
+    maxTravelers: 2,
+    intentFingerprint: "intent-1",
+  });
+
+  assert.match(db.calls[0].sql, /departure_date = \$2/u);
+  assert.match(db.calls[0].sql, /seat_class = \$3/u);
+  assert.match(db.calls[0].sql, /scheduledServiceRef/u);
+  assert.match(db.calls[0].sql, /stopSequenceVersion/u);
+  assert.match(db.calls[0].sql, /jsonb_array_length\(traveler_refs\) <= \$8/u);
+  assert.match(db.calls[0].sql, /FOR UPDATE SKIP LOCKED/u);
+  assert.deepEqual(db.calls[0].params, ["seg-1", "2026-07-20", "SECOND_CLASS", "ss-1", "sha256:route-v1", 1, 3, 2, "intent-1"]);
 });
 
 test("PostgresWaitlistRepository.add translates unique violation to conflict", async () => {
@@ -114,4 +139,12 @@ test("processed_events primary key change is applied by a follow-up migration", 
   assert.match(migration, /DROP CONSTRAINT IF EXISTS processed_events_pkey/u);
   assert.match(migration, /DROP NOT NULL/u);
   assert.match(migration, /ADD PRIMARY KEY \(event_id\)/u);
+});
+
+test("precise waitlist matching has a partial queue index", async () => {
+  const migration = await readFile(join(process.cwd(), "migrations/007_precise_match_index.sql"), "utf8");
+  assert.match(migration, /waitlist_precise_match_idx/u);
+  assert.match(migration, /scheduledServiceRef/u);
+  assert.match(migration, /stopSequenceVersion/u);
+  assert.match(migration, /WHERE status = 'QUEUED'/u);
 });
