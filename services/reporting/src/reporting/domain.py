@@ -624,7 +624,7 @@ class ContextEventRollup:
 @dataclass(frozen=True, slots=True)
 class MetricSnapshot:
     generated_at: datetime
-    orders_per_second: int
+    orders_per_second: float
     revenue_per_hour: tuple[Money, ...]
     fill_rate_by_route: Mapping[str, float]
     avg_booking_latency: Mapping[str, float]
@@ -984,7 +984,7 @@ class MetricAggregator:
         routes = self.route_metrics(at=now)
         return MetricSnapshot(
             generated_at=now,
-            orders_per_second=len(orders_60s),
+            orders_per_second=round(len(orders_60s) / 60, 4),
             revenue_per_hour=revenue_1h,
             fill_rate_by_route={route.route_id: route.fill_rate for route in routes},
             avg_booking_latency=self._latency_percentiles(latencies),
