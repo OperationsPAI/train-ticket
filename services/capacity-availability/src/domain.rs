@@ -34,6 +34,11 @@ pub enum DomainError {
         now: u64,
         expires_at: u64,
     },
+    HoldExpiredBeforeConfirmation {
+        hold_id: String,
+        now: u64,
+        expires_at: u64,
+    },
 }
 
 impl std::fmt::Display for DomainError {
@@ -99,6 +104,9 @@ impl std::fmt::Display for DomainError {
                     "hold {} not expired: now={} expires_at={}",
                     hold_id, now, expires_at
                 )
+            }
+            DomainError::HoldExpiredBeforeConfirmation { hold_id, now, expires_at } => {
+                write!(f, "hold {} expired before confirmation: now={} expires_at={}", hold_id, now, expires_at)
             }
         }
     }
@@ -467,6 +475,13 @@ impl CapacityHold {
 
     fn confirm(&mut self, now: u64) -> DomainResult<()> {
         match self.state {
+            CapacityHoldState::Held if now >= self.expires_at => Err(
+                DomainError::HoldExpiredBeforeConfirmation {
+                    hold_id: self.hold_id.to_string(),
+                    now,
+                    expires_at: self.expires_at,
+                },
+            ),
             CapacityHoldState::Held => {
                 self.state = CapacityHoldState::Confirmed;
                 self.confirmed_at = Some(now);
@@ -1103,6 +1118,20 @@ impl InventoryPool {
         Ok(events)
     }
 
+    pub fn confirm_or_expire_hold(
+        &mut self,
+        hold_id: &HoldId,
+        now: u64,
+    ) -> DomainResult<(Vec<DomainEvent>, bool)> {
+        match self.confirm_hold(hold_id, now) {
+            Ok(events) => Ok((events, false)),
+            Err(DomainError::HoldExpiredBeforeConfirmation { .. }) => {
+                self.expire_hold(hold_id, now).map(|events| (events, true))
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     pub fn release_hold(
         &mut self,
         hold_id: &HoldId,
@@ -1722,6 +1751,16 @@ mod tests {
             expired.first(),
             Some(DomainEvent::CapacityHoldExpired(_))
         ));
+    }
+
+    #[test]
+    fn late_confirmation_expires_instead_of_reviving_hold() {
+        let mut pool = pool();
+        pool.request_hold(request("hold-late", "01A", 1, 3, "idem-late", 10, 20), 10).unwrap();
+        let (events, expired) = pool.confirm_or_expire_hold(&hold_id("hold-late"), 20).unwrap();
+        assert!(expired);
+        assert!(matches!(events.first(), Some(DomainEvent::CapacityHoldExpired(_))));
+        assert_eq!(pool.hold(&hold_id("hold-late")).unwrap().state, CapacityHoldState::Expired);
     }
 
     #[test]
