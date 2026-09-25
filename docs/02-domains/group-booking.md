@@ -7,7 +7,7 @@
 | Domain | Group Booking |
 | Status | proposed-ddd-baseline |
 | Owner Agent | agentm-group-booking |
-| Last Updated | 2026-07-10 |
+| Last Updated | 2026-09-25 |
 | High-Level Inputs | `docs/adr/0003-commercial-realism-scope.md`, `docs/02-domains/capacity-availability.md`, `docs/02-domains/journey-order.md`, `docs/02-domains/booking-orchestration.md`, `docs/02-domains/entitlement-ticketing.md`, `docs/02-domains/provider-integration.md`, `docs/08-contracts/events/capacity-availability.md`, `docs/08-contracts/api/capacity-availability.md`, `docs/08-contracts/events/journey-order.md`, `docs/08-contracts/api/journey-order.md`, `docs/08-contracts/events/booking-orchestration.md`, `docs/08-contracts/api/booking-orchestration.md`, `docs/08-contracts/events/entitlement-ticketing.md`, `docs/08-contracts/api/entitlement-ticketing.md` |
 
 ## 1. 领域目标
@@ -60,7 +60,7 @@ Group Booking 负责团体订票的申请、运营审批、批量占座、分批
 
 ## 4. 上下游契约
 
-本节只引用已经存在于 `docs/08-contracts/` 的域、事件或端点名称。Group Booking 拟新增的命令和领域事件只在第 7 节列出；未来契约化必须单独修改 `docs/08-contracts/`。Identity Verification 是 ADR-0003 上游之一，但当前 base 分支没有对应 08-contracts 文档，本设计只记录集成缺口，不编造事件或端点。
+本节引用已经存在于 `docs/08-contracts/` 的域、事件或端点名称；Group Booking 自身当前实现契约见 [HTTP API](../08-contracts/api/group-booking.md) 和 [事件](../08-contracts/events/group-booking.md)。
 
 ### Upstream
 
