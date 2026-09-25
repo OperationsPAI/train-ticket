@@ -40,9 +40,11 @@ export async function bootstrap(options: BootstrapOptions = {}) {
     return applicationService;
   };
   const eventService = {
-    handleCapacityFreed: (event: WaitlistCapacityFreed, correlationId: string | undefined, envelope: EventEnvelope) => storage
-      ? storage.runConsumedEvent(envelope.eventId, consumedStream(envelope), (repository, publisher) => new WaitlistApplicationService(repository, publisher).handleCapacityFreed(event, correlationId))
-      : inMemoryApplicationService().handleCapacityFreed(event, correlationId),
+    handleCapacityFreed: async (event: WaitlistCapacityFreed, correlationId: string | undefined, envelope: EventEnvelope) => {
+      if (!storage) return inMemoryApplicationService().handleCapacityFreed(event, correlationId);
+      await storage.runConsumedEvent(envelope.eventId, consumedStream(envelope), (repository, publisher) => new WaitlistApplicationService(repository, publisher).recordCapacityFreed(event));
+      return drainPromotions(storage, correlationId);
+    },
     handleJourneyOrderConfirmed: (orderId: string, correlationId: string | undefined, envelope: EventEnvelope) => storage
       ? storage.runConsumedEvent(envelope.eventId, consumedStream(envelope), (repository, publisher) => new WaitlistApplicationService(repository, publisher).handleJourneyOrderConfirmed(orderId, correlationId))
       : inMemoryApplicationService().handleJourneyOrderConfirmed(orderId, correlationId),
@@ -96,6 +98,11 @@ export async function bootstrap(options: BootstrapOptions = {}) {
     operation.catch((error: unknown) => app.log.error({ err: error }, "waitlist offer expiry scan failed"));
   }, Number.parseInt(process.env.WAITLIST_EXPIRY_SCAN_MS ?? "15000", 10));
   expiryTimer.unref();
+  const promotionTimer = setInterval(() => {
+    const operation = storage ? drainPromotions(storage) : inMemoryApplicationService().advanceNextPromotion();
+    operation.catch((error: unknown) => app.log.error({ err: error }, "waitlist promotion recovery failed"));
+  }, Number.parseInt(process.env.WAITLIST_PROMOTION_SCAN_MS ?? "1000", 10));
+  promotionTimer.unref();
   const archivalTimer = setInterval(() => {
     const operation = storage
       ? storage.runCommand((repository, publisher) => new WaitlistApplicationService(repository, publisher).archiveTerminalRequests())
@@ -105,6 +112,7 @@ export async function bootstrap(options: BootstrapOptions = {}) {
   archivalTimer.unref();
   app.addHook("onClose", async () => {
     clearInterval(expiryTimer);
+    clearInterval(promotionTimer);
     clearInterval(archivalTimer);
     abortController.abort();
     // Stops the retry loop as well as the attached subscriber, so a shutdown
@@ -115,4 +123,12 @@ export async function bootstrap(options: BootstrapOptions = {}) {
   });
   await app.listen({ host: runtimeHost(options), port: runtimePort(options) });
   return app;
+}
+
+async function drainPromotions(storage: NonNullable<Awaited<ReturnType<typeof startWaitlistStorage>>>, correlationId?: string): Promise<void> {
+  for (let steps = 0; steps < 1_000; steps++) {
+    const progressed = await storage.runCommand((repository, publisher) => new WaitlistApplicationService(repository, publisher).advanceNextPromotion(correlationId));
+    if (!progressed) return;
+  }
+  throw new Error("waitlist promotion drain exceeded its safety limit");
 }

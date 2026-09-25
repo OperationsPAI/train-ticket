@@ -32,12 +32,12 @@ test("WaitlistCapacityFreed requires all match dimensions before promotion", () 
   const full = {
     eventId: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c124", eventType: "WaitlistCapacityFreed", schemaVersion: 1,
     producer: "capacity-availability", correlationId: "corr-1", occurredAt: "2026-09-25T00:00:00Z",
-    payload: { segmentRef: "seg-1", scheduledServiceRef: "ss-1", departureDate: "2026-10-20", classRef: "SECOND", interval: { fromSeq: 0, toSeq: 2 }, stopSequenceVersion: "sha256:v1", freedSlots: 2, intentFingerprint: "intent-1" },
+    payload: { segmentRef: "seg-1", scheduledServiceRef: "ss-1", departureDate: "2026-10-20", classRef: "SECOND", interval: { fromSeq: 0, toSeq: 2 }, stopSequenceVersion: "sha256:v1", freedSlots: 2, intentFingerprint: "intent-1", capacityReleaseRef: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c125" },
   } as EventEnvelope;
   assert.deepEqual(parseCapacityFreed(full), {
     segmentRef: "seg-1", scheduledServiceRef: "ss-1", departureDate: "2026-10-20", seatClass: "SECOND_CLASS",
     interval: { fromSeq: 0, toSeq: 2 }, stopSequenceVersion: "sha256:v1", freedSlots: 2,
-    intentFingerprint: "intent-1", capacityReleaseRef: full.eventId,
+    intentFingerprint: "intent-1", capacityReleaseRef: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c125",
   });
   assert.equal(tryParseCapacityFreed({ ...full, payload: { ...full.payload, interval: undefined } }), undefined);
 });
