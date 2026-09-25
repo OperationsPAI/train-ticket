@@ -27,6 +27,12 @@ func (payoutExecutor) Disburse(_ context.Context, policy domain.Policy, _ domain
 	return application.PayoutReceipt{ExecutionRef: "ben-test", AccountID: policy.AccountID, Amount: advice.Amount, Target: domain.PayoutWalletBenefit}, nil
 }
 
+type coverageResolver struct{ coverage application.JourneyCoverage }
+
+func (r coverageResolver) ResolveJourneyCoverage(context.Context, string, string) (application.JourneyCoverage, error) {
+	return r.coverage, nil
+}
+
 func sequentialIDs() func(string) string {
 	counters := map[string]int{}
 	return func(prefix string) string {
@@ -252,6 +258,27 @@ func TestHandleJourneyOrderConfirmedDoesNotCreateUnpaidPolicy(t *testing.T) {
 
 	if _, err := svc.GetPolicy(context.Background(), "pol-1"); err != application.ErrNotFound {
 		t.Fatalf("unexpected policy result: %v", err)
+	}
+}
+
+func TestHandleJourneyOrderPostSalesAdjustedRefreshesCoverage(t *testing.T) {
+	now := time.Date(2026, 9, 25, 4, 0, 0, 0, time.UTC)
+	pub := &capturePublisher{}
+	resolver := coverageResolver{coverage: application.JourneyCoverage{OrderID: "ord-change", AccountID: "acc-change", Status: "CONFIRMED",
+		TravelerRefs: []string{"tvl-change"}, ReplacedSegmentRefs: []string{"seg-old"}, SegmentRefs: []string{"seg-new"},
+		StartsAt: now.Add(48 * time.Hour), EndsAt: now.Add(52 * time.Hour)}}
+	svc := application.NewInsuranceService(application.ServiceConfig{Publisher: pub, Clock: fixedClock{now}, IDGenerator: sequentialIDs(), PayoutExecutor: payoutExecutor{}, JourneyCoverageResolver: resolver})
+	policy, err := svc.IssuePolicy(context.Background(), application.IssuePolicyCommand{ProductCode: string(domain.ProductDelayInsurance), ProductVersion: "v1", JourneyOrderID: "ord-change", AncillaryOrderItemID: "anc-change", AccountID: "acc-change", TravelerRef: "tvl-change", SegmentRefs: []string{"seg-old"}, PaymentIntentID: "pi-change", CoverageStartAt: now.Add(time.Hour), CoverageEndAt: now.Add(2 * time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := makeEnvelope(t, "JourneyOrderPostSalesAdjusted", map[string]any{"orderId": "ord-change", "accountId": "acc-change", "postSalesCaseId": "psc-change", "segmentRefs": []string{"seg-new"}}, now)
+	if err := NewInboundHandler(svc).Handle(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	changed, _ := svc.GetPolicy(context.Background(), policy.ID)
+	if len(changed.SegmentRefs) != 1 || changed.SegmentRefs[0] != "seg-new" || !changed.CoverageStartAt.Equal(now.Add(48*time.Hour)) {
+		t.Fatalf("coverage was not moved to changed journey: %#v", changed)
 	}
 }
 
