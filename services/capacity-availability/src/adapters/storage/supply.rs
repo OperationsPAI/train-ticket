@@ -13,9 +13,17 @@ use futures_util::{StreamExt, TryStreamExt, stream};
 ///
 /// The hold's own supply evidence is the authoritative record of the interval
 /// it occupies, and this service wrote it, so a hold that has that evidence
-/// does not need the cached row to be complete. A hold old enough to predate
-/// the evidence still has to come from the cache, and a cache row that cannot
-/// be trusted there stays an error.
+/// does not need the cached row to be complete.
+///
+/// A hold old enough to predate the evidence still has to come from the cache,
+/// and this cluster has millions of them: every confirmed hold stays live for
+/// the life of the journey it was taken for, so 2562487 of the 2562487 live
+/// holds when this was measured had no evidence, and none of their cache rows
+/// carried a source. Rejecting those does not protect anything -- the hold is
+/// already occupying the pool and its interval, service, date and class are all
+/// recorded -- so what the occupancy check actually needs is a structurally
+/// complete row. A row missing one of those is still refused, because that is
+/// a hold whose interval we cannot place at all.
 fn historical_hold_facts(
     hold: &CapacityHoldSnapshot,
     recorded: Value,
@@ -26,9 +34,7 @@ fn historical_hold_facts(
         return Ok(saved);
     }
     let Some(evidence) = hold.supply_evidence.as_ref() else {
-        // No evidence and no usable cache: the hold cannot be attributed, and
-        // guessing would put an interval under a source nobody recorded.
-        saved.validate_source()?;
+        structural_hold_facts(&saved)?;
         return Ok(saved);
     };
     let booking_purpose = match evidence.source_type.as_str() {
@@ -56,6 +62,26 @@ fn historical_hold_facts(
     };
     facts.validate_source()?;
     Ok(facts)
+}
+
+/// Require only the facts that place a historical hold in an interval.
+fn structural_hold_facts(facts: &ReservationSupply) -> Result<(), AppError> {
+    for (name, value) in [
+        ("segmentBookingId", facts.segment_booking_id.as_str()),
+        ("journeyOrderId", facts.journey_order_id.as_str()),
+        ("travelerRef", facts.traveler_ref.as_str()),
+        ("segmentRef", facts.segment_ref.as_str()),
+        ("scheduledServiceRef", facts.scheduled_service_ref.as_str()),
+        ("serviceDate", facts.service_date.as_str()),
+        ("classRef", facts.class_ref.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            return Err(AppError::Unavailable(format!(
+                "active hold has no recorded {name}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 impl PostgresCapacityService {
@@ -535,15 +561,31 @@ mod tests {
     }
 
     #[test]
-    fn a_hold_without_evidence_still_refuses_an_unattributable_cache_row() {
-        // A hold old enough to predate the evidence has nothing authoritative
-        // left, and inventing a source for it is exactly what the check exists
-        // to prevent.
-        let error = historical_hold_facts(&hold_with_evidence(None), legacy_recorded())
-            .expect_err("must refuse");
+    fn a_hold_without_evidence_uses_its_structurally_complete_cache_row() {
+        // Millions of confirmed holds predate the evidence field and stay live
+        // for the life of their journey. Their cached rows record the interval
+        // even though they carry no source, and refusing them is what made new
+        // reservations fail.
+        let facts =
+            historical_hold_facts(&hold_with_evidence(None), legacy_recorded()).expect("facts");
+
+        assert_eq!(facts.segment_booking_id, "sb-1");
+        assert_eq!(facts.scheduled_service_ref, "ss-1");
+        assert_eq!(facts.class_ref, "SECOND_CLASS");
+    }
+
+    #[test]
+    fn a_hold_without_evidence_still_refuses_a_row_that_cannot_place_it() {
+        // Without a service and date there is no interval to attribute, and
+        // that stays an error rather than being guessed at.
+        let mut recorded = legacy_recorded();
+        recorded["scheduledServiceRef"] = Value::String(String::new());
+
+        let error =
+            historical_hold_facts(&hold_with_evidence(None), recorded).expect_err("must refuse");
 
         assert!(
-            format!("{error:?}").contains("unsupported purchase source"),
+            format!("{error:?}").contains("scheduledServiceRef"),
             "{error:?}"
         );
     }
