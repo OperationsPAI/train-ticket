@@ -1,4 +1,5 @@
 use crate::application::AppError;
+use crate::domain::{CapacitySnapshot, ClassCapacity, OverbookingPolicy};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -275,6 +276,72 @@ pub struct PendingOccupancy {
     pub effective_capacity_unit_ref: String,
     pub state: String,
     pub interval: Interval,
+}
+
+pub fn combined_class_snapshot(
+    facts: &ReservationSupply,
+    interval: &Interval,
+    supply: &SeatSupply,
+    available_refs: &[String],
+    occupancy: &[PendingOccupancy],
+    generated_at: u64,
+) -> Result<CapacitySnapshot, AppError> {
+    let total = supply.capacity();
+    let occupied = total.saturating_sub(available_refs.len());
+    let terminal: HashSet<&str> = occupancy.iter()
+        .filter(|hold| matches!(hold.state.as_str(), "Released" | "Expired" | "Failed"))
+        .map(|hold| hold.hold_id.as_str()).collect();
+    let active: HashMap<&str, &str> = occupancy.iter()
+        .filter(|hold| !terminal.contains(hold.hold_id.as_str()) && hold.interval.overlaps(interval))
+        .map(|hold| (hold.hold_id.as_str(), hold.state.as_str())).collect();
+    let mut classified: HashMap<String, bool> = HashMap::new();
+    for hold in occupancy.iter().filter(|hold| active.contains_key(hold.hold_id.as_str())) {
+        classified.insert(hold.effective_capacity_unit_ref.clone(), hold.state == "Confirmed");
+    }
+    for allocation in supply.allocations.iter().filter(|allocation| {
+        !terminal.contains(allocation.capacity_hold_id.as_str()) && allocation.interval.overlaps(interval)
+    }) {
+        let unit = supply.resolve_allocation_unit(allocation)?;
+        let confirmed = active.get(allocation.capacity_hold_id.as_str())
+            .map(|state| *state == "Confirmed")
+            .unwrap_or(allocation.status != "ALLOCATED");
+        classified.entry(unit).and_modify(|current| *current |= confirmed).or_insert(confirmed);
+    }
+    require(classified.len() == occupied, "capacity snapshot occupancy differs from admission")?;
+    let confirmed = classified.values().filter(|confirmed| **confirmed).count();
+    let held = occupied.saturating_sub(confirmed);
+    let physical = if supply.class_ref == "STANDING" { 0 } else { supply.units.len() };
+    Ok(CapacitySnapshot {
+        segment_ref: facts.segment_ref.clone(), departure_date: facts.service_date.clone(),
+        total_capacity: total as u32, remaining_capacity: available_refs.len() as u32,
+        physical_capacity: physical as u32, hold_count: held as u32, confirmed_count: confirmed as u32,
+        utilization_pct: if total == 0 { 0.0 } else { (occupied as f64 / total as f64) * 100.0 },
+        snapshot_version: format!("{}-{generated_at}", supply.seat_map_version),
+        classes: vec![ClassCapacity { class_ref: supply.class_ref.clone(), physical_capacity: physical as u32,
+            effective_capacity: total as u32, hold_count: held as u32, confirmed_count: confirmed as u32,
+            remaining_capacity: available_refs.len() as u32, overbooking_policy: OverbookingPolicy::none() }],
+    })
+}
+
+pub fn combine_capacity_snapshots(
+    segment_ref: &str,
+    departure_date: &str,
+    mut snapshots: Vec<CapacitySnapshot>,
+) -> Result<CapacitySnapshot, AppError> {
+    require(!snapshots.is_empty(), "capacity snapshot has no published classes")?;
+    require(snapshots.iter().all(|snapshot| snapshot.segment_ref == segment_ref && snapshot.departure_date == departure_date),
+        "capacity class snapshots do not share one segment and date")?;
+    snapshots.sort_by(|left, right| left.classes[0].class_ref.cmp(&right.classes[0].class_ref));
+    let total_capacity = snapshots.iter().map(|snapshot| snapshot.total_capacity).sum();
+    let remaining_capacity = snapshots.iter().map(|snapshot| snapshot.remaining_capacity).sum();
+    let physical_capacity = snapshots.iter().map(|snapshot| snapshot.physical_capacity).sum();
+    let hold_count = snapshots.iter().map(|snapshot| snapshot.hold_count).sum();
+    let confirmed_count = snapshots.iter().map(|snapshot| snapshot.confirmed_count).sum();
+    Ok(CapacitySnapshot { segment_ref: segment_ref.to_owned(), departure_date: departure_date.to_owned(),
+        total_capacity, remaining_capacity, physical_capacity, hold_count, confirmed_count,
+        utilization_pct: if total_capacity == 0 { 0.0 } else { ((hold_count + confirmed_count) as f64 / total_capacity as f64) * 100.0 },
+        snapshot_version: snapshots.iter().map(|snapshot| snapshot.snapshot_version.as_str()).collect::<Vec<_>>().join("+"),
+        classes: snapshots.into_iter().flat_map(|snapshot| snapshot.classes).collect() })
 }
 
 impl SeatSupply {
@@ -1307,5 +1374,42 @@ mod occupancy_slot_tests {
         let occupied = pending("1", "quota:standing-second-class-10pct-v1:0", 0, 2);
         assert_eq!(supply.available_refs(&Interval { from_seq: 1, to_seq: 3 }, &[occupied.clone()]).unwrap(), vec!["quota:standing-second-class-10pct-v1:1"]);
         assert_eq!(supply.available_refs(&Interval { from_seq: 2, to_seq: 4 }, &[occupied]).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn unified_snapshot_counts_pending_and_unfinished_occupancy() {
+        let mut supply = physical_supply();
+        supply.allocations.push(Allocation { seat_allocation_id: "alloc-orphan".into(), capacity_hold_id: "hold-orphan".into(),
+            scheduled_service_ref: "ss-1".into(), service_date: "2026-09-25".into(), segment_booking_id: "sb-orphan".into(),
+            journey_order_id: "ord-orphan".into(), traveler_ref: "tvl-orphan".into(), capacity_unit_ref: "seat-b".into(),
+            interval: Interval { from_seq: 0, to_seq: 2 }, seat_ref: SeatReference { seat_unit_ref: "seat-b".into(), allocation_type: "SEAT".into(), seat_map_id: "map-1".into(), seat_map_version: 2 }, status: "ALLOCATED".into() });
+        let interval = Interval { from_seq: 1, to_seq: 2 };
+        let occupancy = vec![pending("1", "seat-a", 0, 2)];
+        let available = supply.available_refs(&interval, &occupancy).unwrap();
+        let facts = ReservationSupply { segment_booking_id: "sb-query".into(), journey_order_id: "ord-query".into(),
+            traveler_ref: "tvl-query".into(), segment_ref: "seg-1".into(), scheduled_service_ref: "ss-1".into(),
+            service_date: "2026-09-25".into(), class_ref: "SECOND_CLASS".into(), booking_purpose: "purchase".into(),
+            offer_item_ref: "ofi-query".into(), standing_accepted: false, source_type: "PURCHASE_ORDER".into(), source_ref: "ord-query".into() };
+        let snapshot = combined_class_snapshot(&facts, &interval, &supply, &available, &occupancy, 100).unwrap();
+        assert_eq!((snapshot.total_capacity, snapshot.remaining_capacity), (2, 0));
+        assert_eq!((snapshot.hold_count, snapshot.confirmed_count), (2, 0));
+    }
+
+    #[test]
+    fn unified_snapshot_combines_physical_and_standing_classes() {
+        let physical = CapacitySnapshot { segment_ref: "seg-1".into(), departure_date: "2026-09-25".into(),
+            total_capacity: 20, remaining_capacity: 17, physical_capacity: 20, hold_count: 1, confirmed_count: 2,
+            utilization_pct: 15.0, snapshot_version: "2-100".into(), classes: vec![ClassCapacity {
+                class_ref: "SECOND_CLASS".into(), physical_capacity: 20, effective_capacity: 20, hold_count: 1,
+                confirmed_count: 2, remaining_capacity: 17, overbooking_policy: OverbookingPolicy::none() }] };
+        let standing = CapacitySnapshot { segment_ref: "seg-1".into(), departure_date: "2026-09-25".into(),
+            total_capacity: 2, remaining_capacity: 1, physical_capacity: 0, hold_count: 1, confirmed_count: 0,
+            utilization_pct: 50.0, snapshot_version: "2-100".into(), classes: vec![ClassCapacity {
+                class_ref: "STANDING".into(), physical_capacity: 0, effective_capacity: 2, hold_count: 1,
+                confirmed_count: 0, remaining_capacity: 1, overbooking_policy: OverbookingPolicy::none() }] };
+        let snapshot = combine_capacity_snapshots("seg-1", "2026-09-25", vec![standing, physical]).unwrap();
+        assert_eq!((snapshot.total_capacity, snapshot.physical_capacity, snapshot.remaining_capacity), (22, 20, 18));
+        assert_eq!((snapshot.hold_count, snapshot.confirmed_count), (2, 2));
+        assert_eq!(snapshot.classes.iter().map(|class| class.class_ref.as_str()).collect::<Vec<_>>(), vec!["SECOND_CLASS", "STANDING"]);
     }
 }
