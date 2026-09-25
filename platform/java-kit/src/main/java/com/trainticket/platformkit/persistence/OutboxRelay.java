@@ -94,7 +94,11 @@ public class OutboxRelay implements AutoCloseable {
             return 0;
         }
 
-        Duration oldestAge = nonNegativeAge(rows.getFirst().createdAt());
+        java.time.Instant oldestCreatedAt = rows.stream()
+            .map(OutboxRow::createdAt)
+            .min(java.time.Instant::compareTo)
+            .orElseThrow();
+        Duration oldestAge = nonNegativeAge(oldestCreatedAt);
         metrics.observeUnpublishedSample(rows.size(), oldestAge);
 
         try {
