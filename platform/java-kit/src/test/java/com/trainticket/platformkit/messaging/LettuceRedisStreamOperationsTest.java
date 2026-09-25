@@ -10,6 +10,7 @@ import static org.mockito.Mockito.when;
 
 import io.lettuce.core.XAddArgs;
 import io.lettuce.core.XAutoClaimArgs;
+import io.lettuce.core.StreamMessage;
 import io.lettuce.core.api.StatefulRedisConnection;
 import io.lettuce.core.api.sync.RedisCommands;
 import io.lettuce.core.codec.StringCodec;
@@ -93,20 +94,28 @@ class LettuceRedisStreamOperationsTest {
     }
 
     @Test
-    void autoClaimIssuesXautoclaimWithTheConfiguredMinIdleWindow() {
+    void autoClaimUsesTheProvidedCursorAndReturnsTheNextPageCursor() {
         RedisCommands<String, String> commands = syncCommands();
         StatefulRedisConnection<String, String> connection = connectionFor(commands);
         when(commands.xautoclaim(anyString(), any(XAutoClaimArgs.class)))
-            .thenReturn(new ClaimedMessages<>("0-0", List.of()));
+            .thenReturn(new ClaimedMessages<>("42-0", List.of(
+                new StreamMessage<>("events:payment", "10-0", java.util.Map.of("envelope", "{}"))
+            )));
 
-        new LettuceRedisStreamOperations(connection).autoClaim("events:payment", "journey-order", "consumer-1");
+        RedisStreamOperations.AutoClaimResult result = new LettuceRedisStreamOperations(connection)
+            .autoClaim("events:payment", "journey-order", "consumer-1", "9-0");
 
         ArgumentCaptor<XAutoClaimArgs<String>> args = ArgumentCaptor.captor();
         verify(commands).xautoclaim(eq("events:payment"), args.capture());
         CommandArgs<String, String> commandArgs = new CommandArgs<>(StringCodec.UTF8);
         args.getValue().build(commandArgs);
         assertThat(commandArgs.toCommandString())
-            .contains(String.valueOf(LettuceRedisStreamOperations.configuredAutoClaimMinIdleMillis()));
+            .contains(String.valueOf(LettuceRedisStreamOperations.configuredAutoClaimMinIdleMillis()))
+            .contains("9-0")
+            .contains("COUNT")
+            .contains("100");
+        assertThat(result.nextStartId()).isEqualTo("42-0");
+        assertThat(result.messages()).containsExactly(new RedisStreamOperations.StreamEntry("10-0", "{}"));
     }
 
     @SuppressWarnings("unchecked")
