@@ -58,7 +58,7 @@ export interface FarePricingClient {
 }
 
 export interface OfferManagementClient {
-  createOffer(entry: WaitlistEntry, fareQuoteId: string): Promise<{ offerId: string; offerVersion: number }>;
+  createOffer(entry: WaitlistEntry, fareQuoteId: string): Promise<{ offerId: string; offerVersion: number; expiresAt: string }>;
 }
 
 export interface CapacityAvailabilityClient {
@@ -104,7 +104,7 @@ export class HttpOfferManagementClient implements OfferManagementClient {
     private readonly channelId = process.env.WAITLIST_CHANNEL_ID ?? process.env.WAITLIST_CHANNEL ?? "WEB",
   ) {}
 
-  async createOffer(entry: WaitlistEntry, fareQuoteId: string): Promise<{ offerId: string; offerVersion: number }> {
+  async createOffer(entry: WaitlistEntry, fareQuoteId: string): Promise<{ offerId: string; offerVersion: number; expiresAt: string }> {
     const response = await tracedFetch(`${trimRight(this.baseUrl)}/api/v1/offers`, {
       method: "POST",
       headers: { "content-type": "application/json", "Idempotency-Key": entry.offerIdempotencyKey },
@@ -120,9 +120,11 @@ export class HttpOfferManagementClient implements OfferManagementClient {
     const body = await response.json() as Record<string, unknown>;
     const offerId = stringField(body, "offerId");
     const offerVersion = body.offerVersion;
+    const expiresAt = stringField(body, "expiresAt");
     if (!offerId) throw new Error("Offer response did not include offerId");
     if (typeof offerVersion !== "number" || !Number.isSafeInteger(offerVersion) || offerVersion < 1) throw new Error("Offer response did not include a positive integer offerVersion");
-    return { offerId, offerVersion };
+    if (!expiresAt || !Number.isFinite(new Date(expiresAt).getTime())) throw new Error("Offer response did not include a valid expiresAt");
+    return { offerId, offerVersion, expiresAt };
   }
 }
 
@@ -192,14 +194,17 @@ export class PromotionOrchestrator {
       const quote = await this.farePricing.quote(entry);
       const commercialOffer = await this.offerManagement.createOffer(entry, quote.fareQuoteId);
       const now = this.now();
-      const expiresAt = new Date(now.getTime() + 15 * 60 * 1000);
+      const expiresAt = earliestInstant(commercialOffer.expiresAt, entry.paymentGuarantee.authorizedUntil, entry.deadline);
+      if (expiresAt <= now) throw new DomainError("PRECONDITION_FAILED", "Commercial offer is already outside the waitlist offer window");
       const offer = { offerId: commercialOffer.offerId, offerVersion: commercialOffer.offerVersion, entryId: entry.entryId, fareQuoteId: quote.fareQuoteId, expiresAt: expiresAt.toISOString() };
       entry.offer(offer.offerId, offer.offerVersion, quote.fareQuoteId, undefined, now, expiresAt);
       let snapshot = await this.repository.save(entry);
       await publishAll(this.publisher, [waitlistMatchStarted(snapshot, entry.loadedVersion, event.capacityReleaseRef, correlationId, now.toISOString())]);
 
+      const orderRequestedAt = this.now();
+      entry.ensureOfferAcceptable(orderRequestedAt);
       const order = await journeyOrder.createOrder(entry);
-      entry.linkJourneyOrder(this.now(), order.orderId);
+      entry.linkJourneyOrder(orderRequestedAt, order.orderId);
       snapshot = await this.repository.save(entry);
       promoted.push({ ...snapshot, waitlistRequestId: snapshot.entryId });
       offers.push(offer);
@@ -240,4 +245,9 @@ function trimRight(value: string): string { return value.replace(/\/+$/u, ""); }
 function stringField(body: Record<string, unknown>, field: string): string | undefined {
   const value = body[field];
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+function earliestInstant(...values: readonly string[]): Date {
+  const instants = values.map((value) => new Date(value));
+  if (instants.some((value) => !Number.isFinite(value.getTime()))) throw new Error("Waitlist offer boundary included an invalid timestamp");
+  return new Date(Math.min(...instants.map((value) => value.getTime())));
 }

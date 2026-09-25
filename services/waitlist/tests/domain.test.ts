@@ -32,6 +32,15 @@ test("matching entries return to queue instead of cancelling directly", () => {
   assert.equal(entry.offerExpiresAt, null);
 });
 
+test("offer acceptance rejects the exact expiry instant", () => {
+  const entry = WaitlistEntry.create({ entryId: "wl-expiry", accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND_CLASS", priority: {} });
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const expiresAt = new Date("2026-01-01T00:10:00.000Z");
+  entry.offer("offer-1", 1, "fare-1", undefined, now, expiresAt);
+
+  assert.throws(() => entry.ensureOfferAcceptable(expiresAt), /expired/u);
+});
+
 test("close only archives terminal fulfilled expired or cancelled entries", () => {
   const fulfilled = WaitlistEntry.fromSnapshot({
     entryId: "wl-fulfilled",
