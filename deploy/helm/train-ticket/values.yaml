@@ -65,6 +65,9 @@ postgres:
       maxWalSize: 16GB
       walCompression: lz4
       shmSize: 2Gi
+      maxWorkerProcesses: 24
+      maxLogicalReplicationWorkers: 20
+      maxSyncWorkersPerSubscription: 8
       nodeSelector: &database_target_node
         kubernetes.io/hostname: vm-197-212-tencentos
       resources:
@@ -84,6 +87,9 @@ postgres:
       maxWalSize: 16GB
       walCompression: lz4
       shmSize: 2Gi
+      maxWorkerProcesses: 24
+      maxLogicalReplicationWorkers: 20
+      maxSyncWorkersPerSubscription: 8
       nodeSelector: *database_target_node
       resources:
         requests: { cpu: '2', memory: 4Gi }
@@ -104,6 +110,9 @@ postgres:
       maxWalSize: 24GB
       walCompression: lz4
       shmSize: 2Gi
+      maxWorkerProcesses: 24
+      maxLogicalReplicationWorkers: 20
+      maxSyncWorkersPerSubscription: 8
       nodeSelector: *database_target_node
       resources:
         requests: { cpu: '3', memory: 8Gi }
@@ -120,6 +129,9 @@ postgres:
       maxWalSize: 16GB
       walCompression: lz4
       shmSize: 2Gi
+      maxWorkerProcesses: 24
+      maxLogicalReplicationWorkers: 20
+      maxSyncWorkersPerSubscription: 8
       nodeSelector: *database_target_node
       resources:
         requests: { cpu: '2', memory: 4Gi }
@@ -137,11 +149,23 @@ postgres:
       maxWalSize: 24GB
       walCompression: lz4
       shmSize: 2Gi
+      maxWorkerProcesses: 24
+      maxLogicalReplicationWorkers: 20
+      maxSyncWorkersPerSubscription: 8
       nodeSelector: *database_target_node
       resources:
         requests: { cpu: '3', memory: 8Gi }
         limits: { cpu: '32', memory: 48Gi }
     core:
+      # The existing cluster is migrated online from this source. Logical
+      # replication keeps each target shard current while its initial table
+      # copy runs; services switch only after row counts, lag and sequences
+      # have been checked. These settings remain useful for shard evacuation
+      # and disaster recovery after the one-time split.
+      walLevel: logical
+      maxReplicationSlots: 40
+      maxWalSenders: 40
+      maxSlotWalKeepSize: 64GB
       databases:
         - account
         - admin_audit

@@ -106,7 +106,43 @@ spec:
                   key: POSTGRES_PASSWORD
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
-          args: ["-c", "max_connections={{ $pg.maxConnections | default 300 }}", "-c", "shared_buffers={{ $pg.sharedBuffers | default "256MB" }}", "-c", "work_mem={{ $pg.workMem | default "8MB" }}", "-c", "max_slot_wal_keep_size=2GB", "-c", "max_wal_size={{ $pg.maxWalSize | default "1GB" }}", "-c", "wal_compression={{ $pg.walCompression | default "off" }}"]
+          args:
+            - "-c"
+            - "max_connections={{ $pg.maxConnections | default 300 }}"
+            - "-c"
+            - "shared_buffers={{ $pg.sharedBuffers | default "256MB" }}"
+            - "-c"
+            - "work_mem={{ $pg.workMem | default "8MB" }}"
+            - "-c"
+            - "max_slot_wal_keep_size={{ $pg.maxSlotWalKeepSize | default "2GB" }}"
+            - "-c"
+            - "max_wal_size={{ $pg.maxWalSize | default "1GB" }}"
+            - "-c"
+            - "wal_compression={{ $pg.walCompression | default "off" }}"
+            {{- if $pg.walLevel }}
+            - "-c"
+            - "wal_level={{ $pg.walLevel }}"
+            {{- end }}
+            {{- if $pg.maxReplicationSlots }}
+            - "-c"
+            - "max_replication_slots={{ $pg.maxReplicationSlots }}"
+            {{- end }}
+            {{- if $pg.maxWalSenders }}
+            - "-c"
+            - "max_wal_senders={{ $pg.maxWalSenders }}"
+            {{- end }}
+            {{- if $pg.maxWorkerProcesses }}
+            - "-c"
+            - "max_worker_processes={{ $pg.maxWorkerProcesses }}"
+            {{- end }}
+            {{- if $pg.maxLogicalReplicationWorkers }}
+            - "-c"
+            - "max_logical_replication_workers={{ $pg.maxLogicalReplicationWorkers }}"
+            {{- end }}
+            {{- if $pg.maxSyncWorkersPerSubscription }}
+            - "-c"
+            - "max_sync_workers_per_subscription={{ $pg.maxSyncWorkersPerSubscription }}"
+            {{- end }}
           startupProbe:
             exec:
               command: ["pg_isready", "-U", "{{ $.Values.postgres.credentials.username }}"]
