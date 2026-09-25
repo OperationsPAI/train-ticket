@@ -131,6 +131,14 @@ spec:
             - "-c"
             - "max_wal_senders={{ $pg.maxWalSenders }}"
             {{- end }}
+            {{- if $pg.walSenderTimeout }}
+            - "-c"
+            - "wal_sender_timeout={{ $pg.walSenderTimeout }}"
+            {{- end }}
+            {{- if $pg.walReceiverTimeout }}
+            - "-c"
+            - "wal_receiver_timeout={{ $pg.walReceiverTimeout }}"
+            {{- end }}
             {{- if $pg.maxWorkerProcesses }}
             - "-c"
             - "max_worker_processes={{ $pg.maxWorkerProcesses }}"
