@@ -177,23 +177,37 @@ impl PostgresCapacityService {
         correlation: &str,
         now: u64,
     ) -> Result<(SeatSupply, Vec<String>), AppError> {
+        let route = segments.route(&facts.segment_ref)?;
+        if route.service_date != facts.service_date {
+            return Err(AppError::PreconditionFailed(
+                "reservation date differs from its validated route".into(),
+            ));
+        }
+        let supply = self.supply_client.seats(facts, correlation).await?;
         let rows: Vec<(Value, Option<Value>)> = sqlx::query_as(
-            "SELECT hold, facts.data FROM inventory_pool_snapshots pool
-             CROSS JOIN LATERAL jsonb_array_elements(pool.data->'holds') hold
-             LEFT JOIN reservation_supply_facts facts ON facts.segment_booking_id=hold->'references'->>'segmentBookingRef'
-             WHERE (pool.service_segment_ref=ANY($1) OR pool.scheduled_service_ref=$2)
-               AND (hold->>'state'='Confirmed' OR (hold->>'state'='Held' AND (hold->>'expiresAt')::bigint>$3))")
-            .bind(&segments.segments).bind(&facts.scheduled_service_ref).bind(now as i64)
+            "SELECT hold.data, facts.data FROM capacity_hold_snapshots hold
+             LEFT JOIN reservation_supply_facts facts ON facts.segment_booking_id=hold.data#>>'{references,segmentBookingRef}'
+             WHERE facts.scheduled_service_ref=$1 AND facts.service_date=$2::date")
+            .bind(&facts.scheduled_service_ref).bind(&facts.service_date)
             .fetch_all(&mut **tx).await.map_err(to_app_storage)?;
         let mut occupancy = Vec::new();
         for (hold, recorded) in rows {
             let hold: CapacityHoldSnapshot =
                 serde_json::from_value(hold).map_err(|e| AppError::Internal(e.to_string()))?;
+            let state = if hold.state == "Held" && hold.expires_at <= now { "Expired".to_owned() } else { hold.state.clone() };
+            if matches!(state.as_str(), "Released" | "Expired" | "Failed") {
+                occupancy.push(PendingOccupancy { hold_id: hold.hold_id, segment_booking_id: String::new(),
+                    journey_order_id: String::new(), traveler_ref: String::new(), capacity_unit_ref: hold.capacity_unit_ref.clone(),
+                    effective_capacity_unit_ref: hold.capacity_unit_ref, state, interval: SupplyInterval { from_seq: hold.from_seq, to_seq: hold.to_seq } });
+                continue;
+            }
+            if state != "Held" && state != "Confirmed" { continue; }
             let recorded = recorded.ok_or_else(|| {
                 AppError::Unavailable("active hold has no persisted supply facts".into())
             })?;
             let hold_facts: ReservationSupply =
                 serde_json::from_value(recorded).map_err(|e| AppError::Internal(e.to_string()))?;
+            hold_facts.validate_source()?;
             if hold.references.segment_booking_ref.as_deref()
                 != Some(hold_facts.segment_booking_id.as_str())
                 || hold.references.traveler_ref.as_deref() != Some(hold_facts.traveler_ref.as_str())
@@ -220,25 +234,39 @@ impl PostgresCapacityService {
                     "historical Hold interval differs from its validated service route".into(),
                 ));
             }
+            if let Some(evidence) = hold.supply_evidence.as_ref() {
+                if evidence.accepted_class_ref != hold_facts.class_ref
+                    || evidence.occupancy_class_ref != occupancy_class
+                    || evidence.scheduled_service_ref != hold_facts.scheduled_service_ref
+                    || evidence.service_date != hold_facts.service_date
+                    || evidence.source_type != hold_facts.source_type
+                    || evidence.source_ref != hold_facts.source_ref
+                    || evidence.stop_sequence_version != route.stop_sequence_version {
+                    return Err(AppError::Unavailable("active Hold supply evidence differs from authoritative facts".into()));
+                }
+            }
+            let effective_capacity_unit_ref = match supply.resolve_capacity_unit(&hold.capacity_unit_ref, hold.supply_evidence.as_ref()) {
+                Ok(reference) => reference,
+                Err(error) => {
+                    let allocations: Vec<_> = supply.allocations.iter().filter(|allocation| allocation.capacity_hold_id == hold.hold_id).collect();
+                    if allocations.len() != 1 { return Err(error); }
+                    supply.resolve_allocation_unit(allocations[0])?
+                }
+            };
             occupancy.push(PendingOccupancy {
                 hold_id: hold.hold_id,
                 segment_booking_id: hold_facts.segment_booking_id,
                 journey_order_id: hold_facts.journey_order_id,
                 traveler_ref: hold_facts.traveler_ref,
                 capacity_unit_ref: hold.capacity_unit_ref,
+                effective_capacity_unit_ref,
+                state,
                 interval: SupplyInterval {
                     from_seq: hold.from_seq,
                     to_seq: hold.to_seq,
                 },
             });
         }
-        let route = segments.route(&facts.segment_ref)?;
-        if route.service_date != facts.service_date {
-            return Err(AppError::PreconditionFailed(
-                "reservation date differs from its validated route".into(),
-            ));
-        }
-        let supply = self.supply_client.seats(facts, correlation).await?;
         let available = supply.available_refs(&route.interval, &occupancy)?;
         sqlx::query("INSERT INTO capacity_supply_observations(inventory_pool_id,seat_map_id,seat_map_version,sellable_capacity,data) VALUES($1,$2,$3,$4,$5) ON CONFLICT(inventory_pool_id) DO UPDATE SET seat_map_id=EXCLUDED.seat_map_id,seat_map_version=EXCLUDED.seat_map_version,sellable_capacity=EXCLUDED.sellable_capacity,data=EXCLUDED.data,observed_at=now()")
             .bind(pool_id_for(&facts.segment_ref,&facts.class_ref)).bind(&supply.seat_map_id).bind(supply.seat_map_version as i64)
