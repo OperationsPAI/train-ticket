@@ -183,9 +183,15 @@ def test_migration_rebuild_schema_grants_replay_and_grouping_plan(database):
             assert not service._save_metric_event(conn, event)
         assert source_rows(conn) == before_rows
         service._refresh_revenue_views(conn)
-    report = service.revenue_report("channel")
+    report = service.revenue_report("channel", limit=1, offset=1)
     assert report.total_revenue == (Money("1928.59", "CNY"),)
-    assert sum(item.count for item in report.items) == 20
+    assert report.total_items == 3
+    assert len(report.items) == 1
+    assert (report.limit, report.offset) == (1, 1)
+    beyond = service.revenue_report("channel", limit=1, offset=100)
+    assert beyond.items == ()
+    assert beyond.total_revenue == report.total_revenue
+    assert beyond.total_items == report.total_items
 
 
 def test_real_null_dimensions_hour_boundary_and_refunds(database):
