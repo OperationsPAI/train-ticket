@@ -1,6 +1,6 @@
 # Post Sales 当前设计
 
-更新日期：2026年9月24日。
+更新日期：2026年9月25日。
 运行基线为 Helm revision 279，本文根据当前 Java 服务、README 和 HTTP 入口描述行为。
 统一待办见 [TODO](../TODO.md)。
 
@@ -39,6 +39,12 @@ Post Sales 通过这些服务的 API 和事件推进 Case，各服务保存各�
 审批会启动内部执行，因此公开状态 `APPROVED` 同时覆盖执行期间。
 调用方通过 `changeOperations`、`compensationOperations`、`releasedOrderItemRefs` 和终态判断结果。
 
+历史 Case 如果仍处于内部 `EXECUTING`，可使用新的 HTTP 幂等键再次调用审批入口执行 redrive。
+服务从冻结决策、当前 `approvedActions` 输入和持久化执行计划重建 `PostSalesApproved` 与 `PostSalesExecutionStarted`，而不重复状态迁移。
+首次 redrive 将稳定的事件身份写入 Case 快照；重复或并发 redrive 复用同一事件对，由事务 Outbox 的事件唯一键收敛。
+Payment 继续使用规范 Case ID（拆分退款使用 `caseId:paymentIntentId`）去重，票证作废携带相同业务 Case 引用且对已作废票证无操作，容量释放由其拥有方状态防重。
+`APPLIED` Case 不重发任何执行事件。
+
 普通退款和取消消费 `CapacityReleased`，记录每个范围内预订的释放确认。
 范围全部释放后可发布 `PostSalesApplied` 并将 Case 置为 `APPLIED`。
 该终态表示售后业务结果已应用，资金是否结算仍需查询 Payment 的 `Refund`。
@@ -75,7 +81,7 @@ Payment 跳过补偿审批的退款处理，Journey Order 和 Finance 跳过补�
 |---|---|
 | `POST /api/v1/post-sales-cases` | 创建 Case。 |
 | `POST /api/v1/post-sales-cases/{caseId}/evaluate` | 保存资格和金额决策。 |
-| `POST /api/v1/post-sales-cases/{caseId}/approve` | 审批并启动执行。 |
+| `POST /api/v1/post-sales-cases/{caseId}/approve` | 审批并启动执行；对历史 `EXECUTING` Case 使用新 HTTP 幂等键可安全 redrive。 |
 | `POST /api/v1/post-sales-cases/{caseId}/target-offer` | 选择改签目标。 |
 | `POST /api/v1/post-sales-cases/{caseId}/execute-change` | 推进改签操作。 |
 | `POST /api/v1/post-sales-cases/{caseId}/execute-compensation` | 推进钱包补偿操作。 |
@@ -84,6 +90,7 @@ Payment 跳过补偿审批的退款处理，Journey Order 和 Finance 跳过补�
 | `GET /api/v1/post-sales-cases/{caseId}/settlement` | 核验改签资金归属和结算总额。 |
 
 Case 快照和事件保存在 PostgreSQL，事件通过事务 Outbox 发布，消费通过事件标识去重。
+执行 redrive 的稳定事件身份也保存在 Case 快照，因此不依赖已过期的 Redis 或 Outbox 历史。
 改签和补偿共享执行锁，使用独立的16连接锁池和 PostgreSQL advisory lock，繁忙调用返回当前 Case。
 每次推进需要新的 HTTP 幂等键，重复同一键返回已保存的 HTTP 响应。
 操作证据支持重试和服务重启后的继续执行。
