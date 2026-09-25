@@ -159,8 +159,11 @@ def _postgres_store_from_env(app: FastAPI) -> tuple[Any, IdempotencyStore | None
     relay.start()
     subscriber = RedisEventSubscriber()
     service_holder: dict[str, Any] = {}
-    def handle(envelope: Any) -> Any:
-        return service_holder["service"].handle_inbound_event(envelope)
+    # Declaring the stream parameter opts this handler into the kit's
+    # two-argument form, so the audit row records which stream the event was
+    # consumed from instead of leaving processed_events.stream empty.
+    def handle(envelope: Any, stream: str | None = None) -> Any:
+        return service_holder["service"].handle_inbound_event(envelope, stream)
     thread = subscriber.start_in_background(INBOUND_STREAMS, "disruption-recovery", handle)
     app.state.outbox_relay = relay
     app.state.event_subscriber = subscriber
