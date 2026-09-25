@@ -1,6 +1,7 @@
 package com.trainticket.platformkit.messaging;
 
 import java.util.List;
+import java.util.Objects;
 
 public interface RedisStreamOperations {
     void createGroup(String stream, String group);
@@ -15,7 +16,7 @@ public interface RedisStreamOperations {
 
     List<StreamEntry> readGroup(String stream, String group, String consumerName);
 
-    List<StreamEntry> autoClaim(String stream, String group, String consumerName);
+    AutoClaimResult autoClaim(String stream, String group, String consumerName, String startId);
 
     int deliveryCount(String stream, String group, String messageId);
 
@@ -29,5 +30,14 @@ public interface RedisStreamOperations {
     }
 
     record StreamEntry(String id, String envelopeJson) {
+    }
+
+    record AutoClaimResult(String nextStartId, List<StreamEntry> messages) {
+        public AutoClaimResult {
+            if (Objects.requireNonNull(nextStartId, "next auto-claim cursor is required").isBlank()) {
+                throw new IllegalArgumentException("next auto-claim cursor must not be blank");
+            }
+            messages = List.copyOf(Objects.requireNonNull(messages, "auto-claimed messages are required"));
+        }
     }
 }
