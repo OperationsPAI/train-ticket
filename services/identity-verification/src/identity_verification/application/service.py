@@ -616,14 +616,6 @@ class IdentityVerificationService:
         payload = {"purchaseLimitFactId": fact.purchaseLimitFactId, "failureCode": failure_code, "detectionRunId": detection_run_id, "factStatus": "FAILED", "limitPolicyVersion": fact.limitPolicyVersion, "failedAt": rfc3339_utc(at), "aggregateVersion": fact.version}
         return _envelope("PurchaseLimitFactFailed", LEDGER_AGGREGATE_ID, fact.version, payload, corr, cause, at, fact.purchaseLimitFactId)
 
-    def handle_upstream_event(self, envelope: EventEnvelope) -> None:
-        if envelope.producer == "journey-order" and envelope.eventType in {"JourneyOrderCreated", "JourneyOrderCancelled"}:
-            self.handle_journey_order_event(envelope, "events:journey-order")
-        elif envelope.producer == "risk-compliance" and envelope.eventType == "RiskAlertRaised":
-            self.handle_risk_alert_raised(envelope, "events:risk-compliance")
-        elif envelope.producer == "traveler-profile" and envelope.eventType == "TravelerSnapshotUpdated":
-            self.handle_traveler_snapshot_updated(envelope, "events:traveler-profile")
-
     def handle_traveler_snapshot_updated(self, envelope: EventEnvelope, stream: str) -> None:
         if envelope.producer != "traveler-profile" or envelope.eventType != "TravelerSnapshotUpdated":
             return
@@ -636,7 +628,7 @@ class IdentityVerificationService:
                 self.store.save_traveler_snapshot(traveler_id, payload)
 
 
-    def handle_journey_order_event(self, envelope: EventEnvelope, stream: str = "events:journey-order") -> None:
+    def handle_journey_order_event(self, envelope: EventEnvelope, stream: str) -> None:
         with self.transaction():
             if not self.store.mark_processed(envelope.eventId, stream):
                 return
@@ -667,7 +659,7 @@ class IdentityVerificationService:
                 for segment_ref in fact.segmentRefs:
                     self.store.save_active_ticket(ActiveTicket(document_number, segment_ref, departure_date, order_id))
 
-    def handle_risk_alert_raised(self, envelope: EventEnvelope, stream: str = "events:risk-compliance") -> None:
+    def handle_risk_alert_raised(self, envelope: EventEnvelope, stream: str) -> None:
         with self.transaction():
             if not self.store.mark_processed(envelope.eventId, stream):
                 return

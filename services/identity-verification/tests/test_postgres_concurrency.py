@@ -10,6 +10,7 @@ import pytest
 from psycopg_pool import ConnectionPool
 
 from identity_verification.adapters.storage.postgres import PostgresIdentityVerificationStore
+from identity_verification.adapters.messaging import handle_upstream_event
 from identity_verification.application.service import IdentityVerificationService
 from train_ticket_platform.events import EventEnvelope
 
@@ -27,10 +28,10 @@ def test_concurrent_registration_returns_one_durable_credential():
                         conn.execute(migration.read_text())
                 service = IdentityVerificationService(PostgresIdentityVerificationStore(pool))
                 snapshot = {"travelerId": "tvl-projection", "snapshotVersion": "1", "travelerType": "ADULT"}
-                service.handle_upstream_event(EventEnvelope(eventId="evt-profile-projection", eventType="TravelerSnapshotUpdated",
+                handle_upstream_event(service, EventEnvelope(eventId="evt-profile-projection", eventType="TravelerSnapshotUpdated",
                     producer="traveler-profile", payload=snapshot))
                 for event_type in ("RiskAssessmentResult", "JourneyOrderConfirmed", "TravelerDocumentVerified"):
-                    service.handle_upstream_event(EventEnvelope(eventId="evt-unhandled-" + event_type, eventType=event_type,
+                    handle_upstream_event(service, EventEnvelope(eventId="evt-unhandled-" + event_type, eventType=event_type,
                         producer="risk-compliance", payload={"travelerId": "tvl-projection"}))
                 with pool.connection() as conn:
                     assert conn.execute("SELECT data FROM traveler_snapshot_links WHERE traveler_id='tvl-projection'").fetchone()[0] == snapshot
