@@ -698,37 +698,39 @@ func (s *Service) transitionAllocationsByCapacityRecovery(ctx context.Context, m
 	if match.HoldID == "" {
 		return nil
 	}
-	transitionedAt := time.Now().UTC()
-	if v, ok := extra[timeKey].(time.Time); ok {
-		transitionedAt = v
-	}
-	allocs, err := s.repo.FindSeatAllocationsByCapacityRecovery(ctx, match.HoldID, match.CapacityUnitRef, match.Interval)
-	if err != nil {
-		return err
-	}
-	for _, alloc := range allocs {
-		if alloc.Status == domain.AllocationStatusReleased || alloc.Status == domain.AllocationStatusExpired {
-			continue
+	return s.tx(ctx, func(tx context.Context) error {
+		transitionedAt := time.Now().UTC()
+		if v, ok := extra[timeKey].(time.Time); ok {
+			transitionedAt = v
 		}
-		current := alloc
-		_, exp, err := s.repo.GetSeatAllocation(ctx, current.SeatAllocationID)
+		allocs, err := s.repo.FindSeatAllocationsByCapacityRecovery(tx, match.HoldID, match.CapacityUnitRef, match.Interval)
 		if err != nil {
-			continue
-		}
-		apply(&current, transitionedAt)
-		if current.Status == alloc.Status {
-			continue
-		}
-		if err := s.repo.UpdateSeatAllocation(ctx, &current, exp); err != nil {
 			return err
 		}
-		payload := map[string]any{"seatAllocationId": current.SeatAllocationID, "segmentBookingId": current.SegmentBookingID, "journeyOrderId": current.JourneyOrderID, "travelerRef": current.TravelerRef, "capacityHoldId": current.CapacityHoldID, "capacityUnitRef": current.CapacityUnitRef, "interval": current.Interval, "seatRef": current.SeatRef, timeKey: transitionedAt, "sourceEventId": e.EventID, "status": current.Status}
-		for k, v := range extra {
-			payload[k] = v
+		for _, alloc := range allocs {
+			if alloc.Status == domain.AllocationStatusReleased || alloc.Status == domain.AllocationStatusExpired {
+				continue
+			}
+			current, exp, err := s.repo.GetSeatAllocation(tx, alloc.SeatAllocationID)
+			if err != nil {
+				continue
+			}
+			before := current.Status
+			apply(current, transitionedAt)
+			if current.Status == before {
+				continue
+			}
+			if err := s.repo.UpdateSeatAllocation(tx, current, exp); err != nil {
+				return err
+			}
+			payload := map[string]any{"seatAllocationId": current.SeatAllocationID, "segmentBookingId": current.SegmentBookingID, "journeyOrderId": current.JourneyOrderID, "travelerRef": current.TravelerRef, "capacityHoldId": current.CapacityHoldID, "capacityUnitRef": current.CapacityUnitRef, "interval": current.Interval, "seatRef": current.SeatRef, timeKey: transitionedAt, "sourceEventId": e.EventID, "status": current.Status}
+			for k, v := range extra {
+				payload[k] = v
+			}
+			if err := s.publish(tx, []domain.Event{{EventType: eventType, AggregateID: current.SeatAllocationID, Version: 2, OccurredAt: transitionedAt, CorrelationID: e.CorrelationID, CausationID: e.EventID, Payload: payload}}); err != nil {
+				return err
+			}
 		}
-		if err := s.publish(ctx, []domain.Event{{EventType: eventType, AggregateID: current.SeatAllocationID, Version: 2, OccurredAt: transitionedAt, CorrelationID: e.CorrelationID, CausationID: e.EventID, Payload: payload}}); err != nil {
-			return err
-		}
-	}
-	return nil
+		return nil
+	})
 }

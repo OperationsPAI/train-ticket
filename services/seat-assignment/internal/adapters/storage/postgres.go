@@ -220,6 +220,11 @@ func (r *Repository) UpdateSeatAllocation(ctx context.Context, a *domain.Contrac
 	return conflict(err)
 }
 func (r *Repository) GetSeatAllocation(ctx context.Context, id string) (*domain.ContractSeatAllocation, int64, error) {
+	if _, transactional := ctx.Value(txKey{}).(kitstorage.DBTX); transactional {
+		if _, err := r.tx.DBFor(ctx).Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "seat-allocation-id:"+id); err != nil {
+			return nil, 0, err
+		}
+	}
 	snap, ok, err := kitstorage.NewSnapshotRepository(r.tx.DBFor(ctx), "seat_allocations").Get(ctx, id)
 	if err != nil {
 		return nil, 0, err
