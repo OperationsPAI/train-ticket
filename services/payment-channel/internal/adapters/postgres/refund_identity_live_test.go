@@ -68,6 +68,7 @@ func TestLiveRefundOriginalPaymentIdentity(t *testing.T) {
 		ChannelOrderID: order.ChannelOrderID, OriginalChannelTransactionID: order.ChannelTransactionID,
 		Channel: order.Channel, Amount: order.Amount, RefundReasonCode: "USER_CANCELLED", IdempotencyKey: uuid.NewString(),
 		SourceCommandID: order.SourceCommandID, CorrelationID: order.CorrelationID}
+	replayRequest := request
 	for _, field := range []string{"payment", "transaction", "currency"} {
 		invalid := request
 		switch field {
@@ -89,10 +90,7 @@ func TestLiveRefundOriginalPaymentIdentity(t *testing.T) {
 	results := make(chan error, 16)
 	for index := 0; index < 16; index++ {
 		go func() {
-			attempt := request
-			attempt.RefundID = domain.NewID("rf")
-			attempt.IdempotencyKey = uuid.NewString()
-			_, err := service.CreateRefund(ctx, attempt)
+			_, err := service.CreateRefund(ctx, replayRequest)
 			results <- err
 		}()
 	}
@@ -101,19 +99,59 @@ func TestLiveRefundOriginalPaymentIdentity(t *testing.T) {
 		if err := <-results; err == nil {
 			accepted++
 		} else {
-			var rejected *application.DomainError
-			if !errors.As(err, &rejected) || rejected.Message != "refund amount exceeds original order" {
-				t.Fatalf("unexpected concurrent refund error: %v", err)
-			}
+			t.Fatalf("identical concurrent refund was rejected: %v", err)
 		}
 	}
-	if accepted != 1 {
-		t.Fatalf("accepted %d full refunds for one collected payment", accepted)
+	if accepted != 16 {
+		t.Fatalf("accepted %d identical refund replays", accepted)
 	}
 	if sum, err := repository.SumRefundsForOrder(ctx, order.ChannelOrderID); err != nil || sum != order.Amount.MinorUnits {
 		t.Fatalf("reserved refund amount=%d err=%v", sum, err)
 	}
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM outbox").Scan(&count); err != nil || count != 1 {
 		t.Fatalf("expected one refund creation event: count=%d err=%v", count, err)
+	}
+	var channelRefundID string
+	if err := pool.QueryRow(ctx, "SELECT id FROM channel_refund_snapshots WHERE data->>'refundId'=$1", request.RefundID).Scan(&channelRefundID); err != nil {
+		t.Fatal(err)
+	}
+	refund, err := service.GetRefund(ctx, channelRefundID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 16; index++ {
+		go func() {
+			_, submitErr := service.SubmitRefund(ctx, channelRefundID, refund.Version, refund.RequestFingerprint)
+			results <- submitErr
+		}()
+	}
+	for index := 0; index < 16; index++ {
+		if submitErr := <-results; submitErr != nil {
+			t.Fatalf("identical concurrent submit was rejected: %v", submitErr)
+		}
+	}
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM outbox").Scan(&count); err != nil || count != 3 {
+		t.Fatalf("expected one creation and one successful submit event pair: count=%d err=%v", count, err)
+	}
+	changed := request
+	changed.Amount.MinorUnits--
+	if _, err := service.CreateRefund(ctx, changed); err == nil {
+		t.Fatal("changed business refund replay was accepted")
+	} else {
+		var rejected *application.DomainError
+		if !errors.As(err, &rejected) || rejected.Message != "refund identity was reused with different request details" {
+			t.Fatalf("unexpected changed replay error: %v", err)
+		}
+	}
+	second := request
+	second.RefundID = domain.NewID("rf")
+	second.IdempotencyKey = uuid.NewString()
+	if _, err := service.CreateRefund(ctx, second); err == nil {
+		t.Fatal("second full refund was accepted")
+	} else {
+		var rejected *application.DomainError
+		if !errors.As(err, &rejected) || rejected.Message != "refund amount exceeds original order" {
+			t.Fatalf("unexpected second refund error: %v", err)
+		}
 	}
 }
