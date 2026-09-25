@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/jackc/pgx/v5"
 	"github.com/trainticket/greenfield/platform/go-kit/storage"
 	"github.com/trainticket/greenfield/services/payment-channel/internal/application"
 	"github.com/trainticket/greenfield/services/payment-channel/internal/domain"
 	"strings"
+	"time"
 )
 
 type Repository struct{ tx *Transactor }
@@ -110,13 +112,143 @@ func (r *Repository) FindRefundForOrder(ctx context.Context, orderID, refundID s
 	return found, nil
 }
 func (r *Repository) SaveStatement(ctx context.Context, o *domain.ChannelStatement) error {
-	return conflict(r.save(ctx, "channel_statement_snapshots", o.ChannelStatementID, o))
+	summary := *o
+	summary.Lines = nil
+	return conflict(r.save(ctx, "channel_statement_snapshots", o.ChannelStatementID, &summary))
 }
 func (r *Repository) UpdateStatement(ctx context.Context, o *domain.ChannelStatement, e int64) error {
-	return conflict(r.update(ctx, "channel_statement_snapshots", o.ChannelStatementID, e, o))
+	summary := *o
+	summary.Lines = nil
+	b, err := json.Marshal(&summary)
+	if err != nil {
+		return err
+	}
+	tag, err := r.tx.DBFor(ctx).Exec(ctx, `UPDATE channel_statement_snapshots
+		SET version=version+1,
+		    data=$2::jsonb || CASE WHEN data ? 'lines' THEN jsonb_build_object('lines', data->'lines') ELSE '{}'::jsonb END,
+		    updated_at=now()
+		WHERE id=$1 AND version=$3`, o.ChannelStatementID, b, e)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return conflict(storage.ErrConflict)
+	}
+	return nil
 }
 func (r *Repository) GetStatement(ctx context.Context, id string) (*domain.ChannelStatement, error) {
-	return get[domain.ChannelStatement](ctx, r.snap(ctx, "channel_statement_snapshots"), id)
+	var raw json.RawMessage
+	query := `SELECT data - 'lines' FROM channel_statement_snapshots WHERE id=$1`
+	if _, inTransaction := ctx.Value(txKey{}).(storage.DBTX); inTransaction {
+		query += ` FOR UPDATE`
+	}
+	if err := r.tx.DBFor(ctx).QueryRow(ctx, query, id).Scan(&raw); err != nil {
+		return nil, err
+	}
+	return decode[domain.ChannelStatement](raw)
+}
+
+func (r *Repository) ClaimStatementForGeneration(ctx context.Context, channel, date, currency, seed, candidateID string) (*domain.ChannelStatement, error) {
+	identity := domain.StatementIdentityKey(channel, date, currency, seed)
+	if _, inTransaction := ctx.Value(txKey{}).(storage.DBTX); !inTransaction {
+		return nil, fmt.Errorf("statement generation requires a transaction")
+	}
+	tag, err := r.tx.DBFor(ctx).Exec(ctx, `INSERT INTO channel_statement_identities (identity_key, statement_id)
+		VALUES ($1, $2) ON CONFLICT (identity_key) DO NOTHING`, identity, candidateID)
+	if err != nil {
+		return nil, err
+	}
+	if tag.RowsAffected() == 1 {
+		return nil, nil
+	}
+	var raw json.RawMessage
+	err = r.tx.DBFor(ctx).QueryRow(ctx, `SELECT statement.data - 'lines'
+		FROM channel_statement_identities identity
+		JOIN channel_statement_snapshots statement ON statement.id=identity.statement_id
+		WHERE identity.identity_key=$1`, identity).Scan(&raw)
+	if err != nil {
+		return nil, err
+	}
+	return decode[domain.ChannelStatement](raw)
+}
+
+func (r *Repository) SaveStatementLines(ctx context.Context, statementID string, firstOrdinal int64, lines []domain.StatementLine) error {
+	if len(lines) == 0 {
+		return nil
+	}
+	payload, err := json.Marshal(lines)
+	if err != nil {
+		return err
+	}
+	tag, err := r.tx.DBFor(ctx).Exec(ctx, `INSERT INTO channel_statement_lines
+		(statement_id, line_ordinal, statement_line_id, line_type, source_id, evidence_hash, occurred_at, data)
+		SELECT $1, $2 + ordinal - 1, line->>'statementLineId', line->>'lineType',
+		       CASE WHEN line->>'lineType'='REFUND' THEN line->>'channelRefundId' ELSE line->>'channelOrderId' END,
+		       line->>'evidenceHash', (line->>'occurredAt')::timestamptz, line
+		FROM jsonb_array_elements($3::jsonb) WITH ORDINALITY AS input(line, ordinal)`, statementID, firstOrdinal, payload)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != int64(len(lines)) {
+		return fmt.Errorf("stored %d of %d statement lines", tag.RowsAffected(), len(lines))
+	}
+	return nil
+}
+
+func (r *Repository) ListStatementLines(ctx context.Context, statementID string, after int64, limit int) ([]domain.StatementLine, error) {
+	rows, err := r.tx.DBFor(ctx).Query(ctx, `SELECT line FROM (
+		SELECT normalized.data AS line, normalized.line_ordinal AS ordinal
+		FROM channel_statement_snapshots snapshot
+		JOIN channel_statement_lines normalized ON normalized.statement_id=snapshot.id
+		WHERE snapshot.id=$1 AND snapshot.data->>'lineStorage'='NORMALIZED_V1' AND normalized.line_ordinal>$2
+		UNION ALL
+		SELECT legacy.line, legacy.ordinal
+		FROM channel_statement_snapshots snapshot,
+		     LATERAL jsonb_array_elements(COALESCE(snapshot.data->'lines', '[]'::jsonb)) WITH ORDINALITY AS legacy(line, ordinal)
+		WHERE snapshot.id=$1 AND COALESCE(snapshot.data->>'lineStorage', '')<>'NORMALIZED_V1' AND legacy.ordinal>$2
+	) statement_lines ORDER BY ordinal LIMIT $3`, statementID, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	return decodeStatementLineRows(rows)
+}
+
+func (r *Repository) GetStatementLine(ctx context.Context, statementID, lineID string) (*domain.StatementLine, error) {
+	var raw json.RawMessage
+	err := r.tx.DBFor(ctx).QueryRow(ctx, `SELECT line FROM (
+		SELECT normalized.data AS line
+		FROM channel_statement_snapshots snapshot
+		JOIN channel_statement_lines normalized ON normalized.statement_id=snapshot.id
+		WHERE snapshot.id=$1 AND snapshot.data->>'lineStorage'='NORMALIZED_V1'
+		  AND normalized.statement_line_id=$2
+		UNION ALL
+		SELECT legacy.line
+		FROM channel_statement_snapshots snapshot,
+		     LATERAL jsonb_array_elements(COALESCE(snapshot.data->'lines', '[]'::jsonb)) AS legacy(line)
+		WHERE snapshot.id=$1 AND COALESCE(snapshot.data->>'lineStorage', '')<>'NORMALIZED_V1'
+		  AND legacy.line->>'statementLineId'=$2
+	) statement_line LIMIT 1`, statementID, lineID).Scan(&raw)
+	if err != nil {
+		return nil, err
+	}
+	return decode[domain.StatementLine](raw)
+}
+
+func decodeStatementLineRows(rows pgx.Rows) ([]domain.StatementLine, error) {
+	defer rows.Close()
+	out := []domain.StatementLine{}
+	for rows.Next() {
+		var raw json.RawMessage
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		line, err := decode[domain.StatementLine](raw)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *line)
+	}
+	return out, rows.Err()
 }
 func (r *Repository) SaveDiscrepancy(ctx context.Context, o *domain.ReconciliationDiscrepancy) error {
 	return conflict(r.save(ctx, "channel_discrepancy_snapshots", o.DiscrepancyID, o))
@@ -128,43 +260,49 @@ func (r *Repository) GetDiscrepancy(ctx context.Context, id string) (*domain.Rec
 	return get[domain.ReconciliationDiscrepancy](ctx, r.snap(ctx, "channel_discrepancy_snapshots"), id)
 }
 
-func (r *Repository) ListOrdersForStatement(ctx context.Context, channel, date, currency string) ([]domain.ChannelOrder, error) {
-	rows, err := r.tx.DBFor(ctx).Query(ctx, `SELECT data FROM channel_order_snapshots WHERE data->>'status'='SUCCEEDED' AND data->>'channel'=$1 AND data->'amount'->>'currency'=$2 AND left(data->>'completedAt', 10)=$3 ORDER BY id`, channel, currency, date)
+func (r *Repository) ListPaymentFactsForStatement(ctx context.Context, channel, date, currency, afterID string, limit int, cutoff time.Time) ([]application.StatementPaymentFact, error) {
+	rows, err := r.tx.DBFor(ctx).Query(ctx, `SELECT id, data->>'paymentIntentId', data->>'channelTransactionId',
+		       data->'amount'->>'currency', (data->'amount'->>'minorUnits')::bigint,
+		       (data->>'completedAt')::timestamptz
+		FROM channel_order_snapshots
+		WHERE data->>'status'='SUCCEEDED' AND data->>'channel'=$1 AND data->'amount'->>'currency'=$2
+		  AND left(data->>'completedAt', 10)=$3 AND id>$4 AND (data->>'completedAt')::timestamptz <= $5
+		ORDER BY id LIMIT $6`, channel, currency, date, afterID, cutoff, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := []domain.ChannelOrder{}
+	out := []application.StatementPaymentFact{}
 	for rows.Next() {
-		var raw json.RawMessage
-		if err := rows.Scan(&raw); err != nil {
+		var fact application.StatementPaymentFact
+		if err := rows.Scan(&fact.ChannelOrderID, &fact.PaymentIntentID, &fact.ChannelTransactionID,
+			&fact.Amount.Currency, &fact.Amount.MinorUnits, &fact.CompletedAt); err != nil {
 			return nil, err
 		}
-		o, err := decode[domain.ChannelOrder](raw)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, *o)
+		out = append(out, fact)
 	}
 	return out, rows.Err()
 }
-func (r *Repository) ListRefundsForStatement(ctx context.Context, channel, date, currency string) ([]domain.ChannelRefund, error) {
-	rows, err := r.tx.DBFor(ctx).Query(ctx, `SELECT data FROM channel_refund_snapshots WHERE data->>'status'='SUCCEEDED' AND data->>'channel'=$1 AND data->'amount'->>'currency'=$2 AND left(data->>'completedAt', 10)=$3 ORDER BY id`, channel, currency, date)
+func (r *Repository) ListRefundFactsForStatement(ctx context.Context, channel, date, currency, afterID string, limit int, cutoff time.Time) ([]application.StatementRefundFact, error) {
+	rows, err := r.tx.DBFor(ctx).Query(ctx, `SELECT data->>'channelOrderId', id, data->>'paymentIntentId', data->>'refundId',
+		       data->>'channelRefundTransactionId', data->'amount'->>'currency',
+		       (data->'amount'->>'minorUnits')::bigint, (data->>'completedAt')::timestamptz
+		FROM channel_refund_snapshots
+		WHERE data->>'status'='SUCCEEDED' AND data->>'channel'=$1 AND data->'amount'->>'currency'=$2
+		  AND left(data->>'completedAt', 10)=$3 AND id>$4 AND (data->>'completedAt')::timestamptz <= $5
+		ORDER BY id LIMIT $6`, channel, currency, date, afterID, cutoff, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := []domain.ChannelRefund{}
+	out := []application.StatementRefundFact{}
 	for rows.Next() {
-		var raw json.RawMessage
-		if err := rows.Scan(&raw); err != nil {
+		var fact application.StatementRefundFact
+		if err := rows.Scan(&fact.ChannelOrderID, &fact.ChannelRefundID, &fact.PaymentIntentID, &fact.RefundID,
+			&fact.ChannelRefundTransactionID, &fact.Amount.Currency, &fact.Amount.MinorUnits, &fact.CompletedAt); err != nil {
 			return nil, err
 		}
-		o, err := decode[domain.ChannelRefund](raw)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, *o)
+		out = append(out, fact)
 	}
 	return out, rows.Err()
 }
@@ -199,7 +337,7 @@ func (r *Repository) ListStatements(ctx context.Context, f application.Statement
 		return nil, 0, err
 	}
 	args = append(args, f.Limit, f.Offset)
-	rows, err := db.Query(ctx, "SELECT data FROM channel_statement_snapshots "+where+fmt.Sprintf(" ORDER BY data->>'statementDate' DESC, id LIMIT $%d OFFSET $%d", len(args)-1, len(args)), args...)
+	rows, err := db.Query(ctx, "SELECT data - 'lines' FROM channel_statement_snapshots "+where+fmt.Sprintf(" ORDER BY data->>'statementDate' DESC, id LIMIT $%d OFFSET $%d", len(args)-1, len(args)), args...)
 	if err != nil {
 		return nil, 0, err
 	}

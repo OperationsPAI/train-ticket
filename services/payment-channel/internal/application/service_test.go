@@ -6,27 +6,30 @@ import (
 	"github.com/trainticket/greenfield/platform/go-kit/ids"
 	kitmsg "github.com/trainticket/greenfield/platform/go-kit/messaging"
 	"github.com/trainticket/greenfield/services/payment-channel/internal/domain"
+	"sort"
 	"sync"
 	"testing"
 	"time"
 )
 
 type memRepo struct {
-	orders        map[string]*domain.ChannelOrder
-	refunds       map[string]*domain.ChannelRefund
-	stmts         map[string]*domain.ChannelStatement
-	disc          map[string]*domain.ReconciliationDiscrepancy
-	refundUpdates int
-	ordersErr     error
-	refundsErr    error
+	orders         map[string]*domain.ChannelOrder
+	refunds        map[string]*domain.ChannelRefund
+	stmts          map[string]*domain.ChannelStatement
+	statementLines map[string][]domain.StatementLine
+	disc           map[string]*domain.ReconciliationDiscrepancy
+	refundUpdates  int
+	ordersErr      error
+	refundsErr     error
 }
 
 func newMem() *memRepo {
 	return &memRepo{
-		orders:  map[string]*domain.ChannelOrder{},
-		refunds: map[string]*domain.ChannelRefund{},
-		stmts:   map[string]*domain.ChannelStatement{},
-		disc:    map[string]*domain.ReconciliationDiscrepancy{},
+		orders:         map[string]*domain.ChannelOrder{},
+		refunds:        map[string]*domain.ChannelRefund{},
+		stmts:          map[string]*domain.ChannelStatement{},
+		statementLines: map[string][]domain.StatementLine{},
+		disc:           map[string]*domain.ReconciliationDiscrepancy{},
 	}
 }
 func (m *memRepo) SaveOrder(_ context.Context, o *domain.ChannelOrder) error {
@@ -44,17 +47,21 @@ func (m *memRepo) GetOrder(_ context.Context, id string) (*domain.ChannelOrder, 
 	}
 	return o, nil
 }
-func (m *memRepo) ListOrdersForStatement(_ context.Context, channel, date, currency string) ([]domain.ChannelOrder, error) {
+func (m *memRepo) ListPaymentFactsForStatement(_ context.Context, channel, date, currency, afterID string, limit int, cutoff time.Time) ([]StatementPaymentFact, error) {
 	if m.ordersErr != nil {
 		return nil, m.ordersErr
 	}
-	out := []domain.ChannelOrder{}
+	out := []StatementPaymentFact{}
 	start, _ := time.Parse("2006-01-02", date)
 	end := start.Add(24 * time.Hour)
 	for _, o := range m.orders {
-		if o.Status == domain.StatusSucceeded && o.CompletedAt != nil && o.Channel == channel && o.Amount.Currency == currency && !o.CompletedAt.Before(start) && o.CompletedAt.Before(end) {
-			out = append(out, *o)
+		if o.Status == domain.StatusSucceeded && o.CompletedAt != nil && o.ChannelOrderID > afterID && !o.CompletedAt.After(cutoff) && o.Channel == channel && o.Amount.Currency == currency && !o.CompletedAt.Before(start) && o.CompletedAt.Before(end) {
+			out = append(out, StatementPaymentFact{ChannelOrderID: o.ChannelOrderID, PaymentIntentID: o.PaymentIntentID, ChannelTransactionID: o.ChannelTransactionID, Amount: o.Amount, CompletedAt: o.CompletedAt.UTC()})
 		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ChannelOrderID < out[j].ChannelOrderID })
+	if len(out) > limit {
+		out = out[:limit]
 	}
 	return out, nil
 }
@@ -82,17 +89,21 @@ func (m *memRepo) FindRefundForOrder(_ context.Context, orderID, refundID string
 	}
 	return nil, nil
 }
-func (m *memRepo) ListRefundsForStatement(_ context.Context, channel, date, currency string) ([]domain.ChannelRefund, error) {
+func (m *memRepo) ListRefundFactsForStatement(_ context.Context, channel, date, currency, afterID string, limit int, cutoff time.Time) ([]StatementRefundFact, error) {
 	if m.refundsErr != nil {
 		return nil, m.refundsErr
 	}
-	out := []domain.ChannelRefund{}
+	out := []StatementRefundFact{}
 	start, _ := time.Parse("2006-01-02", date)
 	end := start.Add(24 * time.Hour)
 	for _, o := range m.refunds {
-		if o.Status == domain.StatusSucceeded && o.CompletedAt != nil && o.Channel == channel && o.Amount.Currency == currency && !o.CompletedAt.Before(start) && o.CompletedAt.Before(end) {
-			out = append(out, *o)
+		if o.Status == domain.StatusSucceeded && o.CompletedAt != nil && o.ChannelRefundID > afterID && !o.CompletedAt.After(cutoff) && o.Channel == channel && o.Amount.Currency == currency && !o.CompletedAt.Before(start) && o.CompletedAt.Before(end) {
+			out = append(out, StatementRefundFact{ChannelOrderID: o.ChannelOrderID, ChannelRefundID: o.ChannelRefundID, PaymentIntentID: o.PaymentIntentID, RefundID: o.RefundID, ChannelRefundTransactionID: o.ChannelRefundTransactionID, Amount: o.Amount, CompletedAt: o.CompletedAt.UTC()})
 		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ChannelRefundID < out[j].ChannelRefundID })
+	if len(out) > limit {
+		out = out[:limit]
 	}
 	return out, nil
 }
@@ -119,6 +130,41 @@ func (m *memRepo) GetStatement(_ context.Context, id string) (*domain.ChannelSta
 		return nil, assertErr{}
 	}
 	return o, nil
+}
+func (m *memRepo) ClaimStatementForGeneration(_ context.Context, channel, date, currency, seed, _ string) (*domain.ChannelStatement, error) {
+	for _, statement := range m.stmts {
+		if statement.Channel == channel && statement.StatementDate == date && statement.Currency == currency && statement.SeedVersion == seed {
+			return statement, nil
+		}
+	}
+	return nil, nil
+}
+func (m *memRepo) SaveStatementLines(_ context.Context, statementID string, firstOrdinal int64, lines []domain.StatementLine) error {
+	if firstOrdinal != int64(len(m.statementLines[statementID]))+1 {
+		return errors.New("non-contiguous statement line ordinal")
+	}
+	m.statementLines[statementID] = append(m.statementLines[statementID], lines...)
+	return nil
+}
+func (m *memRepo) ListStatementLines(_ context.Context, statementID string, after int64, limit int) ([]domain.StatementLine, error) {
+	lines := m.statementLines[statementID]
+	if after >= int64(len(lines)) {
+		return []domain.StatementLine{}, nil
+	}
+	end := after + int64(limit)
+	if end > int64(len(lines)) {
+		end = int64(len(lines))
+	}
+	return append([]domain.StatementLine(nil), lines[after:end]...), nil
+}
+func (m *memRepo) GetStatementLine(_ context.Context, statementID, lineID string) (*domain.StatementLine, error) {
+	for _, line := range m.statementLines[statementID] {
+		if line.StatementLineID == lineID {
+			copy := line
+			return &copy, nil
+		}
+	}
+	return nil, assertErr{}
 }
 func (m *memRepo) ListStatements(context.Context, StatementFilter) ([]domain.ChannelStatement, int, error) {
 	out := []domain.ChannelStatement{}
@@ -167,7 +213,7 @@ func TestOrderRefundStatementDiscrepancyFlow(t *testing.T) {
 	ctx := context.Background()
 	cmd := ids.NewCommandID()
 	corr := ids.NewCorrelationID()
-	o, err := svc.CreateOrder(ctx, CreateOrderRequest{PaymentIntentID: "pi-1", BusinessRef: "ord-1", Purpose: "purchase", Channel: domain.ChannelAlipay, Amount: domain.Money{"CNY", 100}, IdempotencyKey: ids.NewUUIDv7(), SourceCommandID: cmd, CorrelationID: corr})
+	o, err := svc.CreateOrder(ctx, CreateOrderRequest{PaymentIntentID: "pi-1", BusinessRef: "ord-1", Purpose: "purchase", Channel: domain.ChannelAlipay, Amount: domain.Money{Currency: "CNY", MinorUnits: 100}, IdempotencyKey: ids.NewUUIDv7(), SourceCommandID: cmd, CorrelationID: corr})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +224,7 @@ func TestOrderRefundStatementDiscrepancyFlow(t *testing.T) {
 	if o.Status != domain.StatusSucceeded || o.ChannelTransactionID == "" {
 		t.Fatalf("order not succeeded: %+v", o)
 	}
-	rf, err := svc.CreateRefund(ctx, CreateRefundRequest{RefundID: "rf-1", PaymentIntentID: "pi-1", ChannelOrderID: o.ChannelOrderID, OriginalChannelTransactionID: o.ChannelTransactionID, Channel: o.Channel, Amount: domain.Money{"CNY", 40}, RefundReasonCode: "USER", IdempotencyKey: ids.NewUUIDv7(), SourceCommandID: cmd, CorrelationID: corr})
+	rf, err := svc.CreateRefund(ctx, CreateRefundRequest{RefundID: "rf-1", PaymentIntentID: "pi-1", ChannelOrderID: o.ChannelOrderID, OriginalChannelTransactionID: o.ChannelTransactionID, Channel: o.Channel, Amount: domain.Money{Currency: "CNY", MinorUnits: 40}, RefundReasonCode: "USER", IdempotencyKey: ids.NewUUIDv7(), SourceCommandID: cmd, CorrelationID: corr})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +243,11 @@ func TestOrderRefundStatementDiscrepancyFlow(t *testing.T) {
 	if st.LineCount < 2 {
 		t.Fatalf("want statement lines")
 	}
-	d, err := svc.OpenDiscrepancy(ctx, OpenDiscrepancyRequest{ChannelStatementID: st.ChannelStatementID, DifferenceType: "AMOUNT_MISMATCH", ExpectedAmount: domain.Money{"CNY", 100}, ActualAmount: domain.Money{"CNY", 101}, EvidenceRef: "hash", CorrelationID: corr, SourceCommandID: cmd})
+	page, err := svc.ListStatementLines(ctx, st.ChannelStatementID, 0, 100)
+	if err != nil || len(page.Items) != st.LineCount {
+		t.Fatalf("statement lines were not queryable: page=%+v err=%v", page, err)
+	}
+	d, err := svc.OpenDiscrepancy(ctx, OpenDiscrepancyRequest{ChannelStatementID: st.ChannelStatementID, DifferenceType: "AMOUNT_MISMATCH", ExpectedAmount: domain.Money{Currency: "CNY", MinorUnits: 100}, ActualAmount: domain.Money{Currency: "CNY", MinorUnits: 101}, EvidenceRef: "hash", CorrelationID: corr, SourceCommandID: cmd})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +266,7 @@ func TestMissedOrderRecovery(t *testing.T) {
 	repo := newMem()
 	svc := New(repo, &pub{}, nil)
 	seed := &domain.FaultSeed{SeedVersion: "v1", ScenarioCode: "MISSED_ORDER", SeedMaterialHash: "abc"}
-	o, err := svc.CreateOrder(context.Background(), CreateOrderRequest{PaymentIntentID: "pi-2", BusinessRef: "ord-2", Purpose: "purchase", Channel: domain.ChannelWechat, Amount: domain.Money{"CNY", 101}, IdempotencyKey: ids.NewUUIDv7(), SourceCommandID: ids.NewCommandID(), CorrelationID: ids.NewCorrelationID(), FaultSeed: seed})
+	o, err := svc.CreateOrder(context.Background(), CreateOrderRequest{PaymentIntentID: "pi-2", BusinessRef: "ord-2", Purpose: "purchase", Channel: domain.ChannelWechat, Amount: domain.Money{Currency: "CNY", MinorUnits: 101}, IdempotencyKey: ids.NewUUIDv7(), SourceCommandID: ids.NewCommandID(), CorrelationID: ids.NewCorrelationID(), FaultSeed: seed})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +292,7 @@ func TestStatementGenerationFiltersByStatementDate(t *testing.T) {
 	ctx := context.Background()
 	cmd := ids.NewCommandID()
 	corr := ids.NewCorrelationID()
-	o, err := svc.CreateOrder(ctx, CreateOrderRequest{PaymentIntentID: "pi-date", BusinessRef: "ord-date", Purpose: "purchase", Channel: domain.ChannelAlipay, Amount: domain.Money{"CNY", 100}, IdempotencyKey: ids.NewUUIDv7(), SourceCommandID: cmd, CorrelationID: corr})
+	o, err := svc.CreateOrder(ctx, CreateOrderRequest{PaymentIntentID: "pi-date", BusinessRef: "ord-date", Purpose: "purchase", Channel: domain.ChannelAlipay, Amount: domain.Money{Currency: "CNY", MinorUnits: 100}, IdempotencyKey: ids.NewUUIDv7(), SourceCommandID: cmd, CorrelationID: corr})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,11 +348,12 @@ func TestStatementGenerationUsesTerminalOccurrenceInsteadOfSnapshotUpdate(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if statement.LineCount != 1 || len(statement.Lines) != 1 {
+	if statement.LineCount != 1 || len(statement.Lines) != 0 {
 		t.Fatalf("terminal occurrence must remain on its settlement day: %+v", statement)
 	}
-	if !statement.Lines[0].OccurredAt.Equal(settledAt) {
-		t.Fatalf("line occurrence=%s want %s", statement.Lines[0].OccurredAt, settledAt)
+	page, err := svc.ListStatementLines(ctx, statement.ChannelStatementID, 0, 100)
+	if err != nil || len(page.Items) != 1 || !page.Items[0].OccurredAt.Equal(settledAt) {
+		t.Fatalf("line occurrence page=%+v err=%v want %s", page, err, settledAt)
 	}
 	wrongDay, err := svc.GenerateStatement(ctx, GenerateStatementRequest{
 		Channel: order.Channel, StatementDate: "2026-09-25", Currency: "CNY", SeedVersion: "v2",
@@ -312,7 +363,7 @@ func TestStatementGenerationUsesTerminalOccurrenceInsteadOfSnapshotUpdate(t *tes
 		t.Fatal(err)
 	}
 	if wrongDay.LineCount != 0 {
-		t.Fatalf("later snapshot update moved terminal fact into another statement: %+v", wrongDay.Lines)
+		t.Fatalf("later snapshot update moved terminal fact into another statement: %+v", wrongDay)
 	}
 }
 
