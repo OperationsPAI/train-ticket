@@ -378,10 +378,20 @@ impl PostgresCapacityService {
             {
                 Ok(reference) => reference,
                 Err(error) => {
+                    // The same overlap filter the availability fold applies, so
+                    // both read the same allocation. A hold can carry more than
+                    // one allocation -- a replacement seat is a second one --
+                    // and a hold whose allocations include one outside this
+                    // interval used to look ambiguous here while the fold picked
+                    // the overlapping one, which made the two disagree about a
+                    // hold neither of them had a reason to doubt.
                     let allocations: Vec<_> = supply
                         .allocations
                         .iter()
-                        .filter(|allocation| allocation.capacity_hold_id == hold.hold_id)
+                        .filter(|allocation| {
+                            allocation.capacity_hold_id == hold.hold_id
+                                && allocation.interval.overlaps(&route.interval)
+                        })
                         .collect();
                     if allocations.len() != 1 {
                         // A hold that predates the supply evidence has no way to
