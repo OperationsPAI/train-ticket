@@ -13,6 +13,7 @@ import { superviseSubscribe, type SubscribeSupervisor, type SupervisedConsumer, 
 import {
   OutboxAppender,
   OutboxRelay,
+  PostgresDeadLetterEvidenceStore,
   PostgresIdempotencyStore,
   RedisStreamEventPublisher,
   RedisStreamEventSubscriber,
@@ -25,6 +26,7 @@ import {
   tracedFetch,
   withTransaction,
   type Database,
+  type DeadLetterEvidenceSink,
   type IdempotencyStore,
   type SchemaDetail,
 } from "@trainticket/ts-kit";
@@ -55,7 +57,7 @@ export async function bootstrap(options: BootstrapOptions = {}) {
   const publisher = storage ? storage.publisher : new RedisStreamEventPublisher();
   const repository = storage?.repository ?? new InMemoryMemberRepository();
   const application = new LoyaltyMembershipApplicationService(repository, publisher, resolveOrderAccount, resolveCapturedPaymentFacts, SOURCE_STREAMS);
-  const subscriber = startSubscriber(application, undefined, storage?.runCommand);
+  const subscriber = startSubscriber(application, undefined, storage?.runCommand, storage?.deadLetterEvidenceSink);
 
   const app = createApp({
     instrumentation: options.instrumentation ?? opentelemetryInstrumentationFromEnv(),
@@ -101,6 +103,7 @@ export function startSubscriber<T extends SupervisedConsumer = RedisStreamEventS
   application: LoyaltyMembershipApplicationService,
   overrides: Pick<SuperviseSubscribeOptions<T>, "subscribe" | "backoffMs" | "sleep" | "log"> | undefined = undefined,
   runCommand?: LoyaltyStorage["runCommand"],
+  deadLetterEvidenceSink?: DeadLetterEvidenceSink,
 ): SubscribeSupervisor | undefined {
   if (!overrides && !process.env.REDIS_URL) {
     return undefined;
@@ -111,12 +114,12 @@ export function startSubscriber<T extends SupervisedConsumer = RedisStreamEventS
     // rejected has set `stopped = true` for good, so reusing it would register
     // a healthy consumer component whose loops exit immediately -- a green
     // probe over silent non-consumption.
-    subscribe: overrides?.subscribe ?? (() => subscribeOnce(application, runCommand)),
+    subscribe: overrides?.subscribe ?? (() => subscribeOnce(application, runCommand, deadLetterEvidenceSink)),
   });
 }
 
-async function subscribeOnce(application: LoyaltyMembershipApplicationService, runCommand?: LoyaltyStorage["runCommand"]): Promise<RedisStreamEventSubscriber> {
-  const subscriber = new RedisStreamEventSubscriber(undefined, undefined, { thrownHandlerErrors: "retry" });
+async function subscribeOnce(application: LoyaltyMembershipApplicationService, runCommand?: LoyaltyStorage["runCommand"], deadLetterEvidenceSink?: DeadLetterEvidenceSink): Promise<RedisStreamEventSubscriber> {
+  const subscriber = new RedisStreamEventSubscriber(undefined, undefined, { thrownHandlerErrors: "retry", deadLetterEvidenceSink });
   try {
     await subscriber.subscribe([JOURNEY_ORDER_STREAM, PAYMENT_STREAM, POST_SALES_STREAM], "loyalty-membership", consumerName(), async (envelope) => {
       const dispatch = async (application: LoyaltyMembershipApplicationService) => {
@@ -244,6 +247,7 @@ export type LoyaltyStorage = Readonly<{
   repository: MemberRepository;
   publisher: EventPublisher & Readonly<{ close?: () => Promise<void> }>;
   idempotencyStore: IdempotencyStore;
+  deadLetterEvidenceSink: DeadLetterEvidenceSink;
   ready: () => Promise<boolean>;
   /** Migration retry state, surfaced on `/readyz` so a stuck boot is diagnosable. */
   schema: () => SchemaDetail;
@@ -289,6 +293,7 @@ export async function startLoyaltyStorage(pool: Pool = createPostgresPool()): Pr
     repository,
     publisher,
     idempotencyStore,
+    deadLetterEvidenceSink: new PostgresDeadLetterEvidenceStore(pool),
     // Gate on migrations as the other six services already did. Without this,
     // a pod whose schema is missing answers /readyz 200 and takes traffic that
     // can only 500.
