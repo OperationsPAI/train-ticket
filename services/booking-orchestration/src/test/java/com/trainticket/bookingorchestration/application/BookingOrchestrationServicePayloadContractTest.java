@@ -498,6 +498,22 @@ class BookingOrchestrationServicePayloadContractTest {
         passRiskAssessment(service, start.sagaId());
         published.clear();
 
+        // Capacity first, then the provider: the reservation is only confirmed
+        // when both are recorded, so a confirmation that arrives first waits.
+        var capacityHeld = service.handleUpstreamEvent(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d301", "CapacityHeld",
+            Instant.parse("2026-07-05T10:01:00Z"), "corr-0194f2e0-7b3e-7610-8284-5c26e8b0d503", "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0d504",
+            "capacity-availability", 1, Map.ofEntries(
+                Map.entry("segmentBookingId", "sb-0194f2e0-7b3e-7610-8284-5c26e8b0d301"),
+                Map.entry("holdId", "hold-0194f2e0-7b3e-7610-8284-5c26e8b0d305"),
+                Map.entry("inventoryPoolId", "pool:seg-001:standard"),
+                Map.entry("capacityUnitRef", "su-0194f2e0-7b3e-7610-8284-5c26e8b0d307"),
+                Map.entry("idempotencyKey", "ord-0194f2e0-7b3e-7610-8284-5c26e8b0d306:seg-001:tvl-123:purchase"),
+                Map.entry("expiresAt", "2026-07-05T10:06:00Z"),
+                Map.entry("idempotentReplay", false),
+                Map.entry("interval", Map.of("fromSeq", 0, "toSeq", 1)))));
+        assertInstanceOf(HandlerResult.Success.class, capacityHeld);
+
         var result = service.handleUpstreamEvent(new EventEnvelope(
             "evt-0194f2e0-7b3e-7610-8284-5c26e8b0d302", "ProviderReservationConfirmed",
             Instant.parse("2026-07-05T10:02:00Z"), "corr-0194f2e0-7b3e-7610-8284-5c26e8b0d503", "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0d504",
