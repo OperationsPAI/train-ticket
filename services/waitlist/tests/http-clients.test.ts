@@ -17,10 +17,10 @@ test("HTTP downstream clients use documented endpoint shapes and idempotency key
     calls.push({ url: String(input), method: init?.method ?? "GET", headers: new Headers(init?.headers), body: init?.body ? JSON.parse(String(init.body)) : null });
     const url = String(input);
     if (url.endsWith("/api/v1/fare-quotes")) return Response.json({ quoteId: "fq-1" }, { status: 201 });
-    if (url.endsWith("/api/v1/offers")) return Response.json({ offerId: "off-1", offerVersion: 1, expiresAt: "2026-01-01T00:10:00.000Z" }, { status: 201 });
+    if (url.endsWith("/api/v1/offers")) return Response.json({ offerId: "off-1", offerVersion: 1, expiresAt: "2026-01-01T00:10:00.000Z", total: { currency: "CNY", minorUnits: 10_750 } }, { status: 201 });
     if (url.endsWith("/api/v1/capacity-holds")) return Response.json({ holdId: "hold-1" }, { status: 201 });
     if (url.endsWith("/api/v1/capacity-holds/hold-1/release")) return Response.json({ holdId: "hold-1", status: "RELEASED" });
-    if (url.endsWith("/api/v1/journey-orders")) return Response.json({ orderId: "ord-1" }, { status: 201 });
+    if (url.endsWith("/api/v1/journey-orders")) return Response.json({ orderId: "ord-1", monetarySummary: { payableTotal: { currency: "CNY", minorUnits: 10_750 } } }, { status: 201 });
     throw new Error(`unexpected URL ${url}`);
   }) as typeof fetch;
 
