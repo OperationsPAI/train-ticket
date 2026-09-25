@@ -53,6 +53,11 @@ returns HTTP 409 `CONFLICT`. A replay adds no benefit, wallet credit, ledger
 entry or `BenefitIssued` event.
 An existing compensation benefit without its recorded issuance request returns HTTP 409 `CONFLICT` and remains unchanged.
 The database also enforces one compensation benefit per case through a unique partial index.
+`GET /api/v1/internal/benefits/by-case/{caseId}` exposes that canonical benefit
+to Post Sales as a read-only recovery check. A caller can therefore recover a
+Wallet-success/Post-Sales-crash window without issuing a second credit.
+The lookup returns HTTP 404 when no compensation exists and never mutates a
+benefit, wallet balance, ledger or outbox.
 The HTTP filter separately returns `IDEMPOTENCY_KEY_REUSED` when a stored idempotency key is reused for a different request.
 
 The PostgreSQL repository acquires a transaction advisory lock for the receiving

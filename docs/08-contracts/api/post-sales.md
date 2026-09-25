@@ -141,7 +141,10 @@ The endpoint accepts an empty request body and returns full case details with HT
 Execution requires an evaluated `COMPENSATION` case in internal status `EXECUTING`.
 The approved execution plan must contain `ISSUE_COMPENSATION_CREDIT` before active execution can proceed.
 The public status remains `APPROVED` while operations are pending and becomes `APPLIED` after verification and completion.
-An evaluated compensation case already in `APPLIED` or `FAILED` returns its recorded state.
+An evaluated compensation case in `FAILED` returns its recorded state. An
+`APPLIED` compensation case is read-only reverified against its original
+rights, Payment facts and Wallet benefit so historical terminal mismatches are
+not treated as successful merely because the case status is terminal.
 Concurrent calls share the case execution guard with change execution, including its sixteen execution permits and PostgreSQL advisory lock.
 When a permit or the case lock is busy, the call returns the current case without advancing it.
 
@@ -176,11 +179,26 @@ Operation records are saved in the PostgreSQL case snapshot and restored on relo
 
 Wallet / Promotion deduplicates `POST_SALES_COMP` issuance by `caseId` and the complete issuance command.
 An identical command returns the existing benefit even with a different HTTP idempotency key, while a different command returns HTTP 409 `CONFLICT` from the wallet API.
-The executor treats an unsuccessful wallet response as an execution error and retains previously recorded evidence.
-It does not convert that error into a successful or terminal case result.
+Before issuing, the executor uses `GET /api/v1/internal/benefits/by-case/{caseId}`.
+An existing matching benefit is adopted into `compensationOperations.issued`,
+closing the Wallet-commit/Post-Sales-crash window without a second issuance.
+An unsuccessful downstream response remains retryable and does not create a
+terminal checkpoint.
 
-**Execution errors:** Invalid case type, state or business evidence raises HTTP 422 `DOMAIN_RULE_VIOLATION`.
-An unsuccessful downstream read or issuance response raises HTTP 500 `INTERNAL_ERROR` through the Post Sales exception handler, including a wallet 409 conflict.
+When successful authoritative reads prove a contradiction, Post Sales saves a
+first-write-wins `compensation_mismatch_checkpoints` row and returns HTTP 409
+`COMPENSATION_MISMATCH`. The response includes the case, mismatch code,
+approved amount, detection time and `automaticReplayAllowed=false`. Later calls
+return the same checkpoint before any Payment or Wallet request.
+
+**GET** `/api/v1/internal/compensation-mismatches/{caseId}` returns the complete
+checkpoint, including refund, Wallet, rights and local operation evidence, or
+HTTP 404 when no terminal mismatch is recorded.
+
+**Execution errors:** Invalid case type or state raises HTTP 422
+`DOMAIN_RULE_VIOLATION`; a proven terminal contradiction returns 409
+`COMPENSATION_MISMATCH`; an unsuccessful downstream read or issuance response
+raises HTTP 500 `INTERNAL_ERROR` and remains retryable.
 
 ### Execute an approved change
 

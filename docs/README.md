@@ -9,6 +9,7 @@ The [TODO](TODO.md) is the single active list of remaining defects, unfinished i
 The [loadgen guide](./README.md) describes resident configuration, persistence, operation recovery and live test commands.
 The [standing capacity policy](08-contracts/standing-capacity-policy.md) defines the versioned quota used by Seat Assignment.
 The [capacity integration design](10-domain-enrichment/capacity-overbooking.md) distinguishes the current Hold path from the unpublished coordinated supply implementation.
+The [durable event recovery contract](08-contracts/durable-event-recovery.md) defines the bounded PostgreSQL replay source, consumer checkpoints, durable dead-letter evidence and terminal compensation mismatch handling.
 
 ## Reference areas
 
