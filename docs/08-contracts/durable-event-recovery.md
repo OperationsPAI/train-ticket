@@ -70,6 +70,12 @@ condition advances the cursor.
 The default poll interval is 5 seconds. `EVENT_REPLAY_POLL_INTERVAL_MS` may
 override it with a value of at least 100 milliseconds.
 
+For Notification and Loyalty Membership, `processed_events` uses the same
+`EVENT_REPLAY_RETENTION_DAYS` window instead of the platform's ordinary
+five-minute cleanup. This is required for correctness: a source that is
+unavailable for several minutes may later replay an older archived event, and
+the durable event ID must still exist when that happens.
+
 ## Durable dead-letter evidence
 
 Notification and Loyalty Membership persist a dead letter in
