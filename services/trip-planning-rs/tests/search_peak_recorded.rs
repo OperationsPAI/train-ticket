@@ -257,7 +257,11 @@ async fn recorded_search_concurrent_postgres() {
         .await
         .unwrap();
     assert_eq!(before, 0, "the test requires an empty dedicated database");
-    let state = Arc::new(AppState::new(Some(pool.clone()), index(&source)));
+    let state = Arc::new(AppState::new(
+        Some(pool.clone()),
+        index(&source),
+        trip_planning::adapters::messaging::ITINERARY_STREAM,
+    ));
     let app = trip_planning::router_with_state(state);
     let mut tasks = tokio::task::JoinSet::new();
     let start = Instant::now();
