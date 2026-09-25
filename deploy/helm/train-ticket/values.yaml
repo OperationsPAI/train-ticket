@@ -49,6 +49,11 @@ postgres:
   # its first query. See the initdb caveat in templates/postgres.yaml: on an
   # already-initialised volume, adding a name here has no effect until the
   # database is created by hand.
+  #
+  # Each instance may override `storageSize`, `storageClass` and `nodeSelector`.
+  # This matters for a sharded local-path deployment: every PVC is pinned to the
+  # node selected for its first database Pod, so placement and disk headroom
+  # must be explicit rather than left to scheduler order.
   instances:
     core:
       databases:
