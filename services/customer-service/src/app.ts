@@ -32,6 +32,7 @@ import {
   type RequestContext,
   type SchemaDetail,
 } from "@trainticket/ts-kit";
+import { intakeChannels } from "./intake-channels.js";
 import { serviceProfile } from "./profile.js";
 
 export type HealthStatus = Readonly<{
@@ -106,7 +107,12 @@ type OTelTracer = Readonly<{
   startSpan: (name: string, options?: Record<string, unknown>) => OTelSpan;
 }>;
 
-const channels = ["APP", "WEB", "PHONE", "IM", "EMAIL", "IN_APP_MESSAGE", "BOT", "OPERATOR_CONSOLE"] as const;
+/**
+ * The vocabulary the intake answers: the channels the deployment this process
+ * runs in states, or the platform's whole vocabulary when it states none. See
+ * `intake-channels.ts` for where the list comes from and when it falls back.
+ */
+const channels = intakeChannels;
 const priorities = ["LOW", "NORMAL", "HIGH", "URGENT"] as const;
 const customerTiers = ["STANDARD", "SILVER", "GOLD", "PLATINUM", "DIAMOND"] as const;
 const escalationLevels = ["L1_AGENT", "L2_SPECIALIST", "L3_SUPERVISOR"] as const;

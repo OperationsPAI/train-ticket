@@ -8,6 +8,7 @@ COPY services/customer-service/package.json services/customer-service/package-lo
 RUN --mount=type=cache,target=/root/.npm cd services/customer-service && npm ci --install-links
 COPY services/customer-service/src ./services/customer-service/src
 COPY services/customer-service/migrations ./services/customer-service/migrations
+COPY services/customer-service/config ./services/customer-service/config
 RUN cd services/customer-service && npx tsc --noEmit false --outDir dist
 
 FROM node:26-alpine
@@ -17,6 +18,8 @@ COPY --from=builder --chown=app:app /src/services/customer-service/package.json 
 COPY --from=builder --chown=app:app /src/services/customer-service/node_modules ./node_modules
 COPY --from=builder --chown=app:app /src/services/customer-service/dist ./dist
 COPY --from=builder --chown=app:app /src/services/customer-service/migrations ./migrations
+# The release's own intake settings, at the path the process reads them from.
+COPY --from=builder --chown=app:app /src/services/customer-service/config ./config
 USER app
 ENV PORT=8080 REDIS_URL=redis://localhost:6379
 EXPOSE 8080
