@@ -619,8 +619,13 @@ interface EventSubscriber {
      * - The implementation MUST track delivery attempts per message.
      *   After 5 delivery attempts (as observed from PEL delivery count),
      *   move the message to the dead-letter stream and XACK.
-     * - The implementation MUST call XAUTOCLAIM periodically (every 60s)
-     *   to recover messages in the PEL that belong to other consumers.
+     * - The implementation MUST call XAUTOCLAIM periodically to recover stale
+     *   messages in the PEL that belong to other consumers.
+     * - The implementation MUST retain the returned next-start-id separately
+     *   for each (stream, group, consumer) and pass it to the next XAUTOCLAIM.
+     *   A returned 0-0 completes the current PEL scan; the next pass starts a
+     *   new scan from 0-0. Concurrent recovery for the same identity must be
+     *   serialized so pages cannot overwrite or reuse each other's cursor.
      *
      * At-least-once + dedup obligations (handler side):
      * - The handler (domain/application layer) MUST deduplicate by eventId.
@@ -746,9 +751,12 @@ Polling loop:
         XADD events:<stream>:dlq * envelope message["envelope"]
         XACK events:<stream> <group> message.id
 
-Recovery loop (every 60s):
-    claimed = XAUTOCLAIM events:<stream> <group> <consumer> 60000 "0" COUNT 100
-    for each claimed message:
+Recovery loop:
+    key = (stream, group, consumer)
+    start = recovery_cursor.get_or_default(key, "0-0")
+    page = XAUTOCLAIM events:<stream> <group> <consumer> <min-idle-ms> start COUNT 100
+    recovery_cursor[key] = page.next_start_id  # 0-0 starts a new round next time
+    for each claimed message in page.messages:
       if message.delivery_count >= 5:
         XADD events:<stream>:dlq * envelope message["envelope"]
         XACK events:<stream> <group> message.id
