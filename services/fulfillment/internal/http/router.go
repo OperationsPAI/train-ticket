@@ -342,6 +342,8 @@ func writeMappedError(ctx *gin.Context, err error) {
 		httpkit.WriteError(ctx, http.StatusUnprocessableEntity, httpkit.DomainRuleViolation, err.Error(), nil)
 	case errors.Is(err, application.ErrPublishFailed):
 		httpkit.WriteError(ctx, http.StatusServiceUnavailable, httpkit.Unavailable, "event bus unavailable", nil)
+	case errors.Is(err, application.ErrDependencyUnavailable):
+		httpkit.WriteError(ctx, http.StatusServiceUnavailable, httpkit.Unavailable, "entitlement service unavailable", nil)
 	default:
 		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, err.Error(), nil)
 	}
