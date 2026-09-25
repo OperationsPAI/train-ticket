@@ -50,7 +50,7 @@ test("close only archives terminal fulfilled expired or cancelled entries", () =
     offeredAt: null,
     offerExpiresAt: null,
     deadline: "2026-07-20T00:00:00.000Z",
-    paymentGuaranteeRef: "pay-auth-1",
+    paymentGuaranteeRef: "pi-1",
     intentFingerprint: "intent-1",
   });
   const expired = WaitlistEntry.fromSnapshot({ ...fulfilled.toSnapshot(), entryId: "wl-expired", status: "EXPIRED" });

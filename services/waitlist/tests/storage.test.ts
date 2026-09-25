@@ -110,7 +110,7 @@ test("PostgresWaitlistRepository.add translates unique violation to conflict", a
     departureDate: "2026-07-20",
     seatClass: "SECOND",
     priority: { groupSize: 1, fareClass: "SECOND" },
-    paymentGuaranteeRef: "pay-auth-1",
+    paymentGuaranteeRef: "pi-1",
     itineraryRef: "itn-1",
     intentFingerprint: "intent-1",
   });

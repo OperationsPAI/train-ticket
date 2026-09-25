@@ -276,6 +276,7 @@ function statusForDomainError(error: DomainError): number {
 function createBody(body: unknown): JoinWaitlistRequest {
   const parsed = objectBody(body);
   for (const field of ["accountId", "travelerRef", "segmentRef", "deadline", "paymentGuaranteeRef", "itineraryRef", "intentFingerprint"]) requiredString(parsed, field);
+  if (!String(parsed.paymentGuaranteeRef).startsWith("pi-")) throw new DomainError("VALIDATION_FAILED", "paymentGuaranteeRef must be a payment intent reference");
   return parsed as unknown as JoinWaitlistRequest;
 }
 function cancelBody(body: unknown): Record<string, unknown> {

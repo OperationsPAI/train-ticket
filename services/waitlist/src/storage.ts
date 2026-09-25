@@ -200,7 +200,8 @@ function entryFromRow(row: WaitlistRow): WaitlistEntry {
     offerVersion: typeof data.offerVersion === "number" ? data.offerVersion : undefined,
     itineraryRef: typeof data.itineraryRef === "string" ? data.itineraryRef : undefined,
     deadline: typeof data.deadline === "string" ? data.deadline : deadlineFromDepartureDate(dateString(row.departure_date)),
-    paymentGuaranteeRef: typeof data.paymentGuaranteeRef === "string" ? data.paymentGuaranteeRef : `pay-auth-${row.entry_id}`,
+    paymentGuaranteeRef: typeof data.paymentGuaranteeRef === "string" ? data.paymentGuaranteeRef : `pi-legacy-${row.entry_id}`,
+    paymentGuarantee: paymentGuaranteeFrom(data.paymentGuarantee, row),
     intentFingerprint: typeof data.intentFingerprint === "string" ? data.intentFingerprint : defaultIntentFingerprint(row.traveler_refs, row.segment_ref, dateString(row.departure_date), row.seat_class),
     journeyOrderRef: typeof data.journeyOrderRef === "string" ? data.journeyOrderRef : undefined,
     fareQuoteIdempotencyKey: typeof data.fareQuoteIdempotencyKey === "string" ? data.fareQuoteIdempotencyKey : undefined,
@@ -234,6 +235,43 @@ function intervalFrom(value: unknown): TravelInterval | undefined {
   const toSeq = Number(body.toSeq);
   return Number.isSafeInteger(fromSeq) && Number.isSafeInteger(toSeq) && fromSeq >= 0 && toSeq > fromSeq
     ? { fromSeq, toSeq } : undefined;
+}
+function paymentGuaranteeFrom(value: unknown, row: WaitlistRow): WaitlistEntrySnapshot["paymentGuarantee"] {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const guarantee = value as Record<string, unknown>;
+    const amount = guarantee.amount;
+    if (amount && typeof amount === "object" && !Array.isArray(amount)) {
+      const money = amount as Record<string, unknown>;
+      const sourceStatus = guarantee.sourceStatus;
+      if (typeof guarantee.paymentIntentId === "string" && typeof guarantee.sourceOrderRef === "string"
+          && typeof guarantee.payerRef === "string" && typeof money.currency === "string"
+          && Number.isSafeInteger(Number(money.minorUnits)) && (sourceStatus === "CREATED" || sourceStatus === "AUTHORIZED")
+          && typeof guarantee.sourceExpiresAt === "string" && typeof guarantee.authorizedUntil === "string"
+          && typeof guarantee.verifiedAt === "string") {
+        return {
+          paymentIntentId: guarantee.paymentIntentId,
+          sourceOrderRef: guarantee.sourceOrderRef,
+          payerRef: guarantee.payerRef,
+          amount: { currency: money.currency, minorUnits: Number(money.minorUnits) },
+          sourceStatus,
+          sourceExpiresAt: guarantee.sourceExpiresAt,
+          authorizedUntil: guarantee.authorizedUntil,
+          verifiedAt: guarantee.verifiedAt,
+          preferredChannel: typeof guarantee.preferredChannel === "string" ? guarantee.preferredChannel : undefined,
+        };
+      }
+    }
+  }
+  return {
+    paymentIntentId: typeof row.data?.paymentGuaranteeRef === "string" ? row.data.paymentGuaranteeRef : `legacy:${row.entry_id}`,
+    sourceOrderRef: `legacy:${row.entry_id}`,
+    payerRef: row.account_id,
+    amount: { currency: "CNY", minorUnits: 0 },
+    sourceStatus: "CREATED",
+    sourceExpiresAt: instantString(row.created_at),
+    authorizedUntil: instantString(row.created_at),
+    verifiedAt: instantString(row.created_at),
+  };
 }
 function isUniqueViolation(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;

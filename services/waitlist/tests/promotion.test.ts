@@ -93,7 +93,7 @@ test("no payment-service calls are made while fulfilling a matched waitlist entr
       () => new Date("2026-01-01T00:00:00.000Z"),
       new HttpOfferManagementClient("http://offer-management", "WEB"),
     );
-    const entry = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "PLATINUM", tripCount: 0, daysBefore: 20, paymentGuaranteeRef: "pay-auth-existing" });
+    const entry = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "PLATINUM", tripCount: 0, daysBefore: 20, paymentGuaranteeRef: "pi-existing" });
 
     await service.handleCapacityFreed(capacityEvent());
 

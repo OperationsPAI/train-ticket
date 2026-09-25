@@ -290,6 +290,7 @@ export class WaitlistApplicationService {
       itineraryRef: request.itineraryRef ?? request.segmentRef,
       deadline: request.deadline,
       paymentGuaranteeRef: request.paymentGuaranteeRef,
+      paymentGuarantee: intent.paymentGuarantee,
       intentFingerprint: request.intentFingerprint,
       priority: {
         loyaltyTier: request.loyaltyTier ?? "NONE",

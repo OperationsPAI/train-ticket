@@ -24,7 +24,7 @@ test("waitlist request endpoints return contract resource shape", async () => {
       segmentRef: "seg-1",
       travelClass: "SECOND",
       deadline: "2026-07-20T00:00:00.000Z",
-      paymentGuaranteeRef: "pay-auth-1",
+      paymentGuaranteeRef: "pi-1",
       itineraryRef: "itn-1",
       intentFingerprint: "intent-1",
     },
@@ -69,7 +69,7 @@ test("create rejects missing travelerRef even when legacy travelerRefs is suppli
       travelerRefs: ["tvl-legacy"],
       segmentRef: "seg-1",
       deadline: "2026-07-20T00:00:00.000Z",
-      paymentGuaranteeRef: "pay-auth-1",
+      paymentGuaranteeRef: "pi-1",
       itineraryRef: "itn-1",
       intentFingerprint: "intent-1",
     },
@@ -79,6 +79,25 @@ test("create rejects missing travelerRef even when legacy travelerRefs is suppli
   assert.equal(response.json().code, "VALIDATION_FAILED");
   assert.equal(response.json().details.domainCode, "VALIDATION_FAILED");
   assert.match(response.json().message, /travelerRef is required/u);
+  await app.close();
+});
+
+test("create rejects unverifiable legacy payment guarantee references", async () => {
+  resetWaitlistStore();
+  const app = createApp();
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/v1/waitlist-requests",
+    headers: { "Idempotency-Key": "0194f2e0-7b3e-7610-8284-5c26e8b0c155" },
+    payload: {
+      accountId: "acc-1", travelerRef: "tvl-1", segmentRef: "seg-1", deadline: "2026-10-20T00:00:00.000Z",
+      paymentGuaranteeRef: "pay-auth-unverifiable", itineraryRef: "itn-1", intentFingerprint: "intent-1",
+    },
+  });
+
+  assert.equal(response.statusCode, 400);
+  assert.equal(response.json().code, "VALIDATION_FAILED");
+  assert.match(response.json().message, /payment intent reference/u);
   await app.close();
 });
 
@@ -92,7 +111,7 @@ test("create rejects all contract-required fields that were previously defaulted
       travelerRef: "tvl-1",
       segmentRef: "seg-1",
       deadline: "2026-07-20T00:00:00.000Z",
-      paymentGuaranteeRef: "pay-auth-1",
+      paymentGuaranteeRef: "pi-1",
       itineraryRef: "itn-1",
       intentFingerprint: "intent-1",
     };
@@ -158,7 +177,7 @@ test("create uses documented travelerRef when legacy travelerRefs is also presen
     segmentRef: "seg-1",
     travelClass: "SECOND",
     deadline: "2026-07-20T00:00:00.000Z",
-    paymentGuaranteeRef: "pay-auth-1",
+    paymentGuaranteeRef: "pi-1",
     itineraryRef: "itn-1",
     intentFingerprint: "intent-contract-canonical",
   };
@@ -196,7 +215,7 @@ test("duplicate active traveler and intent returns conflict", async () => {
     segmentRef: "seg-1",
     travelClass: "SECOND",
     deadline: "2026-07-20T00:00:00.000Z",
-    paymentGuaranteeRef: "pay-auth-1",
+    paymentGuaranteeRef: "pi-1",
     itineraryRef: "itn-1",
     intentFingerprint: "intent-duplicate",
   };
@@ -224,7 +243,7 @@ test("on-demand archival sweep closes cancelled request and contract GET still r
       segmentRef: "seg-archive",
       travelClass: "SECOND",
       deadline: "2026-07-20T00:00:00.000Z",
-      paymentGuaranteeRef: "pay-auth-archive",
+      paymentGuaranteeRef: "pi-archive",
       itineraryRef: "itn-archive",
       intentFingerprint: "intent-archive",
     },
@@ -277,7 +296,7 @@ test("in-memory app can share an application service with periodic archival", as
       segmentRef: "seg-shared-archive",
       travelClass: "SECOND",
       deadline: "2026-07-20T00:00:00.000Z",
-      paymentGuaranteeRef: "pay-auth-shared-archive",
+      paymentGuaranteeRef: "pi-shared-archive",
       itineraryRef: "itn-shared-archive",
       intentFingerprint: "intent-shared-archive",
     },
@@ -314,7 +333,7 @@ test("cancel requires reason and handles null body defensively", async () => {
         segmentRef: "seg-1",
         travelClass: "SECOND",
         deadline: "2026-07-20T00:00:00.000Z",
-        paymentGuaranteeRef: "pay-auth-1",
+        paymentGuaranteeRef: "pi-1",
         itineraryRef: "itn-1",
         intentFingerprint: "intent-cancel",
       },
