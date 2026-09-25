@@ -479,6 +479,11 @@ up{job="train-ticket-applications"}
 count by (service) (http_server_request_duration_seconds_count)
 ```
 
+The low-cardinality domain metric names, recording rules and remaining
+service-owned instrumentation work are defined in
+[business-metrics.md](business-metrics.md). Missing source metrics deliberately
+produce no recording-rule series; absence is not converted to a false zero.
+
 ## Retention and Storage
 
 All three signals are **durable**. The store is ClickHouse, writing to a
