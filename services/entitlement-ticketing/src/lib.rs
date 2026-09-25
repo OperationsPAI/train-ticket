@@ -24,6 +24,7 @@ use shared_kernel::{
 
 pub mod adapters;
 pub mod application;
+pub mod metrics;
 mod issue_facts;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -89,6 +90,7 @@ pub async fn build_runtime() -> Result<(Router, JoinHandle<()>), application::Su
             .map_err(|error| application::SubscribeFailed(error.to_string()))?,
     );
     rust_kit::storage::spawn_outbox_relay(service.pool().clone(), redis_url);
+    service.clone().spawn_active_ticketing_refresh();
     let subscriber = adapters::messaging::RedisEventSubscriber::from_env()?;
     let streams = adapters::messaging::RedisEventSubscriber::entitlement_streams();
     let group = adapters::messaging::RedisEventSubscriber::entitlement_group().to_string();
