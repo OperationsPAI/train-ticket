@@ -543,9 +543,29 @@ class DisruptionRecoveryService:
         finder = getattr(self.store, "find_orders_by_segment", None)
         if not callable(finder):
             return HandlerResult.transient_error("segment order resolver is unavailable")
-        affected = tuple(finder(segment_ref))
+        try:
+            affected = tuple(finder(segment_ref))
+        except Exception as exc:
+            return HandlerResult.transient_error(str(exc))
         if not affected:
-            return HandlerResult.transient_error(f"no affected orders resolved for segmentRef {segment_ref}")
+            # A segment status is an operational fact, not proof that a customer
+            # order exists for that segment. Empty trains, positioning services,
+            # tests and stale supplier observations are all valid zero-impact
+            # outcomes. Retrying them forever leaves permanent Redis PEL entries
+            # and reports a healthy no-op as an infrastructure failure.
+            #
+            # Persist the event identity transactionally so a replay remains an
+            # auditable no-op. Resolver failures still return above as transient.
+            transaction = getattr(self.store, "transaction", None)
+            context = transaction() if callable(transaction) else nullcontext()
+            try:
+                with context:
+                    mark = getattr(self.store, "mark_processed", None)
+                    if callable(mark):
+                        mark(envelope.eventId, stream)
+                return HandlerResult.success()
+            except Exception as exc:
+                return HandlerResult.transient_error(str(exc))
         disruption_type = "DELAY" if envelope.eventType == "SegmentDelayed" else "CANCELLATION"
         observed_at = str(payload.get("observedAt") or payload.get("estimatedArrivalAt") or payload.get("cancelledAt") or "").strip() or None
         report = {
