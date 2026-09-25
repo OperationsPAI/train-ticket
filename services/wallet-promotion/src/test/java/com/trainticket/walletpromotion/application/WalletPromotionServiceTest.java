@@ -28,6 +28,24 @@ import org.junit.jupiter.api.Test;
 
 public class WalletPromotionServiceTest {
     @Test
+    void findsTheCanonicalCompensationBenefitByCaseWithoutIssuingAgain() {
+        InMemoryPromotionRepository repository = new InMemoryPromotionRepository(Optional.empty());
+        WalletPromotionService service = new WalletPromotionService(repository, (benefit, useReference, businessReason) -> { });
+        Instant now = Instant.parse("2026-09-25T04:00:00Z");
+        IssueBenefitCommand command = new IssueBenefitCommand(
+            "acc-1", BenefitType.COMPENSATION_CREDIT, BalanceType.PROMOTION_CREDIT, new Money("USD", 100),
+            IssuanceSource.POST_SALES_COMP, "psc-case-1",
+            new ApplicableScope(BenefitScopeType.ANY_TRIP, null, "USD"),
+            new RedemptionRule(false, null, false), new RevocationRule(null), now, now.plus(Duration.ofDays(30)),
+            reason(ReasonType.POST_SALES_COMP, "SERVICE_QUALITY_COMPLAINT", "POST_SALES_CASE", "psc-case-1")
+        );
+        PromotionInstrument issued = service.issue(command);
+
+        assertThat(service.getCompensationByCaseId("psc-case-1")).isEqualTo(issued);
+        assertThat(repository.countBenefits("acc-1", null, null)).isEqualTo(1);
+    }
+
+    @Test
     void redemptionIsIdempotentByBenefitAndRedemptionReference() {
         WalletPromotionService service = service();
         PromotionInstrument benefit = service.issue(issue(Instant.parse("2999-02-01T00:00:00Z")));
