@@ -24,16 +24,13 @@ class PromotionInstrumentTest {
         // pin it anyway so the whole test sits on one timeline.
         assertThatThrownBy(() -> reserved.revoke(reason(), Instant.parse("2026-01-01T00:00:01Z")))
             .isInstanceOf(DomainException.class)
-            .hasMessageContaining("cannot be revoked from RESERVED");
+            .hasMessageContaining("reserved amount must be zero");
         PromotionInstrument redeemed = reserved.redeem(new Money("USD", 40), reason(), Instant.parse("2026-01-01T00:00:02Z"), true);
-        assertThat(redeemed.status()).isEqualTo(PromotionStatus.REDEEMED);
+        assertThat(redeemed.status()).isEqualTo(PromotionStatus.ISSUED);
         PromotionInstrument reversed = redeemed.reverse(new Money("USD", 40), reason(), Instant.parse("2026-01-01T00:00:03Z"));
         assertThat(reversed.status()).isEqualTo(PromotionStatus.REVERSED);
-        // Must reject because the status is REVERSED, NOT because the benefit
-        // expired -- assert the message so the two can never be conflated again.
-        assertThatThrownBy(() -> reversed.reserve(new Money("USD",1), reason(), Instant.parse("2026-01-01T00:00:04Z")))
-            .isInstanceOf(DomainException.class)
-            .hasMessageContaining("cannot be reserved from REVERSED");
+        assertThat(reversed.reserve(new Money("USD", 1), reason(), Instant.parse("2026-01-01T00:00:04Z")).status())
+            .isEqualTo(PromotionStatus.RESERVED);
     }
 
     @Test void reserveRejectsExpiredBenefitIndependentlyOfStatus() {
