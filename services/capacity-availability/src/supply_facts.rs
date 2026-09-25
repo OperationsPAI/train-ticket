@@ -537,11 +537,12 @@ impl SeatSupply {
                 continue;
             }
             if let Some(a) = allocated_holds.get(&hold.hold_id) {
+                let effective_allocation_unit = self.resolve_allocation_unit(a)?;
                 require(
                     a.segment_booking_id == hold.segment_booking_id
                         && a.journey_order_id == hold.journey_order_id
                         && a.traveler_ref == hold.traveler_ref
-                        && a.seat_ref.seat_unit_ref == hold.effective_capacity_unit_ref
+                        && effective_allocation_unit == hold.effective_capacity_unit_ref
                         && a.interval.from_seq == hold.interval.from_seq
                         && a.interval.to_seq == hold.interval.to_seq,
                     "seat allocation differs from its capacity hold",
@@ -1281,6 +1282,20 @@ mod occupancy_slot_tests {
             journey_order_id: "ord-1".into(), traveler_ref: "tvl-1".into(), capacity_unit_ref: "seat-a".into(),
             interval: Interval { from_seq: 0, to_seq: 2 }, seat_ref: SeatReference { seat_unit_ref: "seat-a".into(), allocation_type: "SEAT".into(), seat_map_id: "map-1".into(), seat_map_version: 2 }, status: "ALLOCATED".into() });
         assert!(supply.available_refs(&Interval { from_seq: 0, to_seq: 2 }, &[pending("1", "seat-b", 0, 2)]).is_err());
+    }
+
+    #[test]
+    fn replaced_allocation_and_hold_compare_their_effective_units() {
+        let mut supply = physical_supply();
+        supply.replacement_mappings.push(CapacityUnitReplacement { source_seat_map_id: "map-old".into(), source_seat_map_version: 1,
+            source_composition_version: "v0".into(), source_seat_unit_ref: "old-seat-a".into(), target_seat_unit_ref: "seat-a".into(), mapping_version: "map-v2".into() });
+        supply.allocations.push(Allocation { seat_allocation_id: "alloc-1".into(), capacity_hold_id: "1".into(),
+            scheduled_service_ref: "ss-1".into(), service_date: "2026-09-25".into(), segment_booking_id: "sb-1".into(),
+            journey_order_id: "ord-1".into(), traveler_ref: "tvl-1".into(), capacity_unit_ref: "old-seat-a".into(),
+            interval: Interval { from_seq: 0, to_seq: 2 }, seat_ref: SeatReference { seat_unit_ref: "old-seat-a".into(), allocation_type: "SEAT".into(), seat_map_id: "map-old".into(), seat_map_version: 1 }, status: "ALLOCATED".into() });
+        let mut hold = pending("1", "old-seat-a", 0, 2);
+        hold.effective_capacity_unit_ref = "seat-a".into();
+        assert_eq!(supply.available_refs(&Interval { from_seq: 0, to_seq: 2 }, &[hold]).unwrap(), vec!["seat-b"]);
     }
 
     #[test]
