@@ -44,6 +44,6 @@ class PromotionInstrumentTest {
             .hasMessageContaining("benefit validity has expired");
     }
 
-    static PromotionInstrument benefit() { return PromotionInstrument.issue("ben-1","acc-1","wac-1",BenefitType.BALANCE,BalanceType.PROMOTION_CREDIT,new Money("USD",100),IssuanceSource.MANUAL_OPS,null,new ApplicableScope("ANY_TRIP",null,"USD"),new RedemptionRule(false,null,false),new RevocationRule(null),ISSUED_AT,VALID_UNTIL,reason(),ISSUED_AT); }
+    static PromotionInstrument benefit() { return PromotionInstrument.issue("ben-1","acc-1","wac-1",BenefitType.BALANCE,BalanceType.PROMOTION_CREDIT,new Money("USD",100),IssuanceSource.MANUAL_OPS,null,new ApplicableScope(BenefitScopeType.ANY_TRIP,null,"USD"),new RedemptionRule(false,null,false),new RevocationRule(null),ISSUED_AT,VALID_UNTIL,reason(),ISSUED_AT); }
     static BusinessReason reason(){ return new BusinessReason(ReasonType.MANUAL_OPS,"TEST","MANUAL_ACTION","act-1",null); }
 }

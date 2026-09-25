@@ -141,7 +141,11 @@ class PostgresPromotionRepositoryOptimisticConcurrencyTest {
             new Money("USD", 100),
             com.trainticket.walletpromotion.domain.IssuanceSource.MANUAL_OPS,
             null,
-            new com.trainticket.walletpromotion.domain.ApplicableScope("ANY_TRIP", null, "USD"),
+            new com.trainticket.walletpromotion.domain.ApplicableScope(
+                com.trainticket.walletpromotion.domain.BenefitScopeType.ANY_TRIP,
+                null,
+                "USD"
+            ),
             new com.trainticket.walletpromotion.domain.RedemptionRule(false, null, false),
             new com.trainticket.walletpromotion.domain.RevocationRule(null),
             Instant.parse("2026-01-01T00:00:00Z"),

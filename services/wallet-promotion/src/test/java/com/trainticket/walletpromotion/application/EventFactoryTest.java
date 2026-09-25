@@ -27,7 +27,11 @@ class EventFactoryTest {
             new Money("USD", 100),
             com.trainticket.walletpromotion.domain.IssuanceSource.MANUAL_OPS,
             null,
-            new com.trainticket.walletpromotion.domain.ApplicableScope("ANY_TRIP", null, "USD"),
+            new com.trainticket.walletpromotion.domain.ApplicableScope(
+                com.trainticket.walletpromotion.domain.BenefitScopeType.ANY_TRIP,
+                null,
+                "USD"
+            ),
             new com.trainticket.walletpromotion.domain.RedemptionRule(false, null, false),
             new com.trainticket.walletpromotion.domain.RevocationRule(null),
             Instant.parse("2026-01-01T00:00:00Z"),
@@ -61,6 +65,7 @@ class EventFactoryTest {
             new Money("USD", 25),
             "ord-1",
             AT.plusSeconds(600),
+            new com.trainticket.walletpromotion.domain.BenefitUseReference("ord-1", null, java.util.List.of()),
             benefit.businessReason()
         );
         WalletPromotionEvent event = EventFactory.reserved(benefit, command, delta(benefit, -25, 25, 0, 75, 25), AT);
@@ -193,7 +198,11 @@ class EventFactoryTest {
             new Money("USD", 100),
             com.trainticket.walletpromotion.domain.IssuanceSource.MANUAL_OPS,
             null,
-            new com.trainticket.walletpromotion.domain.ApplicableScope("ANY_TRIP", null, "USD"),
+            new com.trainticket.walletpromotion.domain.ApplicableScope(
+                com.trainticket.walletpromotion.domain.BenefitScopeType.ANY_TRIP,
+                null,
+                "USD"
+            ),
             new com.trainticket.walletpromotion.domain.RedemptionRule(false, null, false),
             new com.trainticket.walletpromotion.domain.RevocationRule(null),
             Instant.parse("2026-01-01T00:00:00Z"),
