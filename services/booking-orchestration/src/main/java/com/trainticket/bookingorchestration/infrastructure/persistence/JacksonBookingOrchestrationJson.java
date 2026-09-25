@@ -84,6 +84,7 @@ final class JacksonBookingOrchestrationJson {
         node.put("travelerRef", booking.travelerRef());
         node.put("bookingPurpose", booking.bookingPurpose());
         node.put("classRef", booking.classRef());
+        node.put("standingAccepted", booking.standingAccepted());
         if (booking.scheduledServiceRef() != null) {
             node.put("scheduledServiceRef", booking.scheduledServiceRef());
             node.put("serviceDate", booking.serviceDate());
@@ -117,6 +118,7 @@ final class JacksonBookingOrchestrationJson {
             SegmentBookingStatus.valueOf(node.path("status").asText()), textOrNull(node, "capacityHoldId"), providerReference,
             textOrNull(node, "entitlementId"), textOrNull(node, "failureReason"), textOrNull(node, "cancellationReason"),
             textOrNull(node, "seatAllocationRef"), Clock.systemUTC()).withClassRef(textOrNull(node,"classRef"))
+                .withStandingAcceptance(node.path("standingAccepted").asBoolean(false))
                 .withSupplyReference(textOrNull(node,"scheduledServiceRef"), textOrNull(node,"serviceDate"));
     }
 

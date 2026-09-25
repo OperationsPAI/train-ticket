@@ -35,6 +35,7 @@ public final class SegmentBooking {
     private String classRef;
     private String scheduledServiceRef;
     private String serviceDate;
+    private boolean standingAccepted;
     private long version;
 
     private SegmentBooking(String segmentBookingId, String journeyOrderId, String offerItemRef, String segmentRef,
@@ -121,6 +122,23 @@ public final class SegmentBooking {
 
     public String classRef() { return classRef; }
     public SegmentBooking withClassRef(String classRef) { this.classRef=classRef; return this; }
+    public boolean standingAccepted() { return standingAccepted; }
+    public SegmentBooking withStandingAcceptance(boolean accepted) {
+        this.standingAccepted = accepted;
+        return this;
+    }
+    public String purchaseSourceType() {
+        if ("purchase".equals(bookingPurpose)) return "PURCHASE_ORDER";
+        if (bookingPurpose.startsWith("change:") && bookingPurpose.length() > "change:".length()) return "CHANGE_CASE";
+        return null;
+    }
+    public String purchaseSourceRef() {
+        if ("purchase".equals(bookingPurpose)) return journeyOrderId;
+        if (bookingPurpose.startsWith("change:") && bookingPurpose.length() > "change:".length()) {
+            return bookingPurpose.substring("change:".length());
+        }
+        return null;
+    }
     public String scheduledServiceRef() { return scheduledServiceRef; }
     public String serviceDate() { return serviceDate; }
     public SegmentBooking withSupplyReference(String service, String date) {
