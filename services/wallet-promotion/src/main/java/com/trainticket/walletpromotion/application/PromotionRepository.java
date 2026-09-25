@@ -10,6 +10,7 @@ public interface PromotionRepository {
     void recordIssue(IssueBenefitCommand command,String benefitId);
     Optional<PromotionInstrument> lockBenefit(String benefitId);
     Optional<PromotionInstrument> findBenefit(String benefitId);
+    Optional<PromotionInstrument> findCompensationByCaseId(String caseId);
     Optional<WalletAccount> findWalletByAccountId(String accountId);
     List<PromotionInstrument> listBenefits(String accountId, PromotionStatus status, BenefitType benefitType, int limit, int offset);
     int countBenefits(String accountId, PromotionStatus status, BenefitType benefitType);

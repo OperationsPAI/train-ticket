@@ -71,6 +71,15 @@ public class PostgresPromotionRepository implements PromotionRepository {
     }
 
     @Override
+    public Optional<PromotionInstrument> findCompensationByCaseId(String caseId) {
+        return jdbc.query(
+            "SELECT data::text FROM promotion_instrument_snapshots WHERE data->>'issuanceSource'='POST_SALES_COMP' AND data->>'caseId'=?",
+            rs -> rs.next() ? Optional.of(read(rs.getString(1), PromotionInstrument.class)) : Optional.empty(),
+            caseId
+        );
+    }
+
+    @Override
     public Optional<PromotionInstrument> lockBenefit(String id) {
         Optional<String> accountId = jdbc.query(
             "SELECT data->>'accountId' FROM promotion_instrument_snapshots WHERE id=?",

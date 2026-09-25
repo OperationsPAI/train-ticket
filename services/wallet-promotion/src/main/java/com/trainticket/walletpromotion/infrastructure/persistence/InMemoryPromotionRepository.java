@@ -37,6 +37,7 @@ public class InMemoryPromotionRepository implements PromotionRepository {
     private final EventPublisher publisher;
     public InMemoryPromotionRepository(Optional<EventPublisher> publisher) { this.publisher = publisher.orElse(envelope -> {}); }
     public Optional<PromotionInstrument> findBenefit(String benefitId) { return Optional.ofNullable(benefits.get(benefitId)); }
+    public Optional<PromotionInstrument> findCompensationByCaseId(String caseId) { return benefits.values().stream().filter(b -> b.issuanceSource()==IssuanceSource.POST_SALES_COMP && Objects.equals(b.caseId(),caseId)).findFirst(); }
     public Optional<PromotionInstrument> lockBenefit(String benefitId) { return findBenefit(benefitId); }
     public Optional<WalletAccount> findWalletByAccountId(String accountId) { return wallets.values().stream().filter(w -> w.accountId().equals(accountId)).findFirst(); }
     public List<PromotionInstrument> listBenefits(String accountId, PromotionStatus status, BenefitType benefitType, int limit, int offset) { return filtered(accountId,status,benefitType).stream().skip(offset).limit(limit).toList(); }
