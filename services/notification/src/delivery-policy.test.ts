@@ -53,11 +53,18 @@ describe("notification delivery policy", () => {
       mutableCalls.push(params);
       return { rowCount: 1, rows: [{ "?column?": 1 }] };
     } };
-    assert.deepEqual(await deliveryPolicyDecision(client as never, task(), new Date("2026-09-25T08:00:00Z")), {
+    assert.deepEqual(await deliveryPolicyDecision(client as never, task(), new Date("2026-09-25T01:00:00Z")), {
       action: "supersede", reasonCode: "newer_terminal_state",
     });
     assert.equal(mutableCalls.length, 1);
     assert.equal(mutableCalls[0][0], "acc-policy-1");
     assert.match(String(mutableCalls[0][2]), /JourneyOrderCancelled:ord-policy-1/u);
+  });
+
+  it("expires stale work without paying for a supersession lookup", async () => {
+    const client = { query: async () => { throw new Error("unexpected lookup"); } };
+    assert.deepEqual(await deliveryPolicyDecision(client as never, task(), new Date("2026-09-25T08:00:00Z")), {
+      action: "expire", reasonCode: "ttl_order_state",
+    });
   });
 });
