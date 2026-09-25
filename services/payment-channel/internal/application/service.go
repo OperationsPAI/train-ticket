@@ -289,8 +289,7 @@ type GenerateStatementRequest struct {
 
 func (s *Service) GenerateStatement(ctx context.Context, r GenerateStatementRequest) (*domain.ChannelStatement, error) {
 	statementIdentity := domain.StatementIdentityKey(r.Channel, r.StatementDate, r.Currency, r.SeedVersion)
-	builder, err := domain.NewStatementBuilder(r.Channel, r.StatementDate, r.Currency, r.SeedVersion)
-	if err != nil {
+	if _, err := domain.NewStatementBuilder(r.Channel, r.StatementDate, r.Currency, r.SeedVersion); err != nil {
 		return nil, derr("VALIDATION_FAILED", err.Error())
 	}
 	scenarios := normalizeStatementScenarios(r.ScenarioCodes)
@@ -298,93 +297,125 @@ func (s *Service) GenerateStatement(ctx context.Context, r GenerateStatementRequ
 	generatedAt := time.Now().UTC()
 	statementID := domain.NewID("chs")
 	var statement *domain.ChannelStatement
-	err = s.tx(ctx, func(tx context.Context) error {
-		existing, err := s.repo.ClaimStatementForGeneration(tx, r.Channel, r.StatementDate, r.Currency, r.SeedVersion, statementID)
-		if err != nil {
-			return derr("UNAVAILABLE", "lock channel statement identity: "+err.Error())
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		statement = nil
+		err = s.tx(ctx, func(tx context.Context) error {
+			var buildErr error
+			statement, buildErr = s.generateStatementInTransaction(tx, r, statementIdentity, generationFingerprint, generatedAt, statementID, scenarios)
+			return buildErr
+		})
+		if err == nil {
+			return statement, nil
 		}
-		if existing != nil {
-			if existing.GenerationFingerprint != "" && existing.GenerationFingerprint != generationFingerprint {
-				return derr("DOMAIN_RULE_VIOLATION", "statement identity was reused with different generation scenarios")
-			}
-			statement = existing
-			return nil
+		if !isSerializationFailure(err) {
+			return nil, err
 		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(time.Duration(attempt+1) * 10 * time.Millisecond):
+		}
+	}
+	return nil, err
+}
 
-		var ordinal int64
-		afterID := ""
-		for {
-			orders, err := s.repo.ListPaymentFactsForStatement(tx, r.Channel, r.StatementDate, r.Currency, afterID, statementGenerationBatchSize, generatedAt)
-			if err != nil {
-				return derr("UNAVAILABLE", "load channel orders for statement: "+err.Error())
-			}
-			lines := make([]domain.StatementLine, 0, len(orders))
-			for _, order := range orders {
-				line, err := paymentStatementLine(statementIdentity, r.SeedVersion, scenarios, order)
-				if err != nil {
-					return derr("UNAVAILABLE", err.Error())
-				}
-				if err := builder.Add(line); err != nil {
-					return derr("UNAVAILABLE", err.Error())
-				}
-				lines = append(lines, line)
-			}
-			if len(lines) > 0 {
-				if err := s.repo.SaveStatementLines(tx, statementID, ordinal+1, lines); err != nil {
-					return derr("UNAVAILABLE", "save payment statement lines: "+err.Error())
-				}
-				ordinal += int64(len(lines))
-				afterID = orders[len(orders)-1].ChannelOrderID
-			}
-			if len(orders) < statementGenerationBatchSize {
-				break
-			}
-		}
-
-		afterID = ""
-		for {
-			refunds, err := s.repo.ListRefundFactsForStatement(tx, r.Channel, r.StatementDate, r.Currency, afterID, statementGenerationBatchSize, generatedAt)
-			if err != nil {
-				return derr("UNAVAILABLE", "load channel refunds for statement: "+err.Error())
-			}
-			lines := make([]domain.StatementLine, 0, len(refunds))
-			for _, refund := range refunds {
-				line, err := refundStatementLine(statementIdentity, refund)
-				if err != nil {
-					return derr("UNAVAILABLE", err.Error())
-				}
-				if err := builder.Add(line); err != nil {
-					return derr("UNAVAILABLE", err.Error())
-				}
-				lines = append(lines, line)
-			}
-			if len(lines) > 0 {
-				if err := s.repo.SaveStatementLines(tx, statementID, ordinal+1, lines); err != nil {
-					return derr("UNAVAILABLE", "save refund statement lines: "+err.Error())
-				}
-				ordinal += int64(len(lines))
-				afterID = refunds[len(refunds)-1].ChannelRefundID
-			}
-			if len(refunds) < statementGenerationBatchSize {
-				break
-			}
-		}
-
-		statement, err = builder.Build(statementID, generatedAt, r.CorrelationID, r.SourceCommandID)
-		if err != nil {
-			return derr("VALIDATION_FAILED", err.Error())
-		}
-		statement.GenerationFingerprint = generationFingerprint
-		statement.LineStorage = domain.StatementLineStorageNormalized
-		if err := s.repo.SaveStatement(tx, statement); err != nil {
-			return derr("CONFLICT", err.Error())
-		}
-		return s.publish(tx, statement.PullEvents())
-	})
+func (s *Service) generateStatementInTransaction(ctx context.Context, r GenerateStatementRequest, statementIdentity, generationFingerprint string, generatedAt time.Time, statementID string, scenarios []string) (*domain.ChannelStatement, error) {
+	builder, err := domain.NewStatementBuilder(r.Channel, r.StatementDate, r.Currency, r.SeedVersion)
 	if err != nil {
+		return nil, derr("VALIDATION_FAILED", err.Error())
+	}
+	existing, err := s.repo.ClaimStatementForGeneration(ctx, r.Channel, r.StatementDate, r.Currency, r.SeedVersion, statementID)
+	if err != nil {
+		return nil, derr("UNAVAILABLE", "lock channel statement identity: "+err.Error())
+	}
+	if existing != nil {
+		if existing.GenerationFingerprint != "" && existing.GenerationFingerprint != generationFingerprint {
+			return nil, derr("DOMAIN_RULE_VIOLATION", "statement identity was reused with different generation scenarios")
+		}
+		return existing, nil
+	}
+
+	var ordinal int64
+	afterID := ""
+	for {
+		orders, err := s.repo.ListPaymentFactsForStatement(ctx, r.Channel, r.StatementDate, r.Currency, afterID, statementGenerationBatchSize, generatedAt)
+		if err != nil {
+			return nil, derr("UNAVAILABLE", "load channel orders for statement: "+err.Error())
+		}
+		lines := make([]domain.StatementLine, 0, len(orders))
+		for _, order := range orders {
+			line, err := paymentStatementLine(statementIdentity, r.SeedVersion, scenarios, order)
+			if err != nil {
+				return nil, derr("UNAVAILABLE", err.Error())
+			}
+			if err := builder.Add(line); err != nil {
+				return nil, derr("UNAVAILABLE", err.Error())
+			}
+			lines = append(lines, line)
+		}
+		if len(lines) > 0 {
+			if err := s.repo.SaveStatementLines(ctx, statementID, ordinal+1, lines); err != nil {
+				return nil, derr("UNAVAILABLE", "save payment statement lines: "+err.Error())
+			}
+			ordinal += int64(len(lines))
+			afterID = orders[len(orders)-1].ChannelOrderID
+		}
+		if len(orders) < statementGenerationBatchSize {
+			break
+		}
+	}
+
+	afterID = ""
+	for {
+		refunds, err := s.repo.ListRefundFactsForStatement(ctx, r.Channel, r.StatementDate, r.Currency, afterID, statementGenerationBatchSize, generatedAt)
+		if err != nil {
+			return nil, derr("UNAVAILABLE", "load channel refunds for statement: "+err.Error())
+		}
+		lines := make([]domain.StatementLine, 0, len(refunds))
+		for _, refund := range refunds {
+			line, err := refundStatementLine(statementIdentity, refund)
+			if err != nil {
+				return nil, derr("UNAVAILABLE", err.Error())
+			}
+			if err := builder.Add(line); err != nil {
+				return nil, derr("UNAVAILABLE", err.Error())
+			}
+			lines = append(lines, line)
+		}
+		if len(lines) > 0 {
+			if err := s.repo.SaveStatementLines(ctx, statementID, ordinal+1, lines); err != nil {
+				return nil, derr("UNAVAILABLE", "save refund statement lines: "+err.Error())
+			}
+			ordinal += int64(len(lines))
+			afterID = refunds[len(refunds)-1].ChannelRefundID
+		}
+		if len(refunds) < statementGenerationBatchSize {
+			break
+		}
+	}
+
+	statement, err := builder.Build(statementID, generatedAt, r.CorrelationID, r.SourceCommandID)
+	if err != nil {
+		return nil, derr("VALIDATION_FAILED", err.Error())
+	}
+	statement.GenerationFingerprint = generationFingerprint
+	statement.LineStorage = domain.StatementLineStorageNormalized
+	if err := s.repo.SaveStatement(ctx, statement); err != nil {
+		return nil, derr("CONFLICT", err.Error())
+	}
+	if err := s.publish(ctx, statement.PullEvents()); err != nil {
 		return nil, err
 	}
 	return statement, nil
+}
+
+func isSerializationFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "SQLSTATE 40001") || strings.Contains(message, "could not serialize access")
 }
 
 func paymentStatementLine(statementIdentity, seedVersion string, scenarios []string, order StatementPaymentFact) (domain.StatementLine, error) {
