@@ -240,10 +240,7 @@ pub struct PlanningScore {
 
 pub const RANKING_PROFILE_VERSION: &str = "trip-planning-search-v1";
 
-pub fn validate_itinerary_for_intent(
-    intent: &TripIntent,
-    itinerary: &Itinerary,
-) -> Vec<String> {
+pub fn validate_itinerary_for_intent(intent: &TripIntent, itinerary: &Itinerary) -> Vec<String> {
     let mut exclusions = Vec::new();
 
     if itinerary.origin_ref() != intent.origin_ref {
@@ -309,7 +306,10 @@ pub fn rank_itinerary(intent: &TripIntent, itinerary: &Itinerary) -> PlanningSco
         value: duration_value,
         weight: duration_weight,
         contribution: duration_value * duration_weight,
-        explanation: format!("{} minute end-to-end duration", itinerary.duration_minutes()),
+        explanation: format!(
+            "{} minute end-to-end duration",
+            itinerary.duration_minutes()
+        ),
     });
 
     let transfer_value = (500 - itinerary.connection_count() as i64 * 120).max(0);
@@ -326,7 +326,8 @@ pub fn rank_itinerary(intent: &TripIntent, itinerary: &Itinerary) -> PlanningSco
             .preferences
             .max_price_minor
             .unwrap_or(hint.amount_minor.max(1));
-        let price_value = (1000 - ((hint.amount_minor as f64 / budget as f64) * 1000.0) as i64).max(0);
+        let price_value =
+            (1000 - ((hint.amount_minor as f64 / budget as f64) * 1000.0) as i64).max(0);
         let price_weight: i64 = if intent.preferences.prefer_low_price {
             2
         } else {
@@ -353,7 +354,11 @@ pub fn rank_itinerary(intent: &TripIntent, itinerary: &Itinerary) -> PlanningSco
         });
     }
 
-    let availability_value = match itinerary.availability_hint.as_ref().map(|h| h.status.as_str()) {
+    let availability_value = match itinerary
+        .availability_hint
+        .as_ref()
+        .map(|h| h.status.as_str())
+    {
         Some("AVAILABLE") => 200,
         Some("LIMITED") => 120,
         Some("UNKNOWN") => 60,
@@ -387,10 +392,7 @@ pub struct SearchResult {
     pub candidates: Vec<(Itinerary, PlanningScore)>,
 }
 
-pub fn search_itineraries(
-    intent: &TripIntent,
-    candidates: &[Itinerary],
-) -> SearchResult {
+pub fn search_itineraries(intent: &TripIntent, candidates: &[Itinerary]) -> SearchResult {
     let mut accepted: Vec<(Itinerary, PlanningScore)> = Vec::new();
 
     for candidate in candidates {
