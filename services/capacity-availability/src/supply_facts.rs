@@ -316,7 +316,14 @@ pub fn combined_class_snapshot(
         !terminal.contains(allocation.capacity_hold_id.as_str())
             && allocation.interval.overlaps(interval)
     }) {
-        let unit = supply.resolve_allocation_unit(allocation)?;
+        // An allocation whose unit is in neither the current composition nor a
+        // replacement lineage is left out, exactly as the availability fold
+        // leaves it out: the two are compared by size below, so a unit counted
+        // on one side only is a failure of the check rather than a stricter
+        // answer.
+        let Ok(unit) = supply.resolve_allocation_unit(allocation) else {
+            continue;
+        };
         let confirmed = active
             .get(allocation.capacity_hold_id.as_str())
             .map(|state| *state == "Confirmed")
@@ -719,7 +726,12 @@ impl SeatSupply {
             if !a.interval.overlaps(interval) {
                 continue;
             }
-            let effective_unit = self.resolve_allocation_unit(a)?;
+            let Ok(effective_unit) = self.resolve_allocation_unit(a) else {
+                // See the snapshot fold: a unit that cannot be placed is left
+                // out of both, because the alternative is a retry loop that
+                // never ends.
+                continue;
+            };
             let intervals = occupied.entry(effective_unit).or_default();
             require(
                 intervals
