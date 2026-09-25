@@ -205,6 +205,17 @@ client-visible retry mechanism.
 
 **Error codes:** `VALIDATION_FAILED`, `DOMAIN_RULE_VIOLATION`, `CONFLICT`, `IDEMPOTENCY_KEY_REUSED`, `UNAVAILABLE`.
 
+### Internal compensation lookup
+
+**GET** `/api/v1/internal/benefits/by-case/{caseId}`
+
+Returns the unique `POST_SALES_COMP` benefit for the canonical Post Sales case.
+This is a read-only crash-recovery and audit endpoint. It never creates a
+benefit or changes a wallet balance. A missing benefit returns HTTP 404.
+Post Sales uses it before issuing compensation, so a Wallet commit followed by
+a Post Sales crash is recovered by adopting the existing benefit rather than
+calling the issuance endpoint again.
+
 ### Approved complaint compensation request
 
 The current Post Sales executor supplies these fields to `POST /api/v1/benefits`:
