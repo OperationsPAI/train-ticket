@@ -232,6 +232,7 @@ export class PromotionOrchestrator {
       const expiresAt = earliestInstant(commercialOffer.expiresAt, entry.paymentGuarantee.authorizedUntil, entry.deadline);
       if (expiresAt <= offerNow || !guaranteeCovers(entry, commercialOffer.total)) {
         await this.repository.restoreCapacityCredits(entry);
+        entry.forgetMatchedCapacityCredits();
         entry.suspend();
         return this.repository.save(entry);
       }
