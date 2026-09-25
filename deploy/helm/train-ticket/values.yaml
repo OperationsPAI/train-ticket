@@ -401,6 +401,14 @@ otelCollector:
   # signals by disk (see docs/07-observability/README.md) and the series count is
   # what dominates, not the period.
   metricExportIntervalMillis: 15000
+  # Prometheus does not scrape the business pods directly: they expose metrics
+  # through their language SDKs over OTLP, not through a common /metrics route.
+  # The gateway republishes a low-cardinality allowlist on this port, and the
+  # in-cluster Prometheus scrapes that single aggregate target.
+  prometheusExporter:
+    enabled: true
+    port: 9464
+    metricExpiration: 2m
   resources:
     requests: { cpu: 50m, memory: 256Mi }
     limits: { cpu: '1', memory: 1Gi }
@@ -489,6 +497,10 @@ prometheus:
     repository: prom/prometheus
     tag: "v2.55.1"
   scrapeInterval: 30s
+  applicationMetrics:
+    # Matches the SDK export period. Scraping faster would only read the same
+    # sample twice; scraping slower can miss a short-lived queue or pool spike.
+    scrapeInterval: 15s
   # Short on purpose: ClickHouse holds the durable copy (clickhouse.ttl above),
   # so a long window here would retain the same samples twice.
   retention: 6h
@@ -1126,7 +1138,7 @@ services:
       limits: { cpu: '6', memory: 4Gi }
   notification:
     db: notification
-    image: mirrors.tencent.com/microservice/notification:final-e98069db@sha256:663e8692daac52ea992574dd0e3471a663466da1da6e56f249ed359c621161e6
+    image: mirrors.tencent.com/microservice/notification:throughput-63cb1ca7@sha256:f9f9f542002f9e4ee5d04f73d028a399877b0731bb1aea45e841b97e74b46f1d
     strategy:
       type: RollingUpdate
       rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
