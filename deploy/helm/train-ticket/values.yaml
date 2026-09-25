@@ -863,7 +863,7 @@ services:
       PG_MAX_POOL_SIZE: "24"
   offer-management:
     db: offer_management
-    image: mirrors.tencent.com/microservice/offer-management:current-9ef6cbfe@sha256:dc42dd1148a5a61c5c75ff0921bb3dfc048d285862069abb4966dd9045dfbaed
+    image: mirrors.tencent.com/microservice/offer-management:outbox-d9048788@sha256:5e6b8a10aac16866d27653148dfb6fa036bdd88be13ba590c423f077b905df84
     strategy:
       type: RollingUpdate
       rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
@@ -1136,7 +1136,7 @@ services:
       limits: { cpu: '6', memory: 4Gi }
   notification:
     db: notification
-    image: mirrors.tencent.com/microservice/notification:throughput-63cb1ca7@sha256:f9f9f542002f9e4ee5d04f73d028a399877b0731bb1aea45e841b97e74b46f1d
+    image: mirrors.tencent.com/microservice/notification:hpa-d9048788@sha256:c867e29abe549b09d4e5d08faf494b770a5b8bc9b1d80c4e4c6c6e8f506b95e0
     strategy:
       type: RollingUpdate
       rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
