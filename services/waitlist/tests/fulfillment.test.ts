@@ -79,6 +79,7 @@ class DurableFulfillmentClient implements WaitlistFulfillmentClient {
   public paymentCreateEffects = 0;
   public paymentCaptureEffects = 0;
   public entitlementEffects = 0;
+  public captureDuringCancellation = false;
   protected readonly reservations = new Map<string, ReservationFacts>();
   protected readonly reservationKeys = new Map<string, ReservationFacts>();
   protected payment?: PaymentFacts;
@@ -140,7 +141,8 @@ class DurableFulfillmentClient implements WaitlistFulfillmentClient {
 
   async cancelPayment(entry: WaitlistEntry) {
     this.paymentCancelCalls.push(entry.fulfillment.paymentCancelIdempotencyKey);
-    if (this.payment) this.payment = { ...this.payment, status: "CANCELLED" };
+    if (this.payment) this.payment = { ...this.payment, status: this.captureDuringCancellation ? "CAPTURED" : "CANCELLED" };
+    return this.payment;
   }
 
   async releaseCapacity(traveler: FulfillmentTraveler, capacityHoldId: string) {
@@ -360,4 +362,28 @@ test("completed local effects stay matching until authoritative order confirmati
 
   assert.equal(repository.current().status, "FULFILLED");
   assert.equal(publisher.findByEventType("WaitlistFulfilled").length, 1);
+});
+
+test("a payment captured concurrently with cancellation fences capacity and order cleanup", async () => {
+  const entry = matchingEntry(["tvl-1"]);
+  const traveler = entry.fulfillment.travelers[0]!;
+  entry.recordBookingSaga("saga-1");
+  entry.recordReservation(traveler.travelerRef, "CONFIRMED", "hold-tvl-1");
+  const repository = new SnapshotRepository(entry);
+  const client = new DurableFulfillmentClient(["tvl-1"], false);
+  client.seedReservation(entry, traveler, "CONFIRMED", "hold-tvl-1");
+  await client.createPayment(entry);
+  entry.recordPayment("pi-fulfillment", "CREATED");
+  await repository.save(entry);
+  client.captureDuringCancellation = true;
+  const service = new WaitlistApplicationService(repository, new InMemoryEventPublisher(), undefined, undefined, undefined,
+    () => new Date("2026-10-19T00:00:00.000Z"), undefined, undefined, client);
+
+  await service.advanceNextWork();
+
+  assert.equal(repository.current().status, "SUSPENDED");
+  assert.equal(repository.current().fulfillment?.paymentStatus, "CAPTURED");
+  assert.equal(client.paymentCancelCalls.length, 1);
+  assert.equal(client.releaseCalls.length, 0);
+  assert.equal(client.orderCancelCalls.length, 0);
 });
