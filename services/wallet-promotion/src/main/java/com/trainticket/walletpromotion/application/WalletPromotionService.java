@@ -19,6 +19,10 @@ import com.trainticket.walletpromotion.domain.ReversalRecord;
 import com.trainticket.walletpromotion.domain.WalletAccount;
 import com.trainticket.walletpromotion.domain.WalletBalance;
 import com.trainticket.walletpromotion.domain.WalletBalanceDelta;
+import com.trainticket.walletpromotion.metrics.WalletPromotionMetrics;
+import com.trainticket.walletpromotion.metrics.WalletPromotionMetrics.Operation;
+import com.trainticket.walletpromotion.metrics.WalletPromotionMetrics.Outcome;
+import com.trainticket.walletpromotion.metrics.WalletPromotionMetrics.ReasonCode;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
@@ -27,6 +31,8 @@ import java.util.UUID;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 @Service
 public class WalletPromotionService {
@@ -34,22 +40,45 @@ public class WalletPromotionService {
     private final PromotionRepository repository;
     private final BenefitScopeVerifier scopeVerifier;
     private final Clock clock;
+    private final WalletPromotionMetrics metrics;
 
     @org.springframework.beans.factory.annotation.Autowired
-    public WalletPromotionService(PromotionRepository repository, BenefitScopeVerifier scopeVerifier) {
-        this(repository, scopeVerifier, Clock.systemUTC());
+    public WalletPromotionService(PromotionRepository repository, BenefitScopeVerifier scopeVerifier, WalletPromotionMetrics metrics) {
+        this(repository, scopeVerifier, Clock.systemUTC(), metrics);
+    }
+
+    /** Test convenience: same clock semantics, telemetry off. */
+    WalletPromotionService(PromotionRepository repository, BenefitScopeVerifier scopeVerifier) {
+        this(repository, scopeVerifier, Clock.systemUTC(), WalletPromotionMetrics.noop());
     }
 
     WalletPromotionService(PromotionRepository repository, BenefitScopeVerifier scopeVerifier, Clock clock) {
+        this(repository, scopeVerifier, clock, WalletPromotionMetrics.noop());
+    }
+
+    WalletPromotionService(PromotionRepository repository, BenefitScopeVerifier scopeVerifier, Clock clock, WalletPromotionMetrics metrics) {
         this.repository = repository;
         this.scopeVerifier = scopeVerifier;
         this.clock = clock;
+        this.metrics = metrics;
     }
 
     @Transactional
     public PromotionInstrument issue(IssueBenefitCommand command) {
+        try {
+            return issueBenefit(command);
+        } catch (RuntimeException exception) {
+            recordRejected(Operation.ISSUE, command.businessReason(), command.amount());
+            throw exception;
+        }
+    }
+
+    private PromotionInstrument issueBenefit(IssueBenefitCommand command) {
         var existing = repository.findIssue(command);
-        if (existing.isPresent()) return existing.get();
+        if (existing.isPresent()) {
+            recordAfterCommit(Operation.ISSUE, Outcome.REPLAYED, command.businessReason(), command.amount());
+            return existing.get();
+        }
         Instant now = clock.instant();
         String walletAccountId = repository.findWalletByAccountId(command.accountId())
             .map(WalletAccount::walletAccountId)
@@ -91,6 +120,7 @@ public class WalletPromotionService {
         );
         repository.saveMutation(benefit, wallet, EventFactory.issued(benefit, delta, now), MutationArtifacts.none());
         repository.recordIssue(command, benefit.benefitId());
+        recordAfterCommit(Operation.ISSUE, Outcome.SUCCESS, command.businessReason(), command.amount());
         return benefit;
     }
 
@@ -123,6 +153,15 @@ public class WalletPromotionService {
 
     @Transactional
     public PromotionInstrument reserve(String id, ReserveBenefitCommand command) {
+        try {
+            return reserveBenefit(id, command);
+        } catch (RuntimeException exception) {
+            recordRejected(Operation.RESERVE, command.businessReason(), command.amount());
+            throw exception;
+        }
+    }
+
+    private PromotionInstrument reserveBenefit(String id, ReserveBenefitCommand command) {
         Instant now = clock.instant();
         PromotionInstrument candidate = getBenefit(id);
         BenefitUseReference useReference = resolveUseReference(command.useReference(), command.reservationRef(), command.businessReason());
@@ -131,7 +170,9 @@ public class WalletPromotionService {
         if (prior.isPresent()) {
             PromotionInstrument current = lockedBenefit(id);
             BenefitReservation persisted = repository.findReservation(id, command.reservationRef()).orElse(prior.get());
-            return replayedReservation(current, persisted, command, useReference);
+            PromotionInstrument replayed = replayedReservation(current, persisted, command, useReference);
+            recordAfterCommit(Operation.RESERVE, Outcome.REPLAYED, command.businessReason(), command.amount());
+            return replayed;
         }
         if (command.reservationExpiresAt() == null || !command.reservationExpiresAt().isAfter(now)) {
             throw new ApiException(ApiErrorCode.PRECONDITION_FAILED, "reservationExpiresAt must be in the future");
@@ -143,7 +184,9 @@ public class WalletPromotionService {
         PromotionInstrument before = lockedBenefit(id);
         Optional<BenefitReservation> existing = repository.findReservation(id, command.reservationRef());
         if (existing.isPresent()) {
-            return replayedReservation(before, existing.get(), command, useReference);
+            PromotionInstrument replayed = replayedReservation(before, existing.get(), command, useReference);
+            recordAfterCommit(Operation.RESERVE, Outcome.REPLAYED, command.businessReason(), command.amount());
+            return replayed;
         }
         PromotionInstrument after = mapDomain(() -> before.reserve(command.amount(), command.businessReason(), now));
         BenefitReservation reservation = mapDomain(() -> BenefitReservation.reserve(
@@ -170,11 +213,21 @@ public class WalletPromotionService {
             redeemedDelta
         );
         repository.saveMutation(after, wallet, EventFactory.reserved(after, command, reservation, delta, now), MutationArtifacts.reservation(reservation));
+        recordAfterCommit(Operation.RESERVE, Outcome.SUCCESS, command.businessReason(), command.amount());
         return after;
     }
 
     @Transactional
     public RedeemResult redeem(String id, RedeemBenefitCommand command) {
+        try {
+            return redeemBenefit(id, command);
+        } catch (RuntimeException exception) {
+            recordRejected(Operation.REDEEM, command.businessReason(), command.amount());
+            throw exception;
+        }
+    }
+
+    private RedeemResult redeemBenefit(String id, RedeemBenefitCommand command) {
         Instant now = clock.instant();
         PromotionInstrument candidate = getBenefit(id);
         requireText(command.redemptionRef(), "redemptionRef");
@@ -183,12 +236,18 @@ public class WalletPromotionService {
         if (prior.isPresent()) {
             PromotionInstrument current = lockedBenefit(id);
             BenefitRedemption persisted = repository.findRedemptionByReference(id, command.redemptionRef()).orElse(prior.get());
-            return replayedRedemption(current, persisted, command, useReference);
+            RedeemResult replayed = replayedRedemption(current, persisted, command, useReference);
+            recordAfterCommit(Operation.REDEEM, Outcome.REPLAYED, command.businessReason(), command.amount());
+            return replayed;
         }
         scopeVerifier.verify(candidate, useReference, command.businessReason());
         PromotionInstrument before = lockedBenefit(id);
         Optional<BenefitRedemption> existing = repository.findRedemptionByReference(id, command.redemptionRef());
-        if (existing.isPresent()) return replayedRedemption(before, existing.get(), command, useReference);
+        if (existing.isPresent()) {
+            RedeemResult replayed = replayedRedemption(before, existing.get(), command, useReference);
+            recordAfterCommit(Operation.REDEEM, Outcome.REPLAYED, command.businessReason(), command.amount());
+            return replayed;
+        }
 
         boolean fromReservation = command.reservationRef() != null && !command.reservationRef().isBlank();
         BenefitReservation reservation = null;
@@ -240,18 +299,31 @@ public class WalletPromotionService {
             EventFactory.redeemed(after, redemption, command.reservationRef(), delta, now),
             MutationArtifacts.redemption(reservation, redemption)
         );
+        recordAfterCommit(Operation.REDEEM, Outcome.SUCCESS, command.businessReason(), command.amount());
         return new RedeemResult(after, redemption);
     }
 
     @Transactional
     public PromotionInstrument release(String id, ReleaseBenefitCommand command) {
+        try {
+            return releaseBenefit(id, command);
+        } catch (RuntimeException exception) {
+            recordRejected(Operation.RELEASE, command.businessReason(), command.amount());
+            throw exception;
+        }
+    }
+
+    private PromotionInstrument releaseBenefit(String id, ReleaseBenefitCommand command) {
         Instant now = clock.instant();
         PromotionInstrument before = lockedBenefit(id);
         requireText(command.reservationRef(), "reservationRef");
         String releaseRef = operationRef(command.releaseRef(), command.businessReason());
         Optional<ReservationRelease> existing = repository.findReleaseByReference(id, releaseRef);
         if (existing.isPresent()) {
-            if (existing.get().sameRequest(command.reservationRef(), command.amount(), command.businessReason())) return before;
+            if (existing.get().sameRequest(command.reservationRef(), command.amount(), command.businessReason())) {
+                recordAfterCommit(Operation.RELEASE, Outcome.REPLAYED, command.businessReason(), command.amount());
+                return before;
+            }
             throw new ApiException(ApiErrorCode.CONFLICT, "releaseRef already has another release request");
         }
         BenefitReservation current = repository.findReservation(id, command.reservationRef())
@@ -281,11 +353,23 @@ public class WalletPromotionService {
             "brl-" + UUID.randomUUID(), id, command.reservationRef(), releaseRef, command.amount(), command.businessReason(), now
         );
         repository.saveMutation(after, wallet, EventFactory.released(after, command, release, delta, now), MutationArtifacts.release(reservation, release));
+        recordAfterCommit(Operation.RELEASE, Outcome.SUCCESS, command.businessReason(), command.amount());
         return after;
     }
 
     @Transactional
     public PromotionInstrument revoke(String id, RevokeBenefitCommand command) {
+        try {
+            return revokeBenefit(id, command);
+        } catch (RuntimeException exception) {
+            // The command carries no amount, so the currency is only knowable from
+            // the stored benefit; when even that read fails there is no valid point.
+            recordRejected(Operation.REVOKE, command.businessReason(), repository.findBenefit(id).map(PromotionInstrument::issuedAmount).orElse(null));
+            throw exception;
+        }
+    }
+
+    private PromotionInstrument revokeBenefit(String id, RevokeBenefitCommand command) {
         Instant now = command.effectiveAt() == null ? clock.instant() : command.effectiveAt();
         PromotionInstrument before = lockedBenefit(id);
         Money removed = before.availableAmount();
@@ -302,11 +386,21 @@ public class WalletPromotionService {
         );
         WalletBalanceDelta delta = delta(wallet, before.balanceType(), removed.currency(), removed.negate(), zero, zero);
         repository.saveMutation(after, wallet, EventFactory.revoked(after, removed, delta, now), MutationArtifacts.none());
+        recordAfterCommit(Operation.REVOKE, Outcome.SUCCESS, command.businessReason(), removed);
         return after;
     }
 
     @Transactional
     public ReverseResult reverse(String id, ReverseRedemptionCommand command) {
+        try {
+            return reverseRedemption(id, command);
+        } catch (RuntimeException exception) {
+            recordRejected(Operation.REVERSE, command.businessReason(), command.amount());
+            throw exception;
+        }
+    }
+
+    private ReverseResult reverseRedemption(String id, ReverseRedemptionCommand command) {
         Instant now = clock.instant();
         PromotionInstrument before = lockedBenefit(id);
         BenefitRedemption redemption = repository.findRedemption(command.redemptionId())
@@ -318,6 +412,7 @@ public class WalletPromotionService {
         Optional<ReversalRecord> existing = repository.findReversalByReference(command.redemptionId(), reversalRef);
         if (existing.isPresent()) {
             if (existing.get().sameRequest(command.amount(), command.businessReason())) {
+                recordAfterCommit(Operation.REVERSE, Outcome.REPLAYED, command.businessReason(), command.amount());
                 return new ReverseResult(before, command.redemptionId(), existing.get().reversedAt());
             }
             throw new ApiException(ApiErrorCode.CONFLICT, "reversalRef already has another reversal request");
@@ -366,6 +461,7 @@ public class WalletPromotionService {
             EventFactory.reversed(after, command.redemptionId(), reversal.reversalId(), reversalRef, command.amount(), delta, now),
             MutationArtifacts.reversal(reversal)
         );
+        recordAfterCommit(Operation.REVERSE, Outcome.SUCCESS, command.businessReason(), command.amount());
         return new ReverseResult(after, command.redemptionId(), now);
     }
 
@@ -380,6 +476,7 @@ public class WalletPromotionService {
                 // One bad candidate must not abort the whole sweep.
                 LOGGER.warn("expiry sweep skipped benefitId={} exceptionClass={} message={}",
                     before.benefitId(), ex.getClass().getName(), ex.getMessage());
+                recordRejected(Operation.EXPIRE, null, before.issuedAmount());
             }
         }
         for (BenefitReservation reservation : repository.findExpiredReservations(now, 50)) {
@@ -388,6 +485,7 @@ public class WalletPromotionService {
             } catch (RuntimeException ex) {
                 LOGGER.warn("reservation expiry skipped benefitId={} reservationRef={} exceptionClass={} message={}",
                     reservation.benefitId(), reservation.reservationRef(), ex.getClass().getName(), ex.getMessage());
+                recordRejected(Operation.RELEASE, null, reservation.originalAmount());
             }
         }
     }
@@ -427,6 +525,7 @@ public class WalletPromotionService {
             zero
         );
         repository.saveMutation(after, wallet, EventFactory.expired(after, available.plus(reserved), delta, now), MutationArtifacts.reservations(expiredReservations));
+        recordAfterCommit(Operation.EXPIRE, Outcome.SUCCESS, reason, available.plus(reserved));
     }
 
     private void expireReservation(BenefitReservation candidate, Instant now) {
@@ -453,6 +552,7 @@ public class WalletPromotionService {
             "brl-" + UUID.randomUUID(), before.benefitId(), current.reservationRef(), releaseRef, amount, reason, now
         );
         repository.saveMutation(after, wallet, EventFactory.released(after, command, release, delta, now), MutationArtifacts.release(expired, release));
+        recordAfterCommit(Operation.RELEASE, Outcome.SUCCESS, reason, amount);
     }
 
     private WalletAccount wallet(String accountId, String walletId, Instant now) {
@@ -555,6 +655,48 @@ public class WalletPromotionService {
             return operation.get();
         } catch (DomainException exception) {
             throw new ApiException(ApiErrorCode.DOMAIN_RULE_VIOLATION, exception.getMessage());
+        }
+    }
+
+    /**
+     * Records a terminal outcome once the surrounding transaction commits.
+     *
+     * <p>Success must not be counted before the write is durable: a rollback
+     * after this point would otherwise report an operation that never happened.
+     */
+    private void recordAfterCommit(Operation operation, Outcome outcome, BusinessReason reason, Money amount) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    record(operation, outcome, reason, amount);
+                }
+            });
+            return;
+        }
+        record(operation, outcome, reason, amount);
+    }
+
+    /**
+     * Records a rejected attempt immediately. Rejections roll the transaction
+     * back, so {@code afterCommit} would never fire for them, yet the attempt is
+     * exactly what an operator needs to see.
+     */
+    private void recordRejected(Operation operation, BusinessReason reason, Money amount) {
+        record(operation, Outcome.REJECTED, reason, amount);
+    }
+
+    private void record(Operation operation, Outcome outcome, BusinessReason reason, Money amount) {
+        String currency = amount == null ? null : amount.currency();
+        if (currency == null || currency.isBlank()) {
+            // Integer minor units always carry a currency; without one there is no
+            // valid point to record.
+            return;
+        }
+        try {
+            metrics.operation(operation, outcome, ReasonCode.from(reason), currency);
+        } catch (RuntimeException ignored) {
+            // Telemetry is diagnostic and must never fail or mask a business operation.
         }
     }
 
