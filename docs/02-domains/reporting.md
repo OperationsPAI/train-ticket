@@ -1,6 +1,6 @@
 # Reporting 当前设计
 
-更新日期：2026年9月24日。
+更新日期：2026年9月25日。
 运行基线为 Helm revision 279，服务使用 Python、FastAPI、PostgreSQL 和 Redis。
 统一待办见 [TODO](../TODO.md)。
 
@@ -20,6 +20,7 @@ Finance Settlement 保存收入确认和冲减，Reporting 的金额指标采用
 
 金额报表支持 `route`、`seat_class`、`channel`、`passenger_type` 和 `time_period` 五个维度。
 PostgreSQL 分组始终包含币种，缺失维度使用 `unknown`，缺失币种使用 USD，时间按 UTC 小时归集。
+`totalRevenue`、`routeRevenue` 和 `revenue_per_hour` 均返回按 ISO 币种代码排序的 Money 数组；不同币种不相加、不隐式换算，空结果返回空数组。
 金额来自支付事件，维度和附加标记来自已接收事件字段，服务没有自动补全所有缺失维度。
 这些指标不表示净收入或会计确认收入。
 
@@ -38,13 +39,12 @@ SQL 保留源事件表，物化视图是可重新计算的派生结果。
 
 ## 当前查询边界
 
-`totalRevenue` 只汇总应用 `limit` 后返回的项目，并使用首个项目的币种标签，空结果使用 USD。
-返回多个币种时，这一标量没有换算含义，不能作为跨币种合计。
+`totalRevenue` 按币种独立汇总，不再使用首个项目的币种标记跨币种标量。
 PostgreSQL 对缺少金额的 captured 行计数一次、金额贡献为零；内存聚合器只对有金额的 captured 事件计入金额报表数量。
 默认目录说明只用于初始化缺失指标，已有数据库指标描述保留原值。
 
 操作指标、路线指标和异常规则使用 `MetricAggregator`。
-PostgreSQL 加载聚合器时最多读取符合条件的最新10000条事件，并要求同一币种。
+PostgreSQL 加载聚合器时最多读取符合条件的最新10000条事件；聚合器按币种独立保存金额。
 其时间窗口结果受这一输入数量限制，不能据此保证覆盖高流量下完整历史窗口。
 `orders_per_second` 当前字段返回最近60秒订单事件数量。
 `trends` 返回当前快照的单个时间点。
