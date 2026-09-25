@@ -13,6 +13,10 @@ import com.trainticket.bookingorchestration.domain.ProviderReference;
 import com.trainticket.bookingorchestration.domain.ProviderReservationConfirmed;
 import com.trainticket.bookingorchestration.domain.SegmentBooking;
 import com.trainticket.bookingorchestration.domain.SegmentBookingEvent;
+import com.trainticket.bookingorchestration.observability.BookingSagaMetrics;
+import com.trainticket.bookingorchestration.observability.NoopBookingSagaMetrics;
+import com.trainticket.bookingorchestration.observability.NoopOrderFunnelMetrics;
+import com.trainticket.bookingorchestration.observability.OrderFunnelMetrics;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -45,6 +49,8 @@ public class BookingOrchestrationService {
     private final PaymentIntentSagaReferenceRepository paymentIntentRefs;
     private final ConsumedEventRepository consumedEvents;
     private final BookingSagaStepDeadlineRepository stepDeadlines;
+    private final BookingSagaMetrics sagaMetrics;
+    private final OrderFunnelMetrics orderFunnelMetrics;
 
 
     public BookingOrchestrationService(Clock clock, EventPublisher eventPublisher) {
@@ -58,7 +64,9 @@ public class BookingOrchestrationService {
                                        SegmentBookingRepository segmentBookings,
                                        PaymentIntentSagaReferenceRepository paymentIntentRefs,
                                        ConsumedEventRepository consumedEvents,
-                                       BookingSagaStepDeadlineRepository stepDeadlines) {
+                                       BookingSagaStepDeadlineRepository stepDeadlines,
+                                       BookingSagaMetrics sagaMetrics,
+                                       OrderFunnelMetrics orderFunnelMetrics) {
         this.clock = Objects.requireNonNull(clock, "clock is required");
         this.eventPublisher = Objects.requireNonNull(eventPublisher, "eventPublisher is required");
         this.sagas = Objects.requireNonNull(sagas, "sagas repository is required");
@@ -66,6 +74,17 @@ public class BookingOrchestrationService {
         this.paymentIntentRefs = Objects.requireNonNull(paymentIntentRefs, "paymentIntentRefs repository is required");
         this.consumedEvents = Objects.requireNonNull(consumedEvents, "consumedEvents repository is required");
         this.stepDeadlines = Objects.requireNonNull(stepDeadlines, "stepDeadlines repository is required");
+        this.sagaMetrics = Objects.requireNonNull(sagaMetrics, "sagaMetrics is required");
+        this.orderFunnelMetrics = Objects.requireNonNull(orderFunnelMetrics, "orderFunnelMetrics is required");
+    }
+
+    public BookingOrchestrationService(Clock clock, EventPublisher eventPublisher, BookingSagaRepository sagas,
+                                       SegmentBookingRepository segmentBookings,
+                                       PaymentIntentSagaReferenceRepository paymentIntentRefs,
+                                       ConsumedEventRepository consumedEvents,
+                                       BookingSagaStepDeadlineRepository stepDeadlines) {
+        this(clock, eventPublisher, sagas, segmentBookings, paymentIntentRefs, consumedEvents, stepDeadlines,
+            new NoopBookingSagaMetrics(), new NoopOrderFunnelMetrics());
     }
 
     public StartSagaResult startSaga(StartSagaCommand command, String idempotencyKey, String correlationId) {
@@ -74,6 +93,8 @@ public class BookingOrchestrationService {
         Instant riskDeadline = saga.beginStepWait(sagaId + ":risk");
         sagas.save(saga, correlationId);
         stepDeadlines.schedule(sagaId, sagaId + ":risk", riskDeadline);
+        sagaMetrics.transition(BookingSagaMetrics.Stage.RISK_CHECK, BookingSagaMetrics.Outcome.STARTED,
+            BookingSagaMetrics.ReasonCode.NONE);
         String causationId = "cmd-" + UUID.randomUUID();
         publishEvents(saga.pullEvents(), correlationId, causationId);
         publishRiskAssessmentRequested(sagaId, command.journeyOrderId(), command.accountId(), correlationId, causationId);
@@ -124,6 +145,8 @@ public class BookingOrchestrationService {
             saga.advanceTo(BookingSagaStatus.CONFIRMING);
             Instant reservationDeadline = saga.beginStepWait(sagaId + ":reservations");
             sagas.save(saga,correlationId);
+            sagaMetrics.transition(BookingSagaMetrics.Stage.RESERVATION, BookingSagaMetrics.Outcome.STARTED,
+                BookingSagaMetrics.ReasonCode.NONE);
             stepDeadlines.schedule(sagaId, sagaId + ":reservations", reservationDeadline);
             publishEvents(saga.pullEvents(),correlationId,PrefixedIds.newCommandId());
         }
@@ -131,6 +154,7 @@ public class BookingOrchestrationService {
         var booking = SegmentBooking.requestReservation("sb-" + foldedId("change-booking:" + bookingKey),orderId,offerItemId,segmentRef,travelerRef,purpose,clock).withClassRef(classRef)
             .withSupplyReference(scheduledServiceRef, serviceDate);
         segmentBookings.save(booking,sagaId);
+        funnel(OrderFunnelMetrics.Stage.RESERVATION, OrderFunnelMetrics.Outcome.ATTEMPTED);
         eventPublisher.publish(new EventEnvelope(PrefixedIds.newEventId(),"SegmentReservationRequested",clock.instant(),correlationId,
             PrefixedIds.newCommandId(),PRODUCER,1,Map.of("segmentBookingId",booking.segmentBookingId(),"journeyOrderId",orderId,
                 "segmentRef",segmentRef,"travelerRef",travelerRef,"idempotencyKey",booking.idempotencyKey(),"classRef",classRef,"postSalesCaseId",caseId,
@@ -176,6 +200,7 @@ public class BookingOrchestrationService {
             command.segmentBookingId(), saga.journeyOrderId(), command.segmentRef(), command.segmentRef(),
             command.travelerRef(), "purchase", clock);
         segmentBookings.save(booking, sagaId);
+        funnel(OrderFunnelMetrics.Stage.RESERVATION, OrderFunnelMetrics.Outcome.ATTEMPTED);
         publishEvents(booking.pullEvents(), correlationId, "cmd-" + UUID.randomUUID());
 
         RequestReservationResult result = new RequestReservationResult(command.segmentBookingId(), "REQUESTED");
@@ -208,6 +233,7 @@ public class BookingOrchestrationService {
             .withStandingAcceptance(facts.standingAccepted())
             .withSupplyReference(facts.scheduledServiceRef(), facts.serviceDate());
         segmentBookings.save(booking, sagaId);
+        funnel(OrderFunnelMetrics.Stage.RESERVATION, OrderFunnelMetrics.Outcome.ATTEMPTED);
         eventPublisher.publish(new EventEnvelope(PrefixedIds.newEventId(), "SegmentReservationRequested", clock.instant(),
             correlationId, PrefixedIds.newCommandId(), PRODUCER, 1,
             Map.of("segmentBookingId", booking.segmentBookingId(), "journeyOrderId", facts.orderId(),
@@ -231,6 +257,7 @@ public class BookingOrchestrationService {
             throw new PreconditionFailedException(ex.getMessage(), ex);
         }
         segmentBookings.save(booking, sagaId);
+        funnel(OrderFunnelMetrics.Stage.TICKET, OrderFunnelMetrics.Outcome.ACCEPTED);
         publishEvents(booking.pullEvents(), correlationId, "cmd-" + UUID.randomUUID());
 
         MarkTicketedResult result = new MarkTicketedResult(command.segmentBookingId(), "TICKETED");
@@ -339,6 +366,8 @@ public class BookingOrchestrationService {
         Instant riskDeadline = saga.beginStepWait(sagaId + ":risk");
         sagas.save(saga, correlationId);
         stepDeadlines.schedule(sagaId, sagaId + ":risk", riskDeadline);
+        sagaMetrics.transition(BookingSagaMetrics.Stage.RISK_CHECK, BookingSagaMetrics.Outcome.STARTED,
+            BookingSagaMetrics.ReasonCode.NONE);
         publishEvents(saga.pullEvents(), correlationId, causationId);
         publishRiskAssessmentRequested(sagaId, journeyOrderId, accountId, correlationId, causationId);
     }
@@ -408,6 +437,9 @@ public class BookingOrchestrationService {
         if (saga != null && saga.status() != BookingSagaStatus.FAILED && saga.status() != BookingSagaStatus.COMPLETED) {
             saga.fail(reason == null ? "capacity hold failed" : reason);
             sagas.save(saga, correlationId);
+            sagaMetrics.transition(BookingSagaMetrics.Stage.RESERVATION, BookingSagaMetrics.Outcome.REJECTED,
+                BookingSagaMetrics.ReasonCode.CAPACITY_HOLD_FAILED);
+            funnel(OrderFunnelMetrics.Stage.RESERVATION, OrderFunnelMetrics.Outcome.REJECTED);
             publishEvents(saga.pullEvents(), correlationId, causationId);
         }
     }
@@ -452,6 +484,9 @@ public class BookingOrchestrationService {
         if (saga != null) {
             safeAdvance(saga, BookingSagaStatus.TICKETING);
             sagas.save(saga, correlationId);
+            sagaMetrics.transition(BookingSagaMetrics.Stage.PAYMENT, BookingSagaMetrics.Outcome.ACCEPTED,
+                BookingSagaMetrics.ReasonCode.NONE);
+            funnel(OrderFunnelMetrics.Stage.PAYMENT, OrderFunnelMetrics.Outcome.ACCEPTED);
             publishEvents(saga.pullEvents(), correlationId, causationId);
         }
     }
@@ -467,6 +502,9 @@ public class BookingOrchestrationService {
             String reason = firstText(payload, "reason", "reasonCode");
             saga.fail(reason == null ? "payment failed" : reason);
             sagas.save(saga, correlationId);
+            sagaMetrics.transition(BookingSagaMetrics.Stage.PAYMENT, BookingSagaMetrics.Outcome.REJECTED,
+                BookingSagaMetrics.ReasonCode.PAYMENT_FAILED);
+            funnel(OrderFunnelMetrics.Stage.PAYMENT, OrderFunnelMetrics.Outcome.REJECTED);
             publishEvents(saga.pullEvents(), correlationId, causationId);
         }
     }
@@ -489,6 +527,7 @@ public class BookingOrchestrationService {
         booking.confirmFromProvider(new ProviderReservationConfirmed(
             booking.segmentBookingId(), reference, evidence, Map.of()));
         saveAndPublish(booking, correlationId, causationId);
+        funnel(OrderFunnelMetrics.Stage.RESERVATION, OrderFunnelMetrics.Outcome.ACCEPTED);
         markSagaStepSucceeded("ProviderReservationConfirmed", booking.segmentBookingId(), correlationId, causationId);
     }
 
@@ -506,6 +545,9 @@ public class BookingOrchestrationService {
         String reason = firstText(payload, "errorMessage", "reason", "errorType");
         booking.failReservation(reason == null ? "provider reservation failed" : reason);
         saveAndPublish(booking, correlationId, causationId);
+        sagaMetrics.transition(BookingSagaMetrics.Stage.RESERVATION, BookingSagaMetrics.Outcome.REJECTED,
+            BookingSagaMetrics.ReasonCode.PROVIDER_FAILURE);
+        funnel(OrderFunnelMetrics.Stage.RESERVATION, OrderFunnelMetrics.Outcome.REJECTED);
     }
 
     private void handleEntitlementIssued(Map<String, Object> payload, String correlationId, String causationId) {
@@ -547,6 +589,8 @@ public class BookingOrchestrationService {
         }
         markTicketed(sagaId, new MarkTicketedCommand(segmentBookingId, entitlementId),
             "event:" + causationId + ":" + segmentBookingId, correlationId);
+        sagaMetrics.transition(BookingSagaMetrics.Stage.TICKETING, BookingSagaMetrics.Outcome.ACCEPTED,
+            BookingSagaMetrics.ReasonCode.NONE);
         BookingSaga saga = sagas.findById(sagaId).orElse(null);
         if (saga != null && saga.status() == BookingSagaStatus.TICKETING && allSegmentsTicketed(saga.sagaId())) {
             saga.advanceTo(BookingSagaStatus.INVOICING);
@@ -573,6 +617,9 @@ public class BookingOrchestrationService {
         if (saga.status() != BookingSagaStatus.FAILED && saga.status() != BookingSagaStatus.COMPLETED) {
             saga.fail(failureReason);
             sagas.save(saga, correlationId);
+            sagaMetrics.transition(BookingSagaMetrics.Stage.TICKETING, BookingSagaMetrics.Outcome.REJECTED,
+                BookingSagaMetrics.ReasonCode.ENTITLEMENT_FAILED);
+            funnel(OrderFunnelMetrics.Stage.TICKET, OrderFunnelMetrics.Outcome.REJECTED);
             publishEvents(saga.pullEvents(), correlationId, causationId);
         }
     }
@@ -627,16 +674,23 @@ public class BookingOrchestrationService {
             saga.advanceTo(BookingSagaStatus.RESERVING);
             beginReserveStepWaits(saga);
             sagas.save(saga, correlationId);
+            sagaMetrics.transition(BookingSagaMetrics.Stage.RISK_CHECK, BookingSagaMetrics.Outcome.ACCEPTED,
+                BookingSagaMetrics.ReasonCode.NONE);
             publishEvents(saga.pullEvents(), correlationId, causationId);
         } else if ("BLOCK".equals(verdict)) {
             saga.fail("risk-blocked");
             stepDeadlines.clearSaga(sagaId);
             sagas.save(saga, correlationId);
+            sagaMetrics.transition(BookingSagaMetrics.Stage.RISK_CHECK, BookingSagaMetrics.Outcome.REJECTED,
+                BookingSagaMetrics.ReasonCode.RISK_BLOCKED);
             publishEvents(saga.pullEvents(), correlationId, causationId);
         } else if ("CHALLENGE".equals(verdict) || "HOLD".equals(verdict)) {
             saga.moveToManualReview("risk-" + verdict.toLowerCase(java.util.Locale.ROOT));
             stepDeadlines.clearSaga(sagaId);
             sagas.save(saga, correlationId);
+            sagaMetrics.transition(BookingSagaMetrics.Stage.RISK_CHECK, BookingSagaMetrics.Outcome.MANUAL_REVIEW,
+                "CHALLENGE".equals(verdict) ? BookingSagaMetrics.ReasonCode.RISK_CHALLENGE
+                    : BookingSagaMetrics.ReasonCode.RISK_HOLD);
             publishEvents(saga.pullEvents(), correlationId, causationId);
         } else {
             throw new IllegalArgumentException("unsupported risk verdict: " + verdict);
@@ -683,6 +737,8 @@ public class BookingOrchestrationService {
         stepDeadlines.clear(sagaId, sagaId + ":invoice");
         saga.complete();
         sagas.save(saga, correlationId);
+        sagaMetrics.transition(BookingSagaMetrics.Stage.INVOICING, BookingSagaMetrics.Outcome.COMPLETED,
+            BookingSagaMetrics.ReasonCode.NONE);
         publishEvents(saga.pullEvents(), correlationId, causationId);
     }
 
@@ -805,6 +861,13 @@ public class BookingOrchestrationService {
         saga.fail(STEP_TIMED_OUT);
         sagas.save(saga, correlationId);
         for (BookingSagaStep timedOut : expired) {
+            sagaMetrics.transition(stageOfStep(timedOut.name()), BookingSagaMetrics.Outcome.REJECTED,
+                BookingSagaMetrics.ReasonCode.STEP_TIMED_OUT);
+        }
+        if (expired.stream().anyMatch(step -> step.name().startsWith("reserve-"))) {
+            funnel(OrderFunnelMetrics.Stage.RESERVATION, OrderFunnelMetrics.Outcome.REJECTED);
+        }
+        for (BookingSagaStep timedOut : expired) {
             stepDeadlines.clear(sagaId, timedOut.idempotencyKey());
         }
         if (releasesCapacity) {
@@ -861,6 +924,20 @@ public class BookingOrchestrationService {
         return booking.bookingPurpose().startsWith("change:");
     }
 
+    /** The saga stage a planned step belongs to, for the bounded stage label. */
+    private static BookingSagaMetrics.Stage stageOfStep(String stepName) {
+        if (stepName.startsWith("risk")) {
+            return BookingSagaMetrics.Stage.RISK_CHECK;
+        }
+        if (stepName.startsWith("reserve") || stepName.startsWith("change-reservations")) {
+            return BookingSagaMetrics.Stage.RESERVATION;
+        }
+        if (stepName.startsWith("invoice")) {
+            return BookingSagaMetrics.Stage.INVOICING;
+        }
+        return BookingSagaMetrics.Stage.OTHER;
+    }
+
     private void markSagaStepSucceeded(String eventType, String segmentBookingId, String correlationId, String causationId) {
         SegmentBookingRepository.SegmentBookingRecord record = segmentBookings.findById(segmentBookingId).orElse(null);
         SegmentBooking booking = record == null ? null : record.booking();
@@ -886,6 +963,8 @@ public class BookingOrchestrationService {
             if (allReserveStepsSucceeded(saga)) {
                 saga.advanceTo(BookingSagaStatus.AWAITING_PAYMENT);
                 sagas.save(saga, correlationId);
+                sagaMetrics.transition(BookingSagaMetrics.Stage.RESERVATION, BookingSagaMetrics.Outcome.ACCEPTED,
+                    BookingSagaMetrics.ReasonCode.NONE);
                 publishEvents(saga.pullEvents(), correlationId, causationId);
             } else {
                 sagas.save(saga, correlationId);
@@ -918,7 +997,14 @@ public class BookingOrchestrationService {
         }
         stepDeadlines.clear(saga.sagaId(), stepKey);
         sagas.save(saga, correlationId);
+        sagaMetrics.transition(BookingSagaMetrics.Stage.RESERVATION, BookingSagaMetrics.Outcome.ACCEPTED,
+            BookingSagaMetrics.ReasonCode.NONE);
         publishEvents(saga.pullEvents(), correlationId, causationId);
+    }
+
+    /** Booking orchestration never receives the purchase channel, so the funnel reports it unknown. */
+    private void funnel(OrderFunnelMetrics.Stage stage, OrderFunnelMetrics.Outcome outcome) {
+        orderFunnelMetrics.transition(stage, outcome, OrderFunnelMetrics.Channel.OTHER);
     }
 
     private boolean allReserveStepsSucceeded(BookingSaga saga) {
