@@ -5,6 +5,7 @@ import com.trainticket.platformkit.http.CorrelationIds;
 import com.trainticket.postsales.application.OrderNotRefundableException;
 import com.trainticket.postsales.application.PolicyContextUnavailableException;
 import com.trainticket.postsales.application.PostSalesConcurrencyException;
+import com.trainticket.postsales.application.CompensationMismatchException;
 import com.trainticket.postsales.application.RefundAlreadyInProgressException;
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.Map;
@@ -33,6 +34,15 @@ public class PostSalesExceptionHandler {
     @ExceptionHandler(PostSalesConcurrencyException.class)
     public ResponseEntity<ApiError> handleConcurrency(PostSalesConcurrencyException exception, HttpServletRequest request) {
         return error(HttpStatus.CONFLICT, "REFUND_ALREADY_IN_PROGRESS", exception.getMessage(), request, Map.of());
+    }
+
+    @ExceptionHandler(CompensationMismatchException.class)
+    public ResponseEntity<ApiError> handleCompensationMismatch(CompensationMismatchException exception, HttpServletRequest request) {
+        var checkpoint=exception.checkpoint();
+        return error(HttpStatus.CONFLICT,"COMPENSATION_MISMATCH",exception.getMessage(),request,Map.of(
+            "caseId",prefixed(checkpoint.caseId()),"mismatchCode",checkpoint.mismatchCode(),
+            "approvedAmount",Map.of("currency",checkpoint.approvedCurrency(),"minorUnits",checkpoint.approvedMinorUnits()),
+            "detectedAt",checkpoint.detectedAt().toString(),"automaticReplayAllowed",false));
     }
 
     /**
