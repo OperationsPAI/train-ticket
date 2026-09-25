@@ -5,7 +5,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.trainticket.walletpromotion.domain.ApplicableScope;
 import com.trainticket.walletpromotion.domain.BalanceType;
+import com.trainticket.walletpromotion.domain.BenefitScopeType;
 import com.trainticket.walletpromotion.domain.BenefitType;
+import com.trainticket.walletpromotion.domain.BenefitUseReference;
 import com.trainticket.walletpromotion.domain.BusinessReason;
 import com.trainticket.walletpromotion.domain.IssuanceSource;
 import com.trainticket.walletpromotion.domain.Money;
@@ -28,6 +30,7 @@ public class WalletPromotionServiceTest {
             new Money("USD", 20),
             "ord-1",
             null,
+            use("ord-1"),
             reason(ReasonType.ORDER_PURCHASE, "ORDER_BENEFIT_USE", "ORDER", "ord-1")
         );
 
@@ -37,7 +40,7 @@ public class WalletPromotionServiceTest {
         assertThat(replay.redemption().redemptionId()).isEqualTo(first.redemption().redemptionId());
         assertThatThrownBy(() -> service.redeem(
             benefit.benefitId(),
-            new RedeemBenefitCommand(new Money("USD", 10), "ord-1", null, command.businessReason())
+            new RedeemBenefitCommand(new Money("USD", 10), "ord-1", null, use("ord-1"), command.businessReason())
         )).hasMessageContaining("benefit already redeemed");
     }
 
@@ -53,7 +56,10 @@ public class WalletPromotionServiceTest {
     }
 
     static WalletPromotionService service() {
-        return new WalletPromotionService(new InMemoryPromotionRepository(Optional.empty()));
+        return new WalletPromotionService(
+            new InMemoryPromotionRepository(Optional.empty()),
+            (benefit, useReference, businessReason) -> { }
+        );
     }
 
     public static IssueBenefitCommand issue(Instant validUntil) {
@@ -64,7 +70,7 @@ public class WalletPromotionServiceTest {
             new Money("USD", 100),
             IssuanceSource.MANUAL_OPS,
             null,
-            new ApplicableScope("ANY_TRIP", null, "USD"),
+            new ApplicableScope(BenefitScopeType.ANY_TRIP, null, "USD"),
             new RedemptionRule(false, null, false),
             new RevocationRule(null),
             Instant.parse("1999-01-01T00:00:00Z"),
@@ -75,5 +81,9 @@ public class WalletPromotionServiceTest {
 
     public static BusinessReason reason(ReasonType type, String code, String referenceType, String referenceId) {
         return new BusinessReason(type, code, referenceType, referenceId, null);
+    }
+
+    public static BenefitUseReference use(String orderId) {
+        return new BenefitUseReference(orderId, null, java.util.List.of());
     }
 }
