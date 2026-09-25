@@ -1292,6 +1292,8 @@ services:
       limits: { cpu: '6', memory: 4Gi }
   reporting:
     db: reporting
+    pgInstance: event
+    image: mirrors.tencent.com/microservice/reporting:copyfix-f536879b@sha256:3d44229d933cf65070168b6661c38b1e5aff2fd7a9f6caf0e28673b937d5c93f
     env:
       # Twelve rather than four: the projection consumer still reached ten
       # thousand events of lag on the Journey Order stream at a burst, and its
