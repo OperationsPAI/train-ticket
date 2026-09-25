@@ -6,10 +6,18 @@ from pathlib import Path
 
 from psycopg import sql
 from psycopg_pool import ConnectionPool
-from train_ticket_platform.storage import run_migrations
-
-
 VERSION = "006_exclude_incomplete_captures.sql"
+
+
+def _run_through(conn, migrations_dir: Path, version: str) -> None:
+    conn.execute("CREATE TABLE IF NOT EXISTS schema_migrations (version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())")
+    for migration in sorted(migrations_dir.glob("[0-9][0-9][0-9]_*.sql")):
+        if migration.name > version:
+            break
+        if conn.execute("SELECT 1 FROM schema_migrations WHERE version=%s", (migration.name,)).fetchone():
+            continue
+        conn.execute(migration.read_text())
+        conn.execute("INSERT INTO schema_migrations(version) VALUES (%s)", (migration.name,))
 
 
 def migrate_revenue(url: str, schema: str = "public", timeout_seconds: int = 600) -> dict:
@@ -27,7 +35,9 @@ def migrate_revenue(url: str, schema: str = "public", timeout_seconds: int = 600
             acquired = conn.execute("SELECT pg_try_advisory_lock(hashtextextended('reporting:projection-refresh',0))").fetchone()[0]
             if not acquired:
                 raise RuntimeError("Reporting refresh is active; retry when the coordinated window is available")
-        run_migrations(pool, Path(__file__).resolve().parents[1] / "migrations")
+        with pool.connection() as conn:
+            with conn.transaction():
+                _run_through(conn, Path(__file__).resolve().parents[1] / "migrations", VERSION)
         with pool.connection() as conn:
             version, applied_at = conn.execute("SELECT version,applied_at FROM schema_migrations WHERE version=%s", (VERSION,)).fetchone()
             populated = conn.execute("""
