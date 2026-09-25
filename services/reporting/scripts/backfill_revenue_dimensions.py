@@ -206,6 +206,74 @@ class BackfillWriter:
             time.sleep(self.delay_seconds)
 
 
+def _copy_capture_references(
+    source_url: str,
+    target: psycopg.Connection[Any],
+    since: datetime | None,
+) -> int:
+    target.execute(
+        """
+        CREATE TEMP TABLE IF NOT EXISTS reporting_capture_reference_stage (
+          event_id text PRIMARY KEY,
+          business_ref text NOT NULL,
+          payment_intent_id text,
+          payment_purpose text,
+          source_occurred_at timestamptz NOT NULL
+        ) ON COMMIT PRESERVE ROWS
+        """
+    )
+    target.execute("TRUNCATE reporting_capture_reference_stage")
+    where = "" if since is None else "AND snapshot.updated_at >= %s"
+    params: tuple[Any, ...] = () if since is None else (since,)
+    query = f"""
+      COPY (
+        SELECT
+          event->>'eventId' AS event_id,
+          COALESCE(NULLIF(event->'payload'->>'businessRef',''),
+                   NULLIF(event->'payload'->>'orderId',''),
+                   NULLIF(snapshot.data->>'businessRef',''),
+                   'unresolved:' || (event->>'eventId')) AS business_ref,
+          COALESCE(NULLIF(event->'payload'->>'paymentIntentId',''),
+                   NULLIF(event->'payload'->>'intentId',''),
+                   NULLIF(snapshot.data->>'paymentIntentId','')) AS payment_intent_id,
+          COALESCE(NULLIF(event->'payload'->>'purpose',''),
+                   NULLIF(snapshot.data->>'purpose','')) AS payment_purpose,
+          COALESCE(NULLIF(event->>'occurredAt','')::timestamptz,snapshot.updated_at) AS source_occurred_at
+        FROM payment_intent_snapshots snapshot
+        CROSS JOIN LATERAL jsonb_array_elements(COALESCE(snapshot.data->'domainEvents','[]'::jsonb)) event
+        WHERE event->>'eventType'='PaymentCaptured' {where}
+      ) TO STDOUT
+    """
+    with psycopg.connect(source_url) as source:
+        with source.transaction():
+            source.execute("SET TRANSACTION READ ONLY")
+            with source.cursor().copy(query, params) as copy_out:
+                with target.cursor().copy(
+                    "COPY reporting_capture_reference_stage(event_id,business_ref,payment_intent_id,payment_purpose,source_occurred_at) FROM STDIN"
+                ) as copy_in:
+                    for block in copy_out:
+                        copy_in.write(block)
+    row = target.execute(
+        """
+        WITH merged AS (
+          INSERT INTO reporting_capture_references(event_id,business_ref,payment_intent_id,payment_purpose,source_occurred_at)
+          SELECT event_id,business_ref,payment_intent_id,payment_purpose,source_occurred_at
+          FROM reporting_capture_reference_stage
+          ON CONFLICT(event_id) DO UPDATE SET
+            business_ref=EXCLUDED.business_ref,
+            payment_intent_id=EXCLUDED.payment_intent_id,
+            payment_purpose=EXCLUDED.payment_purpose,
+            source_occurred_at=EXCLUDED.source_occurred_at
+          WHERE reporting_capture_references.source_occurred_at<=EXCLUDED.source_occurred_at
+          RETURNING 1
+        )
+        SELECT (SELECT count(*) FROM reporting_capture_reference_stage),count(*) FROM merged
+        """
+    ).fetchone()
+    target.commit()
+    return int(row[0])
+
+
 CAPTURE_SQL = """
 INSERT INTO reporting_capture_references(event_id,business_ref,payment_intent_id,payment_purpose,source_occurred_at)
 VALUES (%s,%s,%s,%s,%s) ON CONFLICT(event_id) DO UPDATE SET
@@ -344,8 +412,7 @@ def backfill(
         _ensure_setup(reporting, schema)
         writer = BackfillWriter(reporting, max(0, batch_delay_ms) / 1000)
 
-        for batch in _iter_snapshots(source_urls["payment"], "payment_intent_snapshots", batch_size, since):
-            writer.write("captures", CAPTURE_SQL, [row for data, updated in batch for row in capture_rows(data, updated)])
+        writer.counts["captures"] = _copy_capture_references(source_urls["payment"], reporting, since)
 
         if since is None:
             post_sales_batches = (
