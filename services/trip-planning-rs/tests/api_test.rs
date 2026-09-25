@@ -56,6 +56,54 @@ fn seed_route(
     });
 }
 
+fn seed_segment(
+    state: &std::sync::Arc<trip_planning::AppState>,
+    reference: &str,
+    origin: &str,
+    destination: &str,
+    departure: &str,
+    arrival: &str,
+) {
+    let departure_time = chrono::DateTime::parse_from_rfc3339(departure)
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    state.plan_index.upsert_segment(trip_planning::plan_index::SegmentEntry {
+        segment_ref: reference.to_string(),
+        scheduled_service_ref: format!("ss-{reference}"),
+        origin_stop_ref: origin.to_string(),
+        destination_stop_ref: destination.to_string(),
+        departure_time,
+        departure_date: departure_time.date_naive(),
+        arrival_time: chrono::DateTime::parse_from_rfc3339(arrival)
+            .unwrap()
+            .with_timezone(&chrono::Utc),
+    });
+}
+
+fn publish_same_station_rule(
+    state: &std::sync::Arc<trip_planning::AppState>,
+    minimum_minutes: u32,
+) {
+    let mutation = state.plan_index.apply_event(
+        "MctRulePublished",
+        &serde_json::json!({
+            "mctRuleId": "mct-api",
+            "version": 1,
+            "status": "PUBLISHED",
+            "fromNodeType": "STATION",
+            "toNodeType": "STATION",
+            "transferCategory": "SAME_STATION",
+            "minimumMinutes": minimum_minutes,
+            "conditions": {},
+            "validFrom": "2026-07-01T00:00:00Z"
+        }),
+    );
+    assert!(matches!(
+        mutation,
+        trip_planning::plan_index::IndexMutation::MinimumConnectionRulePublished(_)
+    ));
+}
+
 #[tokio::test]
 async fn search_returns_valid_response() {
     let (app, state) = test_app();
@@ -320,4 +368,118 @@ async fn search_with_no_inventory_returns_no_itinerary() {
          invented and the failure moves to whichever service is asked about it next",
         itineraries.len()
     );
+}
+
+#[tokio::test]
+async fn multileg_search_is_opt_in_and_enforces_the_published_mct_rule() {
+    let (app, state) = test_app();
+    seed_segment(
+        &state,
+        "seg-a-b",
+        "station-A",
+        "station-B",
+        "2026-07-10T08:00:00Z",
+        "2026-07-10T09:00:00Z",
+    );
+    seed_segment(
+        &state,
+        "seg-b-c-short",
+        "station-B",
+        "station-C",
+        "2026-07-10T09:19:00Z",
+        "2026-07-10T10:00:00Z",
+    );
+    seed_segment(
+        &state,
+        "seg-b-c-valid",
+        "station-B",
+        "station-C",
+        "2026-07-10T09:20:00Z",
+        "2026-07-10T10:01:00Z",
+    );
+    publish_same_station_rule(&state, 20);
+
+    let base = serde_json::json!({
+        "originRef": "station-A",
+        "destinationRef": "station-C",
+        "departureDate": "2026-07-10",
+        "travelerRefs": ["tvl-1"],
+        "channel": "web"
+    });
+    let direct_only = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/itineraries/search")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&base).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(direct_only.status(), StatusCode::OK);
+    let body = direct_only.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert!(json["itineraries"].as_array().unwrap().is_empty());
+
+    let mut multileg = base;
+    multileg["maxConnections"] = serde_json::json!(1);
+    multileg["minConnectionMinutes"] = serde_json::json!(5);
+    multileg["maxConnectionWaitMinutes"] = serde_json::json!(120);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/itineraries/search")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&multileg).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    let itineraries = json["itineraries"].as_array().unwrap();
+    assert_eq!(itineraries.len(), 1);
+    assert_eq!(itineraries[0]["legs"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        itineraries[0]["legs"][1]["serviceSegmentRef"],
+        "seg-b-c-valid"
+    );
+    assert!(json["planningSnapshotRefs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value == "mct-rule:mct-api:v1"));
+}
+
+#[tokio::test]
+async fn multileg_search_rejects_unbounded_preferences() {
+    let (app, _state) = test_app();
+    let payload = serde_json::json!({
+        "originRef": "station-A",
+        "destinationRef": "station-C",
+        "departureDate": "2026-07-10",
+        "travelerRefs": ["tvl-1"],
+        "channel": "web",
+        "maxConnections": 4
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/itineraries/search")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["code"], "VALIDATION_FAILED");
+    assert!(json["message"].as_str().unwrap().contains("maxConnections"));
 }

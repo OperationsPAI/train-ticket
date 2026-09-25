@@ -1,6 +1,6 @@
 # Trip Planning — HTTP API
 
-Last updated: 2026-07-05
+Last updated: 2026-09-25
 
 ## Overview
 
@@ -30,6 +30,13 @@ hints. It does not lock inventory or create offers.
 | `travelerRefs` | string[] | yes | Traveler references for pricing hints. |
 | `channel` | string | yes | Sales channel. |
 | `maxResults` | integer | no | Maximum results to return (default 10, max 50). |
+| `maxConnections` | integer | no | Enables connected search when greater than zero; range 0 to 3. Omitted or zero keeps direct-only search. |
+| `minConnectionMinutes` | integer | no | Caller minimum connection time, range 0 to 1440. It may strengthen but cannot weaken a published MCT rule. |
+| `maxConnectionWaitMinutes` | integer | no | Maximum wait between legs, range 1 to 1440; default 1440 when connected search is enabled. |
+
+Connected search only returns a connection when Trip Planning has consumed an applicable `MctRulePublished` event from Transfer Management.
+The rule must be effective at the incoming leg's arrival time and the wait must be greater than or equal to both the published minimum and the caller minimum.
+`MctRuleRetired` removes the rule from eligibility.
 
 **Response (200):**
 
