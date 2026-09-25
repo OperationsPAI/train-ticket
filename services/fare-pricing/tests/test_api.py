@@ -50,6 +50,47 @@ def iso_z(value: datetime) -> str:
     return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
+def capacity_class(class_ref: str, remaining: int, effective: int = 100) -> dict[str, object]:
+    occupied = effective - remaining
+    return {
+        "classRef": class_ref,
+        "physicalCapacity": effective,
+        "effectiveCapacity": effective,
+        "holdCount": occupied,
+        "confirmedCount": 0,
+        "remainingCapacity": remaining,
+        "overbookingPolicy": {
+            "maxOverbookingPct": 0.0,
+            "noShowRate": 0.0,
+            "safetyMarginPct": 0.0,
+        },
+    }
+
+
+def capacity_payload(
+    segment_ref: str,
+    departure_date: str,
+    classes: list[dict[str, object]],
+    snapshot_version: str = "3",
+) -> dict[str, object]:
+    total = sum(int(item["effectiveCapacity"]) for item in classes)
+    remaining = sum(int(item["remainingCapacity"]) for item in classes)
+    hold_count = sum(int(item["holdCount"]) for item in classes)
+    confirmed_count = sum(int(item["confirmedCount"]) for item in classes)
+    return {
+        "segmentRef": segment_ref,
+        "departureDate": departure_date,
+        "totalCapacity": total,
+        "remainingCapacity": remaining,
+        "physicalCapacity": sum(int(item["physicalCapacity"]) for item in classes),
+        "holdCount": hold_count,
+        "confirmedCount": confirmed_count,
+        "utilizationPct": ((hold_count + confirmed_count) * 100 / total) if total else 0,
+        "snapshotVersion": snapshot_version,
+        "classes": classes,
+    }
+
+
 def rule(rule_id: str, kind: RuleKind, amount: str, *, refundable: bool = True, eligibility_type: str | None = None) -> FareRule:
     parameters = {"rule": rule_id}
     if eligibility_type is not None:
@@ -964,13 +1005,11 @@ class FarePricingMessagingTest(unittest.TestCase):
     def test_capacity_event_replay_is_deduplicated_and_changed_content_is_rejected(self) -> None:
         store = InMemoryStore()
         service = FarePricingService(store)
-        payload = {
-            "segmentRef": "seg-capacity-dedup",
-            "departureDate": (NOW + timedelta(days=3)).date().isoformat(),
-            "totalCapacity": 100,
-            "remainingCapacity": 40,
-            "snapshotVersion": 7,
-        }
+        payload = capacity_payload(
+            "seg-capacity-dedup",
+            (NOW + timedelta(days=3)).date().isoformat(),
+            [capacity_class("SECOND_CLASS", 40)],
+        )
         event = EventEnvelope(
             event_id="evt-capacity-dedup",
             event_type="CapacitySnapshotUpdated",
@@ -993,7 +1032,11 @@ class FarePricingMessagingTest(unittest.TestCase):
             producer=event.producer,
             correlation_id="corr-delivery-metadata-may-change",
             occurred_at=NOW + timedelta(seconds=1),
-            payload={**payload, "remainingCapacity": 39},
+            payload=capacity_payload(
+                str(payload["segmentRef"]),
+                str(payload["departureDate"]),
+                [capacity_class("SECOND_CLASS", 39)],
+            ),
         )
         with self.assertRaises(FatalHandlerError):
             handle_capacity_snapshot_updated(service, changed)
@@ -1001,42 +1044,58 @@ class FarePricingMessagingTest(unittest.TestCase):
         self.assertEqual(store.processed_events, {event.eventId})
         self.assertEqual(next(iter(store.capacity_snapshots.values())).remaining_capacity, 40)
 
-    def test_capacity_business_snapshot_replay_is_idempotent_but_same_version_conflict_is_rejected(self) -> None:
+    def test_capacity_projection_splits_classes_updates_same_version_and_ignores_older_events(self) -> None:
         store = InMemoryStore()
         service = FarePricingService(store)
-        payload = {
-            "segmentRef": "seg-capacity-business-key",
-            "departureDate": (NOW + timedelta(days=4)).date().isoformat(),
-            "totalCapacity": 100,
-            "remainingCapacity": 40,
-            "snapshotVersion": 7,
-        }
+        segment_ref = "seg-capacity-business-key"
+        departure_date = (NOW + timedelta(days=4)).date().isoformat()
 
-        def envelope(event_id: str, body: dict[str, object]) -> EventEnvelope:
+        def envelope(event_id: str, occurred_at: datetime, body: dict[str, object]) -> EventEnvelope:
             return EventEnvelope(
                 event_id=event_id,
                 event_type="CapacitySnapshotUpdated",
                 producer="capacity-availability",
                 correlation_id="corr-capacity-business-key",
-                occurred_at=NOW,
+                occurred_at=occurred_at,
                 payload=body,
             )
 
-        handle_capacity_snapshot_updated(service, envelope("evt-capacity-first", payload))
-        handle_capacity_snapshot_updated(service, envelope("evt-capacity-equivalent", payload))
         handle_capacity_snapshot_updated(
             service,
-            envelope("evt-capacity-stale", {**payload, "remainingCapacity": 80, "snapshotVersion": 6}),
+            envelope(
+                "evt-capacity-initial",
+                NOW,
+                capacity_payload(
+                    segment_ref,
+                    departure_date,
+                    [capacity_class("standard", 80), capacity_class("FIRST_CLASS", 20, 40)],
+                    "3",
+                ),
+            ),
+        )
+        handle_capacity_snapshot_updated(
+            service,
+            envelope(
+                "evt-capacity-same-version-update",
+                NOW + timedelta(seconds=2),
+                capacity_payload(segment_ref, departure_date, [capacity_class("SECOND_CLASS", 79)], "3"),
+            ),
+        )
+        handle_capacity_snapshot_updated(
+            service,
+            envelope(
+                "evt-capacity-late-old-event",
+                NOW + timedelta(seconds=1),
+                capacity_payload(segment_ref, departure_date, [capacity_class("SECOND_CLASS", 25)], "999"),
+            ),
         )
 
-        self.assertEqual(next(iter(store.capacity_snapshots.values())).remaining_capacity, 40)
-        with self.assertRaises(FatalHandlerError):
-            handle_capacity_snapshot_updated(
-                service,
-                envelope("evt-capacity-conflict", {**payload, "remainingCapacity": 39}),
-            )
-        self.assertNotIn("evt-capacity-conflict", store.processed_events)
-        self.assertEqual(next(iter(store.capacity_snapshots.values())).remaining_capacity, 40)
+        second = store.capacity_snapshots[(segment_ref, departure_date, "SECOND_CLASS")]
+        first = store.capacity_snapshots[(segment_ref, departure_date, "FIRST_CLASS")]
+        self.assertEqual(second.remaining_capacity, 79)
+        self.assertEqual(second.snapshot_version, "3")
+        self.assertEqual(first.remaining_capacity, 20)
+        self.assertEqual(len(store.processed_events), 3)
 
     def test_usage_before_certificate_rolls_back_dedup_for_retry(self) -> None:
         store = InMemoryStore()
