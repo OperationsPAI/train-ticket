@@ -30,22 +30,27 @@ The standing policy and the reservation supply facts are deployed. The most
 recent clean window was an eighteen minute run at revision 321 with zero failed
 journeys and zero unexpected HTTP errors.
 
-The cycle measured at revision 377 fails this: 12211 of 50345 journeys. The
-cause is one problem with three faces, recorded in
-[current status](00-current-status.md#the-resident-cycle-is-not-yet-clean):
+The reservation path now holds at the peak: a window inside the last run
+carried zero failed journeys out of 10670, and the one after it 36 of 8924,
+where the previous revision failed 12211 of 50345. What still fails is recorded
+in [current status](00-current-status.md#the-resident-cycle-is-not-yet-clean):
 
-1. [ ] Capacity must confirm a Hold inside the client's poll budget. Its
-   consumer group on `events:booking-orchestration` sat three to five thousand
-   entries behind for the whole window, so 2586 of 2627 confirmed reservations
-   were confirmed without a `capacityHoldId` and the load generator reported
-   them as reservations that never confirmed.
-2. [ ] A segment booking must not reach `CONFIRMED` before its capacity Hold
-   exists. The provider confirmation and the hold arrive on separate streams,
-   and the domain currently confirms on the first of them; the reservation is
-   only complete when both are recorded.
-3. [ ] Re-measure the refund and change case groups after (1) and (2). They wait
-   on the reservation, so their 2521 `failed_at_case-status` may be entirely
-   downstream of it.
+1. [ ] Trip Planning's search must hold at the peak. Its query reads the plan
+   corpus, and the load generator's own bootstrap adds to that corpus on every
+   run -- `plan_nodes` reached 907825 rows and `plan_segments` 748331 when this
+   was measured. A covering index took one search from 1366 to 130-210
+   milliseconds, which held for a few windows and then degraded again as the
+   corpus grew; the shape of the query, not only its index, is what has to
+   change.
+2. [ ] A change must be able to replace a reservation whose original hold is
+   still active. The replacement is refused with `OVERLAPPING_HOLD` and the
+   case answers 422, which the load generator records as `failed_at_change-execute`.
+3. [ ] Disruption must not report a business conflict as an availability
+   failure. Selecting an option for an order that already has a refund or change
+   in progress answers 503 `UNAVAILABLE`; a conflict has its own status, and the
+   flow has to decide what the honest terminal outcome for that case is.
+4. [ ] Re-measure the refund and change `case-status` groups once the above are
+   fixed; they wait on the reservations and cases in front of them.
 
 ## Open verification
 
@@ -221,10 +226,12 @@ that was made safe rather than fast.
    the old ones are not worth rewriting beyond what the retention sweep removes.
 5. [ ] Historical hold unit binding: a hold that predates `supplyEvidence`
    cannot name the composition its unit came from, so a unit ref that appears in
-   more than one replacement lineage cannot be resolved. Admission now counts
-   such a hold against a free unit of its class rather than failing, which keeps
-   the occupied count exact but loses the identity. Backfilling the binding from
-   the owning composition would restore it and let the fallback be removed.
+   more than one replacement lineage cannot be resolved. Admission now leaves
+   such a hold out of the occupancy fold, on both sides of the check that
+   compares the fold with the admission, rather than failing or inventing a
+   unit. What that costs is the unit the hold used to stand for, so a pool whose
+   composition was replaced can admit one more reservation than it should.
+   Backfilling the binding from the owning composition would restore it.
 6. [ ] Post Sales: `FarePricingAdjustmentQuoteClient.compute` answers 500
    `IllegalStateException: target offer travelers differ from the original
    order` when a change case's target offer does not carry exactly the order's

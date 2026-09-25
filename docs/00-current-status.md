@@ -48,6 +48,8 @@ to one and back.
 | Check | Result | Evidence |
 |---|---|---|
 | Resident cycle on revision 377 | 450756 requests and 50345 journeys in 600 seconds, P99 1218 milliseconds, **12211 failed journeys** | `.scratch/runtime-fixes/goal-rev377-ten-minute.json` |
+| Resident cycle on revision 386 | 455602 requests and 96165 journeys in 600 seconds, **19569 failed journeys**, dominated by Trip Planning search | `.scratch/runtime-fixes/goal-rev386-ten-minute.json` |
+| Peak window inside revision 386's run | 0 failed journeys of 10670 in one window and 36 of 8924 in the next, both after the reservation fixes | resident load generator logs |
 | Business metric contract | 22 chart tests pass, including the label allowlist and the recording rule targets | `deploy/tests/test_observability_metrics_config.py` |
 | Transport collector | Unit and `miniredis` tests pass; label sets, entry-id ages, dead-letter attribution and the no-poll-before-first-read case | `tools/redis-state-collector` |
 | Notification module suite | 108 passed, 6 skipped, 0 failures | `services/notification` `npm test` |
@@ -65,9 +67,25 @@ the live path works.
 
 ### The resident cycle is not yet clean
 
-Revision 377 does not pass the acceptance in [TODO](TODO.md#acceptance). The
-measured window carries 12211 failed journeys out of 50345, and they are not a
-spread of unrelated defects:
+The cycle does not pass the acceptance in [TODO](TODO.md#acceptance) yet. The
+last measured window carries 19569 failed journeys out of 96165, and the
+reservation path is no longer what produces them:
+
+| Group | Count in the window | Cause |
+|---|---|---|
+| `trip-planning` `search` timeout | 14153 | The search query reads the plan corpus, which the load generator's own bootstrap keeps growing; see the note below. |
+| `trip-planning` `search` 503 | 2890 | The same query holding a pooled connection long enough to exhaust it. |
+| `post-sales` `change-execute` 422 | several hundred | The replacement reservation is refused with `OVERLAPPING_HOLD` while the original hold is still active. |
+| `disruption-recovery` `disruption-select` 503 | tens | A business conflict ("a refund or change case is already in progress for this order") mapped to an availability failure. |
+
+The peak windows inside the same run, taken before Trip Planning degraded,
+carried **zero failed journeys out of 10670** and 36 out of 8924, so the
+reservation path itself now holds at the peak.
+
+#### What the reservation path cost before those fixes
+
+Revision 377 failed 12211 of 50345 journeys, and they were not a spread of
+unrelated defects:
 
 | Group | Count in the window | Cause |
 |---|---|---|
@@ -92,6 +110,21 @@ an unresolvable historical hold failed every admission into the pool it
 occupied; and the capacity level rebuild loaded seven gigabytes of pool
 documents into memory and was OOM-killed at its four gigabyte limit. What
 remains is the throughput of admission itself, which is the open item below.
+
+#### What this pass fixed
+
+Each of these was measured, reproduced, fixed and deployed, one commit each:
+
+| Defect | Evidence before the fix |
+|---|---|
+| Capacity rejected a reservation whose cached supply facts predated the purchase source. | 19102 retries and 3899 dead letters in twenty minutes. |
+| A hold whose unit was in more than one replacement lineage failed every admission into its pool. | 989 retries in three minutes. |
+| A hold and its replacement allocation legitimately disagreed about the unit, and the admission treated that as corruption. | 3458 failures in three minutes. |
+| A standing hold, then a standing allocation, named a quota slot the current policy no longer had. | 1918 and 1829 retries in five minutes. |
+| Substituting a unit to keep an admission going broke the check that compares the availability fold with the admission. | 221 failures in five minutes. |
+| Post Sales compared a change's target offer with every traveler on the order instead of the case's scope. | 1637 evaluate calls answered 500 in one window. |
+| A segment booking was confirmed by whichever of the provider confirmation and the capacity Hold arrived first. | 2586 of 2627 confirmed reservations had no `capacityHoldId`. |
+| Trip Planning's search read the heap for the columns it selects, at 1366 milliseconds per search. | 14425 searches answered 503 in one window; 130-210 milliseconds after a covering index. |
 
 ### Previously recorded windows
 
