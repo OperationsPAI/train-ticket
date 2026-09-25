@@ -16,6 +16,7 @@ import (
 	kitmsg "github.com/trainticket/greenfield/platform/go-kit/messaging"
 	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
 
+	"github.com/trainticket/greenfield/services/fulfillment/internal/adapters/observability"
 	"github.com/trainticket/greenfield/services/fulfillment/internal/domain"
 )
 
@@ -99,6 +100,7 @@ type Service struct {
 	idGen        IDGenerator
 	clock        Clock
 	uow          UnitOfWork
+	metrics      observability.TransitionRecorder
 	mu           sync.Mutex
 	tickets      map[string]TicketProjection
 	ancInMem     map[string]*domain.AncillaryFulfillmentHandoff
@@ -133,7 +135,17 @@ func NewService(repo FulfillmentRepository, publisher EventPublisher, consumed C
 	segments, _ := repo.(SegmentStatusRepository)
 	ancillary, _ := repo.(AncillaryHandoffRepository)
 	rides, _ := repo.(RideExecutionRepository)
-	return &Service{repo: repo, segments: segments, ancillary: ancillary, rides: rides, pub: publisher, consumed: consumed, idGen: idGen, clock: clock, tickets: map[string]TicketProjection{}, ancInMem: map[string]*domain.AncillaryFulfillmentHandoff{}, ridesInMem: map[string]*domain.RideExecutionView{}}
+	return &Service{repo: repo, segments: segments, ancillary: ancillary, rides: rides, pub: publisher, consumed: consumed, idGen: idGen, clock: clock, metrics: observability.NoopRecorder{}, tickets: map[string]TicketProjection{}, ancInMem: map[string]*domain.AncillaryFulfillmentHandoff{}, ridesInMem: map[string]*domain.RideExecutionView{}}
+}
+
+// WithTicketingMetrics installs the ticketing transition recorder. Without it
+// the service keeps a no-op: metrics are opt-in, and a caller that has not
+// enabled export must not pay for an instrument.
+func (s *Service) WithTicketingMetrics(recorder observability.TransitionRecorder) *Service {
+	if s != nil && recorder != nil {
+		s.metrics = recorder
+	}
+	return s
 }
 
 func (s *Service) WithUnitOfWork(uow UnitOfWork) *Service {
@@ -300,28 +312,35 @@ func (s *Service) VerifyBoarding(ctx context.Context, cmd VerifyBoardingCommand,
 		return BoardingResult{}, errors.New("fulfillment service is not configured")
 	}
 	if err := validateVerifyBoarding(cmd); err != nil {
+		s.recordValidation("", "", err)
 		return BoardingResult{}, err
 	}
 	if err := s.recoverMissingRecord(ctx, cmd.EntitlementID, cmd.SegmentBookingID, cmd.JourneyOrderID, cmd.TravelerID, cmd.SegmentRef, "boarding"); err != nil {
+		s.recordValidation("", "", err)
 		return BoardingResult{}, err
 	}
 	var result BoardingResult
-	if err := s.within(ctx, func(txCtx context.Context) error {
+	var before, after domain.FulfillmentStatus
+	runErr := s.within(ctx, func(txCtx context.Context) error {
 		record, err := s.readyRecordForCommand(txCtx, cmd.EntitlementID, cmd.SegmentBookingID, cmd.JourneyOrderID, cmd.TravelerID, cmd.SegmentRef)
 		if err != nil {
 			return err
 		}
+		before = record.Status
 		receivedAt := s.clock().UTC()
 		if err := record.VerifyBoarding(cmd.EntitlementID, cmd.Source, cmd.SourceEventID, cmd.OccurredAt.UTC(), receivedAt, nil); err != nil {
 			return fmt.Errorf("%w: %v", ErrDomainRuleViolation, err)
 		}
+		after = record.Status
 		if err := s.saveAndPublishPending(txCtx, record, meta); err != nil {
 			return err
 		}
 		result = BoardingResult{FulfillmentRecordID: record.FulfillmentRecordID, EntitlementID: record.EntitlementID, Status: record.Status, OccurredAt: cmd.OccurredAt.UTC()}
 		return nil
-	}); err != nil {
-		return BoardingResult{}, err
+	})
+	s.recordValidation(before, after, runErr)
+	if runErr != nil {
+		return BoardingResult{}, runErr
 	}
 	return result, nil
 }
@@ -377,28 +396,35 @@ func (s *Service) RecordNoShow(ctx context.Context, cmd RecordNoShowCommand, met
 		return NoShowResult{}, errors.New("fulfillment service is not configured")
 	}
 	if err := validateNoShow(cmd); err != nil {
+		s.recordValidation("", "", err)
 		return NoShowResult{}, err
 	}
 	if err := s.recoverMissingRecord(ctx, cmd.EntitlementID, cmd.SegmentBookingID, cmd.JourneyOrderID, cmd.TravelerID, cmd.SegmentRef, "no-show"); err != nil {
+		s.recordValidation("", "", err)
 		return NoShowResult{}, err
 	}
 	var result NoShowResult
-	if err := s.within(ctx, func(txCtx context.Context) error {
+	var before, after domain.FulfillmentStatus
+	runErr := s.within(ctx, func(txCtx context.Context) error {
 		record, err := s.readyRecordForCommand(txCtx, cmd.EntitlementID, cmd.SegmentBookingID, cmd.JourneyOrderID, cmd.TravelerID, cmd.SegmentRef)
 		if err != nil {
 			return err
 		}
+		before = record.Status
 		assessedAt := s.clock().UTC()
 		if err := record.RecordNoShow(cmd.Reason, assessedAt); err != nil {
 			return fmt.Errorf("%w: %v", ErrConflict, err)
 		}
+		after = record.Status
 		if err := s.saveAndPublishPending(txCtx, record, meta); err != nil {
 			return err
 		}
 		result = NoShowResult{FulfillmentRecordID: record.FulfillmentRecordID, Status: record.Status, AssessedAt: assessedAt}
 		return nil
-	}); err != nil {
-		return NoShowResult{}, err
+	})
+	s.recordValidation(before, after, runErr)
+	if runErr != nil {
+		return NoShowResult{}, runErr
 	}
 	return result, nil
 }
@@ -408,24 +434,30 @@ func (s *Service) RecordFulfillmentCompleted(ctx context.Context, cmd Fulfillmen
 		return FulfillmentCompletedResult{}, errors.New("fulfillment service is not configured")
 	}
 	if err := validateSegmentProgress(cmd.EntitlementID, cmd.SegmentBookingID, cmd.JourneyOrderID, cmd.TravelerID, cmd.SegmentRef, domain.FulfillmentSource(cmd.CompletionSource), cmd.CompletedAt, "completedAt"); err != nil {
+		s.recordValidation("", "", err)
 		return FulfillmentCompletedResult{}, err
 	}
 	var result FulfillmentCompletedResult
-	if err := s.within(ctx, func(txCtx context.Context) error {
+	var before, after domain.FulfillmentStatus
+	runErr := s.within(ctx, func(txCtx context.Context) error {
 		record, err := s.readyRecordForCommand(txCtx, cmd.EntitlementID, cmd.SegmentBookingID, cmd.JourneyOrderID, cmd.TravelerID, cmd.SegmentRef)
 		if err != nil {
 			return err
 		}
+		before = record.Status
 		if err := record.CompleteFulfillment(cmd.CompletionSource, cmd.CompletedAt.UTC()); err != nil {
 			return fmt.Errorf("%w: %v", ErrDomainRuleViolation, err)
 		}
+		after = record.Status
 		if err := s.saveAndPublishPending(txCtx, record, meta); err != nil {
 			return err
 		}
 		result = FulfillmentCompletedResult{FulfillmentRecordID: record.FulfillmentRecordID, Status: record.Status, CompletedAt: cmd.CompletedAt.UTC()}
 		return nil
-	}); err != nil {
-		return FulfillmentCompletedResult{}, err
+	})
+	s.recordValidation(before, after, runErr)
+	if runErr != nil {
+		return FulfillmentCompletedResult{}, runErr
 	}
 	return result, nil
 }
@@ -435,6 +467,63 @@ func (s *Service) GetFulfillmentRecord(ctx context.Context, id domain.Fulfillmen
 		return nil, err
 	}
 	return s.repo.FindByID(ctx, id)
+}
+
+// recordValidation publishes one ticket validation transition.
+//
+// The reason is classified from typed state and wrapped sentinel errors only.
+// The domain returns plain `fmt.Errorf` messages, and a message is exactly what
+// must not become a label: it carries record and entitlement identifiers.
+func (s *Service) recordValidation(previous, current domain.FulfillmentStatus, err error) {
+	if s == nil || s.metrics == nil {
+		return
+	}
+	outcome, reason := classifyValidation(previous, current, err)
+	s.metrics.Transition(outcome, observability.TicketTypeUnknown, reason)
+}
+
+func classifyValidation(previous, current domain.FulfillmentStatus, err error) (string, string) {
+	switch {
+	case err == nil && previous == current:
+		// Same status before and after a successful call: the fact was already
+		// recorded, which is what a duplicate boarding scan looks like.
+		return observability.OutcomeNoop, observability.ReasonIdempotentReplay
+	case err == nil:
+		return observability.OutcomeAccepted, observability.ReasonNone
+	case errors.Is(err, ErrDependencyUnavailable):
+		return observability.OutcomeFailed, observability.ReasonDependencyUnavailable
+	case errors.Is(err, ErrNotFound):
+		return observability.OutcomeRejected, observability.ReasonNotFound
+	case errors.Is(err, ErrConflict):
+		// A no-show assessed after the traveler boarded conflicts with a
+		// recorded fact; any other conflict is a generic write conflict.
+		if previous == domain.FulfillmentStatusBoarded {
+			return observability.OutcomeRejected, observability.ReasonBoardingConflict
+		}
+		return observability.OutcomeRejected, observability.ReasonConflict
+	case errors.Is(err, ErrDomainRuleViolation):
+		return observability.OutcomeRejected, reasonForHeldStatus(previous)
+	default:
+		// A storage or transport fault is a failure, not a business rejection.
+		return observability.OutcomeFailed, observability.ReasonOther
+	}
+}
+
+// reasonForHeldStatus names why a lifecycle command was refused, from the state
+// the record was already in.
+func reasonForHeldStatus(status domain.FulfillmentStatus) string {
+	switch status {
+	case domain.FulfillmentStatusCompleted, domain.FulfillmentStatusCancelled, domain.FulfillmentStatusNoShow:
+		return observability.ReasonTerminalStatus
+	case domain.FulfillmentStatusBoarded:
+		// The record is already boarded, so a no-show assessment conflicts with
+		// a recorded boarding fact.
+		return observability.ReasonBoardingConflict
+	default:
+		// The record was not in the state the command needs, most often
+		// completion attempted before boarding.
+		return observability.ReasonPreconditionsUnmet
+	}
 }
 
 func (s *Service) HandleSubscribedEvent(ctx context.Context, envelope EventEnvelope) error {
