@@ -13,7 +13,12 @@ public interface PromotionRepository {
     List<PromotionInstrument> listBenefits(String accountId, PromotionStatus status, BenefitType benefitType, int limit, int offset);
     int countBenefits(String accountId, PromotionStatus status, BenefitType benefitType);
     List<PromotionInstrument> findExpirable(Instant now, int limit);
-    Optional<BenefitRedemption> findRedemptionByReason(String benefitId, BusinessReason reason);
+    List<BenefitReservation> findExpiredReservations(Instant now, int limit);
+    List<BenefitReservation> findActiveReservations(String benefitId);
+    Optional<BenefitReservation> findReservation(String benefitId, String reservationRef);
+    Optional<BenefitRedemption> findRedemptionByReference(String benefitId, String redemptionRef);
     Optional<BenefitRedemption> findRedemption(String redemptionId);
-    void saveMutation(PromotionInstrument benefit, WalletAccount wallet, WalletPromotionEvent event, BenefitRedemption redemption, ReversalRecord reversal);
+    Optional<ReservationRelease> findReleaseByReference(String benefitId, String releaseRef);
+    Optional<ReversalRecord> findReversalByReference(String redemptionId, String reversalRef);
+    void saveMutation(PromotionInstrument benefit, WalletAccount wallet, WalletPromotionEvent event, MutationArtifacts artifacts);
 }

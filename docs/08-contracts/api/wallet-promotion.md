@@ -20,20 +20,22 @@ JSON fields are camelCase and enum values are SCREAMING_SNAKE_CASE.
 
 ## Status enum
 
-The wire status enum is the seven-state `PromotionInstrument` state machine from
-the Wallet / Promotion domain document:
+The wire status describes the current balance shape and most recent lifecycle
+transition. It is not a one-way workflow for partially redeemable benefits:
 
 | Status | Meaning | Allowed next statuses |
 |---|---|---|
-| `ISSUED` | Benefit has been issued and is available for use. | `RESERVED`, `REDEEMED`, `EXPIRED`, `REVOKED` |
-| `RESERVED` | Benefit value is temporarily frozen for an order, post-sales case, or other business use. | `REDEEMED`, `RELEASED`, `EXPIRED` |
-| `REDEEMED` | Benefit has been consumed. | `REVERSED` |
-| `RELEASED` | A previous reservation was released and value is available again. | `RESERVED`, `REDEEMED`, `EXPIRED` |
+| `ISSUED` | Value is available and no reservation remains; this also represents a partial redemption with value still available. | `RESERVED`, `REDEEMED`, `RELEASED`, `REVERSED`, `EXPIRED`, `REVOKED` |
+| `RESERVED` | At least one durable reservation retains frozen value; available and redeemed amounts may also be non-zero. | `RESERVED`, `REDEEMED`, `RELEASED`, `REVERSED`, `EXPIRED` |
+| `REDEEMED` | No available or reserved value remains after redemption. | `REVERSED`, `EXPIRED` |
+| `RELEASED` | The last reservation release left no reserved value and some value available. | `RESERVED`, `REDEEMED`, `REVERSED`, `EXPIRED`, `REVOKED` |
 | `EXPIRED` | Validity window elapsed before use. | - |
 | `REVOKED` | Issued benefit was administratively or commercially revoked. | - |
-| `REVERSED` | A previous redemption was reversed by a compensating business action. | - |
+| `REVERSED` | The last mutation reversed redeemed value during the validity window; restored value may be used again. | `RESERVED`, `REDEEMED`, `REVERSED`, `EXPIRED`, `REVOKED` |
 
-`EXPIRED`, `REVOKED`, and `REVERSED` are terminal.
+`EXPIRED` and `REVOKED` prohibit new reservation or redemption. A later
+reversal may still correct redeemed history, but it does not restore spendable
+value and preserves the terminal status.
 The expiry scheduler runs every five seconds by default; expiry has no public HTTP endpoint.
 
 ## Wallet balance invariants
@@ -45,6 +47,9 @@ A `WalletAccount` is the per-account ledger view for benefit balances.
   `availableBalance.minorUnits >= 0` and `reservedBalance.minorUnits >= 0` for
   every `(accountId, balanceType, currency)` sub-ledger.
 - Money arithmetic MUST reject cross-currency operations at the domain boundary.
+- For each benefit, `availableAmount + reservedAmount + redeemedAmount` MUST
+  never exceed `issuedAmount`. Expiry and revocation can make the sum smaller by
+  removing unspent exposure.
 - Every mutation appends a ledger entry and increments the affected aggregate
   version. Consumers should use the event envelope `eventId` for deduplication.
 
@@ -259,8 +264,8 @@ The endpoint requires an account filter.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `amount` | Money | yes | Amount to freeze. Must be positive, same currency as the benefit, and not exceed available amount. |
-| `reservationRef` | string | yes | External reservation reference, for example an order or post-sales workflow reference. |
-| `reservationExpiresAt` | RFC3339 UTC | yes | Reservation expiry timestamp. |
+| `reservationRef` | string | yes | Stable business idempotency key for this reservation. |
+| `reservationExpiresAt` | RFC3339 UTC | yes | Reservation expiry timestamp; must be after request processing and not after benefit `validUntil`. |
 | `useReference` | object | yes | Authoritative order/business reference used for scope validation. See below. |
 | `businessReason` | object | yes | Business reason for freezing value. |
 
@@ -272,6 +277,11 @@ accepted only when `businessReason.referenceType=ORDER` and its `referenceId`
 exactly equals `reservationRef`; that order is still fetched and verified.
 
 **Response (200):** `PromotionInstrument` resource with status `RESERVED`.
+
+The service persists one reservation record per `(benefitId, reservationRef)`.
+An equal replay has no second balance, ledger or event effect. Reusing the
+reference with a different amount, expiry, verified use reference or reason
+returns `CONFLICT`.
 
 **Domain effects:** moves amount from available to reserved balance and emits
 `BenefitReserved`.
@@ -290,10 +300,10 @@ exactly equals `reservationRef`; that order is still fetched and verified.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `amount` | Money | yes | Amount to redeem. Must be positive, same currency as the benefit, and satisfy the redemption rule. |
-| `redemptionRef` | string | yes | Business reference for this redemption, for example `ord-<uuid>` or a post-sales workflow reference. |
+| `redemptionRef` | string | yes | Stable business idempotency key for this redemption. |
 | `reservationRef` | string | no | Reservation being consumed when redemption follows `ReserveBenefit`. |
 | `useReference` | object | yes | Authoritative order/business reference used for scope validation. |
-| `businessReason` | object | yes | Business reason. The same benefit and the same reason cannot be redeemed twice. |
+| `businessReason` | object | yes | Audit reason; it must remain identical on a replay of the same `redemptionRef`. |
 
 The same `useReference` checks as reservation apply. For compatibility, an
 older request without it is accepted only when an `ORDER` business reason
@@ -304,7 +314,7 @@ verified.
 
 | Field | Type | Description |
 |---|---|---|
-| `benefit` | PromotionInstrument | Updated benefit resource, normally status `REDEEMED` when the redemption consumes the redeemable amount or the rule is `singleUse=true`. |
+| `benefit` | PromotionInstrument | Updated benefit resource. Status is `RESERVED` while reservations remain, `ISSUED` while unreserved value remains, and `REDEEMED` only when no available/reserved value remains. |
 | `redemption` | BenefitRedemption | Idempotent redemption record. |
 
 `BenefitRedemption` fields:
@@ -316,6 +326,8 @@ verified.
 | `accountId` | string | yes | Owning account. |
 | `amount` | Money | yes | Redeemed amount. |
 | `redemptionRef` | string | yes | Business reference supplied in the request. |
+| `reservationRef` | string | no | Reservation consumed by this redemption. |
+| `useReference` | object | yes | Verified order/business reference retained with the redemption. |
 | `businessReason` | object | yes | Idempotency/audit reason. |
 | `redeemedAt` | RFC3339 UTC | yes | Redemption timestamp. |
 
@@ -337,9 +349,14 @@ balance and emits `BenefitRedeemed`.
 |---|---|---|---|
 | `amount` | Money | yes | Reserved amount to release. Must be positive, same currency, and not exceed reserved amount. |
 | `reservationRef` | string | yes | Reservation being released. |
+| `releaseRef` | string | yes | Stable business idempotency key for this release. Older clients may omit it; the service then derives a deterministic key from `businessReason`. |
 | `businessReason` | object | yes | Business reason, for example timeout or order cancellation. |
 
-**Response (200):** `PromotionInstrument` resource with status `RELEASED`.
+**Response (200):** `PromotionInstrument` resource. Status remains `RESERVED`
+after a partial release and becomes `RELEASED` when no reservation remains.
+
+An equal `releaseRef` replay has no second balance, ledger or event effect.
+Reusing it with different request semantics returns `CONFLICT`.
 
 **Domain effects:** moves amount from reserved back to available balance and
 emits `BenefitReservationReleased`.
@@ -379,6 +396,7 @@ requires reserved amount to be zero, and emits `BenefitRevoked`.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `redemptionId` | string | yes | Redemption to reverse. |
+| `reversalRef` | string | yes | Stable business idempotency key for this reversal. Older clients may omit it; the service then derives a deterministic key from `businessReason`. |
 | `amount` | Money | yes | Amount to reverse. Must be positive, same currency, and not exceed the redemption's unreversed amount. |
 | `businessReason` | object | yes | Business reason for reversal. |
 
@@ -386,12 +404,14 @@ requires reserved amount to be zero, and emits `BenefitRevoked`.
 
 | Field | Type | Description |
 |---|---|---|
-| `benefit` | PromotionInstrument | Updated benefit resource with status `REVERSED`. |
+| `benefit` | PromotionInstrument | Updated benefit resource. Within validity, restored value produces `REVERSED`; after expiry/revocation, status remains terminal and no spendable value is restored. |
 | `reversedRedemptionId` | string | Redemption that was reversed. |
 | `reversedAt` | RFC3339 UTC | Reversal timestamp. |
 
-**Domain effects:** compensates a prior redemption, restores value according to
-policy, and emits `BenefitRedemptionReversed`.
+**Domain effects:** compensates a prior redemption. Within the benefit validity
+window it moves value from redeemed to available. After expiry or revocation it
+only decreases redeemed history. An equal `reversalRef` replay has no second
+ledger or event effect.
 
 **Error codes:** `NOT_FOUND`, `PRECONDITION_FAILED`, `DOMAIN_RULE_VIOLATION`,
 `IDEMPOTENCY_KEY_REUSED`, `UNAVAILABLE`
@@ -411,3 +431,8 @@ Wallet / Promotion ledger view for that account.
 
 `ExpireBenefit` is triggered by the expiry scheduler when `validUntil` has elapsed.
 It moves eligible active benefits to `EXPIRED`, clears their remaining available and reserved balances, carries `businessReason.reasonType=SYSTEM_EXPIRY`, and emits `BenefitExpired`.
+
+Reservation expiry is separate: when `reservationExpiresAt` elapses before the
+benefit, only that reservation's remaining amount moves from reserved back to
+available and the service emits `BenefitReservationReleased` with a stable
+`reservation-expiry:<reservationRef>` release identity.
