@@ -16,6 +16,7 @@ from fare_pricing.domain import (
     FareRuleSet,
     RuleSetStatus,
     PricingError,
+    normalize_capacity_class_ref,
     calculate_fare_quote,
     assess_refund,
     assess_change,
@@ -58,7 +59,7 @@ class InMemoryStore:
     fare_quotes: dict[str, FareQuote] = field(default_factory=dict)
     adjustment_quotes: dict[str, AdjustmentQuote] = field(default_factory=dict)
     fare_quote_segment_links: dict[str, tuple[str, ...]] = field(default_factory=dict)
-    capacity_snapshots: dict[tuple[str, str], CapacitySnapshot] = field(default_factory=dict)
+    capacity_snapshots: dict[tuple[str, str, str], CapacitySnapshot] = field(default_factory=dict)
     eligibility_certificates: dict[str, EligibilityCertificateSummary] = field(default_factory=dict)
     processed_events: set[str] = field(default_factory=set)
     processed_event_fingerprints: dict[str, tuple[str | None, str]] = field(default_factory=dict)
@@ -123,26 +124,31 @@ class InMemoryStore:
         return self.adjustment_quotes[adjustment_quote_id]
 
     def upsert_capacity_snapshot(self, snapshot: CapacitySnapshot) -> None:
-        key = (snapshot.segment_ref, snapshot.departure_date.isoformat())
+        key = (snapshot.segment_ref, snapshot.departure_date.isoformat(), snapshot.class_ref)
         current = self.capacity_snapshots.get(key)
-        if current is None or snapshot.snapshot_version > current.snapshot_version:
+        if current is None or snapshot.ordering_key > current.ordering_key:
             self.capacity_snapshots[key] = snapshot
-            return
-        if snapshot.snapshot_version < current.snapshot_version:
-            return
-        if snapshot != current:
-            raise ProjectionConflictError(
-                f"capacity snapshot {snapshot.segment_ref}/{snapshot.departure_date.isoformat()} "
-                f"has conflicting content at version {snapshot.snapshot_version}"
-            )
 
-    def capacity_snapshots_for(self, segment_refs: list[str], departure_date: str | None) -> tuple[CapacitySnapshot, ...]:
+    def capacity_snapshots_for(
+        self,
+        segment_refs: list[str],
+        departure_date: str | None,
+        class_ref: str,
+    ) -> tuple[CapacitySnapshot, ...]:
         if departure_date is None:
             return ()
+        if class_ref:
+            normalized_class = normalize_capacity_class_ref(class_ref)
+            return tuple(
+                snapshot
+                for segment_ref in segment_refs
+                if (snapshot := self.capacity_snapshots.get((segment_ref, departure_date, normalized_class))) is not None
+            )
+        requested_segments = {segment_ref.strip() for segment_ref in segment_refs if segment_ref.strip()}
         return tuple(
             snapshot
-            for segment_ref in segment_refs
-            if (snapshot := self.capacity_snapshots.get((segment_ref, departure_date))) is not None
+            for (segment_ref, snapshot_date, _), snapshot in self.capacity_snapshots.items()
+            if segment_ref in requested_segments and snapshot_date == departure_date
         )
 
     def try_mark_processed(
@@ -441,12 +447,17 @@ class FarePricingService:
         if callable(upsert):
             upsert(snapshot)
 
-    def capacity_snapshots_for(self, segment_refs: list[str], departure_date: str | None) -> tuple[CapacitySnapshot, ...]:
+    def capacity_snapshots_for(
+        self,
+        segment_refs: list[str],
+        departure_date: str | None,
+        class_ref: str | None = None,
+    ) -> tuple[CapacitySnapshot, ...]:
         if departure_date is None:
             return ()
         lookup = getattr(self._store, "capacity_snapshots_for", None)
         if callable(lookup):
-            return lookup(segment_refs, departure_date)
+            return lookup(segment_refs, departure_date, class_ref)
         return ()
 
     def mark_event_processed(self, event_id: str, stream: str, event_fingerprint: str | None = None) -> bool:
