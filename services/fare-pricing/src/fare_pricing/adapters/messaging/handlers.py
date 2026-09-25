@@ -30,7 +30,6 @@ def handle_capacity_snapshot_updated(service: FarePricingService, envelope: Even
     """Cache CapacitySnapshotUpdated events for quote-time dynamic pricing."""
     if envelope.producer != "capacity-availability" or envelope.event_type != CAPACITY_EVENT_TYPE:
         return
-    snapshot = capacity_snapshot_from_payload(envelope.payload)
     try:
         with service.transaction():
             if not service.mark_event_processed(
@@ -39,8 +38,9 @@ def handle_capacity_snapshot_updated(service: FarePricingService, envelope: Even
                 event_semantic_fingerprint(envelope),
             ):
                 return
-            service.upsert_capacity_snapshot(snapshot)
-    except (ConsumedEventConflictError, ProjectionConflictError) as exc:
+            for snapshot in capacity_snapshots_from_envelope(envelope):
+                service.upsert_capacity_snapshot(snapshot)
+    except (ConsumedEventConflictError, ProjectionConflictError, PricingError) as exc:
         raise FatalHandlerError(str(exc)) from exc
 
 
@@ -87,15 +87,37 @@ def event_semantic_fingerprint(envelope: EventEnvelope) -> str:
     return sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def capacity_snapshot_from_payload(payload: Mapping[str, Any]) -> CapacitySnapshot:
+def capacity_snapshots_from_envelope(envelope: EventEnvelope) -> tuple[CapacitySnapshot, ...]:
+    payload = envelope.payload
     try:
-        return CapacitySnapshot(
-            segment_ref=str(payload["segmentRef"]),
-            departure_date=date.fromisoformat(str(payload["departureDate"])),
-            total_capacity=int(payload["totalCapacity"]),
-            remaining_capacity=int(payload["remainingCapacity"]),
-            snapshot_version=int(payload["snapshotVersion"]),
+        segment_ref = str(payload["segmentRef"])
+        departure_date = date.fromisoformat(str(payload["departureDate"]))
+        snapshot_version = str(payload["snapshotVersion"])
+        occurred_at = envelope.occurredAt
+        observed_at = (
+            occurred_at
+            if isinstance(occurred_at, datetime)
+            else datetime.fromisoformat(str(occurred_at).replace("Z", "+00:00"))
         )
+        raw_classes = payload["classes"]
+        if not isinstance(raw_classes, list) or not raw_classes:
+            raise ValueError("classes must be a non-empty array")
+        snapshots = tuple(
+            CapacitySnapshot(
+                segment_ref=segment_ref,
+                departure_date=departure_date,
+                class_ref=str(class_snapshot["classRef"]),
+                total_capacity=int(class_snapshot["effectiveCapacity"]),
+                remaining_capacity=int(class_snapshot["remainingCapacity"]),
+                snapshot_version=snapshot_version,
+                observed_at=observed_at,
+                source_event_id=envelope.eventId,
+            )
+            for class_snapshot in raw_classes
+        )
+        if len({snapshot.class_ref for snapshot in snapshots}) != len(snapshots):
+            raise ValueError("classes must not contain duplicate classRef values")
+        return tuple(sorted(snapshots, key=lambda snapshot: snapshot.class_ref))
     except (KeyError, TypeError, ValueError) as exc:
         raise PricingError("invalid CapacitySnapshotUpdated payload") from exc
 
