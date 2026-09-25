@@ -2,6 +2,7 @@ pub mod adapters;
 pub mod api;
 pub mod application;
 pub mod domain;
+pub mod metrics;
 pub mod ports;
 pub mod supply_facts;
 
@@ -94,6 +95,7 @@ pub async fn build_runtime() -> Router {
             .expect("failed to initialize Postgres capacity storage"),
     );
     rust_kit::storage::spawn_outbox_relay(service.pool().clone(), redis_url.clone());
+    service.clone().spawn_business_metrics_refresh();
     let selected_streams = adapters::messaging::redis_subscriber::default_subscription_streams();
     log::info!(
         "capacity-availability starting Redis subscriber group={CONSUMER_GROUP} streams={}",
