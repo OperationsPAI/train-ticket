@@ -166,6 +166,70 @@ func TestProcessedEventReplayIsAtomicAndPersistent(t *testing.T) {
 	assertOutboxEventCount(t, ctx, pool, retryAllocation.SeatAllocationID, "SeatAllocationConfirmed", 1)
 }
 
+func TestCapacityTerminalFenceRejectsLateAndConcurrentAllocation(t *testing.T) {
+	databaseURL := os.Getenv("TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("TEST_DATABASE_URL is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := newSeatAssignmentTestPool(t, ctx, databaseURL, "capacity_fence")
+	defer pool.Close()
+	tx := NewTransactor(pool)
+	repo := NewRepository(tx)
+	svc := application.New(repo, NewOutboxPublisher(tx), tx.Within)
+	now := time.Now().UTC().Truncate(time.Second)
+	seatMap, err := domain.NewContractSeatMap("ss-fence", "2026-09-25", "v1", "BASE", "map-v1", "", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seatMap.Publish(seatMap.SeatMapVersion, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SaveSeatMap(ctx, seatMap); err != nil {
+		t.Fatal(err)
+	}
+	request := application.AllocateSeatRequest{SegmentBookingID: "sb-fence", JourneyOrderID: "ord-fence", TravelerRef: "tvl-fence",
+		SegmentRef: "seg-fence", ScheduledServiceRef: seatMap.ScheduledServiceRef, ServiceDate: seatMap.ServiceDate,
+		CapacityHoldID: "hold-fence", CapacityUnitRef: seatMap.Coaches[0].SeatUnits[0].SeatUnitRef,
+		Interval: domain.StationInterval{FromSeq: 0, ToSeq: 2}, ClassRef: "standard", IssuePurpose: "INITIAL", ExpiresAt: now.Add(time.Hour)}
+	release := func(hold string, unit string) error {
+		payload, _ := json.Marshal(map[string]any{"holdId": hold, "capacityUnitRef": unit,
+			"interval": request.Interval, "releasedAt": now.Format(time.RFC3339)})
+		return svc.HandleSubscribedEvent(ctx, kitmsg.EventEnvelope{EventID: ids.NewEventID(), EventType: "CapacityReleased",
+			CorrelationID: ids.NewCorrelationID(), Payload: payload})
+	}
+	if err := release(request.CapacityHoldID, request.CapacityUnitRef); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.AllocateSeat(ctx, request); err == nil {
+		t.Fatal("late allocation crossed a persisted release fence")
+	}
+	request.SegmentBookingID, request.TravelerRef, request.CapacityHoldID = "sb-race", "tvl-race", "hold-race"
+	request.CapacityUnitRef = seatMap.Coaches[0].SeatUnits[1].SeatUnitRef
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	go func() { <-start; _, err := svc.AllocateSeat(ctx, request); results <- err }()
+	go func() { <-start; results <- release(request.CapacityHoldID, request.CapacityUnitRef) }()
+	close(start)
+	for index := 0; index < 2; index++ {
+		<-results
+	}
+	allocations, _, err := repo.FindSeatAllocations(ctx, request.SegmentBookingID, "", 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, allocation := range allocations {
+		if allocation.Status == domain.AllocationStatusAllocated || allocation.Status == domain.AllocationStatusStanding || allocation.Status == domain.AllocationStatusConfirmed {
+			t.Fatalf("concurrent release left active allocation %+v", allocation)
+		}
+	}
+	var fences int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM capacity_hold_fences WHERE capacity_hold_id IN ($1,$2)", "hold-fence", "hold-race").Scan(&fences); err != nil || fences != 2 {
+		t.Fatalf("fences=%d error=%v", fences, err)
+	}
+}
+
 func newEventTestAllocation(id, holdID string, now time.Time) *domain.ContractSeatAllocation {
 	return &domain.ContractSeatAllocation{
 		SeatAllocationID: id, SegmentBookingID: "sb-" + id, JourneyOrderID: "ord-" + id,

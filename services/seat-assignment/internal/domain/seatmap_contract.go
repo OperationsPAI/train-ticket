@@ -287,6 +287,7 @@ type SeatRef struct {
 
 type ContractSeatAllocation struct {
 	RequestedClassRef   string           `json:"requestedClassRef,omitempty"`
+	OccupancyClassRef   string           `json:"occupancyClassRef,omitempty"`
 	IssuePurpose        string           `json:"issuePurpose,omitempty"`
 	StandingPolicy      *StandingPolicy  `json:"standingPolicy,omitempty"`
 	SeatAllocationID    string           `json:"seatAllocationId"`
@@ -306,6 +307,15 @@ type ContractSeatAllocation struct {
 	ConfirmedAt         *time.Time       `json:"confirmedAt,omitempty"`
 	ReleasedAt          *time.Time       `json:"releasedAt,omitempty"`
 	ExpiresAt           time.Time        `json:"expiresAt"`
+}
+
+type CapacityHoldFence struct {
+	CapacityHoldID  string          `json:"capacityHoldId"`
+	TerminalState   string          `json:"terminalState"`
+	SourceEventID   string          `json:"sourceEventId"`
+	TerminalAt      time.Time       `json:"terminalAt"`
+	CapacityUnitRef string          `json:"capacityUnitRef"`
+	Interval        StationInterval `json:"interval"`
 }
 
 func (a *ContractSeatAllocation) Release(now time.Time) {

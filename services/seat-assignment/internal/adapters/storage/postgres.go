@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	kitmsg "github.com/trainticket/greenfield/platform/go-kit/messaging"
 	kitstorage "github.com/trainticket/greenfield/platform/go-kit/storage"
@@ -326,6 +327,32 @@ func (r *Repository) FindSeatAllocationsByCapacityRecovery(ctx context.Context, 
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+func (r *Repository) LockCapacityHold(ctx context.Context, holdID string) error {
+	_, err := r.tx.DBFor(ctx).Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "capacity-hold:"+holdID)
+	return err
+}
+
+func (r *Repository) CapacityHoldFence(ctx context.Context, holdID string) (*domain.CapacityHoldFence, error) {
+	var fence domain.CapacityHoldFence
+	err := r.tx.DBFor(ctx).QueryRow(ctx, `SELECT capacity_hold_id,terminal_state,source_event_id,terminal_at,capacity_unit_ref,from_seq,to_seq
+		FROM capacity_hold_fences WHERE capacity_hold_id=$1`, holdID).Scan(&fence.CapacityHoldID, &fence.TerminalState,
+		&fence.SourceEventID, &fence.TerminalAt, &fence.CapacityUnitRef, &fence.Interval.FromSeq, &fence.Interval.ToSeq)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return &fence, err
+}
+
+func (r *Repository) RecordCapacityHoldFence(ctx context.Context, fence domain.CapacityHoldFence) (*domain.CapacityHoldFence, error) {
+	_, err := r.tx.DBFor(ctx).Exec(ctx, `INSERT INTO capacity_hold_fences(capacity_hold_id,terminal_state,source_event_id,terminal_at,capacity_unit_ref,from_seq,to_seq)
+		VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(capacity_hold_id) DO NOTHING`, fence.CapacityHoldID, fence.TerminalState,
+		fence.SourceEventID, fence.TerminalAt, fence.CapacityUnitRef, fence.Interval.FromSeq, fence.Interval.ToSeq)
+	if err != nil {
+		return nil, err
+	}
+	return r.CapacityHoldFence(ctx, fence.CapacityHoldID)
 }
 
 func inventoryID(segmentRef, date string) string { return segmentRef + "|" + date }
