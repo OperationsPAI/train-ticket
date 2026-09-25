@@ -30,12 +30,19 @@ where `aggregateVersion` is the `PromotionInstrument` version after applying the
 transition. If a command replay does not apply a new transition, no new event is
 emitted. Consumers still deduplicate by envelope `eventId`.
 
-For `POST_SALES_COMP` issuance, the service compares the complete `IssueBenefitCommand` with the command stored for `caseId`.
-An identical command returns the existing benefit even if its HTTP idempotency key differs, with no additional wallet credit, ledger entry or `BenefitIssued` event.
-A different command for the same case returns HTTP 409 `CONFLICT` and creates no issuance event.
+Every issuance has a durable business key. Compensation uses its canonical
+`caseId`; other callers can supply `issuanceRef`; legacy manual issuance derives
+the key from account and complete business reason. The service compares the
+complete `IssueBenefitCommand` stored for that key. An identical command returns
+the existing benefit even if its HTTP idempotency key differs, with no
+additional wallet credit, ledger entry or `BenefitIssued` event. A changed
+command under the same key returns HTTP 409 `CONFLICT` and creates no event.
 Equality includes the recipient, monetary value, types, scope, rules, validity timestamps and complete business reason.
-The PostgreSQL implementation serializes issuance with transaction advisory locks for the case and account.
-It records the case, unique benefit ID and request in `compensation_issuances` in the same transaction as the benefit, wallet ledger and event outbox.
+The PostgreSQL implementation serializes every wallet mutation with a transaction
+advisory lock for the owning account and rereads state after taking that lock.
+This also serializes different benefits that share one wallet. Issuance identity,
+unique benefit ID and request are stored in `benefit_issuances` in the same
+transaction as the benefit, wallet ledger and event outbox.
 HTTP response replay remains separate: a stored idempotency key reused with a different request returns `IDEMPOTENCY_KEY_REUSED`.
 
 `BenefitReserved`, `BenefitRedeemed`, `BenefitReservationReleased`, and
