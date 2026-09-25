@@ -2,7 +2,7 @@ import json
 from typing import Any
 
 from train_ticket_platform.messaging import RedisEventSubscriber as PlatformRedisEventSubscriber
-from fare_pricing.handlers import IDENTITY_VERIFICATION_EVENT_TYPES
+from fare_pricing.adapters.messaging.handlers import IDENTITY_VERIFICATION_EVENT_TYPES
 
 
 def handles_fare_event(producer: str, event_type: str) -> bool:
