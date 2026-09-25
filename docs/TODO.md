@@ -64,9 +64,12 @@ in [current status](00-current-status.md#the-resident-cycle-is-not-yet-clean):
    so the shards would fill again at the same rate. Decide what a useful
    retention for each of them is, the way the outbox and `processed_events`
    sweeps already do.
-4. [ ] Attribute the change executions that still answer 422. Reservations no
-   longer fail, so the replacement is reaching capacity and the refusal now
-   comes from somewhere else in the case; the last window carried 403 of them.
+4. [ ] Attribute the reservations that still do not confirm inside the client's
+   budget. Capacity reports no transient failure, its pool no longer times out,
+   its consumer group sits at a few hundred entries, and no confirmed booking is
+   missing its hold -- so the remaining wait is downstream of it, on the
+   provider reservation or the saga that waits for it. The last two windows
+   carried 5673 and 313 failed journeys, all of this shape.
 5. [ ] Disruption must not report a business conflict as an availability
    failure. Selecting an option for an order that already has a refund or change
    in progress answers 503 `UNAVAILABLE`; a conflict has its own status, and the
