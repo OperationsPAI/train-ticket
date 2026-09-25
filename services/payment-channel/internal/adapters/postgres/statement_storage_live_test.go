@@ -479,6 +479,102 @@ func TestLiveLegacyStatementBackfillRollsBackInvalidContent(t *testing.T) {
 	}
 }
 
+func TestLiveStatementMigrationUpgradesLegacySchemaWithoutRewritingHistory(t *testing.T) {
+	pool := newEmptyStatementTestPool(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	allMigrations, err := kitstorage.LoadMigrations(os.DirFS("../../../migrations"), ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyMigrations := make([]kitstorage.Migration, 0, len(allMigrations))
+	for _, migration := range allMigrations {
+		if migration.Version < "005_" {
+			legacyMigrations = append(legacyMigrations, migration)
+		}
+	}
+	if err := kitstorage.NewMigrationRunner(pool).Run(ctx, legacyMigrations); err != nil {
+		t.Fatal(err)
+	}
+
+	identity := domain.StatementIdentityKey(domain.ChannelAlipay, "2026-09-22", "CNY", "duplicate-v1")
+	line := domain.FinalizeStatementLine(identity, 0, domain.StatementLine{
+		LineType: "PAYMENT", LineStatus: "PRESENT", ChannelOrderID: "cho-migration",
+		ExpectedAmount: domain.Money{Currency: "CNY", MinorUnits: 750},
+		ActualAmount:   domain.Money{Currency: "CNY", MinorUnits: 750},
+		OccurredAt:     time.Date(2026, time.September, 22, 12, 0, 0, 0, time.UTC),
+	})
+	older, err := domain.NewStatement("chs-older", domain.ChannelAlipay, "2026-09-22", "CNY", "duplicate-v1", []domain.StatementLine{line}, time.Date(2026, time.September, 23, 0, 0, 0, 0, time.UTC), ids.NewCorrelationID(), ids.NewCommandID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	newer, err := domain.NewStatement("chs-newer", domain.ChannelAlipay, "2026-09-22", "CNY", "duplicate-v1", []domain.StatementLine{line}, time.Date(2026, time.September, 24, 0, 0, 0, 0, time.UTC), ids.NewCorrelationID(), ids.NewCommandID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := make(map[string]string)
+	for _, statement := range []*domain.ChannelStatement{newer, older} {
+		payload, err := json.Marshal(statement)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `INSERT INTO channel_statement_snapshots(id,version,data) VALUES($1,$2,$3)`, statement.ChannelStatementID, statement.Version, payload); err != nil {
+			t.Fatal(err)
+		}
+		var stored string
+		if err := pool.QueryRow(ctx, `SELECT data::text FROM channel_statement_snapshots WHERE id=$1`, statement.ChannelStatementID).Scan(&stored); err != nil {
+			t.Fatal(err)
+		}
+		before[statement.ChannelStatementID] = stored
+	}
+
+	if err := kitstorage.NewMigrationRunner(pool).Run(ctx, allMigrations); err != nil {
+		t.Fatal(err)
+	}
+	if err := kitstorage.NewMigrationRunner(pool).Run(ctx, allMigrations); err != nil {
+		t.Fatalf("migration replay failed: %v", err)
+	}
+	for id, original := range before {
+		var after string
+		if err := pool.QueryRow(ctx, `SELECT data::text FROM channel_statement_snapshots WHERE id=$1`, id).Scan(&after); err != nil {
+			t.Fatal(err)
+		}
+		if after != original {
+			t.Fatalf("schema migration rewrote historical statement %s", id)
+		}
+	}
+	var statements int
+	var canonicalID string
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM channel_statement_snapshots`).Scan(&statements); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT statement_id FROM channel_statement_identities WHERE identity_key=$1`, identity).Scan(&canonicalID); err != nil {
+		t.Fatal(err)
+	}
+	if statements != 2 || canonicalID != older.ChannelStatementID {
+		t.Fatalf("migration did not preserve duplicate history/canonical identity: statements=%d canonical=%s", statements, canonicalID)
+	}
+
+	repository := NewRepository(NewTransactor(pool))
+	result, err := repository.BackfillLegacyStatementLines(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Statements != 2 || result.Lines != 2 || !result.Complete {
+		t.Fatalf("legacy migration backfill result=%+v", result)
+	}
+	var normalizedStatements, normalizedLines int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM channel_statement_snapshots WHERE data->>'lineStorage'=$1 AND NOT data ? 'lines'`, domain.StatementLineStorageNormalized).Scan(&normalizedStatements); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM channel_statement_lines`).Scan(&normalizedLines); err != nil {
+		t.Fatal(err)
+	}
+	if normalizedStatements != 2 || normalizedLines != 2 {
+		t.Fatalf("backfill did not normalize all preserved history: statements=%d lines=%d", normalizedStatements, normalizedLines)
+	}
+}
+
 func assertBoundedStatementReads(t *testing.T, ctx context.Context, service *application.Service, statement *domain.ChannelStatement) {
 	t.Helper()
 	getStarted := time.Now()
@@ -509,6 +605,21 @@ func assertBoundedStatementReads(t *testing.T, ctx context.Context, service *app
 
 func newStatementTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
+	pool := newEmptyStatementTestPool(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	migrations, err := kitstorage.LoadMigrations(os.DirFS("../../../migrations"), ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := kitstorage.NewMigrationRunner(pool).Run(ctx, migrations); err != nil {
+		t.Fatal(err)
+	}
+	return pool
+}
+
+func newEmptyStatementTestPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
 	databaseURL := os.Getenv("TEST_DATABASE_URL")
 	if databaseURL == "" {
 		t.Skip("TEST_DATABASE_URL is required")
@@ -538,13 +649,6 @@ func newStatementTestPool(t *testing.T) *pgxpool.Pool {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	migrations, err := kitstorage.LoadMigrations(os.DirFS("../../../migrations"), ".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := kitstorage.NewMigrationRunner(pool).Run(ctx, migrations); err != nil {
-		t.Fatal(err)
-	}
 	return pool
 }
 
