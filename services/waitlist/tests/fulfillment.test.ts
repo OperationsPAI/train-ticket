@@ -335,3 +335,29 @@ test("captured payment continues to ticketing after the authorization deadline",
   assert.equal(client.entitlementEffects, 1);
   assert.equal(client.orderCancelCalls.length, 0);
 });
+
+test("completed local effects stay matching until authoritative order confirmation", async () => {
+  const entry = matchingEntry(["tvl-1"]);
+  const repository = new SnapshotRepository(entry);
+  const publisher = new InMemoryEventPublisher();
+  const client = new DurableFulfillmentClient(["tvl-1"], false);
+  let now = NOW;
+
+  for (let step = 0; step < 20 && client.entitlementEffects === 0; step++) {
+    const service = new WaitlistApplicationService(repository, publisher, undefined, undefined, undefined, () => now, undefined, undefined, client);
+    await service.advanceNextWork();
+    now = new Date(now.getTime() + 1_001);
+  }
+
+  assert.equal(client.entitlementEffects, 1);
+  assert.equal(repository.current().status, "MATCHING");
+  assert.equal(publisher.findByEventType("WaitlistFulfilled").length, 0);
+
+  client.orderStatus = "CONFIRMED";
+  const service = new WaitlistApplicationService(repository, publisher, undefined, undefined, undefined, () => now, undefined, undefined, client);
+  await service.advanceNextWork();
+  await service.handleJourneyOrderConfirmed(entry.journeyOrderRef!);
+
+  assert.equal(repository.current().status, "FULFILLED");
+  assert.equal(publisher.findByEventType("WaitlistFulfilled").length, 1);
+});
