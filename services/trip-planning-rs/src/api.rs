@@ -17,6 +17,9 @@ use crate::domain::{
     Itinerary, search_itineraries, PreferenceConstraints, TripIntent,
 };
 
+const MAX_CONNECTIONS: u32 = 3;
+const DEFAULT_MAX_CONNECTION_WAIT_MINUTES: u32 = 24 * 60;
+
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/v1/itineraries/search", post(search_itineraries_handler))
@@ -38,6 +41,9 @@ pub struct SearchRequest {
     pub traveler_refs: Vec<String>,
     pub channel: String,
     pub max_results: Option<u32>,
+    pub max_connections: Option<u32>,
+    pub min_connection_minutes: Option<u32>,
+    pub max_connection_wait_minutes: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -124,7 +130,7 @@ async fn search_itineraries_handler(
         ));
     }
 
-    let max_results = req.max_results.unwrap_or(10).min(50).max(1);
+    let max_results = req.max_results.unwrap_or(10).clamp(1, 50);
     let departure_date = NaiveDate::parse_from_str(&req.departure_date, "%Y-%m-%d").map_err(|_| {
         (
             StatusCode::BAD_REQUEST,
@@ -145,21 +151,41 @@ async fn search_itineraries_handler(
         .from_local_datetime(&departure_date.and_hms_opt(23, 59, 59).unwrap())
         .unwrap();
 
+    let preferences = PreferenceConstraints {
+        max_connections: req.max_connections,
+        min_connection_minutes: req.min_connection_minutes.unwrap_or(5),
+        max_connection_wait_minutes: req.max_connection_wait_minutes,
+        ..PreferenceConstraints::default()
+    };
+
     let intent = TripIntent {
         origin_ref: req.origin_ref.trim().to_string(),
         destination_ref: req.destination_ref.trim().to_string(),
         departure_window_start: window_start,
         departure_window_end: window_end,
         passenger_count: req.traveler_refs.len() as u32,
-        preferences: PreferenceConstraints::default(),
+        preferences,
     };
 
     // Look up candidates from the in-memory index
-    let real_candidates = state.plan_index.candidates(
-        &intent.origin_ref,
-        &intent.destination_ref,
-        departure_date,
-    );
+    let real_candidates = match intent.preferences.max_connections {
+        Some(max_connections) if max_connections > 0 => state.plan_index.candidates_with_connections(
+            &intent.origin_ref,
+            &intent.destination_ref,
+            departure_date,
+            max_connections,
+            intent.preferences.min_connection_minutes,
+            intent
+                .preferences
+                .max_connection_wait_minutes
+                .unwrap_or(DEFAULT_MAX_CONNECTION_WAIT_MINUTES),
+        ),
+        _ => state.plan_index.candidates(
+            &intent.origin_ref,
+            &intent.destination_ref,
+            departure_date,
+        ),
+    };
 
     // No candidate means no itinerary. An empty result is the honest answer and
     // the one every caller already handles: the load generator records
@@ -294,9 +320,38 @@ fn validate_search_request(req: &SearchRequest) -> Result<(), String> {
     if req.channel.trim().is_empty() {
         return Err("channel is required".to_string());
     }
-    if let Some(mr) = req.max_results {
-        if mr < 1 || mr > 50 {
-            return Err("maxResults must be between 1 and 50".to_string());
+    if req.max_results.is_some_and(|value| !(1..=50).contains(&value)) {
+        return Err("maxResults must be between 1 and 50".to_string());
+    }
+    if req
+        .max_connections
+        .is_some_and(|value| value > MAX_CONNECTIONS)
+    {
+        return Err(format!(
+            "maxConnections must be between 0 and {MAX_CONNECTIONS}"
+        ));
+    }
+    if req
+        .min_connection_minutes
+        .is_some_and(|value| value > DEFAULT_MAX_CONNECTION_WAIT_MINUTES)
+    {
+        return Err(format!(
+            "minConnectionMinutes must be between 0 and {DEFAULT_MAX_CONNECTION_WAIT_MINUTES}"
+        ));
+    }
+    if let Some(maximum) = req.max_connection_wait_minutes {
+        if maximum == 0 || maximum > DEFAULT_MAX_CONNECTION_WAIT_MINUTES {
+            return Err(format!(
+                "maxConnectionWaitMinutes must be between 1 and {DEFAULT_MAX_CONNECTION_WAIT_MINUTES}"
+            ));
+        }
+        if req
+            .min_connection_minutes
+            .is_some_and(|minimum| minimum > maximum)
+        {
+            return Err(
+                "minConnectionMinutes must not exceed maxConnectionWaitMinutes".to_string(),
+            );
         }
     }
     Ok(())

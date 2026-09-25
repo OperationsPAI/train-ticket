@@ -8,12 +8,13 @@
 
 Trip Planning 接受出行条件，从已消费的计划供给中生成候选，执行约束检查和排序，保存 itinerary snapshot。
 它读取上游计划与地点引用，不创建 Capacity Hold、Offer、订单或支付。
-当前 HTTP 搜索返回同日期、匹配起终地点的直达火车服务段。
-每个索引命中转换成只有一个 leg 的 itinerary。
+HTTP 搜索默认返回同日期、匹配起终地点的直达火车服务段。
+请求显式传入大于零的 `maxConnections` 后，索引可组合最多三次换乘的火车 itinerary。
 剩余工作统一见 [docs/TODO.md](../TODO.md)。
 
 领域类型允许 itinerary 包含多个 legs，并能检查连接时间和换乘次数。
-当前 `PlanIndex::candidates` 没有组合多段路线，不能据此描述为已实现跨方式联乘或自动中转规划。
+多段候选的每个连接都必须命中已消费、在到达时刻有效的运营方 MCT 发布规则；没有适用规则时 fail closed。
+当前只组合铁路 segment，不构成跨方式联乘规划。
 Service Plan 的现有创建入口也是两个 stop，对外 supply 区间为 `[0,1)`。
 
 ## 查询模型与排序
@@ -27,10 +28,9 @@ Service Plan 的现有创建入口也是两个 stop，对外 supply 区间为 `[
 | `SearchResult` | 内部保存 intent 引用、接受的候选及分数。 |
 
 HTTP 请求将 `departureDate` 转换为 UTC 当天时间窗口，人数来自 `travelerRefs`。
-该入口使用默认 preferences。
+该入口默认使用直达搜索；`maxConnections`、`minConnectionMinutes` 和 `maxConnectionWaitMinutes` 可显式启用并约束多段搜索。
 领域校验包括起终点、出发窗口、允许方式、连接次数与时间、价格上限及不可用提示。
-默认最短连接间隔为五分钟，但当前索引生成的直达 itinerary 没有连接需要检查。
-领域没有消费 Transfer Management 的 `MctRulePublished` 或 `MctRuleRetired` 来建立运营方最短换乘时间表。
+请求最短连接间隔默认为五分钟，但最终要求取请求值和已发布 MCT 的较大值，调用方不能降低运营规则。
 
 排序后的候选按 `maxResults` 截取。
 HTTP 响应包含 `intentRef`、`itineraries` 和 `planningSnapshotRefs`，不会返回内部的分数解释。
@@ -55,14 +55,16 @@ segment 日期或出发节点改变时，更新逻辑移除旧索引位置并清
 |---|---|
 | `ServicePlanChanged`、`ServiceSegmentCreated` | 从 payload 读取 segment、服务、起终 stop 和时间，更新 segment 索引。 |
 | `TransportNodeRegistered`、`TransportNodeAdded`、`TransportNodeUpdated` | 更新 node 与 place 映射。 |
+| `MctRulePublished` | 保存无条件的站到站规则版本，并用于显式启用的多段搜索。 |
+| `MctRuleRetired` | 使对应规则失效并保留版本 tombstone，防止乱序旧发布事件复活规则。 |
 
 上述事件是当前 `PlanIndex::handles_event` 允许的类型。
 `ServicePlanPublished`、`ScheduledServiceCreated` 和 `PlaceNetworkUpdated` 不生成索引更新。
 `TrainDelayed`、`TrainCancelled`、`TrainRestored` 和 `TemporaryServiceAdded` 也没有当前索引处理。
 不能将 Service Plan 的相关运营操作描述为搜索已自动隐藏、恢复或新增车次。
 
-索引变更分别写入 PostgreSQL 的 `plan_segments` 和 `plan_nodes`。
-进程启动时读取两张表并重建内存索引。
+索引变更分别写入 PostgreSQL 的 `plan_segments`、`plan_nodes` 和 `plan_mct_rules`。
+进程启动时读取三张表并重建内存索引。
 查询结果保存到 `itinerary_snapshots`，重复引用使用现有快照。
 搜索请求通过 outbox 追加 `ItineraryProposed`。
 当前 snapshot 写入与 outbox 追加是独立数据库操作；发布函数记录追加错误，因此 HTTP 成功不能单独证明事件已经持久化。
@@ -79,6 +81,9 @@ segment 日期或出发节点改变时，更新逻辑移除旧索引位置并清
 没有独立的 SearchSession 生命周期 API、PlanningRuleSet 管理 API 或完整规划审计读模型。
 这些概念不能作为当前已经开放的服务能力。
 
+当前 Service Plan 事件没有发布站点类型、跨站拓扑或 MCT 条件维度，因此 Trip Planning 只安全应用 `STATION → STATION / SAME_STATION` 且 `conditions={}` 的通用规则。
+同一 stop 或映射到同一 place 的两个 node 视为同站；其余类别不会猜测，而是拒绝该连接候选。
+
 ## HTTP 与验证记录
 
 | 接口 | 当前作用 |
@@ -90,4 +95,4 @@ segment 日期或出发节点改变时，更新逻辑移除旧索引位置并清
 固定记录包含 394838 个 segment、389797 个节点映射和 45816 条查询。
 本地完整记录测试核对了候选、排序和 HTTP 响应，并经过实际 Axum router 与 PostgreSQL。
 这些结果只支持该记录、固定并发和已记录部署检查的结论，不构成完整生产高峰周期或所有跨服务流程的验收。
-本次文档核对没有重新执行测试。
+2026 年 9 月 25 日执行了 Trip Planning 的 all-features 测试；无需外部数据库或录制数据的测试全部通过，依赖显式 fixture 的测试保持 ignored。
