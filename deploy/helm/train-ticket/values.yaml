@@ -1460,6 +1460,11 @@ services:
       PLACE_NETWORK_URL: http://place-network:8080
   seat-assignment:
     db: seat_assignment
+    # Cut over to the read shard. Seat Assignment is the other reader on the
+    # admission path -- capacity asks it for composition and occupancy on every
+    # reservation -- and its database was copied with logical replication while
+    # core kept serving, so the switch is a catch-up rather than a copy.
+    pgInstance: read
     env:
       # Same default-ten pool as capacity, and it is the service capacity reads
       # twice per admission plus every seat allocation.
