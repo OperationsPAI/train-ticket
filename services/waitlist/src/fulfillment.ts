@@ -27,7 +27,7 @@ export interface WaitlistFulfillmentClient {
   findPayment(orderId: string, correlationId?: string): Promise<PaymentFacts | undefined>;
   getPayment(paymentIntentId: string, correlationId?: string): Promise<PaymentFacts>;
   capturePayment(entry: WaitlistEntry, correlationId?: string): Promise<PaymentFacts>;
-  cancelPayment(entry: WaitlistEntry, reason: string, correlationId?: string): Promise<void>;
+  cancelPayment(entry: WaitlistEntry, reason: string, correlationId?: string): Promise<PaymentFacts | undefined>;
   releaseCapacity(traveler: FulfillmentTraveler, capacityHoldId: string, correlationId?: string): Promise<void>;
   cancelOrder(entry: WaitlistEntry, reason: string, correlationId?: string): Promise<void>;
   issueEntitlement(entry: WaitlistEntry, traveler: FulfillmentTraveler, correlationId?: string): Promise<EntitlementFacts>;
@@ -107,12 +107,16 @@ export class HttpWaitlistFulfillmentClient implements WaitlistFulfillmentClient 
       status: normalizePaymentStatus(requiredString(body, "status")), amount: entry.fulfillment.orderAmount! };
   }
 
-  async cancelPayment(entry: WaitlistEntry, reason: string, correlationId?: string): Promise<void> {
+  async cancelPayment(entry: WaitlistEntry, reason: string, correlationId?: string): Promise<PaymentFacts | undefined> {
     const paymentIntentId = entry.fulfillment.paymentIntentId;
-    if (!paymentIntentId) return;
+    if (!paymentIntentId) return undefined;
     const payment = await this.getPayment(paymentIntentId, correlationId);
-    if (["CAPTURED", "FAILED", "CANCELLED", "EXPIRED"].includes(payment.status)) return;
-    await this.post("payment", `/api/v1/payment-intents/${encodeURIComponent(paymentIntentId)}/cancel`, entry.fulfillment.paymentCancelIdempotencyKey, { reason }, correlationId);
+    if (["CAPTURED", "FAILED", "CANCELLED", "EXPIRED"].includes(payment.status)) return payment;
+    const body = await this.post("payment", `/api/v1/payment-intents/${encodeURIComponent(paymentIntentId)}/cancel`, entry.fulfillment.paymentCancelIdempotencyKey, { reason }, correlationId);
+    return {
+      paymentIntentId: requiredString(body, "paymentIntentId"), businessRef: entry.journeyOrderRef!, payerRef: entry.accountId,
+      status: normalizePaymentStatus(requiredString(body, "status")), amount: entry.fulfillment.orderAmount!,
+    };
   }
 
   async releaseCapacity(traveler: FulfillmentTraveler, capacityHoldId: string, correlationId?: string): Promise<void> {
@@ -288,6 +292,17 @@ export class WaitlistFulfillmentOrchestrator {
       entry.suspend();
       return this.repository.save(entry);
     }
+    if (payment) {
+      const cancelled = await this.client.cancelPayment(entry, reason, correlationId);
+      if (cancelled) {
+        assertPayment(entry, cancelled);
+        entry.recordPayment(cancelled.paymentIntentId, cancelled.status);
+        if (cancelled.status === "CAPTURED") {
+          entry.suspend();
+          return this.repository.save(entry);
+        }
+      }
+    }
     for (const traveler of entry.fulfillment.travelers) {
       const latest = traveler.capacityHoldId ? undefined : await this.client.getReservation(traveler, correlationId);
       if (latest) {
@@ -296,9 +311,6 @@ export class WaitlistFulfillmentOrchestrator {
       }
       const capacityHoldId = latest?.capacityHoldId ?? traveler.capacityHoldId;
       if (capacityHoldId) await this.client.releaseCapacity(traveler, capacityHoldId, correlationId);
-    }
-    if (entry.fulfillment.paymentIntentId && entry.fulfillment.paymentStatus !== "CAPTURED") {
-      await this.client.cancelPayment(entry, reason, correlationId);
     }
     await this.client.cancelOrder(entry, reason, correlationId);
     return this.defer(entry);
@@ -316,7 +328,15 @@ export class WaitlistFulfillmentOrchestrator {
         entry.suspend();
         return this.repository.save(entry);
       }
-      await this.client.cancelPayment(entry, "WAITLIST_ORDER_TERMINAL", correlationId);
+      const cancelled = await this.client.cancelPayment(entry, "WAITLIST_ORDER_TERMINAL", correlationId);
+      if (cancelled) {
+        assertPayment(entry, cancelled);
+        entry.recordPayment(cancelled.paymentIntentId, cancelled.status);
+        if (cancelled.status === "CAPTURED") {
+          entry.suspend();
+          return this.repository.save(entry);
+        }
+      }
     }
     let unheldSlots = 0;
     for (const traveler of entry.fulfillment.travelers) {
