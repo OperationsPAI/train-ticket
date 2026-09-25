@@ -16,6 +16,66 @@ SPEC.loader.exec_module(backfill)
 NOW = datetime(2026, 9, 25, 4, 0, tzinfo=UTC)
 
 
+class RecordingCopy:
+    def __init__(self, events, name, blocks=()):
+        self.events = events
+        self.name = name
+        self.blocks = blocks
+        self.writes = []
+
+    def __enter__(self):
+        self.events.append(f"enter:{self.name}")
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.events.append(f"exit:{self.name}")
+
+    def __iter__(self):
+        return iter(self.blocks)
+
+    def write(self, block):
+        self.events.append(f"write:{self.name}")
+        self.writes.append(bytes(block))
+
+
+class RecordingCursor:
+    def __init__(self, copy):
+        self._copy = copy
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return None
+
+    def copy(self, statement, params=()):
+        return self._copy
+
+
+class RecordingConnection:
+    def __init__(self, copy):
+        self._copy = copy
+
+    def cursor(self):
+        return RecordingCursor(self._copy)
+
+
+def test_required_ids_finish_copy_out_before_copy_in_starts():
+    events = []
+    copy_out = RecordingCopy(events, "out", [b"ord-1\n", b"ord-2\n"])
+    copy_in = RecordingCopy(events, "in")
+
+    backfill._copy_target_requirements(
+        RecordingConnection(copy_out),
+        "COPY required TO STDOUT",
+        RecordingConnection(copy_in),
+        "COPY required FROM STDIN",
+    )
+
+    assert events == ["enter:out", "exit:out", "enter:in", "write:in", "exit:in"]
+    assert b"".join(copy_in.writes) == b"ord-1\nord-2\n"
+
+
 def test_capture_uses_event_identity_and_snapshot_reference_fallback():
     row = backfill.capture_event_row(
         {"eventId": "evt-cap", "eventType": "PaymentCaptured", "occurredAt": "2026-09-25T04:01:00Z", "payload": {}},
