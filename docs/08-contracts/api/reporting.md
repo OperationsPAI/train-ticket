@@ -117,7 +117,19 @@ The operational response does not embed route rows; route detail is available fr
 `orders_per_second` is the rolling average order-event rate over the preceding 60 seconds: matching event count divided by 60, rounded to four decimal places.
 It counts order creation facts (`JourneyOrderCreated` and `OrderCreated`) and does not double count later confirmation facts.
 `revenue_per_hour`, booking latency percentiles, and `scalper_block_rate` use the preceding hour; `refund_rate` uses the preceding 24 hours; `contextRollups` use the preceding five minutes.
-The trends endpoint returns one current point per metric.
+
+### Metric Trends
+
+**GET** `/api/v1/metrics/trends`
+
+The response contains exactly 60 complete one-minute UTC buckets over the half-open interval `[window.start, window.end)`; `window.end` is the start of the current minute, so the incomplete minute is excluded.
+Every series emits all 60 buckets, including zero/empty buckets.
+
+| Metric | Point value | Unit |
+|---|---|---|
+| `orders_per_second` | Order creation count in that minute divided by 60, rounded to four decimal places. | `orders_per_second` |
+| `gross_captured_amount` | `values`: Money array grouped by currency for `PaymentCaptured` in that minute. | `money_per_minute` |
+| `refund_rate` | Refund event count divided by order creation count in that minute; zero when no orders exist. | `ratio` |
 
 ## Bus-only commands
 
