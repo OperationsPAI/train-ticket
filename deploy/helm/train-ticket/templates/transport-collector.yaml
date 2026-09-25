@@ -1,0 +1,76 @@
+{{- if .Values.transportCollector.enabled }}
+{{- /*
+The single reporter for Redis Streams transport state.
+
+Consumer lag, pending entries, the age of the oldest owed entry and the
+dead-letter population are properties of Redis, not of any one consumer. Before
+this component, every subscriber answered those questions for itself: N copies
+of the same XINFO call per poll, a different answer per replica, and no answer
+at all for the streams whose owning service is not a Java consumer. One process
+reads the state once and the recording rules in templates/_prometheus-rules.tpl
+query the metric.
+
+Replicas is deliberately 1 and not templated. These are absolute counts rather
+than rates, so a second replica would publish the same number twice under a
+different service.instance.id; the rules take max() for the same reason.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-state-collector
+  labels:
+    app.kubernetes.io/name: redis-state-collector
+    app.kubernetes.io/part-of: train-ticket
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis-state-collector
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis-state-collector
+        app.kubernetes.io/part-of: train-ticket
+    spec:
+      containers:
+        - name: redis-state-collector
+          image: {{ include "train-ticket.image" (dict "global" .Values.global "name" "redis-state-collector" "image" .Values.transportCollector.image) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: REDIS_URL
+              value: redis://redis.{{ .Release.Namespace }}.svc.cluster.local:6379
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4317
+            - name: OTEL_SERVICE_NAME
+              value: redis-state-collector
+            - name: OTEL_METRICS_EXPORTER
+              value: otlp
+            - name: OTEL_METRIC_EXPORT_INTERVAL
+              value: {{ .Values.otelCollector.metricExportIntervalMillis | quote }}
+            - name: OTEL_METRIC_EXPORT_TIMEOUT
+              value: {{ .Values.otelCollector.metricExportIntervalMillis | quote }}
+            - name: TRANSPORT_POLL_INTERVAL_SECONDS
+              value: {{ .Values.transportCollector.pollIntervalSeconds | quote }}
+          # /healthz answers as soon as the process runs; /readyz only after one
+          # poll has completed, so a collector that cannot reach Redis is
+          # reported as not ready instead of exporting nothing indefinitely.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.transportCollector.resources | nindent 12 }}
+{{- end }}
