@@ -24,25 +24,31 @@ class OutboxRelayMetricsTest {
         JdbcOperations jdbc = mock(JdbcOperations.class);
         RedisStreamOperations streams = mock(RedisStreamOperations.class);
         RecordingOutboxMetrics metrics = new RecordingOutboxMetrics();
-        Instant createdAt = Instant.now().minusSeconds(9);
+        Instant newerCreatedAt = Instant.now().minusSeconds(2);
+        Instant oldestCreatedAt = Instant.now().minusSeconds(9);
         when(jdbc.query(anyString(), any(RowMapper.class))).thenAnswer(invocation -> {
             RowMapper<?> mapper = invocation.getArgument(1);
-            java.sql.ResultSet row = mock(java.sql.ResultSet.class);
-            when(row.getLong("seq")).thenReturn(7L);
-            when(row.getString("stream")).thenReturn("events:payment");
-            when(row.getString("envelope")).thenReturn("{}");
-            when(row.getTimestamp("created_at")).thenReturn(Timestamp.from(createdAt));
-            return List.of(mapper.mapRow(row, 0));
+            java.sql.ResultSet firstBySequence = mock(java.sql.ResultSet.class);
+            when(firstBySequence.getLong("seq")).thenReturn(7L);
+            when(firstBySequence.getString("stream")).thenReturn("events:payment");
+            when(firstBySequence.getString("envelope")).thenReturn("{}");
+            when(firstBySequence.getTimestamp("created_at")).thenReturn(Timestamp.from(newerCreatedAt));
+            java.sql.ResultSet secondBySequence = mock(java.sql.ResultSet.class);
+            when(secondBySequence.getLong("seq")).thenReturn(8L);
+            when(secondBySequence.getString("stream")).thenReturn("events:payment");
+            when(secondBySequence.getString("envelope")).thenReturn("{}");
+            when(secondBySequence.getTimestamp("created_at")).thenReturn(Timestamp.from(oldestCreatedAt));
+            return List.of(mapper.mapRow(firstBySequence, 0), mapper.mapRow(secondBySequence, 1));
         });
-        when(jdbc.update(anyString(), any(Object[].class))).thenReturn(1);
+        when(jdbc.update(anyString(), any(Object[].class))).thenReturn(2);
 
         try (OutboxRelay relay = new OutboxRelay(jdbc, streams, Duration.ofMillis(50), metrics)) {
-            assertThat(relay.pollOnce()).isEqualTo(1);
+            assertThat(relay.pollOnce()).isEqualTo(2);
         }
 
-        assertThat(metrics.sampleRows).isEqualTo(1);
+        assertThat(metrics.sampleRows).isEqualTo(2);
         assertThat(metrics.oldestAge).isBetween(Duration.ofSeconds(8), Duration.ofSeconds(11));
-        assertThat(metrics.publishedRows).isEqualTo(1);
+        assertThat(metrics.publishedRows).isEqualTo(2);
         assertThat(metrics.failures).isEmpty();
         org.mockito.Mockito.verify(jdbc).query(
             org.mockito.ArgumentMatchers.contains("LIMIT 100"),
