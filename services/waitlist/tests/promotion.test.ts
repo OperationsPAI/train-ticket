@@ -279,6 +279,30 @@ test("promotion persists the earliest commercial, guarantee and waitlist expiry"
   assert.equal((await repository.get(created.waitlistRequestId))?.offerExpiresAt?.toISOString(), "2026-01-01T00:03:00.000Z");
 });
 
+test("an already expired downstream offer expires the match and returns capacity", async () => {
+  class ExpiredOffer implements OfferManagementClient {
+    async createOffer(entry: WaitlistEntry) { return { offerId: `off-${entry.entryId}`, offerVersion: 1, expiresAt: "2026-01-01T00:00:00.000Z", total: { currency: "CNY", minorUnits: 10_750 } }; }
+  }
+  const repository = new InMemoryWaitlistRepository();
+  const publisher = new InMemoryEventPublisher();
+  const service = new WaitlistApplicationService(repository, publisher, new StubFarePricing(), new StubCapacity(), new StubJourneyOrder(),
+    () => new Date("2026-01-01T00:00:00.000Z"), new ExpiredOffer());
+  const expired = await service.join({ accountId: "acc", travelerRefs: ["tvl-expired"], segmentRef: "seg", departureDate: "2026-07-20",
+    seatClass: "SECOND_CLASS", deadline: "2026-01-01T00:20:00.000Z" });
+  await service.recordCapacityFreed(capacityEvent());
+  await service.advanceNextPromotion();
+  await service.advanceNextPromotion();
+  await service.advanceNextPromotion();
+
+  assert.equal((await repository.get(expired.waitlistRequestId))?.status, "EXPIRED");
+  assert.equal(publisher.findByEventType("WaitlistExpired").length, 1);
+
+  const next = await service.join({ accountId: "acc", travelerRefs: ["tvl-next-expiry"], segmentRef: "seg", departureDate: "2026-07-20",
+    seatClass: "SECOND_CLASS", deadline: "2026-01-01T00:20:00.000Z" });
+  await service.advanceNextPromotion();
+  assert.equal((await repository.get(next.waitlistRequestId))?.status, "MATCHING");
+});
+
 test("an offer above the verified payment guarantee suspends and returns its capacity credit once", async () => {
   let current = new Date("2026-01-01T00:00:00.000Z");
   const repository = new InMemoryWaitlistRepository();
