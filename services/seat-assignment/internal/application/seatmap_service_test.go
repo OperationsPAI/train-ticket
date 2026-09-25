@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/trainticket/greenfield/platform/go-kit/ids"
 	kitmsg "github.com/trainticket/greenfield/platform/go-kit/messaging"
 	"github.com/trainticket/greenfield/services/seat-assignment/internal/domain"
 )
@@ -14,10 +15,11 @@ import (
 type memRepo struct {
 	maps   map[string]*domain.ContractSeatMap
 	allocs map[string]*domain.ContractSeatAllocation
+	fences map[string]domain.CapacityHoldFence
 }
 
 func newMemRepo() *memRepo {
-	return &memRepo{maps: map[string]*domain.ContractSeatMap{}, allocs: map[string]*domain.ContractSeatAllocation{}}
+	return &memRepo{maps: map[string]*domain.ContractSeatMap{}, allocs: map[string]*domain.ContractSeatAllocation{}, fences: map[string]domain.CapacityHoldFence{}}
 }
 func (r *memRepo) GetInventory(context.Context, string, string) (*domain.SeatInventory, int64, error) {
 	return nil, 0, nil
@@ -60,6 +62,21 @@ func (r *memRepo) FindSeatMaps(_ context.Context, ss, date, status string, limit
 	return out, len(out), nil
 }
 func (r *memRepo) LockSeatMapPublication(context.Context, string, string) error { return nil }
+func (r *memRepo) LockCapacityHold(context.Context, string) error               { return nil }
+func (r *memRepo) CapacityHoldFence(_ context.Context, hold string) (*domain.CapacityHoldFence, error) {
+	fence, ok := r.fences[hold]
+	if !ok {
+		return nil, nil
+	}
+	return &fence, nil
+}
+func (r *memRepo) RecordCapacityHoldFence(_ context.Context, fence domain.CapacityHoldFence) (*domain.CapacityHoldFence, error) {
+	if current, ok := r.fences[fence.CapacityHoldID]; ok {
+		return &current, nil
+	}
+	r.fences[fence.CapacityHoldID] = fence
+	return &fence, nil
+}
 func (r *memRepo) SaveSeatAllocation(_ context.Context, a *domain.ContractSeatAllocation) error {
 	cp := *a
 	r.allocs[a.SeatAllocationID] = &cp
@@ -154,11 +171,16 @@ func TestSeatMapPublishImmutabilityAllocateAdjacencyAndStanding(t *testing.T) {
 	}
 	pref := &domain.SeatPreferences{AcceptStanding: false, AdjacencyPreference: domain.AdjacencyAdjacent, AdjacencyGroupRef: "grp", PreferenceVersion: "pv1"}
 	a1 := allocReq("sb-1", "tvl-1", "hold-1", pref)
+	a1.CapacityUnitRef = m.Coaches[0].SeatUnits[0].SeatUnitRef
 	r1, err := svc.AllocateSeat(ctx, a1)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if r1.SeatRef.SeatUnitRef != a1.CapacityUnitRef {
+		t.Fatalf("allocation unit=%s want capacity-bound %s", r1.SeatRef.SeatUnitRef, a1.CapacityUnitRef)
+	}
 	a2 := allocReq("sb-2", "tvl-2", "hold-2", pref)
+	a2.CapacityUnitRef = m.Coaches[0].SeatUnits[1].SeatUnitRef
 	r2, err := svc.AllocateSeat(ctx, a2)
 	if err != nil {
 		t.Fatal(err)
@@ -170,7 +192,9 @@ func TestSeatMapPublishImmutabilityAllocateAdjacencyAndStanding(t *testing.T) {
 		t.Fatalf("expected second traveler in group to satisfy adjacency, got %#v", r2.SeatRef)
 	}
 	standingPref := &domain.SeatPreferences{AcceptStanding: true, PreferenceVersion: "pv-standing"}
-	if _, err := svc.AllocateSeat(ctx, allocReq("sb-3", "tvl-3", "hold-3", standingPref)); err == nil {
+	standingReq := allocReq("sb-3", "tvl-3", "hold-3", standingPref)
+	standingReq.CapacityUnitRef = "quota:" + domain.StandingPolicyVersion + ":0"
+	if _, err := svc.AllocateSeat(ctx, standingReq); err == nil {
 		t.Fatal("standing requires a published second class composition")
 	}
 	if len(pub.payloads["AdjacentAllocationSolved"]) < 2 {
@@ -193,7 +217,8 @@ func TestSeatMapPublishImmutabilityAllocateAdjacencyAndStanding(t *testing.T) {
 }
 
 func allocReq(sb, tvl, hold string, pref *domain.SeatPreferences) AllocateSeatRequest {
-	return AllocateSeatRequest{SegmentBookingID: sb, JourneyOrderID: "ord-1", TravelerRef: tvl, SegmentRef: "seg-1", ScheduledServiceRef: "ss-1", ServiceDate: "2026-08-02", CapacityHoldID: hold, CapacityUnitRef: "cap-standard", Interval: domain.StationInterval{FromSeq: 1, ToSeq: 3}, ClassRef: "standard", IssuePurpose: "INITIAL", SeatPreferences: pref, ExpiresAt: time.Now().Add(time.Hour)}
+	seatMap, _ := domain.NewContractSeatMap("ss-1", "2026-08-02", "v1", "BASE", "sim-v1", "", time.Now())
+	return AllocateSeatRequest{SegmentBookingID: sb, JourneyOrderID: "ord-1", TravelerRef: tvl, SegmentRef: "seg-1", ScheduledServiceRef: "ss-1", ServiceDate: "2026-08-02", CapacityHoldID: hold, CapacityUnitRef: seatMap.Coaches[0].SeatUnits[0].SeatUnitRef, Interval: domain.StationInterval{FromSeq: 1, ToSeq: 3}, ClassRef: "standard", IssuePurpose: "INITIAL", SeatPreferences: pref, ExpiresAt: time.Now().Add(time.Hour)}
 }
 
 func TestPublishedCompositionReplacementMapsHistoricalUnits(t *testing.T) {
@@ -234,5 +259,88 @@ func TestPublishedCompositionReplacementMapsHistoricalUnits(t *testing.T) {
 		if mapping.SourceSeatMapID != first.SeatMapID || mapping.SourceSeatUnitRef == mapping.TargetSeatUnitRef || mapping.MappingVersion != "map-v2" {
 			t.Fatalf("invalid replacement mapping %+v", mapping)
 		}
+	}
+	request := AllocateSeatRequest{SegmentBookingID: "sb-replaced", JourneyOrderID: "ord-replaced", TravelerRef: "tvl-replaced",
+		SegmentRef: "seg-replaced", ScheduledServiceRef: "ss-replace", ServiceDate: "2026-09-25",
+		CapacityHoldID: "hold-replaced", CapacityUnitRef: first.Coaches[0].SeatUnits[0].SeatUnitRef,
+		Interval: domain.StationInterval{FromSeq: 0, ToSeq: 2}, ClassRef: "standard", IssuePurpose: "INITIAL", ExpiresAt: time.Now().Add(time.Hour)}
+	allocated, err := svc.AllocateSeat(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := facts.ReplacementMappings[0].TargetSeatUnitRef
+	for _, mapping := range facts.ReplacementMappings {
+		if mapping.SourceSeatUnitRef == request.CapacityUnitRef {
+			want = mapping.TargetSeatUnitRef
+		}
+	}
+	if allocated.SeatRef.SeatUnitRef != want {
+		t.Fatalf("replacement allocation=%s want %s", allocated.SeatRef.SeatUnitRef, want)
+	}
+}
+
+func TestCapacityBoundStandingAndIntervalReuse(t *testing.T) {
+	repo := newMemRepo()
+	svc := New(repo, &memPub{}, nil)
+	ctx := context.Background()
+	m, err := svc.CreateSeatMap(ctx, CreateSeatMapRequest{ScheduledServiceRef: "ss-standing", ServiceDate: "2026-09-25", CompositionVersion: "v1", CompositionSeed: "CRH380A", MappingVersion: "map-v1", OperatorRef: "op"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err = svc.PublishSeatMap(ctx, m.SeatMapID, PublishSeatMapRequest{ExpectedSeatMapVersion: m.SeatMapVersion, PublishReason: "READY", OperatorRef: "op"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	physical := m.AssignableUnits("SECOND_CLASS")[0].SeatUnitRef
+	first := AllocateSeatRequest{SegmentBookingID: "sb-a", JourneyOrderID: "ord-a", TravelerRef: "tvl-a", SegmentRef: "seg-a", ScheduledServiceRef: "ss-standing", ServiceDate: "2026-09-25", CapacityHoldID: "hold-a", CapacityUnitRef: physical, Interval: domain.StationInterval{FromSeq: 0, ToSeq: 2}, ClassRef: "SECOND_CLASS", IssuePurpose: "INITIAL", ExpiresAt: time.Now().Add(time.Hour)}
+	if _, err := svc.AllocateSeat(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	overlap := first
+	overlap.SegmentBookingID = "sb-b"
+	overlap.TravelerRef = "tvl-b"
+	overlap.CapacityHoldID = "hold-b"
+	overlap.Interval = domain.StationInterval{FromSeq: 1, ToSeq: 3}
+	if _, err := svc.AllocateSeat(ctx, overlap); err == nil {
+		t.Fatal("overlapping bound unit was allocated twice")
+	}
+	adjacent := overlap
+	adjacent.SegmentBookingID = "sb-c"
+	adjacent.TravelerRef = "tvl-c"
+	adjacent.CapacityHoldID = "hold-c"
+	adjacent.Interval = domain.StationInterval{FromSeq: 2, ToSeq: 4}
+	if _, err := svc.AllocateSeat(ctx, adjacent); err != nil {
+		t.Fatal(err)
+	}
+	standing := first
+	standing.SegmentBookingID = "sb-standing"
+	standing.TravelerRef = "tvl-standing"
+	standing.CapacityHoldID = "hold-standing"
+	standing.CapacityUnitRef = "quota:" + domain.StandingPolicyVersion + ":0"
+	standing.SeatPreferences = nil
+	allocated, err := svc.AllocateSeat(ctx, standing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, _, _ := repo.GetSeatAllocation(ctx, allocated.SeatAllocationID)
+	if stored.RequestedClassRef != "SECOND_CLASS" || stored.OccupancyClassRef != "STANDING" || stored.SeatRef.AllocationType != domain.AllocationTypeStanding {
+		t.Fatalf("standing substitution lost class semantics: %+v", stored)
+	}
+}
+
+func TestCapacityTerminalFenceRejectsLateAllocation(t *testing.T) {
+	repo := newMemRepo()
+	svc := New(repo, &memPub{}, nil)
+	ctx := context.Background()
+	m, _ := svc.CreateSeatMap(ctx, CreateSeatMapRequest{ScheduledServiceRef: "ss-1", ServiceDate: "2026-08-02", CompositionVersion: "v1", CompositionSeed: "BASE", MappingVersion: "sim-v1", OperatorRef: "op"})
+	m, _ = svc.PublishSeatMap(ctx, m.SeatMapID, PublishSeatMapRequest{ExpectedSeatMapVersion: m.SeatMapVersion, PublishReason: "READY", OperatorRef: "op"})
+	req := allocReq("sb-late", "tvl-late", "hold-late", nil)
+	req.CapacityUnitRef = m.Coaches[0].SeatUnits[0].SeatUnitRef
+	payload, _ := json.Marshal(map[string]any{"holdId": req.CapacityHoldID, "capacityUnitRef": req.CapacityUnitRef, "interval": req.Interval, "releasedAt": time.Now().UTC().Format(time.RFC3339)})
+	if err := svc.HandleSubscribedEvent(ctx, kitmsg.EventEnvelope{EventID: ids.NewEventID(), EventType: "CapacityReleased", CorrelationID: ids.NewCorrelationID(), Payload: payload}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.AllocateSeat(ctx, req); err == nil {
+		t.Fatal("late allocation crossed terminal fence")
 	}
 }
