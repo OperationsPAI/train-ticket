@@ -45,6 +45,10 @@ export interface WaitlistRepository {
   add(entry: WaitlistEntry): Promise<WaitlistEntrySnapshot> | WaitlistEntrySnapshot;
   get(entryId: string): Promise<WaitlistEntry | undefined> | WaitlistEntry | undefined;
   save(entry: WaitlistEntry): Promise<WaitlistEntrySnapshot> | WaitlistEntrySnapshot;
+  recordCapacityCredit(event: WaitlistCapacityFreed): Promise<boolean> | boolean;
+  claimNextPromotion(now: Date): Promise<WaitlistEntry | undefined> | WaitlistEntry | undefined;
+  findRecoverablePromotion(): Promise<WaitlistEntry | undefined> | WaitlistEntry | undefined;
+  restoreCapacityCredits(entry: WaitlistEntry): Promise<void> | void;
   findTopQueued(criteria: WaitlistMatchCriteria): Promise<WaitlistEntry | undefined> | WaitlistEntry | undefined;
   findByJourneyOrderRef?(journeyOrderRef: string): Promise<WaitlistEntry | undefined> | WaitlistEntry | undefined;
   findExpiredOffers(now: Date): Promise<readonly WaitlistEntry[]> | readonly WaitlistEntry[];
@@ -169,48 +173,69 @@ export class PromotionOrchestrator {
   ) {}
 
   async onCapacityFreed(event: WaitlistCapacityFreed, journeyOrder: JourneyOrderClient, correlationId?: string): Promise<PromotionResult> {
-    assertCapacityReleaseRef(event.capacityReleaseRef);
+    await this.recordCapacityFreed(event);
     const promoted: PromotedWaitlistRequest[] = [];
     const offers: WaitlistOffer[] = [];
-    let remainingSlots = Math.max(0, Math.floor(event.freedSlots));
-    while (remainingSlots > 0) {
-      const entry = await this.repository.findTopQueued({
-        segmentRef: event.segmentRef,
-        scheduledServiceRef: event.scheduledServiceRef,
-        departureDate: event.departureDate,
-        seatClass: normalizeFareClass(event.seatClass),
-        interval: event.interval,
-        stopSequenceVersion: event.stopSequenceVersion,
-        maxTravelers: remainingSlots,
-        intentFingerprint: event.intentFingerprint,
-      });
-      if (!entry) break;
-      if (new Date(entry.deadline) <= this.now()) {
-        entry.expire();
-        const expired = await this.repository.save(entry);
-        await publishAll(this.publisher, [waitlistExpired(expired, entry.loadedVersion, correlationId, this.now().toISOString())]);
-        continue;
+    for (let steps = 0; steps < 1_000; steps++) {
+      const result = await this.advanceNextPromotion(journeyOrder, correlationId);
+      if (!result) break;
+      if (result.journeyOrderRef && !promoted.some((entry) => entry.entryId === result.entryId)) {
+        promoted.push({ ...result, waitlistRequestId: result.entryId });
       }
-      const quote = await this.farePricing.quote(entry);
-      const commercialOffer = await this.offerManagement.createOffer(entry, quote.fareQuoteId);
-      const now = this.now();
-      const expiresAt = earliestInstant(commercialOffer.expiresAt, entry.paymentGuarantee.authorizedUntil, entry.deadline);
-      if (expiresAt <= now) throw new DomainError("PRECONDITION_FAILED", "Commercial offer is already outside the waitlist offer window");
-      const offer = { offerId: commercialOffer.offerId, offerVersion: commercialOffer.offerVersion, entryId: entry.entryId, fareQuoteId: quote.fareQuoteId, expiresAt: expiresAt.toISOString() };
-      entry.offer(offer.offerId, offer.offerVersion, quote.fareQuoteId, undefined, now, expiresAt);
-      let snapshot = await this.repository.save(entry);
-      await publishAll(this.publisher, [waitlistMatchStarted(snapshot, entry.loadedVersion, event.capacityReleaseRef, correlationId, now.toISOString())]);
-
-      const orderRequestedAt = this.now();
-      entry.ensureOfferAcceptable(orderRequestedAt);
-      const order = await journeyOrder.createOrder(entry);
-      entry.linkJourneyOrder(orderRequestedAt, order.orderId);
-      snapshot = await this.repository.save(entry);
-      promoted.push({ ...snapshot, waitlistRequestId: snapshot.entryId });
-      offers.push(offer);
-      remainingSlots -= entry.travelerRefs.length;
+      if (result.offerId && result.offerVersion && result.fareQuoteId && result.offerExpiresAt
+          && !offers.some((offer) => offer.entryId === result.entryId)) {
+        offers.push({ offerId: result.offerId, offerVersion: result.offerVersion, entryId: result.entryId, fareQuoteId: result.fareQuoteId, expiresAt: result.offerExpiresAt });
+      }
     }
     return { promoted, offers };
+  }
+
+  async recordCapacityFreed(event: WaitlistCapacityFreed): Promise<boolean> {
+    assertCapacityReleaseRef(event.capacityReleaseRef);
+    return this.repository.recordCapacityCredit({ ...event, seatClass: normalizeFareClass(event.seatClass) });
+  }
+
+  async advanceNextPromotion(journeyOrder: JourneyOrderClient, correlationId?: string): Promise<WaitlistEntrySnapshot | undefined> {
+    let entry = await this.repository.findRecoverablePromotion();
+    if (!entry) {
+      entry = await this.repository.claimNextPromotion(this.now());
+      if (!entry) return undefined;
+      const claimed = await this.repository.save(entry);
+      const now = this.now();
+      await publishAll(this.publisher, [waitlistMatchStarted(claimed, entry.loadedVersion, entry.matchedCapacityCredits.map((credit) => credit.capacityReleaseRef), correlationId, now.toISOString())]);
+      return claimed;
+    }
+    return this.advancePromotion(entry, journeyOrder, correlationId);
+  }
+
+  private async advancePromotion(entry: WaitlistEntry, journeyOrder: JourneyOrderClient, correlationId?: string): Promise<WaitlistEntrySnapshot | undefined> {
+    if (entry.status !== "MATCHING" || entry.journeyOrderRef) return undefined;
+    const now = this.now();
+    if (new Date(entry.deadline) <= now || (entry.offerExpiresAt && entry.offerExpiresAt <= now)) {
+      await this.repository.restoreCapacityCredits(entry);
+      entry.expire();
+      const expired = await this.repository.save(entry);
+      await publishAll(this.publisher, [waitlistExpired(expired, entry.loadedVersion, correlationId, now.toISOString())]);
+      return expired;
+    }
+    if (!entry.fareQuoteId) {
+      const quote = await this.farePricing.quote(entry);
+      entry.recordFareQuote(quote.fareQuoteId);
+      return this.repository.save(entry);
+    }
+    if (!entry.offerId) {
+      const commercialOffer = await this.offerManagement.createOffer(entry, entry.fareQuoteId!);
+      const offerNow = this.now();
+      const expiresAt = earliestInstant(commercialOffer.expiresAt, entry.paymentGuarantee.authorizedUntil, entry.deadline);
+      if (expiresAt <= offerNow) throw new DomainError("PRECONDITION_FAILED", "Commercial offer is already outside the waitlist offer window");
+      entry.offer(commercialOffer.offerId, commercialOffer.offerVersion, entry.fareQuoteId!, undefined, offerNow, expiresAt);
+      return this.repository.save(entry);
+    }
+    const orderRequestedAt = this.now();
+    entry.ensureOfferAcceptable(orderRequestedAt);
+    const order = await journeyOrder.createOrder(entry);
+    entry.linkJourneyOrder(orderRequestedAt, order.orderId);
+    return this.repository.save(entry);
   }
 
   async expireDueOffers(correlationId?: string): Promise<readonly WaitlistEntrySnapshot[]> {
@@ -218,6 +243,7 @@ export class PromotionOrchestrator {
     const expired: WaitlistEntrySnapshot[] = [];
     for (const entry of await this.repository.findExpiredOffers(now)) {
       const capacityHoldId = entry.capacityHoldId;
+      if (!entry.journeyOrderRef && entry.matchedCapacityCredits.length > 0) await this.repository.restoreCapacityCredits(entry);
       entry.expire();
       if (capacityHoldId) await this.capacityAvailability.releaseHold(entry, capacityHoldId);
       const snapshot = await this.repository.save(entry);
