@@ -254,6 +254,10 @@ def test_historical_backfill_is_streamed_idempotent_and_switchable():
                     (Jsonb({"policyId": "pol-2", "ancillaryOrderItemId": "aoi-policy-3", "journeyOrderId": "ord-2", "segmentRefs": ["seg-c"], "travelerRef": "tvl-3"}),),
                 )
                 source.execute(
+                    "INSERT INTO policy_snapshots VALUES ('pol-2-related',%s,'2026-09-25T03:56:55Z')",
+                    (Jsonb({"policyId": "pol-2-related", "ancillaryOrderItemId": "aoi-policy-4", "journeyOrderId": "ord-2", "segmentRefs": ["seg-c"], "travelerRef": "tvl-3"}),),
+                )
+                source.execute(
                     "INSERT INTO segment_booking_snapshots VALUES ('sb-1',%s,'2026-09-25T03:57:00Z')",
                     (Jsonb({"journeyOrderId": "ord-1", "segmentRef": "seg-a", "travelerRef": "tvl-1", "classRef": "SECOND_CLASS"}),),
                 )
@@ -289,7 +293,7 @@ def test_historical_backfill_is_streamed_idempotent_and_switchable():
             assert first["backfill"]["captured_events"] == first["backfill"]["referenced_captures"] == 5
             assert second["backfill"]["captured_events"] == second["backfill"]["referenced_captures"] == 5
             assert first["backfill"]["ancillary_scopes"] == 3
-            assert first["backfill"]["insurance_scopes"] == 6
+            assert first["backfill"]["insurance_scopes"] == 8
             assert first["backfill"]["seat_classes"] == 2
             with psycopg.connect(reporting_url) as target:
                 assert target.execute("SELECT count(*) FROM reporting_capture_references").fetchone()[0] == 5
@@ -302,6 +306,7 @@ def test_historical_backfill_is_streamed_idempotent_and_switchable():
                     ("pol-1", ["seg-b"], ["tvl-2"]),
                 ]
                 assert target.execute("SELECT order_id FROM reporting_business_scopes WHERE business_ref='aoi-discovered-from-policy'").fetchone()[0] == "ord-2"
+                assert target.execute("SELECT order_id FROM reporting_business_scopes WHERE business_ref='pol-2-related'").fetchone()[0] == "ord-2"
                 assert target.execute(
                     "SELECT count(*) FROM schema_migrations WHERE version=ANY(%s)",
                     (["007_authoritative_revenue_facts.sql", "008_authoritative_revenue_views.sql"],),
