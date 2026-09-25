@@ -3,13 +3,16 @@ package main
 import (
 	"context"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	kitmessaging "github.com/trainticket/greenfield/platform/go-kit/messaging"
 	"github.com/trainticket/greenfield/platform/go-kit/storage"
 	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
+	entitlementadapter "github.com/trainticket/greenfield/services/fulfillment/internal/adapters/entitlement"
 	"github.com/trainticket/greenfield/services/fulfillment/internal/adapters/messaging"
 	adapterpg "github.com/trainticket/greenfield/services/fulfillment/internal/adapters/postgres"
 	"github.com/trainticket/greenfield/services/fulfillment/internal/application"
@@ -64,7 +67,15 @@ func main() {
 	transactor := adapterpg.NewTransactor(pool)
 	repo := adapterpg.NewFulfillmentRepositoryWithProvider(transactor)
 	consumed := adapterpg.NewProcessedEventsWithProvider(transactor)
-	service := application.NewService(repo, adapterpg.NewOutboxPublisherWithProvider(transactor), consumed, nil, nil).WithSegmentStatusRepository(repo).WithUnitOfWork(transactor.Within)
+	entitlementURL := os.Getenv("ENTITLEMENT_TICKETING_URL")
+	if entitlementURL == "" {
+		entitlementURL = "http://entitlement-ticketing:8080"
+	}
+	entitlementReader := entitlementadapter.NewClient(entitlementURL, &http.Client{Timeout: 5 * time.Second})
+	service := application.NewService(repo, adapterpg.NewOutboxPublisherWithProvider(transactor), consumed, nil, nil).
+		WithSegmentStatusRepository(repo).
+		WithEntitlementReader(entitlementReader).
+		WithUnitOfWork(transactor.Within)
 
 	if subscriber, err := messaging.NewSubscriberFromURL(os.Getenv("REDIS_URL")); err == nil {
 		consumer := os.Getenv("FULFILLMENT_CONSUMER_NAME")
