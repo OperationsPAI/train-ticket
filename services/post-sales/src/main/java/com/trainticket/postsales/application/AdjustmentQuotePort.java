@@ -17,10 +17,23 @@ public interface AdjustmentQuotePort {
         String journeyOrderId,
         List<String> segmentRefs,
         String idempotencyKey,
-        String targetOfferId
+        String targetOfferId,
+        /**
+         * The travelers this case covers.
+         *
+         * A change can be scoped to one traveler of an order that carries
+         * several -- the case and its target offer are built for that subset --
+         * so the offer has to be checked against the case's scope rather than
+         * against every traveler on the order.
+         */
+        List<String> travelerRefs
     ) {
         public AdjustmentQuoteRequest(String purpose, List<String> entitlementIds, String journeyOrderId, List<String> segmentRefs, String idempotencyKey) {
-            this(purpose, entitlementIds, journeyOrderId, segmentRefs, idempotencyKey, null);
+            this(purpose, entitlementIds, journeyOrderId, segmentRefs, idempotencyKey, null, null);
+        }
+
+        public AdjustmentQuoteRequest(String purpose, List<String> entitlementIds, String journeyOrderId, List<String> segmentRefs, String idempotencyKey, String targetOfferId) {
+            this(purpose, entitlementIds, journeyOrderId, segmentRefs, idempotencyKey, targetOfferId, null);
         }
     }
 
