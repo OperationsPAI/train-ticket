@@ -913,6 +913,7 @@ def _dynamic_capacity_adjustment(
     adjustment_pct = band.adjustment_pct if band is not None else 0
     component_data = {
         "segmentRef": lowest.segment_ref,
+        "classRef": lowest.class_ref,
         "remainingPct": str(remaining_pct),
         "adjustmentPct": adjustment_pct,
     }
