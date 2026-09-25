@@ -80,7 +80,7 @@ The default metric catalog describes this meaning; existing stored metric descri
 | `limit` | Requested maximum number of grouped rows in `items`. |
 | `offset` | Requested grouped-row offset. |
 | `items[].revenue` | Gross captured amount for the dimension value and currency. |
-| `items[].count` | Captured event count in the PostgreSQL projection; a missing amount contributes zero amount and one count. |
+| `items[].count` | Count of valid captured payments with an amount. A `PaymentCaptured` fact with no amount is retained for audit but contributes neither amount nor count. |
 | `items[].yieldPerKm` | Captured amount divided by the sum of recorded distance, or zero when the distance sum is zero. |
 | `items[].ancillaryAttachRate` | Captured rows with the ancillary flag divided by captured row count. |
 | `items[].insuranceAttachRate` | Captured rows with the insurance flag divided by captured row count. |
@@ -94,7 +94,7 @@ Trend points for `revenue_per_hour` expose the same array in `points[].values`; 
 Missing dimension values appear as `unknown`; `time_period` uses UTC hour labels such as `2026-09-23T15:00:00Z`.
 The report covers stored history and reads the last completed materialized refresh.
 Refresh work runs when requests are pending and waits 30 seconds after each completed worker iteration.
-The in memory implementation supports multiple currencies and excludes events whose amount is absent from its monetary count.
+PostgreSQL and the in-memory implementation both exclude a capture whose amount is absent from monetary totals and payment counts.
 Requests using `source_context` or `event_type` return event count reports with zero monetary fields.
 For those reports, `total` is the number of grouped values and `eventCount` is the complete number of source events before pagination.
 
