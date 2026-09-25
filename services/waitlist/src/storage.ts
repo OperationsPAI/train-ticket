@@ -122,15 +122,23 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
     return entry;
   }
 
-  async restoreCapacityCredits(entry: WaitlistEntry): Promise<void> {
+  async restoreCapacityCredits(entry: WaitlistEntry, slots = entry.travelerRefs.length): Promise<void> {
+    if (!Number.isSafeInteger(slots) || slots < 0 || slots > entry.travelerRefs.length) {
+      throw new DomainError("VALIDATION_FAILED", "restored capacity slots are outside the matched traveler group");
+    }
+    let remaining = slots;
     for (const credit of entry.matchedCapacityCredits) {
+      if (remaining === 0) break;
+      const restored = Math.min(credit.slots, remaining);
       const result = await this.db.query(
         `UPDATE waitlist_capacity_credits SET remaining_slots=remaining_slots+$2
          WHERE capacity_release_ref=$1 AND remaining_slots+$2 <= released_slots`,
-        [credit.capacityReleaseRef, credit.slots],
+        [credit.capacityReleaseRef, restored],
       );
       if ((result.rowCount ?? 0) !== 1) throw new OptimisticConcurrencyConflict(`Capacity credit ${credit.capacityReleaseRef} cannot be restored`);
+      remaining -= restored;
     }
+    if (remaining !== 0) throw new OptimisticConcurrencyConflict(`Matched capacity credits do not cover ${remaining} restored slots for ${entry.entryId}`);
   }
 
   async findRecoverablePromotion(): Promise<WaitlistEntry | undefined> {
@@ -139,6 +147,17 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
        WHERE status='MATCHING' AND data->>'journeyOrderRef' IS NULL
        ORDER BY updated_at ASC,entry_id ASC LIMIT 1
        FOR UPDATE SKIP LOCKED`,
+    ) as QueryResult<WaitlistRow>;
+    return result.rows[0] ? entryFromRow(result.rows[0]) : undefined;
+  }
+
+  async findRecoverableFulfillment(now: Date): Promise<WaitlistEntry | undefined> {
+    const result = await this.db.query(
+      `SELECT * FROM waitlist_entries
+       WHERE status='MATCHING' AND data->>'journeyOrderRef' IS NOT NULL
+         AND COALESCE((data#>>'{fulfillment,nextActionAt}')::timestamptz,'-infinity'::timestamptz) <= $1
+       ORDER BY updated_at ASC,entry_id ASC LIMIT 1
+       FOR UPDATE SKIP LOCKED`, [now.toISOString()],
     ) as QueryResult<WaitlistRow>;
     return result.rows[0] ? entryFromRow(result.rows[0]) : undefined;
   }
@@ -170,7 +189,7 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
     const result = await this.db.query(
       `SELECT * FROM waitlist_entries
        WHERE (status = 'MATCHING' AND data->>'journeyOrderRef' IS NULL AND offer_expires_at <= $1)
-          OR (status = 'QUEUED' AND (data->>'deadline')::timestamptz <= $1)
+          OR (status IN ('QUEUED','SUSPENDED') AND (data->>'deadline')::timestamptz <= $1)
           OR (status = 'MATCHING' AND data->>'journeyOrderRef' IS NULL AND (data->>'deadline')::timestamptz <= $1)
        ORDER BY COALESCE(offer_expires_at, (data->>'deadline')::timestamptz) ASC, entry_id ASC
        FOR UPDATE SKIP LOCKED`,
@@ -185,7 +204,7 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
   }
 
   async findByJourneyOrderRef(journeyOrderRef: string): Promise<WaitlistEntry | undefined> {
-    const result = await this.db.query(`SELECT * FROM waitlist_entries WHERE data->>'journeyOrderRef' = $1 ORDER BY created_at ASC LIMIT 1`, [journeyOrderRef]) as QueryResult<WaitlistRow>;
+    const result = await this.db.query(`SELECT * FROM waitlist_entries WHERE data->>'journeyOrderRef' = $1 ORDER BY created_at ASC LIMIT 1 FOR UPDATE`, [journeyOrderRef]) as QueryResult<WaitlistRow>;
     return result.rows[0] ? entryFromRow(result.rows[0]) : undefined;
   }
 
@@ -303,6 +322,7 @@ function entryFromRow(row: WaitlistRow): WaitlistEntry {
     paymentGuarantee: paymentGuaranteeFrom(data.paymentGuarantee, row),
     intentFingerprint: typeof data.intentFingerprint === "string" ? data.intentFingerprint : defaultIntentFingerprint(row.traveler_refs, row.segment_ref, dateString(row.departure_date), row.seat_class),
     matchedCapacityCredits: capacityCreditAllocations(data.matchedCapacityCredits),
+    fulfillment: fulfillmentProgress(data.fulfillment, row.entry_id, row.traveler_refs),
     journeyOrderRef: typeof data.journeyOrderRef === "string" ? data.journeyOrderRef : undefined,
     fareQuoteIdempotencyKey: typeof data.fareQuoteIdempotencyKey === "string" ? data.fareQuoteIdempotencyKey : undefined,
     offerIdempotencyKey: typeof data.offerIdempotencyKey === "string" ? data.offerIdempotencyKey : undefined,
@@ -381,6 +401,51 @@ function capacityCreditAllocations(value: unknown): readonly { capacityReleaseRe
     return typeof credit.capacityReleaseRef === "string" && Number.isSafeInteger(Number(credit.slots)) && Number(credit.slots) > 0
       ? [{ capacityReleaseRef: credit.capacityReleaseRef, slots: Number(credit.slots) }] : [];
   });
+}
+function fulfillmentProgress(value: unknown, entryId: string, travelerRefs: unknown): WaitlistEntrySnapshot["fulfillment"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const progress = value as Record<string, unknown>;
+  if (!Array.isArray(progress.travelers) || typeof progress.paymentCreateIdempotencyKey !== "string"
+      || typeof progress.paymentCaptureIdempotencyKey !== "string" || typeof progress.paymentCancelIdempotencyKey !== "string"
+      || typeof progress.orderCancelIdempotencyKey !== "string") return undefined;
+  const travelers = progress.travelers.flatMap((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const traveler = item as Record<string, unknown>;
+    if (typeof traveler.travelerRef !== "string" || typeof traveler.segmentBookingId !== "string"
+        || typeof traveler.reservationIdempotencyKey !== "string" || typeof traveler.capacityReleaseIdempotencyKey !== "string"
+        || typeof traveler.entitlementIdempotencyKey !== "string") return [];
+    return [{
+      travelerRef: traveler.travelerRef,
+      segmentBookingId: traveler.segmentBookingId,
+      reservationIdempotencyKey: traveler.reservationIdempotencyKey,
+      capacityReleaseIdempotencyKey: traveler.capacityReleaseIdempotencyKey,
+      entitlementIdempotencyKey: traveler.entitlementIdempotencyKey,
+      reservationStatus: typeof traveler.reservationStatus === "string" ? traveler.reservationStatus : undefined,
+      capacityHoldId: typeof traveler.capacityHoldId === "string" ? traveler.capacityHoldId : undefined,
+      entitlementId: typeof traveler.entitlementId === "string" ? traveler.entitlementId : undefined,
+    }];
+  });
+  const expectedTravelers = Array.isArray(travelerRefs) ? travelerRefs.map(String) : [];
+  if (travelers.length !== expectedTravelers.length || !expectedTravelers.every((reference) => travelers.some((traveler) => traveler.travelerRef === reference))) return undefined;
+  const orderAmount = moneyFrom(progress.orderAmount);
+  return {
+    bookingSagaRef: typeof progress.bookingSagaRef === "string" ? progress.bookingSagaRef : undefined,
+    orderAmount,
+    travelers,
+    paymentCreateIdempotencyKey: progress.paymentCreateIdempotencyKey,
+    paymentCaptureIdempotencyKey: progress.paymentCaptureIdempotencyKey,
+    paymentCancelIdempotencyKey: progress.paymentCancelIdempotencyKey,
+    orderCancelIdempotencyKey: progress.orderCancelIdempotencyKey,
+    paymentIntentId: typeof progress.paymentIntentId === "string" ? progress.paymentIntentId : undefined,
+    paymentStatus: typeof progress.paymentStatus === "string" ? progress.paymentStatus : undefined,
+    nextActionAt: typeof progress.nextActionAt === "string" ? progress.nextActionAt : undefined,
+  };
+}
+function moneyFrom(value: unknown): { currency: string; minorUnits: number } | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const money = value as Record<string, unknown>;
+  return typeof money.currency === "string" && Number.isSafeInteger(Number(money.minorUnits)) && Number(money.minorUnits) > 0
+    ? { currency: money.currency, minorUnits: Number(money.minorUnits) } : undefined;
 }
 function isUniqueViolation(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;

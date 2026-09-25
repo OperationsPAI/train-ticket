@@ -43,14 +43,14 @@ export async function bootstrap(options: BootstrapOptions = {}) {
     handleCapacityFreed: async (event: WaitlistCapacityFreed, correlationId: string | undefined, envelope: EventEnvelope) => {
       if (!storage) return inMemoryApplicationService().handleCapacityFreed(event, correlationId);
       await storage.runConsumedEvent(envelope.eventId, consumedStream(envelope), (repository, publisher) => new WaitlistApplicationService(repository, publisher).recordCapacityFreed(event));
-      return drainPromotions(storage, correlationId);
+      return drainWork(storage, correlationId);
     },
     handleJourneyOrderConfirmed: (orderId: string, correlationId: string | undefined, envelope: EventEnvelope) => storage
       ? storage.runConsumedEvent(envelope.eventId, consumedStream(envelope), (repository, publisher) => new WaitlistApplicationService(repository, publisher).handleJourneyOrderConfirmed(orderId, correlationId))
       : inMemoryApplicationService().handleJourneyOrderConfirmed(orderId, correlationId),
-    handleJourneyOrderCancelled: (orderId: string, _correlationId: string | undefined, envelope: EventEnvelope) => storage
-      ? storage.runConsumedEvent(envelope.eventId, consumedStream(envelope), (repository, publisher) => new WaitlistApplicationService(repository, publisher).handleJourneyOrderCancelled(orderId))
-      : inMemoryApplicationService().handleJourneyOrderCancelled(orderId),
+    handleJourneyOrderCancelled: (orderId: string, correlationId: string | undefined, envelope: EventEnvelope) => storage
+      ? storage.runConsumedEvent(envelope.eventId, consumedStream(envelope), (repository, publisher) => new WaitlistApplicationService(repository, publisher).handleJourneyOrderCancelled(orderId, correlationId))
+      : inMemoryApplicationService().handleJourneyOrderCancelled(orderId, correlationId),
   };
   // Retry subscribe in the background rather than logging and continuing.
   //
@@ -99,9 +99,9 @@ export async function bootstrap(options: BootstrapOptions = {}) {
   }, Number.parseInt(process.env.WAITLIST_EXPIRY_SCAN_MS ?? "15000", 10));
   expiryTimer.unref();
   const promotionTimer = setInterval(() => {
-    const operation = storage ? drainPromotions(storage) : inMemoryApplicationService().advanceNextPromotion();
-    operation.catch((error: unknown) => app.log.error({ err: error }, "waitlist promotion recovery failed"));
-  }, Number.parseInt(process.env.WAITLIST_PROMOTION_SCAN_MS ?? "1000", 10));
+    const operation = storage ? drainWork(storage) : inMemoryApplicationService().advanceNextWork();
+    operation.catch((error: unknown) => app.log.error({ err: error }, "waitlist promotion or fulfillment recovery failed"));
+  }, Number.parseInt(process.env.WAITLIST_WORK_SCAN_MS ?? process.env.WAITLIST_PROMOTION_SCAN_MS ?? "1000", 10));
   promotionTimer.unref();
   const archivalTimer = setInterval(() => {
     const operation = storage
@@ -125,10 +125,10 @@ export async function bootstrap(options: BootstrapOptions = {}) {
   return app;
 }
 
-async function drainPromotions(storage: NonNullable<Awaited<ReturnType<typeof startWaitlistStorage>>>, correlationId?: string): Promise<void> {
+async function drainWork(storage: NonNullable<Awaited<ReturnType<typeof startWaitlistStorage>>>, correlationId?: string): Promise<void> {
   for (let steps = 0; steps < 1_000; steps++) {
-    const progressed = await storage.runCommand((repository, publisher) => new WaitlistApplicationService(repository, publisher).advanceNextPromotion(correlationId));
+    const progressed = await storage.runCommand((repository, publisher) => new WaitlistApplicationService(repository, publisher).advanceNextWork(correlationId));
     if (!progressed) return;
   }
-  throw new Error("waitlist promotion drain exceeded its safety limit");
+  throw new Error("waitlist work drain exceeded its safety limit");
 }

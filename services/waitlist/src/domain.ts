@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { uuidV7 } from "@trainticket/ts-kit";
 
 export type WaitlistStatus = "DRAFT" | "QUEUED" | "MATCHING" | "FULFILLED" | "EXPIRED" | "CANCELLED" | "SUSPENDED" | "CLOSED";
@@ -20,6 +21,28 @@ export type PaymentGuaranteeSnapshot = Readonly<{
 export type CapacityCreditAllocation = Readonly<{
   capacityReleaseRef: string;
   slots: number;
+}>;
+export type FulfillmentTraveler = Readonly<{
+  travelerRef: string;
+  segmentBookingId: string;
+  reservationIdempotencyKey: string;
+  capacityReleaseIdempotencyKey: string;
+  entitlementIdempotencyKey: string;
+  reservationStatus?: string;
+  capacityHoldId?: string;
+  entitlementId?: string;
+}>;
+export type FulfillmentProgress = Readonly<{
+  bookingSagaRef?: string;
+  orderAmount?: MoneySnapshot;
+  travelers: readonly FulfillmentTraveler[];
+  paymentCreateIdempotencyKey: string;
+  paymentCaptureIdempotencyKey: string;
+  paymentCancelIdempotencyKey: string;
+  orderCancelIdempotencyKey: string;
+  paymentIntentId?: string;
+  paymentStatus?: string;
+  nextActionAt?: string;
 }>;
 export type SpecialStatus = "MILITARY" | "DISABLED" | "STUDENT" | "NONE";
 
@@ -53,6 +76,7 @@ export type WaitlistEntrySnapshot = Readonly<{
   paymentGuarantee?: PaymentGuaranteeSnapshot;
   intentFingerprint: string;
   matchedCapacityCredits?: readonly CapacityCreditAllocation[];
+  fulfillment?: FulfillmentProgress;
   fareQuoteId?: string;
   capacityHoldId?: string;
   offerId?: string;
@@ -84,6 +108,7 @@ export type CreateWaitlistEntry = Readonly<{
   paymentGuarantee?: PaymentGuaranteeSnapshot;
   intentFingerprint?: string;
   matchedCapacityCredits?: readonly CapacityCreditAllocation[];
+  fulfillment?: FulfillmentProgress;
   createdAt?: Date;
 }>;
 
@@ -120,6 +145,7 @@ export class WaitlistEntry {
     public readonly paymentGuarantee: PaymentGuaranteeSnapshot = testPaymentGuarantee(paymentGuaranteeRef, accountId, deadline),
     public readonly intentFingerprint: string = defaultIntentFingerprint(travelerRefs, scheduledServiceRef, departureDate, seatClass, interval),
     private _matchedCapacityCredits: readonly CapacityCreditAllocation[] = [],
+    private _fulfillment: FulfillmentProgress = newFulfillmentProgress(entryId, travelerRefs),
     private _journeyOrderRef?: string,
     private _fareQuoteIdempotencyKey: string = uuidV7(),
     private _offerIdempotencyKey: string = uuidV7(),
@@ -145,8 +171,9 @@ export class WaitlistEntry {
     const groupSize = command.priority.groupSize ?? command.travelerRefs.length;
     const fareClass = command.priority.fareClass ?? seatClass;
     const priorityScore = PriorityCalculator.calculate({ ...command.priority, groupSize, fareClass });
+    const entryId = command.entryId ?? `wlr-${uuidV7()}`;
     return new WaitlistEntry(
-      command.entryId ?? `wlr-${uuidV7()}`,
+      entryId,
       command.accountId,
       [...command.travelerRefs],
       command.segmentRef,
@@ -170,6 +197,7 @@ export class WaitlistEntry {
       command.paymentGuarantee ?? testPaymentGuarantee(command.paymentGuaranteeRef ?? "pi-test", command.accountId, command.deadline ?? deadlineFromDepartureDate(command.departureDate)),
       command.intentFingerprint ?? defaultIntentFingerprint(command.travelerRefs, scheduledServiceRef, command.departureDate, seatClass, interval),
       command.matchedCapacityCredits ?? [],
+      command.fulfillment ?? newFulfillmentProgress(entryId, command.travelerRefs),
     );
   }
 
@@ -199,6 +227,7 @@ export class WaitlistEntry {
       snapshot.paymentGuarantee ?? testPaymentGuarantee(snapshot.paymentGuaranteeRef, snapshot.accountId, snapshot.deadline),
       snapshot.intentFingerprint,
       snapshot.matchedCapacityCredits ?? [],
+      snapshot.fulfillment ?? newFulfillmentProgress(snapshot.entryId, snapshot.travelerRefs),
       snapshot.journeyOrderRef,
       snapshot.fareQuoteIdempotencyKey,
       snapshot.offerIdempotencyKey,
@@ -218,6 +247,7 @@ export class WaitlistEntry {
   get offerVersion(): number | undefined { return this._offerVersion; }
   get journeyOrderRef(): string | undefined { return this._journeyOrderRef; }
   get matchedCapacityCredits(): readonly CapacityCreditAllocation[] { return this._matchedCapacityCredits.map((credit) => ({ ...credit })); }
+  get fulfillment(): FulfillmentProgress { return cloneFulfillment(this._fulfillment); }
   get fareQuoteIdempotencyKey(): string { return this._fareQuoteIdempotencyKey; }
   get offerIdempotencyKey(): string { return this._offerIdempotencyKey; }
   get capacityHoldIdempotencyKey(): string { return this._capacityHoldIdempotencyKey; }
@@ -255,6 +285,7 @@ export class WaitlistEntry {
     this.assertStatus("QUEUED", "Only queued waitlist entries can claim released capacity");
     if (capacityCredits.length === 0
         || capacityCredits.some((credit) => credit.capacityReleaseRef.trim().length === 0 || !Number.isSafeInteger(credit.slots) || credit.slots < 1)
+        || new Set(capacityCredits.map((credit) => credit.capacityReleaseRef)).size !== capacityCredits.length
         || capacityCredits.reduce((total, credit) => total + credit.slots, 0) !== this.travelerRefs.length) {
       throw new DomainError("VALIDATION_FAILED", "capacity credits must exactly cover the traveler group");
     }
@@ -262,9 +293,66 @@ export class WaitlistEntry {
     this._matchedCapacityCredits = capacityCredits.map((credit) => ({ ...credit }));
   }
 
-  linkJourneyOrder(now: Date, journeyOrderRef: string): void {
+  linkJourneyOrder(now: Date, journeyOrderRef: string, orderAmount?: MoneySnapshot): void {
     this.ensureOfferAcceptable(now);
     this.recordJourneyOrderRef(journeyOrderRef);
+    if (orderAmount) this.recordOrderAmount(orderAmount);
+  }
+
+  recordOrderAmount(amount: MoneySnapshot): void {
+    assertMoney(amount, "orderAmount");
+    if (this._fulfillment.orderAmount
+        && (this._fulfillment.orderAmount.currency !== amount.currency || this._fulfillment.orderAmount.minorUnits !== amount.minorUnits)) {
+      throw new DomainError("CONFLICT", "Waitlist fulfillment already references a different order amount");
+    }
+    this._fulfillment = { ...this._fulfillment, orderAmount: { ...amount } };
+  }
+
+  recordBookingSaga(sagaId: string): void {
+    assertNonEmpty(sagaId, "sagaId");
+    if (this._fulfillment.bookingSagaRef && this._fulfillment.bookingSagaRef !== sagaId) throw new DomainError("CONFLICT", "Waitlist fulfillment already references a different booking saga");
+    this._fulfillment = { ...this._fulfillment, bookingSagaRef: sagaId };
+  }
+
+  recordReservation(travelerRef: string, status: string, capacityHoldId?: string): void {
+    assertNonEmpty(status, "reservationStatus");
+    this.updateTraveler(travelerRef, (traveler) => {
+      if (traveler.capacityHoldId && capacityHoldId && traveler.capacityHoldId !== capacityHoldId) {
+        throw new DomainError("CONFLICT", "Waitlist reservation already references a different capacity hold");
+      }
+      return { ...traveler, reservationStatus: status, capacityHoldId: capacityHoldId ?? traveler.capacityHoldId };
+    });
+  }
+
+  recordPayment(paymentIntentId: string, status: string): void {
+    assertNonEmpty(paymentIntentId, "paymentIntentId");
+    assertNonEmpty(status, "paymentStatus");
+    if (this._fulfillment.paymentIntentId && this._fulfillment.paymentIntentId !== paymentIntentId) throw new DomainError("CONFLICT", "Waitlist fulfillment already references a different payment intent");
+    this._fulfillment = { ...this._fulfillment, paymentIntentId, paymentStatus: status };
+  }
+
+  recordEntitlement(travelerRef: string, entitlementId: string): void {
+    assertNonEmpty(entitlementId, "entitlementId");
+    this.updateTraveler(travelerRef, (traveler) => {
+      if (traveler.entitlementId && traveler.entitlementId !== entitlementId) throw new DomainError("CONFLICT", "Waitlist traveler already references a different entitlement");
+      return { ...traveler, entitlementId };
+    });
+  }
+
+  deferFulfillment(nextActionAt: Date): void {
+    this.assertStatus("MATCHING", "Only matching waitlist entries can defer fulfillment");
+    this._fulfillment = { ...this._fulfillment, nextActionAt: nextActionAt.toISOString() };
+  }
+
+  clearFulfillmentDelay(): void {
+    if (!this._fulfillment.nextActionAt) return;
+    const { nextActionAt: _ignored, ...rest } = this._fulfillment;
+    this._fulfillment = rest;
+  }
+
+  suspend(): void {
+    this.assertStatus("MATCHING", "Only matching waitlist entries can be suspended");
+    this._status = "SUSPENDED";
   }
 
   confirmJourneyOrder(journeyOrderRef: string): void {
@@ -281,7 +369,7 @@ export class WaitlistEntry {
   }
 
   expire(): void {
-    if (this._status !== "QUEUED" && this._status !== "MATCHING") throw new DomainError("INVALID_TRANSITION", `Cannot expire ${this._status} waitlist entry`);
+    if (this._status !== "QUEUED" && this._status !== "MATCHING" && this._status !== "SUSPENDED") throw new DomainError("INVALID_TRANSITION", `Cannot expire ${this._status} waitlist entry`);
     this._status = "EXPIRED";
   }
 
@@ -296,6 +384,7 @@ export class WaitlistEntry {
     this._offerVersion = undefined;
     this._journeyOrderRef = undefined;
     this._matchedCapacityCredits = [];
+    this._fulfillment = newFulfillmentProgress(this.entryId, this.travelerRefs);
     this._fareQuoteIdempotencyKey = uuidV7();
     this._offerIdempotencyKey = uuidV7();
     this._journeyOrderIdempotencyKey = uuidV7();
@@ -337,6 +426,7 @@ export class WaitlistEntry {
       paymentGuarantee: { ...this.paymentGuarantee, amount: { ...this.paymentGuarantee.amount } },
       intentFingerprint: this.intentFingerprint,
       matchedCapacityCredits: this._matchedCapacityCredits.map((credit) => ({ ...credit })),
+      fulfillment: cloneFulfillment(this._fulfillment),
       fareQuoteId: this._fareQuoteId,
       capacityHoldId: this._capacityHoldId,
       offerId: this._offerId,
@@ -360,6 +450,17 @@ export class WaitlistEntry {
     assertNonEmpty(journeyOrderRef, "journeyOrderRef");
     if (this._journeyOrderRef && this._journeyOrderRef !== journeyOrderRef) throw new DomainError("CONFLICT", "Waitlist request already references a different order");
     this._journeyOrderRef = journeyOrderRef;
+  }
+
+  private updateTraveler(travelerRef: string, update: (traveler: FulfillmentTraveler) => FulfillmentTraveler): void {
+    let found = false;
+    const travelers = this._fulfillment.travelers.map((traveler) => {
+      if (traveler.travelerRef !== travelerRef) return traveler;
+      found = true;
+      return update(traveler);
+    });
+    if (!found) throw new DomainError("PRECONDITION_FAILED", "Fulfillment traveler is outside the waitlist intent");
+    this._fulfillment = { ...this._fulfillment, travelers };
   }
 }
 
@@ -511,4 +612,41 @@ function testPaymentGuarantee(paymentIntentId: string, payerRef: string, authori
     authorizedUntil,
     verifiedAt: new Date(0).toISOString(),
   };
+}
+
+function newFulfillmentProgress(entryId: string, travelerRefs: readonly string[]): FulfillmentProgress {
+  return {
+    travelers: travelerRefs.map((travelerRef) => ({
+      travelerRef,
+      segmentBookingId: `sb-${stableUuidV7(`${entryId}:booking:${travelerRef}`)}`,
+      reservationIdempotencyKey: stableUuidV7(`${entryId}:reservation:${travelerRef}`),
+      capacityReleaseIdempotencyKey: stableUuidV7(`${entryId}:capacity:release:${travelerRef}`),
+      entitlementIdempotencyKey: stableUuidV7(`${entryId}:entitlement:${travelerRef}`),
+    })),
+    paymentCreateIdempotencyKey: stableUuidV7(`${entryId}:payment:create`),
+    paymentCaptureIdempotencyKey: stableUuidV7(`${entryId}:payment:capture`),
+    paymentCancelIdempotencyKey: stableUuidV7(`${entryId}:payment:cancel`),
+    orderCancelIdempotencyKey: stableUuidV7(`${entryId}:order:cancel`),
+  };
+}
+
+function cloneFulfillment(progress: FulfillmentProgress): FulfillmentProgress {
+  return {
+    ...progress,
+    orderAmount: progress.orderAmount ? { ...progress.orderAmount } : undefined,
+    travelers: progress.travelers.map((traveler) => ({ ...traveler })),
+  };
+}
+
+function assertMoney(amount: MoneySnapshot, field: string): void {
+  assertNonEmpty(amount.currency, `${field}.currency`);
+  if (!Number.isSafeInteger(amount.minorUnits) || amount.minorUnits <= 0) throw new DomainError("VALIDATION_FAILED", `${field}.minorUnits must be positive`);
+}
+
+function stableUuidV7(material: string): string {
+  const bytes = createHash("sha256").update(material, "utf8").digest().subarray(0, 16);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x70;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
