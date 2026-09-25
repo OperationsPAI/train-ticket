@@ -110,11 +110,15 @@ def money_to_json(money: Any) -> dict[str, object]:
     return {"amount": str(money.amount), "currency": money.currency}
 
 
+def money_totals_to_json(totals: Any) -> list[dict[str, object]]:
+    return [money_to_json(total) for total in totals]
+
+
 def route_metrics_to_json(route: RouteMetrics) -> dict[str, object]:
     return {
         "routeId": route.route_id,
         "serviceDate": route.service_date.isoformat(),
-        "routeRevenue": money_to_json(route.route_revenue),
+        "routeRevenue": money_totals_to_json(route.route_revenue),
         "routeDemand": route.route_demand,
         "bookings": route.bookings,
         "searches": route.searches,
@@ -129,7 +133,7 @@ def operational_snapshot_to_json(snapshot: MetricSnapshot) -> dict[str, object]:
     return {
         "generatedAt": rfc3339_utc(snapshot.generated_at),
         "orders_per_second": snapshot.orders_per_second,
-        "revenue_per_hour": money_to_json(snapshot.revenue_per_hour),
+        "revenue_per_hour": money_totals_to_json(snapshot.revenue_per_hour),
         "fill_rate_by_route": dict(snapshot.fill_rate_by_route),
         "avg_booking_latency": dict(snapshot.avg_booking_latency),
         "refund_rate": snapshot.refund_rate,
@@ -153,7 +157,7 @@ def context_count_report_to_revenue_json(report: ContextCountReport) -> dict[str
     return {
         "generatedAt": rfc3339_utc(report.generated_at),
         "groupBy": report.group_by,
-        "totalRevenue": money_to_json(Money("0.00", "USD")),
+        "totalRevenue": [],
         "items": [
             {
                 "dimension": item.dimension,
@@ -173,7 +177,7 @@ def revenue_report_to_json(report: RevenueReport) -> dict[str, object]:
     return {
         "generatedAt": rfc3339_utc(report.generated_at),
         "groupBy": report.group_by,
-        "totalRevenue": money_to_json(report.total_revenue),
+        "totalRevenue": money_totals_to_json(report.total_revenue),
         "items": [
             {
                 "dimension": item.dimension,

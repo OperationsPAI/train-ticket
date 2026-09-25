@@ -16,7 +16,7 @@ from reporting.application.service import ReportingApplicationService
 from reporting.adapters.messaging.publisher import RedisEventPublisher
 from reporting.adapters.messaging.stream_config import SUBSCRIBED_CONTEXTS, reporting_subscription_streams
 from reporting.adapters.messaging.subscriber import RedisEventSubscriber
-from reporting.domain import ReadModelStatus, ReportingError
+from reporting.domain import Money, ReadModelStatus, ReportingError
 
 
 def _payload_dict(payload: object) -> dict[str, object]:
@@ -193,12 +193,16 @@ class EndpointTest(unittest.TestCase):
     def test_revenue_endpoint_returns_route_breakdown(self) -> None:
         service = ReportingApplicationService()
         service.handle_event(EventEnvelope(eventId="evt-r-a", eventType="PaymentCaptured", occurredAt="2026-07-05T10:30:00.000Z", correlationId="corr-1", producer="payment", schemaVersion=1, payload={"routeId": "A", "amount": "50.00", "currency": "USD"}, causationId="evt-source"))
-        service.handle_event(EventEnvelope(eventId="evt-r-b", eventType="PaymentCaptured", occurredAt="2026-07-05T10:30:00.000Z", correlationId="corr-1", producer="payment", schemaVersion=1, payload={"routeId": "B", "amount": "75.00", "currency": "USD"}, causationId="evt-source"))
+        service.handle_event(EventEnvelope(eventId="evt-r-b", eventType="PaymentCaptured", occurredAt="2026-07-05T10:30:00.000Z", correlationId="corr-1", producer="payment", schemaVersion=1, payload={"routeId": "B", "amount": "75.00", "currency": "CNY"}, causationId="evt-source"))
 
         response = TestClient(create_app(service=service)).get("/api/v1/metrics/revenue?groupBy=route")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["items"][0]["value"], "B")
+        self.assertEqual(response.json()["totalRevenue"], [
+            {"amount": "75.00", "currency": "CNY"},
+            {"amount": "50.00", "currency": "USD"},
+        ])
 
     def test_new_context_events_increment_context_rollup_and_anomaly_signal(self) -> None:
         service = ReportingApplicationService()
@@ -244,7 +248,7 @@ class EndpointTest(unittest.TestCase):
         self.assertEqual([item["value"] for item in body["items"]], ["dispatch", "ancillary-service", "waitlist"])
         self.assertEqual([item["count"] for item in body["items"]], [2, 1, 1])
         self.assertEqual(body["items"][0]["revenue"], {"amount": "0.00", "currency": "USD"})
-        self.assertEqual(body["totalRevenue"], {"amount": "0.00", "currency": "USD"})
+        self.assertEqual(body["totalRevenue"], [])
 
 
 class MessagingTest(unittest.TestCase):
@@ -416,8 +420,7 @@ class MessagingTest(unittest.TestCase):
         self.assertTrue(rebuild_events)
         self.assertEqual(rebuild_events[-1].payload["dashboardId"], "dash-revenue")
         self.assertEqual(rebuild_events[-1].payload["eventCount"], dashboard_after.current_snapshot.event_count)
-        self.assertEqual(str(service.revenue_report().total_revenue.amount), "350.00")
-        self.assertEqual(service.revenue_report().total_revenue.currency, "USD")
+        self.assertEqual(service.revenue_report().total_revenue, (Money("350.00", "USD"),))
 
         result = service.handle_event(EventEnvelope(
             eventId="evt-reporting-order-confirmed-rebuild",

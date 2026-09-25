@@ -449,12 +449,7 @@ class PostgresReportingApplicationService:
             params,
         ).fetchall()
         rows.reverse()
-        # The aggregator holds a single currency and rejects any event that
-        # disagrees, so it has to be told which one the stored events are in
-        # rather than assuming its own default. The system quotes in CNY, and
-        # every RevenueRecognized event failed and was redelivered forever.
-        currency = next((str(row[7]) for row in rows if row[7]), None)
-        aggregator = MetricAggregator() if currency is None else MetricAggregator(currency=currency)
+        aggregator = MetricAggregator()
         for row in rows:
             aggregator.record(_event_from_row(row))
         return aggregator
@@ -565,8 +560,8 @@ class PostgresReportingApplicationService:
                 (group_by, limit),
             ).fetchall()
         items = tuple(self._revenue_item_from_view(group_by, row) for row in rows)
-        total = sum((item.revenue.amount for item in items), Decimal("0.00"))
-        return RevenueReport(at or utc_now(), group_by, items, Money(total, items[0].revenue.currency if items else "USD"))
+        totals = MetricAggregator._money_totals_from_money(item.revenue for item in items)
+        return RevenueReport(at or utc_now(), group_by, items, totals)
 
     @staticmethod
     def _revenue_item_from_view(group_by: str, row: Sequence[Any]) -> RevenueItem:
@@ -615,7 +610,16 @@ class PostgresReportingApplicationService:
             "generatedAt": rfc3339_utc(snapshot.generated_at),
             "series": [
                 {"metric": "orders_per_second", "points": [{"at": rfc3339_utc(snapshot.generated_at), "value": snapshot.orders_per_second}]},
-                {"metric": "revenue_per_hour", "points": [{"at": rfc3339_utc(snapshot.generated_at), "value": str(snapshot.revenue_per_hour.amount)}]},
+                {
+                    "metric": "revenue_per_hour",
+                    "points": [{
+                        "at": rfc3339_utc(snapshot.generated_at),
+                        "values": [
+                            {"amount": str(total.amount), "currency": total.currency}
+                            for total in snapshot.revenue_per_hour
+                        ],
+                    }],
+                },
                 {"metric": "refund_rate", "points": [{"at": rfc3339_utc(snapshot.generated_at), "value": snapshot.refund_rate}]},
             ],
         }
