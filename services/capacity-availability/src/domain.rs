@@ -297,6 +297,54 @@ pub struct HoldScope {
     pub capacity_unit_ref: CapacityUnitRef,
     pub station_interval: StationInterval,
     pub references: ReferenceMetadata,
+    pub supply_evidence: Option<HoldSupplyEvidence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HoldSupplyEvidence {
+    pub accepted_class_ref: String,
+    pub occupancy_class_ref: String,
+    pub scheduled_service_ref: String,
+    pub service_date: String,
+    pub source_type: String,
+    pub source_ref: String,
+    pub seat_map_id: String,
+    pub seat_map_version: u64,
+    pub composition_version: String,
+    pub stop_sequence_version: String,
+}
+
+impl HoldSupplyEvidence {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        accepted_class_ref: impl Into<String>,
+        occupancy_class_ref: impl Into<String>,
+        scheduled_service_ref: impl Into<String>,
+        service_date: impl Into<String>,
+        source_type: impl Into<String>,
+        source_ref: impl Into<String>,
+        seat_map_id: impl Into<String>,
+        seat_map_version: u64,
+        composition_version: impl Into<String>,
+        stop_sequence_version: impl Into<String>,
+    ) -> DomainResult<Self> {
+        if seat_map_version == 0 {
+            return Err(DomainError::EmptyField("seat_map_version"));
+        }
+        Ok(Self {
+            accepted_class_ref: non_empty(accepted_class_ref, "accepted_class_ref")?,
+            occupancy_class_ref: non_empty(occupancy_class_ref, "occupancy_class_ref")?,
+            scheduled_service_ref: non_empty(scheduled_service_ref, "scheduled_service_ref")?,
+            service_date: non_empty(service_date, "service_date")?,
+            source_type: non_empty(source_type, "source_type")?,
+            source_ref: non_empty(source_ref, "source_ref")?,
+            seat_map_id: non_empty(seat_map_id, "seat_map_id")?,
+            seat_map_version,
+            composition_version: non_empty(composition_version, "composition_version")?,
+            stop_sequence_version: non_empty(stop_sequence_version, "stop_sequence_version")?,
+        })
+    }
 }
 
 impl HoldScope {
@@ -311,7 +359,18 @@ impl HoldScope {
             capacity_unit_ref,
             station_interval,
             references,
+            supply_evidence: None,
         }
+    }
+
+    pub fn with_supply_evidence(mut self, evidence: HoldSupplyEvidence) -> Self {
+        self.supply_evidence = Some(evidence);
+        self
+    }
+
+    pub fn with_optional_supply_evidence(mut self, evidence: Option<HoldSupplyEvidence>) -> Self {
+        self.supply_evidence = evidence;
+        self
     }
 }
 
@@ -513,6 +572,7 @@ pub struct CapacityHeld {
     pub idempotency_key: IdempotencyKey,
     pub expires_at: u64,
     pub references: ReferenceMetadata,
+    pub supply_evidence: Option<HoldSupplyEvidence>,
     pub idempotent_replay: bool,
 }
 
@@ -525,6 +585,7 @@ pub struct CapacityHoldConfirmed {
     pub interval: StationInterval,
     pub confirmed_at: u64,
     pub references: ReferenceMetadata,
+    pub supply_evidence: Option<HoldSupplyEvidence>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -540,6 +601,7 @@ pub struct CapacityReleased {
     pub released_at: u64,
     pub release_reason: String,
     pub references: ReferenceMetadata,
+    pub supply_evidence: Option<HoldSupplyEvidence>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -551,6 +613,7 @@ pub struct CapacityHoldExpired {
     pub interval: StationInterval,
     pub expired_at: u64,
     pub references: ReferenceMetadata,
+    pub supply_evidence: Option<HoldSupplyEvidence>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1015,6 +1078,7 @@ impl InventoryPool {
                 interval: hold.scope.station_interval.clone(),
                 confirmed_at: now,
                 references: hold.scope.references.clone(),
+                supply_evidence: hold.scope.supply_evidence.clone(),
             })
         };
         self.version += 1;
@@ -1069,6 +1133,7 @@ impl InventoryPool {
                 released_at: now,
                 release_reason,
                 references: hold.scope.references.clone(),
+                supply_evidence: hold.scope.supply_evidence.clone(),
             })
         };
         self.version += 1;
@@ -1103,6 +1168,7 @@ impl InventoryPool {
                 interval: hold.scope.station_interval.clone(),
                 expired_at: now,
                 references: hold.scope.references.clone(),
+                supply_evidence: hold.scope.supply_evidence.clone(),
             })
         };
         self.version += 1;
@@ -1354,6 +1420,7 @@ impl CapacityHold {
             idempotency_key: self.idempotency_key.clone(),
             expires_at: self.expires_at,
             references: self.scope.references.clone(),
+            supply_evidence: self.scope.supply_evidence.clone(),
             idempotent_replay,
         }
     }
