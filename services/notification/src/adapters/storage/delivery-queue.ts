@@ -9,12 +9,26 @@ import { deliveryErrorEvidence } from "../delivery-errors.js";
 import { PostgresNotificationTaskRepository, PostgresRateLimitRepository } from "./notification-repository.js";
 
 const CLAIM_LEASE_SECONDS = 30;
+const CLAIM_BATCH_SIZE = 64;
 const MAX_CHANNEL_ATTEMPTS = 3;
 type QueueRow = {
   task_id: string; channels: DeliveryChannel[]; channel_index: number; state: string;
   claim_token: string; attempt_number: number; message_id: string;
 };
 export type DeliveryClaim = Readonly<{ taskId: string; token: string }>;
+export type DeliveryWorkerOperations = Readonly<{
+  claim: (limit: number) => Promise<DeliveryClaim[]>;
+  send: (claim: DeliveryClaim) => Promise<void>;
+  recover: () => Promise<void>;
+}>;
+
+type ClaimInput = Readonly<{
+  task_id: string;
+  claim_token: string;
+  attempt_number: number;
+  channel: DeliveryChannel["channel"];
+  message_id: string;
+}>;
 
 async function evidence(client: PoolClient, row: QueueRow, kind: string, details: unknown): Promise<void> {
   await client.query("INSERT INTO notification_delivery_evidence(task_id,claim_token,kind,evidence) VALUES($1,$2,$3,$4)",
@@ -35,21 +49,71 @@ export class PostgresDeliveryScheduler implements NotificationDeliveryScheduler 
   }
 }
 
-export async function claimDelivery(pool: Pool): Promise<DeliveryClaim | undefined> {
+export async function claimDeliveries(pool: Pool, limit: number): Promise<DeliveryClaim[]> {
+  if (!Number.isInteger(limit) || limit < 1 || limit > CLAIM_BATCH_SIZE) {
+    throw new Error(`Delivery claim batch size must be an integer between 1 and ${CLAIM_BATCH_SIZE}`);
+  }
   return withTransaction(pool, async client => {
     const result = await client.query<QueueRow>(
-      "SELECT * FROM notification_delivery_queue WHERE state='Ready' AND available_at<=now() ORDER BY available_at,task_id LIMIT 1 FOR UPDATE SKIP LOCKED",
+      "SELECT * FROM notification_delivery_queue WHERE state='Ready' AND available_at<=now() ORDER BY available_at,task_id LIMIT $1 FOR UPDATE SKIP LOCKED",
+      [limit],
     );
-    const row = result.rows[0];
-    if (!row) return undefined;
-    const token = randomUUID();
-    await client.query("UPDATE notification_delivery_queue SET state='Claimed',claim_token=$2,lease_until=now()+$3*interval '1 second',attempt_number=attempt_number+1,updated_at=now() WHERE task_id=$1",
-      [row.task_id, token, CLAIM_LEASE_SECONDS]);
-    await client.query("INSERT INTO notification_delivery_attempts(claim_token,task_id,attempt_number,channel,state,message_id) VALUES($1,$2,$3,$4,'Claimed',$5)",
-      [token, row.task_id, row.attempt_number + 1, row.channels[row.channel_index].channel, row.message_id]);
-    await evidence(client, { ...row, claim_token: token }, "Claimed", { leaseSeconds: CLAIM_LEASE_SECONDS });
-    return { taskId: row.task_id, token };
+    if (result.rows.length === 0) return [];
+
+    const claims: ClaimInput[] = result.rows.map(row => {
+      const channel = row.channels[row.channel_index]?.channel;
+      if (!channel) throw new Error(`Delivery task ${row.task_id} has no current channel`);
+      return {
+        task_id: row.task_id,
+        claim_token: randomUUID(),
+        attempt_number: row.attempt_number + 1,
+        channel,
+        message_id: row.message_id,
+      };
+    });
+    const claimPayload = JSON.stringify(claims);
+    const updated = await client.query(
+      `UPDATE notification_delivery_queue AS queue
+       SET state='Claimed', claim_token=claim.claim_token,
+           lease_until=now()+$2*interval '1 second',
+           attempt_number=claim.attempt_number, updated_at=now()
+       FROM jsonb_to_recordset($1::jsonb) AS claim(
+         task_id text, claim_token uuid, attempt_number integer,
+         channel text, message_id text
+       )
+       WHERE queue.task_id=claim.task_id
+         AND queue.state='Ready' AND queue.available_at<=now()`,
+      [claimPayload, CLAIM_LEASE_SECONDS],
+    );
+    if (updated.rowCount !== claims.length) {
+      throw new Error(`Claimed ${updated.rowCount ?? 0} of ${claims.length} locked delivery tasks`);
+    }
+    await client.query(
+      `INSERT INTO notification_delivery_attempts(
+         claim_token,task_id,attempt_number,channel,state,message_id
+       )
+       SELECT claim_token,task_id,attempt_number,channel,'Claimed',message_id
+       FROM jsonb_to_recordset($1::jsonb) AS claim(
+         task_id text, claim_token uuid, attempt_number integer,
+         channel text, message_id text
+       )`,
+      [claimPayload],
+    );
+    await client.query(
+      `INSERT INTO notification_delivery_evidence(task_id,claim_token,kind,evidence)
+       SELECT task_id,claim_token,'Claimed',$2::jsonb
+       FROM jsonb_to_recordset($1::jsonb) AS claim(
+         task_id text, claim_token uuid, attempt_number integer,
+         channel text, message_id text
+       )`,
+      [claimPayload, JSON.stringify({ leaseSeconds: CLAIM_LEASE_SECONDS })],
+    );
+    return claims.map(claim => ({ taskId: claim.task_id, token: claim.claim_token }));
   });
+}
+
+export async function claimDelivery(pool: Pool): Promise<DeliveryClaim | undefined> {
+  return (await claimDeliveries(pool, 1))[0];
 }
 
 export async function beginDelivery(pool: Pool, claim: DeliveryClaim): Promise<NotificationTaskSnapshot | undefined> {
@@ -170,25 +234,47 @@ export async function sendClaim(pool: Pool, gateway: NotificationChannelGateway,
   await persist(result);
 }
 
-export function startDeliveryWorker(pool: Pool, gateway: NotificationChannelGateway, concurrency = Number(process.env.SMTP_MAX_CONNECTIONS ?? "8")): { stop(): Promise<void> } {
+export function startDeliveryWorker(
+  pool: Pool,
+  gateway: NotificationChannelGateway,
+  concurrency = Number(process.env.SMTP_MAX_CONNECTIONS ?? "8"),
+  operations: DeliveryWorkerOperations = {
+    claim: limit => claimDeliveries(pool, limit),
+    send: claim => sendClaim(pool, gateway, claim),
+    recover: () => recoverDeliveryClaims(pool),
+  },
+): { stop(): Promise<void> } {
   if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 128) throw new Error("Invalid delivery concurrency");
   let stopped = false;
-  const run = async () => {
+  const inFlight = new Set<Promise<void>>();
+  const dispatch = (claim: DeliveryClaim): void => {
+    let sending: Promise<void>;
+    sending = operations.send(claim)
+      .catch(error => console.error({ component: "notification-delivery", code: "WORKER_SEND_FAILED", error: deliveryErrorEvidence(error) }))
+      .finally(() => inFlight.delete(sending));
+    inFlight.add(sending);
+  };
+  const run = (async () => {
     while (!stopped) {
       try {
-        const claim = await claimDelivery(pool);
-        if (claim) { await sendClaim(pool, gateway, claim); continue; }
+        const availableSlots = concurrency - inFlight.size;
+        if (availableSlots > 0) {
+          const claims = await operations.claim(Math.min(availableSlots, CLAIM_BATCH_SIZE));
+          for (const claim of claims) dispatch(claim);
+          if (claims.length > 0) continue;
+        }
       } catch (error) { console.error({ component: "notification-delivery", code: "WORKER_CYCLE_FAILED", error: deliveryErrorEvidence(error) }); }
-      await new Promise(resolve => setTimeout(resolve, 250));
+      if (inFlight.size > 0) await Promise.race(inFlight);
+      else await new Promise(resolve => setTimeout(resolve, 250));
     }
-  };
-  const workers = Array.from({ length: concurrency }, run);
+    await Promise.all(inFlight);
+  })();
   const recovery = (async () => {
     while (!stopped) {
-      try { await recoverDeliveryClaims(pool); }
+      try { await operations.recover(); }
       catch (error) { console.error({ component: "notification-delivery", code: "RECOVERY_CYCLE_FAILED", error: deliveryErrorEvidence(error) }); }
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
   })();
-  return { stop: async () => { stopped = true; await Promise.all([...workers, recovery]); } };
+  return { stop: async () => { stopped = true; await Promise.all([run, recovery]); } };
 }
