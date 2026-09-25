@@ -403,6 +403,45 @@ func TestNoShowCommandContinuesAfterRestartWithPersistedRecord(t *testing.T) {
 	}
 }
 
+func TestRecordNoShowRecoversMissingProjectionFromAuthoritativeEntitlement(t *testing.T) {
+	repo := NewInMemoryRepository()
+	publisher := &recordingPublisher{}
+	reader := &stubEntitlementReader{snapshot: EntitlementSnapshot{
+		EntitlementID: "ent-no-show-recover1", SegmentBookingID: "sb-no-show-recover1",
+		JourneyOrderID: "ord-no-show-recover1", TravelerID: "tvl-no-show-recover1",
+		SegmentRef: "seg-no-show-recover1", Status: "ISSUED",
+	}}
+	service := NewService(repo, publisher, NewInMemoryConsumedEventLog(), func(prefix string) string {
+		return prefix + "-00000000-0000-7000-8000-000000000202"
+	}, func() time.Time { return time.Date(2026, 9, 25, 4, 22, 0, 0, time.UTC) }).WithEntitlementReader(reader)
+	cmd := RecordNoShowCommand{
+		EntitlementID: "ent-no-show-recover1", SegmentBookingID: "sb-no-show-recover1",
+		JourneyOrderID: "ord-no-show-recover1", TravelerID: "tvl-no-show-recover1",
+		SegmentRef: "seg-no-show-recover1", Reason: domain.NoShowReasonManualRecord,
+	}
+
+	result, err := service.RecordNoShow(context.Background(), cmd, CommandMetadata{})
+	if err != nil {
+		t.Fatalf("record no-show: %v", err)
+	}
+	if reader.calls != 1 {
+		t.Fatalf("entitlement lookups=%d, want 1", reader.calls)
+	}
+	if result.Status != domain.FulfillmentStatusNoShow {
+		t.Fatalf("status=%s, want NO_SHOW", result.Status)
+	}
+	record, err := repo.FindByEntitlementSegment(context.Background(), cmd.EntitlementID, cmd.SegmentBookingID, cmd.SegmentRef)
+	if err != nil {
+		t.Fatalf("find recovered no-show record: %v", err)
+	}
+	if record.JourneyOrderID != cmd.JourneyOrderID || record.TravelerID != cmd.TravelerID || record.Status != domain.FulfillmentStatusNoShow {
+		t.Fatalf("recovered record=%+v", record)
+	}
+	if len(publisher.envelopes) != 1 || publisher.envelopes[0].EventType != "NoShowRecorded" {
+		t.Fatalf("published envelopes=%#v", publisher.envelopes)
+	}
+}
+
 func TestFulfillmentCompletedPublishesContractEvent(t *testing.T) {
 	publisher := &recordingPublisher{}
 	service := NewService(NewInMemoryRepository(), publisher, NewInMemoryConsumedEventLog(), nil, func() time.Time { return time.Date(2026, 7, 5, 10, 1, 0, 0, time.UTC) })
