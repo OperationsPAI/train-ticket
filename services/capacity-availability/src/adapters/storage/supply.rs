@@ -165,7 +165,13 @@ impl PostgresCapacityService {
                         );
                         Ok(reference)
                     }
-                    None => Err(error),
+                    // A class with no units at all -- a standing policy whose
+                    // basis supply is gone, for one -- leaves nothing to count
+                    // the hold against. Keeping the recorded reference makes the
+                    // hold occupy nothing, which is the same answer as having no
+                    // availability, and it keeps the reservation out of a retry
+                    // loop it can never leave.
+                    None => Ok(capacity_unit_ref.to_owned()),
                 }
             }
         }
