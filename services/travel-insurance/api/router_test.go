@@ -2,15 +2,25 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/trainticket/greenfield/services/travel-insurance/application"
+	"github.com/trainticket/greenfield/services/travel-insurance/domain"
 )
 
+type apiPayoutExecutor struct{}
+
+func (apiPayoutExecutor) Disburse(_ context.Context, policy domain.Policy, _ domain.Claim, advice domain.PayoutAdvice, _ string) (application.PayoutReceipt, error) {
+	return application.PayoutReceipt{ExecutionRef: "ben-http", AccountID: policy.AccountID, Amount: advice.Amount, Target: domain.PayoutWalletBenefit}, nil
+}
+
 func TestPolicyAndClaimHTTPFlow(t *testing.T) {
-	router := Router()
+	router := RouterWithService(application.NewInsuranceService(application.ServiceConfig{PayoutExecutor: apiPayoutExecutor{}}))
 	now := time.Now().UTC()
 	policyBody := map[string]any{"productCode": "DELAY_INSURANCE", "productVersion": "v1", "journeyOrderId": "jo-http", "ancillaryOrderItemId": "anc-http", "accountId": "acct-http", "travelerRef": "trav-http", "segmentRefs": []string{"seg-http"}, "paymentIntentId": "pi-http", "coverageStartAt": now.Add(-time.Minute).Format(time.RFC3339), "coverageEndAt": now.Add(time.Hour).Format(time.RFC3339)}
 	w := performJSON(router, http.MethodPost, "/api/v1/policies", policyBody)
@@ -31,7 +41,7 @@ func TestPolicyAndClaimHTTPFlow(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET /policies status %d body %s", w.Code, w.Body.String())
 	}
-	claimBody := map[string]any{"policyId": policy.PolicyID, "claimType": "DELAY_AUTO", "triggerFactKey": "fact-http", "delayFact": map[string]any{"segmentRef": "seg-http", "sourceEventType": "SegmentArrived", "sourceEventId": "evt-http", "delayMinutes": 90}, "claimedAmount": map[string]any{"currency": "CNY", "minorUnits": 1000}, "settle": true, "payoutTarget": "PAYMENT_REFUND"}
+	claimBody := map[string]any{"policyId": policy.PolicyID, "claimType": "DELAY_AUTO", "triggerFactKey": "fact-http", "delayFact": map[string]any{"segmentRef": "seg-http", "sourceEventType": "SegmentArrived", "sourceEventId": "evt-http", "delayMinutes": 90}, "claimedAmount": map[string]any{"currency": "CNY", "minorUnits": 1000}, "settle": true, "payoutTarget": "WALLET_BENEFIT"}
 	w = performJSON(router, http.MethodPost, "/api/v1/claims", claimBody)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("POST /claims status %d body %s", w.Code, w.Body.String())

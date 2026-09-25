@@ -121,7 +121,7 @@ func (h Handler) fileClaim(ctx *gin.Context) {
 	if req.Settle {
 		target := strings.TrimSpace(req.PayoutTarget)
 		if target == "" {
-			target = string(domain.PayoutPaymentRefund)
+			target = string(domain.PayoutWalletBenefit)
 		}
 		advice, err := h.service.SettleClaim(ctx.Request.Context(), application.SettleClaimCommand{ClaimID: claim.ID, PayoutTarget: target, ReasonCode: req.ReasonCode, CorrelationID: httpkit.CorrelationID(ctx), CausationID: claim.ID})
 		if err != nil {
@@ -145,7 +145,17 @@ func (h Handler) getClaim(ctx *gin.Context) {
 }
 
 func (h Handler) approveClaim(ctx *gin.Context) {
-	advice, err := h.service.ApproveClaim(ctx.Request.Context(), application.SettleClaimCommand{ClaimID: ctx.Param("id"), PayoutTarget: string(domain.PayoutPaymentRefund), CorrelationID: httpkit.CorrelationID(ctx), CausationID: ctx.GetHeader("X-Causation-Id")})
+	var req struct {
+		PayoutTarget string `json:"payoutTarget"`
+		ReasonCode   string `json:"reasonCode"`
+	}
+	if ctx.Request.ContentLength > 0 {
+		if err := bindBody(ctx, &req); err != nil {
+			httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, "Request body failed structural validation", nil)
+			return
+		}
+	}
+	advice, err := h.service.ApproveClaim(ctx.Request.Context(), application.SettleClaimCommand{ClaimID: ctx.Param("id"), PayoutTarget: req.PayoutTarget, ReasonCode: req.ReasonCode, CorrelationID: httpkit.CorrelationID(ctx), CausationID: ctx.GetHeader("X-Causation-Id")})
 	if err != nil {
 		writeMappedError(ctx, err)
 		return
@@ -190,6 +200,8 @@ func writeMappedError(ctx *gin.Context, err error) {
 		httpkit.WriteError(ctx, http.StatusUnprocessableEntity, httpkit.DomainRuleViolation, err.Error(), nil)
 	case errors.Is(err, application.ErrPublish):
 		httpkit.WriteError(ctx, http.StatusServiceUnavailable, httpkit.Unavailable, "Service is temporarily unavailable", nil)
+	case errors.Is(err, application.ErrPayoutUnavailable):
+		httpkit.WriteError(ctx, http.StatusServiceUnavailable, httpkit.Unavailable, "Payout is temporarily unavailable", nil)
 	default:
 		httpkit.WriteError(ctx, http.StatusInternalServerError, httpkit.Unavailable, "internal error", nil)
 	}
