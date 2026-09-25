@@ -1130,6 +1130,7 @@ services:
     db: corporate_travel
   account:
     db: account
+    pgInstance: user
   loyalty-membership:
     db: loyalty_membership
     env:
