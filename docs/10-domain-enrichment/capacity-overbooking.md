@@ -1,10 +1,9 @@
 # Physical supply and standing quota integration
 
-Last updated: 2026-09-24.
+Last updated: 2026-09-25.
 
-The combined Capacity supply calculation is committed as `caafa668` and is not deployed.
-Booking coordinated behavior is not enabled.
-Seat Assignment's standing quota enforcement and pre-reservation SeatMap preparation are published and deployed.
+The combined Capacity supply calculation is deployed, and Booking presents the accepted class, service and date with each reservation.
+The current release and its evidence are in [current status](../00-current-status.md).
 Remaining work is tracked in [docs/TODO.md](../TODO.md).
 
 ## Sources
@@ -48,6 +47,19 @@ Each verified reservation is committed independently so a refused admission reta
 Repeated queries and process restarts reuse these immutable PostgreSQL records.
 The locked admission query joins all active Holds to persisted reservation facts before reading current Seat Assignment supply.
 An active Hold without persisted facts prevents admission.
+
+### Historical facts, and why a legacy row no longer blocks admission
+
+`reservation_supply_facts` is a cache of what Booking Orchestration answers, not a second source of truth.
+The rows written before the purchase source became part of that answer are the majority of the table: 2576539 of 2590284 when this was measured carried neither `bookingPurpose` nor `sourceType`.
+
+Refusing those rows to *attribute the hold being admitted* is correct: the request's own facts are re-resolved from Booking Orchestration and the cache row is repaired.
+Refusing them to *account for a hold that already occupies the pool* is not, and that is what the admission path did: every new reservation into a pool holding one of them failed with "reservation has an unsupported purchase source".
+The load generator reported 6302 of 39771 journeys lost to it in one ten minute window.
+
+A historical hold is placed by the interval it records, so the check accepts a cached row that carries its segment booking, order, traveler, segment, service, date and class, and prefers the hold's own `supplyEvidence` when the hold has it.
+A row missing one of those is still refused, because then there is no interval to attribute.
+Every hold created after the evidence existed carries its source, so this concerns the accumulated confirmations from before that change; confirmed holds stay live for the life of their journey, which is why they do not retire on their own.
 Historical issued bookings can be resolved through their actual allocation and composition.
 Initial purchase reservations without their own immutable references use Journey Order's `purchase-source` endpoint, which reads the accepted Offer from the persisted creation timeline fact.
 Replacement reservations use the target Offer recorded by their change case.
