@@ -574,71 +574,54 @@ class PostgresFarePricingStore:
 
     def upsert_capacity_snapshot(self, snapshot: CapacitySnapshot) -> None:
         def write(conn: Any) -> None:
-            identity = f"fare-pricing:capacity:{snapshot.segment_ref}:{snapshot.departure_date.isoformat()}"
-            conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", (identity,))
-            row = conn.execute(
-                "SELECT total_capacity,remaining_capacity,snapshot_version FROM capacity_snapshot_cache "
-                "WHERE segment_ref=%s AND departure_date=%s",
-                (snapshot.segment_ref, snapshot.departure_date),
-            ).fetchone()
-            if row is None:
-                conn.execute(
-                    "INSERT INTO capacity_snapshot_cache(segment_ref,departure_date,total_capacity,remaining_capacity,snapshot_version) "
-                    "VALUES (%s,%s,%s,%s,%s)",
-                    (
-                        snapshot.segment_ref,
-                        snapshot.departure_date,
-                        snapshot.total_capacity,
-                        snapshot.remaining_capacity,
-                        snapshot.snapshot_version,
-                    ),
-                )
-                return
-
-            current = CapacitySnapshot(
-                snapshot.segment_ref,
-                snapshot.departure_date,
-                int(row[0]),
-                int(row[1]),
-                int(row[2]),
-            )
-            if snapshot.snapshot_version < current.snapshot_version:
-                return
-            if snapshot.snapshot_version == current.snapshot_version:
-                if snapshot != current:
-                    raise ProjectionConflictError(
-                        f"capacity snapshot {snapshot.segment_ref}/{snapshot.departure_date.isoformat()} "
-                        f"has conflicting content at version {snapshot.snapshot_version}"
-                    )
-                return
             conn.execute(
-                "UPDATE capacity_snapshot_cache SET total_capacity=%s,remaining_capacity=%s,snapshot_version=%s,updated_at=now() "
-                "WHERE segment_ref=%s AND departure_date=%s",
+                "INSERT INTO capacity_snapshot_cache("
+                "segment_ref,departure_date,class_ref,total_capacity,remaining_capacity,snapshot_version,"
+                "source_occurred_at,source_event_id) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) "
+                "ON CONFLICT (segment_ref,departure_date,class_ref) DO UPDATE SET "
+                "total_capacity=EXCLUDED.total_capacity,remaining_capacity=EXCLUDED.remaining_capacity,"
+                "snapshot_version=EXCLUDED.snapshot_version,source_occurred_at=EXCLUDED.source_occurred_at,"
+                "source_event_id=EXCLUDED.source_event_id,updated_at=now() "
+                "WHERE (capacity_snapshot_cache.source_occurred_at,capacity_snapshot_cache.source_event_id) "
+                "< (EXCLUDED.source_occurred_at,EXCLUDED.source_event_id)",
                 (
+                    snapshot.segment_ref,
+                    snapshot.departure_date,
+                    snapshot.class_ref,
                     snapshot.total_capacity,
                     snapshot.remaining_capacity,
                     snapshot.snapshot_version,
-                    snapshot.segment_ref,
-                    snapshot.departure_date,
+                    snapshot.observed_at,
+                    snapshot.source_event_id,
                 ),
             )
 
         self._with_conn(write)
 
-    def capacity_snapshots_for(self, segment_refs: Iterable[str], departure_date: str | None) -> tuple[CapacitySnapshot, ...]:
+    def capacity_snapshots_for(
+        self,
+        segment_refs: Iterable[str],
+        departure_date: str | None,
+        class_ref: str | None = None,
+    ) -> tuple[CapacitySnapshot, ...]:
         refs = tuple(sorted({ref.strip() for ref in segment_refs if ref.strip()}))
         if not refs or departure_date is None:
             return ()
         target_date = date.fromisoformat(departure_date)
 
         def read(conn: Any) -> tuple[CapacitySnapshot, ...]:
+            class_filter = " AND class_ref = %s" if class_ref else ""
+            params: tuple[Any, ...] = (list(refs), target_date, class_ref) if class_ref else (list(refs), target_date)
             rows = conn.execute(
-                "SELECT segment_ref, departure_date, total_capacity, remaining_capacity, snapshot_version "
-                "FROM capacity_snapshot_cache WHERE segment_ref = ANY(%s) AND departure_date = %s",
-                (list(refs), target_date),
+                "SELECT segment_ref,departure_date,class_ref,total_capacity,remaining_capacity,snapshot_version,"
+                "source_occurred_at,source_event_id FROM capacity_snapshot_cache "
+                "WHERE segment_ref = ANY(%s) AND departure_date = %s" + class_filter + " ORDER BY segment_ref,class_ref",
+                params,
             ).fetchall()
             return tuple(
-                CapacitySnapshot(str(row[0]), row[1], int(row[2]), int(row[3]), int(row[4]))
+                CapacitySnapshot(
+                    str(row[0]), row[1], str(row[2]), int(row[3]), int(row[4]), str(row[5]), row[6], str(row[7])
+                )
                 for row in rows
             )
 
