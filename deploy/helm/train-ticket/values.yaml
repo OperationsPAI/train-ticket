@@ -1137,7 +1137,7 @@ services:
       limits: { cpu: '6', memory: 4Gi }
   notification:
     db: notification
-    image: mirrors.tencent.com/microservice/notification:hpa-d9048788@sha256:c867e29abe549b09d4e5d08faf494b770a5b8bc9b1d80c4e4c6c6e8f506b95e0
+    image: mirrors.tencent.com/microservice/notification:policy-79b36a5a@sha256:e000db889c8c05a4f7b0cdec8cdc538d1fdf4f7267b2a6e36a9e33b191748e62
     replicas: 2
     autoscaling:
       enabled: true
