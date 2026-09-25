@@ -44,3 +44,7 @@ Consumers must deduplicate by envelope `eventId`. They may treat `executionRef` 
 ## InsurancePolicyCancelled
 
 Published after a settled premium refund has been verified and the policy is cancelled. This event represents premium return, which is separate from claim payout.
+
+## InsurancePolicyCoverageAdjusted
+
+Published after `JourneyOrderPostSalesAdjusted` for an applied change. Travel Insurance reads the Post Sales case and current Journey Order through their owning APIs, verifies the changed segment scope and affected traveler, and replaces the still-issued policy's segment refs and coverage window with the target itinerary times. Replaying the same change does not increment the policy version or emit another event. Paid, cancelled or otherwise terminal policies remain unchanged.
