@@ -13,7 +13,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from train_ticket_platform.messaging import InMemoryEventPublisher
 from train_ticket_platform.observability import init_opentelemetry
-from train_ticket_platform.storage import DatabaseConfig, DatabasePool, OutboxRelay, run_migrations
+from train_ticket_platform.idempotency import BoundedInMemoryIdempotencyStore, configure_idempotency_middleware
+from train_ticket_platform.storage import DatabaseConfig, DatabasePool, OutboxRelay, PostgresIdempotencyStore, run_migrations
 
 from train_ticket_platform.ids import is_uuid7
 
@@ -324,12 +325,14 @@ def create_app(service: CorporateTravelService | None = None) -> FastAPI:
     redis_url = os.environ.get("REDIS_URL", "")
     database_config = DatabaseConfig.from_env()
     app_service = service or CorporateTravelService(publisher=InMemoryEventPublisher(), repository=InMemoryCorporateTravelRepository())
+    idempotency_store = BoundedInMemoryIdempotencyStore()
     if database_config is not None and service is None:
         pool = DatabasePool(database_config)
         migrations_dir = Path(os.environ.get("MIGRATIONS_DIR", Path(__file__).resolve().parents[2] / "migrations"))
         run_migrations(pool, migrations_dir)
         repository = PostgresCorporateTravelRepository(pool)
         app_service = CorporateTravelService(repository=repository, unit_of_work=repository.transaction)
+        idempotency_store = PostgresIdempotencyStore(pool)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -359,5 +362,11 @@ def create_app(service: CorporateTravelService | None = None) -> FastAPI:
     set_default_service(app_service)
     configure_error_handlers(app)
     configure_runtime_endpoints(app)
+    configure_idempotency_middleware(
+        app,
+        idempotency_store,
+        require_key=True,
+        include_path_prefixes=("/api/v1/agreements",),
+    )
     configure_corporate_travel_endpoints(app, app.state.corporate_travel_service)
     return app
