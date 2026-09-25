@@ -45,12 +45,13 @@ metadata:
   name: postgres-{{ $name }}-data
 spec:
   accessModes: ["ReadWriteOnce"]
-  {{- if $.Values.postgres.storage.storageClass }}
-  storageClassName: {{ $.Values.postgres.storage.storageClass }}
+  {{- $storageClass := $pg.storageClass | default $.Values.postgres.storage.storageClass }}
+  {{- if $storageClass }}
+  storageClassName: {{ $storageClass }}
   {{- end }}
   resources:
     requests:
-      storage: {{ $.Values.postgres.storage.size }}
+      storage: {{ $pg.storageSize | default $.Values.postgres.storage.size }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -82,6 +83,10 @@ spec:
         # immutable selector field.
         app.kubernetes.io/component: database
     spec:
+      {{- with $pg.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: postgres
           image: {{ include "train-ticket.infraImage" (dict "global" $.Values.global "repo" $.Values.postgres.image.repository "tag" $.Values.postgres.image.tag) }}
