@@ -5,6 +5,18 @@ export type LoyaltyTier = "PLATINUM" | "GOLD" | "SILVER" | "NONE";
 export type FareClass = "BUSINESS_CLASS" | "FIRST_CLASS" | "SECOND_CLASS" | "STANDING" | "SLEEPER_HARD" | "SLEEPER_SOFT";
 export type FareClassInput = FareClass | "BUSINESS" | "FIRST" | "SECOND";
 export type TravelInterval = Readonly<{ fromSeq: number; toSeq: number }>;
+export type MoneySnapshot = Readonly<{ currency: string; minorUnits: number }>;
+export type PaymentGuaranteeSnapshot = Readonly<{
+  paymentIntentId: string;
+  sourceOrderRef: string;
+  payerRef: string;
+  amount: MoneySnapshot;
+  sourceStatus: "CREATED" | "AUTHORIZED";
+  sourceExpiresAt: string;
+  authorizedUntil: string;
+  verifiedAt: string;
+  preferredChannel?: string;
+}>;
 export type SpecialStatus = "MILITARY" | "DISABLED" | "STUDENT" | "NONE";
 
 export type PriorityInput = Readonly<{
@@ -34,6 +46,7 @@ export type WaitlistEntrySnapshot = Readonly<{
   offerExpiresAt: string | null;
   deadline: string;
   paymentGuaranteeRef: string;
+  paymentGuarantee?: PaymentGuaranteeSnapshot;
   intentFingerprint: string;
   fareQuoteId?: string;
   capacityHoldId?: string;
@@ -63,6 +76,7 @@ export type CreateWaitlistEntry = Readonly<{
   itineraryRef?: string;
   deadline?: string;
   paymentGuaranteeRef?: string;
+  paymentGuarantee?: PaymentGuaranteeSnapshot;
   intentFingerprint?: string;
   createdAt?: Date;
 }>;
@@ -96,7 +110,8 @@ export class WaitlistEntry {
     private _offerVersion?: number,
     public readonly itineraryRef?: string,
     public readonly deadline: string = deadlineFromDepartureDate(departureDate),
-    public readonly paymentGuaranteeRef: string = `pay-auth-${uuidV7()}`,
+    public readonly paymentGuaranteeRef: string = `pi-${uuidV7()}`,
+    public readonly paymentGuarantee: PaymentGuaranteeSnapshot = testPaymentGuarantee(paymentGuaranteeRef, accountId, deadline),
     public readonly intentFingerprint: string = defaultIntentFingerprint(travelerRefs, scheduledServiceRef, departureDate, seatClass, interval),
     private _journeyOrderRef?: string,
     private _fareQuoteIdempotencyKey: string = uuidV7(),
@@ -144,7 +159,8 @@ export class WaitlistEntry {
       undefined,
       command.itineraryRef ?? command.segmentRef,
       command.deadline ?? deadlineFromDepartureDate(command.departureDate),
-      command.paymentGuaranteeRef ?? `pay-auth-${uuidV7()}`,
+      command.paymentGuaranteeRef ?? `pi-${uuidV7()}`,
+      command.paymentGuarantee ?? testPaymentGuarantee(command.paymentGuaranteeRef ?? "pi-test", command.accountId, command.deadline ?? deadlineFromDepartureDate(command.departureDate)),
       command.intentFingerprint ?? defaultIntentFingerprint(command.travelerRefs, scheduledServiceRef, command.departureDate, seatClass, interval),
     );
   }
@@ -172,6 +188,7 @@ export class WaitlistEntry {
       snapshot.itineraryRef,
       snapshot.deadline,
       snapshot.paymentGuaranteeRef,
+      snapshot.paymentGuarantee ?? testPaymentGuarantee(snapshot.paymentGuaranteeRef, snapshot.accountId, snapshot.deadline),
       snapshot.intentFingerprint,
       snapshot.journeyOrderRef,
       snapshot.fareQuoteIdempotencyKey,
@@ -288,6 +305,7 @@ export class WaitlistEntry {
       offerExpiresAt: this._offerExpiresAt?.toISOString() ?? null,
       deadline: this.deadline,
       paymentGuaranteeRef: this.paymentGuaranteeRef,
+      paymentGuarantee: { ...this.paymentGuarantee, amount: { ...this.paymentGuarantee.amount } },
       intentFingerprint: this.intentFingerprint,
       fareQuoteId: this._fareQuoteId,
       capacityHoldId: this._capacityHoldId,
@@ -450,4 +468,17 @@ function assertTravelInterval(interval: TravelInterval): void {
 
 function defaultIntentFingerprint(travelerRefs: readonly string[], scheduledServiceRef: string, departureDate: string, seatClass: FareClass, interval: TravelInterval): string {
   return `${[...travelerRefs].sort().join(",")}:${scheduledServiceRef}:${departureDate}:${seatClass}:${interval.fromSeq}-${interval.toSeq}`;
+}
+
+function testPaymentGuarantee(paymentIntentId: string, payerRef: string, authorizedUntil: string): PaymentGuaranteeSnapshot {
+  return {
+    paymentIntentId,
+    sourceOrderRef: "test-source-order",
+    payerRef,
+    amount: { currency: "CNY", minorUnits: Number.MAX_SAFE_INTEGER },
+    sourceStatus: "CREATED",
+    sourceExpiresAt: authorizedUntil,
+    authorizedUntil,
+    verifiedAt: new Date(0).toISOString(),
+  };
 }
