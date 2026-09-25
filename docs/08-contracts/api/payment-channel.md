@@ -165,7 +165,9 @@ there is no scheduler contract.
 | `grossRefundAmount` | Money | yes | Sum of refund lines as positive Money. |
 | `feeAmount` | Money | yes | Sum of fees as Money. |
 | `statementHash` | string | yes | Hash of canonical statement content. |
-| `lines` | array[StatementLine] | yes | Statement lines. List endpoints may omit or truncate lines and include `lineCount`. |
+| `generationFingerprint` | string | yes | Hash of the normalized generation scenario set, used to reject semantically different replay. |
+| `lineStorage` | enum | yes | `NORMALIZED_V1`; statement lines are stored and queried independently from the summary. |
+| `lines` | array[StatementLine] | no | Legacy storage field only. New generate/get/list responses omit it; use the paginated lines endpoint. |
 | `createdAt` | RFC3339 UTC | yes | Creation timestamp. |
 | `updatedAt` | RFC3339 UTC | yes | Last mutation timestamp. |
 | `version` | integer | yes | Aggregate version after latest mutation. |
@@ -422,11 +424,17 @@ Operations-triggered endpoint. RULING: Wave A does not define a scheduler.
 | `operatorRef` | string | yes | Operator or system actor reference. |
 | `reasonCode` | string | yes | Stable reason for generation/replay. |
 
-**Response (201):** `ChannelStatement` resource with `status=GENERATED`.
+**Response (201):** `ChannelStatement` summary with `status=GENERATED`; the
+response does not embed `lines`.
 
-**Domain effects:** emits `ChannelStatementGenerated`. Same
-`channel + statementDate + currency + seedVersion` produces the same canonical
-`statementHash` for the same input event stream and seed.
+**Domain effects:** emits `ChannelStatementGenerated` once. The tuple
+`channel + statementDate + currency + seedVersion` is a durable business
+identity. Concurrent or later identical generation replays return that statement
+without creating another aggregate or event. Reusing the identity with a
+different normalized `scenarioCodes` set is rejected. Generation reads payment
+and refund facts from one PostgreSQL repeatable-read snapshot; statement lines
+use deterministic IDs and the canonical hash is independent of page boundaries
+and request timing.
 
 **Error codes:** `VALIDATION_FAILED`, `CONFLICT`, `DOMAIN_RULE_VIOLATION`,
 `IDEMPOTENCY_KEY_REUSED`, `UNAVAILABLE`
@@ -457,7 +465,7 @@ Operations-triggered endpoint. RULING: Wave A does not define a scheduler.
 
 **GET** `/api/v1/channel-statements/{channelStatementId}`
 
-**Response (200):** `ChannelStatement` resource.
+**Response (200):** `ChannelStatement` summary without embedded lines.
 
 **Error codes:** `NOT_FOUND`
 
@@ -480,9 +488,22 @@ unfiltered listing is not part of Wave A.
 | `offset` | integer | no | Default 0. |
 
 **Response (200):** Paginated response with `items`, `total`, `limit`, and
-`offset`; each item is a `ChannelStatement` summary and MAY omit `lines`.
+`offset`; every item is a `ChannelStatement` summary without `lines`.
 
 **Error codes:** `VALIDATION_FAILED`
+
+### List Channel Statement Lines
+
+**GET** `/api/v1/channel-statements/{channelStatementId}/lines?after=0&limit=100`
+
+`after` is the last consumed one-based line ordinal. The first request uses
+`after=0`. `limit` defaults to 100 and is capped at 500.
+
+**Response (200):** `{items, lineCount, limit, after, nextCursor}` where
+`nextCursor` is present only when another page exists. Items retain the original
+`statementLineId`, evidence hash and canonical statement ordering.
+
+**Error codes:** `NOT_FOUND`, `UNAVAILABLE`
 
 ### Open Reconciliation Discrepancy
 
@@ -498,7 +519,7 @@ channel-side discrepancy. It does not mutate Payment or Finance aggregates.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `channelStatementId` | string | yes | Statement that exposed the discrepancy. |
-| `statementLineId` | string | no | Statement line, if line-bound. |
+| `statementLineId` | string | no | Statement line, if line-bound. It must exist in the named statement. |
 | `channelOrderId` | string | no | Related channel order, if known. |
 | `channelRefundId` | string | no | Related channel refund, if known. |
 | `financeReconciliationCaseId` | string | no | Existing Finance case to attach. |
@@ -506,6 +527,12 @@ channel-side discrepancy. It does not mutate Payment or Finance aggregates.
 | `expectedAmount` | Money | yes | Expected amount. |
 | `actualAmount` | Money | yes | Actual amount. |
 | `evidenceRef` | string | yes | Evidence reference/hash; no raw PII/documents. |
+
+When `statementLineId` is supplied, its immutable line is authoritative:
+`channelOrderId`, `channelRefundId`, `expectedAmount`, and `actualAmount` must
+match it. Omitted order/refund references are populated from that line. A
+line-less discrepancy must carry at least one channel order, channel refund, or
+Finance case reference.
 
 **Response (201):** `ReconciliationDiscrepancy` resource.
 
@@ -533,7 +560,10 @@ channel-side discrepancy. It does not mutate Payment or Finance aggregates.
 
 **Response (200):** `ReconciliationDiscrepancy` resource in terminal status.
 
-**Domain effects:** emits `ReconciliationDiscrepancyResolved`.
+**Domain effects:** emits `ReconciliationDiscrepancyResolved`. An identical
+terminal replay returns the stored result without changing its version or
+emitting another event. A replay that asks for a different terminal status or
+resolution reference is rejected.
 
 **Error codes:** `NOT_FOUND`, `PRECONDITION_FAILED`, `CONFLICT`,
 `DOMAIN_RULE_VIOLATION`, `IDEMPOTENCY_KEY_REUSED`, `UNAVAILABLE`
