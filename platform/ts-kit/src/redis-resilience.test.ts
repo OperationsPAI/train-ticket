@@ -426,7 +426,7 @@ describe("OutboxRelay supervision", () => {
     // of the process -- while /healthz still returned 200.
     let queries = 0;
     const pool = {
-      async query(): Promise<never> {
+      async connect(): Promise<never> {
         queries += 1;
         throw new Error("PostgreSQL unavailable");
       },
@@ -453,11 +453,14 @@ describe("OutboxRelay supervision", () => {
   it("marks itself unhealthy while failing and healthy again once publishing resumes", async () => {
     let failing = true;
     const pool = {
-      async query(sql: string): Promise<unknown> {
+      async connect(): Promise<unknown> {
         if (failing) {
           throw new Error("PostgreSQL unavailable");
         }
-        return String(sql).includes("SELECT") ? { rows: [] } : { rows: [] };
+        return {
+          query: async () => ({ rows: [] }),
+          release: () => {},
+        };
       },
     };
     const relay = new OutboxRelay(pool as never, {} as never, { pollIntervalMs: 5, name: "test-relay" });
