@@ -6,6 +6,10 @@ export type EventReplaySource = Readonly<{
     producer: string;
 }>;
 export type ReplayHandler = (envelope: EventEnvelope, stream: string) => Promise<EventHandlerOutput> | EventHandlerOutput;
+export declare const EVENT_REPLAY_RETENTION_DAYS_ENV = "EVENT_REPLAY_RETENTION_DAYS";
+export declare const DEFAULT_EVENT_REPLAY_RETENTION_DAYS = 7;
+export declare const MAX_EVENT_REPLAY_RETENTION_DAYS = 90;
+export declare function eventReplayRetentionMs(configured?: string | undefined): number;
 type ReplayArchiveEvent = Readonly<{
     sequence: number;
     eventId: string;

@@ -11,6 +11,7 @@ import {
   connectRedisWithRetry,
   createPostgresPool,
   createRedisClient,
+  eventReplayRetentionMs,
   migrationsAwareReadiness,
   redisClientLiveness,
   startMigrations,
@@ -58,6 +59,7 @@ export async function startNotificationStorage(channelGateway: NotificationChann
   await connectRedisWithRetry(redis, "notification-outbox");
   const relay = new OutboxRelay(pool, redis, {
     pollIntervalMs: 250,
+    processedEventRetentionMs: eventReplayRetentionMs(),
     name: "notification-outbox-relay",
     onFailure: (error) => console.error(sanitizedErrorForLog(error)),
   });

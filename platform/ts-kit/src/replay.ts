@@ -12,6 +12,19 @@ export type EventReplaySource = Readonly<{
 
 export type ReplayHandler = (envelope: EventEnvelope, stream: string) => Promise<EventHandlerOutput> | EventHandlerOutput;
 
+export const EVENT_REPLAY_RETENTION_DAYS_ENV = "EVENT_REPLAY_RETENTION_DAYS";
+export const DEFAULT_EVENT_REPLAY_RETENTION_DAYS = 7;
+export const MAX_EVENT_REPLAY_RETENTION_DAYS = 90;
+
+export function eventReplayRetentionMs(configured = process.env[EVENT_REPLAY_RETENTION_DAYS_ENV]): number {
+  if (configured === undefined || configured.trim() === "") return DEFAULT_EVENT_REPLAY_RETENTION_DAYS * 86_400_000;
+  const days = Number(configured);
+  if (!Number.isInteger(days) || days < 1 || days > MAX_EVENT_REPLAY_RETENTION_DAYS) {
+    throw new Error(`${EVENT_REPLAY_RETENTION_DAYS_ENV} must be an integer from 1 to ${MAX_EVENT_REPLAY_RETENTION_DAYS}`);
+  }
+  return days * 86_400_000;
+}
+
 type ReplayArchiveEvent = Readonly<{
   sequence: number;
   eventId: string;
