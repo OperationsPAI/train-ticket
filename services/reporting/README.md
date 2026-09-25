@@ -49,6 +49,8 @@ The in memory aggregator counts captured events with an amount.
 `totalRevenue`, `routeRevenue`, and `revenue_per_hour` are arrays of Money values ordered by ISO currency code.
 The in-memory aggregator and PostgreSQL reader preserve every currency independently and never add or convert unlike currencies.
 An empty monetary result is represented by an empty array rather than by a synthetic zero in a default currency.
+The revenue endpoint paginates grouped `items` with `limit` and `offset` while `totalRevenue` always covers the complete filtered result.
+`total` is the number of grouped rows before pagination; requesting an offset beyond the last row returns an empty `items` array with the same complete totals.
 
 ## Coordinated migration 005
 
