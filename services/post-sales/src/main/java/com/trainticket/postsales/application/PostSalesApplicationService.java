@@ -305,6 +305,23 @@ public class PostSalesApplicationService {
         return current;
     }
 
+    public PostSalesCase reconcileExecution(
+        com.trainticket.postsales.domain.PostSalesExecutionEvidence evidence,
+        String sourceCommandId,
+        String correlationId
+    ) {
+        PostSalesCase initial = get(evidence.caseId());
+        repository.lockOrder(initial.journeyOrderId());
+        PostSalesCase current = get(evidence.caseId());
+        if (current.status() == PostSalesCaseStatus.APPLIED) {
+            return current;
+        }
+        current.reconcileCompletedExecution(evidence, clock.instant(), sourceCommandId, sourceCommandId, correlationId);
+        repository.save(current);
+        publishNewEvents(current);
+        return current;
+    }
+
     public PostSalesCase get(String caseId) {
         return repository.findById(PostSalesMapper.stripCasePrefix(caseId))
             .orElseThrow(() -> new CaseNotFoundException(caseId));
