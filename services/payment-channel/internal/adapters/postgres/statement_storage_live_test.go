@@ -40,6 +40,7 @@ func TestLiveNormalizedStatementStorageIsBounded(t *testing.T) {
 	service := application.New(repository, NewOutboxPublisher(transactor), transactor.Within)
 	request := application.GenerateStatementRequest{
 		Channel: domain.ChannelAlipay, StatementDate: "2026-09-24", Currency: "CNY", SeedVersion: "retained-day-v1",
+		OperatorRef: "ops", ReasonCode: "DAILY_CLOSE",
 		CorrelationID: ids.NewCorrelationID(), SourceCommandID: ids.NewCommandID(),
 	}
 
@@ -159,6 +160,7 @@ func TestLiveConcurrentStatementGenerationReplaysOneIdentity(t *testing.T) {
 	service := application.New(NewRepository(transactor), NewOutboxPublisher(transactor), transactor.Within)
 	request := application.GenerateStatementRequest{
 		Channel: domain.ChannelAlipay, StatementDate: "2026-09-24", Currency: "CNY", SeedVersion: "concurrent-v1",
+		OperatorRef: "ops", ReasonCode: "DAILY_CLOSE",
 		ScenarioCodes: []string{"AMOUNT_MISMATCH"}, CorrelationID: ids.NewCorrelationID(), SourceCommandID: ids.NewCommandID(),
 	}
 
@@ -265,6 +267,7 @@ func TestLiveStatementFreezeAndLineBoundDiscrepancyAreConsistent(t *testing.T) {
 	service := application.New(NewRepository(transactor), NewOutboxPublisher(transactor), transactor.Within)
 	statement, err := service.GenerateStatement(ctx, application.GenerateStatementRequest{
 		Channel: domain.ChannelAlipay, StatementDate: "2026-09-24", Currency: "CNY", SeedVersion: "discrepancy-v1",
+		OperatorRef: "ops", ReasonCode: "DAILY_CLOSE",
 		ScenarioCodes: []string{"AMOUNT_MISMATCH"}, CorrelationID: ids.NewCorrelationID(), SourceCommandID: ids.NewCommandID(),
 	})
 	if err != nil {
