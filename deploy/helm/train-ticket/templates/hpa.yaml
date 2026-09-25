@@ -5,6 +5,7 @@
 {{- $minReplicas := required (printf "services.%s.autoscaling.minReplicas is required when autoscaling is enabled" $name) $autoscaling.minReplicas }}
 {{- $maxReplicas := required (printf "services.%s.autoscaling.maxReplicas is required when autoscaling is enabled" $name) $autoscaling.maxReplicas }}
 {{- $cpuTarget := required (printf "services.%s.autoscaling.targetCPUUtilizationPercentage is required when autoscaling is enabled" $name) $autoscaling.targetCPUUtilizationPercentage }}
+{{- $memoryTargetSet := hasKey $autoscaling "targetMemoryUtilizationPercentage" }}
 {{- $memoryTarget := $autoscaling.targetMemoryUtilizationPercentage | default 0 }}
 {{- $resources := $svc.resources | default $defaults.resources | default dict }}
 {{- $requests := $resources.requests | default dict }}
@@ -14,15 +15,15 @@
 {{- if lt (int $maxReplicas) (int $minReplicas) }}
 {{- fail (printf "services.%s.autoscaling.maxReplicas must be greater than or equal to minReplicas" $name) }}
 {{- end }}
-{{- if or (lt (int $cpuTarget) 1) (gt (int $cpuTarget) 100) }}
-{{- fail (printf "services.%s.autoscaling.targetCPUUtilizationPercentage must be between 1 and 100" $name) }}
+{{- if lt (int $cpuTarget) 1 }}
+{{- fail (printf "services.%s.autoscaling.targetCPUUtilizationPercentage must be at least 1" $name) }}
 {{- end }}
 {{- if not (hasKey $requests "cpu") }}
 {{- fail (printf "services.%s requires resources.requests.cpu when autoscaling is enabled" $name) }}
 {{- end }}
-{{- if $memoryTarget }}
-{{- if or (lt (int $memoryTarget) 1) (gt (int $memoryTarget) 100) }}
-{{- fail (printf "services.%s.autoscaling.targetMemoryUtilizationPercentage must be between 1 and 100" $name) }}
+{{- if $memoryTargetSet }}
+{{- if lt (int $memoryTarget) 1 }}
+{{- fail (printf "services.%s.autoscaling.targetMemoryUtilizationPercentage must be at least 1" $name) }}
 {{- end }}
 {{- if not (hasKey $requests "memory") }}
 {{- fail (printf "services.%s requires resources.requests.memory when memory autoscaling is enabled" $name) }}
@@ -50,7 +51,7 @@ spec:
         target:
           type: Utilization
           averageUtilization: {{ int $cpuTarget }}
-    {{- if $memoryTarget }}
+    {{- if $memoryTargetSet }}
     - type: Resource
       resource:
         name: memory
