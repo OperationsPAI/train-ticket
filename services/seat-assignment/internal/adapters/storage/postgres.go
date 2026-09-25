@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	kitmsg "github.com/trainticket/greenfield/platform/go-kit/messaging"
 	kitstorage "github.com/trainticket/greenfield/platform/go-kit/storage"
+	"github.com/trainticket/greenfield/services/seat-assignment/internal/adapters/observability"
 	"github.com/trainticket/greenfield/services/seat-assignment/internal/domain"
 )
 
@@ -332,6 +333,36 @@ func (r *Repository) FindSeatAllocationsByCapacityRecovery(ctx context.Context, 
 func (r *Repository) LockCapacityHold(ctx context.Context, holdID string) error {
 	_, err := r.tx.DBFor(ctx).Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "capacity-hold:"+holdID)
 	return err
+}
+
+// LoadSeatAllocationsForMetrics reads the durable projection
+// train_ticket.seat.allocations is folded from.
+//
+// A projection rather than the full aggregate: the gauge needs a state, the
+// classes the allocation was requested and delivered as, and the allocation
+// type. Seat, coach and segment references are deliberately not selected, so
+// they cannot reach an attribute even by accident.
+func (r *Repository) LoadSeatAllocationsForMetrics(ctx context.Context) ([]observability.DurableSeatAllocation, error) {
+	rows, err := r.tx.DBFor(ctx).Query(ctx, `SELECT
+			coalesce(data->>'seatAllocationId',''),
+			coalesce(data->>'status',''),
+			coalesce(data->>'requestedClassRef',''),
+			coalesce(data->>'occupancyClassRef',''),
+			coalesce(data->'seatRef'->>'allocationType','')
+		FROM seat_allocations`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []observability.DurableSeatAllocation{}
+	for rows.Next() {
+		var allocation observability.DurableSeatAllocation
+		if err := rows.Scan(&allocation.SeatAllocationID, &allocation.Status, &allocation.RequestedClass, &allocation.OccupancyClass, &allocation.AllocationType); err != nil {
+			return nil, err
+		}
+		out = append(out, allocation)
+	}
+	return out, rows.Err()
 }
 
 func (r *Repository) CapacityHoldFence(ctx context.Context, holdID string) (*domain.CapacityHoldFence, error) {
