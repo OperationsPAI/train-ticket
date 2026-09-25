@@ -52,15 +52,26 @@ in [current status](00-current-status.md#the-resident-cycle-is-not-yet-clean):
    12304 trip-planning ones, and 45.4 million trip-planning tuple fetches. The
    loads that need moving are the read shard's seven databases first, then the
    transactional shard's five; `reporting` is the worked example of the copy,
-   verify and switch that this needs.
-3. [ ] A change must be able to replace a reservation whose original hold is
+   verify and switch that this needs. Plan for the volume before starting it:
+   measured on `core`, `fare_pricing` is 42 GB, `offer_management`,
+   `capacity_availability` and `seat_assignment` are 43 GB each, and
+   `trip_planning` is 3.4 GB, so the read shard's seven databases come to about
+   176 GB of data that has to move while nothing is writing to it.
+3. [ ] Bound the write amplification before moving that data, because a copy
+   carries the growth with it. `capacity_supply_observations` holds 503452 rows
+   in 25 GB -- about 50 KB per admission -- and `seat_maps` holds 427934 rows in
+   37 GB. Both are written per admission or per change and keep every version,
+   so the shards would fill again at the same rate. Decide what a useful
+   retention for each of them is, the way the outbox and `processed_events`
+   sweeps already do.
+4. [ ] A change must be able to replace a reservation whose original hold is
    still active. The replacement is refused with `OVERLAPPING_HOLD` and the
    case answers 422, which the load generator records as `failed_at_change-execute`.
-4. [ ] Disruption must not report a business conflict as an availability
+5. [ ] Disruption must not report a business conflict as an availability
    failure. Selecting an option for an order that already has a refund or change
    in progress answers 503 `UNAVAILABLE`; a conflict has its own status, and the
    flow has to decide what the honest terminal outcome for that case is.
-5. [ ] Re-measure the refund and change `case-status` groups once the above are
+6. [ ] Re-measure the refund and change `case-status` groups once the above are
    fixed; they wait on the reservations and cases in front of them.
 
 ## Open verification
