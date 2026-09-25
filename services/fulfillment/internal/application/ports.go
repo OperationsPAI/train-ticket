@@ -16,6 +16,7 @@ import (
 	kitmsg "github.com/trainticket/greenfield/platform/go-kit/messaging"
 	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
 
+	"github.com/trainticket/greenfield/services/fulfillment/config"
 	"github.com/trainticket/greenfield/services/fulfillment/internal/domain"
 )
 
@@ -1074,13 +1075,16 @@ func validateReferences(entitlementID domain.EntitlementRef, segmentBookingID do
 	return segmentRef.Validate()
 }
 
+// validSource reports whether the release trusts evidence that arrives under
+// this source. The register is the settings file the release ships rather than
+// a list the branch keeps: an estate is withdrawn by stating it there.
 func validSource(source domain.FulfillmentSource) bool {
-	switch source {
-	case domain.FulfillmentSourceGate, domain.FulfillmentSourceStation, domain.FulfillmentSourceProvider, domain.FulfillmentSourceConductor, domain.FulfillmentSourceAdmin:
-		return true
-	default:
-		return false
+	for _, trusted := range config.TrustedBoardingSources {
+		if source == trusted {
+			return true
+		}
 	}
+	return false
 }
 
 func validNoShowReason(reason domain.NoShowReason) bool {
