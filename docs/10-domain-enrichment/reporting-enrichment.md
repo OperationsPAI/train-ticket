@@ -25,7 +25,8 @@ PostgreSQL 在数据库内按时间索引聚合完整窗口，不使用行数上
 `/metrics/operational` 的订单速率为60秒、收入/延迟/风控为1小时、退款率为24小时、context rollup 为5分钟。
 异常评估也使用规则自身的完整时间范围，不受最新10000条事件限制。
 内存聚合器按币种独立汇总金额，绝不对不同币种执行相加或隐式换算。
-`trends` 当前返回 orders、gross captured 和 refund rate 的快照时间点，没有保存完整历史曲线。
+`trends` 返回最近60个完整 UTC 分钟：每分钟订单创建速率、按币种 gross captured 金额和退款率。
+当前未完成分钟不进入结果，空分钟显式返回零速率或空金额数组，因此固定为60点连续序列。
 
 ## gross captured 报表
 
