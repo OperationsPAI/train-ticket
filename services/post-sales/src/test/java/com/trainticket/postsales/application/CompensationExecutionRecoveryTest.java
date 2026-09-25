@@ -28,7 +28,7 @@ class CompensationExecutionRecoveryTest {
         fixture.caseAggregate.recordCompensationOperation("request", request(fixture.caseId));
         fixture.repository.save(fixture.caseAggregate);
         AtomicInteger postCount = new AtomicInteger();
-        try (StubServer server = new StubServer(fixture, false, postCount)) {
+        try (StubServer server = new StubServer(fixture, false, true, postCount)) {
             CompensationExecutionService execution = execution(fixture, new InMemoryCompensationMismatchStore(), server.base());
 
             PostSalesCase recovered = execution.advance(fixture.caseId, "corr-recover");
@@ -38,6 +38,30 @@ class CompensationExecutionRecoveryTest {
             assertEquals(PostSalesCaseStatus.APPLIED, advanceToApplied(execution, fixture.caseId).status());
             assertEquals(0, postCount.get(), "subsequent replay must remain read-only for wallet and payment");
             server.assertNoUnexpectedRequests();
+        }
+    }
+
+    @Test
+    void appliedHistoricalCaseWithoutWalletEvidenceIsFrozenWithoutIssuingCredit() throws Exception {
+        Fixture fixture = fixture();
+        fixture.caseAggregate.recordCompensationOperation("request", request(fixture.caseId));
+        fixture.caseAggregate.recordStepSucceeded(PostSalesStepType.ISSUE_COMPENSATION_CREDIT, "historical-missing-benefit",
+            NOW.plusSeconds(3), "cmd-historical", "cmd-historical", "corr-historical");
+        fixture.caseAggregate.recordStepSucceeded(PostSalesStepType.APPLY_RESULT, fixture.caseAggregate.journeyOrderId(),
+            NOW.plusSeconds(4), "cmd-historical", "cmd-historical", "corr-historical");
+        fixture.repository.save(fixture.caseAggregate);
+        AtomicInteger postCount = new AtomicInteger();
+        InMemoryCompensationMismatchStore mismatches = new InMemoryCompensationMismatchStore();
+        try (StubServer server = new StubServer(fixture, false, false, postCount)) {
+            CompensationExecutionService execution = execution(fixture, mismatches, server.base());
+
+            CompensationMismatchException error = org.junit.jupiter.api.Assertions.assertThrows(
+                CompensationMismatchException.class, () -> execution.advance(fixture.caseId, "corr-historical"));
+
+            assertEquals("WALLET_CREDIT_MISSING", error.checkpoint().mismatchCode());
+            assertEquals(PostSalesCaseStatus.APPLIED.name(), error.checkpoint().caseStatus());
+            assertEquals(0, postCount.get());
+            assertNotNull(mismatches.find(fixture.caseId).orElse(null));
         }
     }
 
@@ -93,12 +117,17 @@ class CompensationExecutionRecoveryTest {
         private final HttpServer server;
         private final Fixture fixture;
         private final boolean refundConflict;
+        private final boolean walletExists;
         private final AtomicInteger postCount;
         private final AtomicInteger unexpected = new AtomicInteger();
         private final AtomicInteger requests = new AtomicInteger();
 
         StubServer(Fixture fixture, boolean refundConflict, AtomicInteger postCount) throws Exception {
-            this.fixture = fixture; this.refundConflict = refundConflict; this.postCount = postCount;
+            this(fixture, refundConflict, true, postCount);
+        }
+
+        StubServer(Fixture fixture, boolean refundConflict, boolean walletExists, AtomicInteger postCount) throws Exception {
+            this.fixture = fixture; this.refundConflict = refundConflict; this.walletExists = walletExists; this.postCount = postCount;
             server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
             server.createContext("/", this::handle);
             server.start();
@@ -125,7 +154,8 @@ class CompensationExecutionRecoveryTest {
                 body = "{\"paymentIntentId\":\"pi-1\",\"businessRef\":\"ord-comp-1\",\"status\":\"CAPTURED\",\"capturedAmount\":{\"currency\":\"CNY\",\"minorUnits\":10000},\"refundedAmount\":{\"currency\":\"CNY\",\"minorUnits\":0}}";
             } else if (path.equals("/api/v1/internal/benefits/by-case/psc-" + fixture.caseId)
                     || path.equals("/api/v1/benefits/ben-existing")) {
-                body = "{\"benefitId\":\"ben-existing\",\"accountId\":\"acc-1\",\"benefitType\":\"COMPENSATION_CREDIT\",\"balanceType\":\"PROMOTION_CREDIT\",\"issuedAmount\":{\"currency\":\"CNY\",\"minorUnits\":1000},\"issuanceSource\":\"POST_SALES_COMP\",\"caseId\":\"psc-" + fixture.caseId + "\"}";
+                if (!walletExists) { status = 404; body = "{\"code\":\"NOT_FOUND\"}"; }
+                else body = "{\"benefitId\":\"ben-existing\",\"accountId\":\"acc-1\",\"benefitType\":\"COMPENSATION_CREDIT\",\"balanceType\":\"PROMOTION_CREDIT\",\"issuedAmount\":{\"currency\":\"CNY\",\"minorUnits\":1000},\"issuanceSource\":\"POST_SALES_COMP\",\"caseId\":\"psc-" + fixture.caseId + "\"}";
             } else {
                 unexpected.incrementAndGet(); status = 500; body = "{\"error\":\"unexpected request\"}";
             }
