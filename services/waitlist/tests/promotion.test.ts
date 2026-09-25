@@ -211,8 +211,8 @@ test("duplicate capacity release does not create another promotion credit", asyn
   const repository = new InMemoryWaitlistRepository();
   const orders = new StubJourneyOrder();
   const service = new WaitlistApplicationService(repository, new InMemoryEventPublisher(), new StubFarePricing(), new StubCapacity(), orders, () => new Date("2026-01-01T00:00:00.000Z"), new StubOfferManagement());
-  const first = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND_CLASS", intentFingerprint: "intent-1" });
-  const second = await service.join({ accountId: "acc", travelerRefs: ["t2"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND_CLASS", intentFingerprint: "intent-2" });
+  const first = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND_CLASS", intentFingerprint: "intent-1", loyaltyTier: "PLATINUM" });
+  const second = await service.join({ accountId: "acc", travelerRefs: ["t2"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND_CLASS", intentFingerprint: "intent-2", loyaltyTier: "NONE" });
 
   await service.handleCapacityFreed(capacityEvent());
   const replay = await service.handleCapacityFreed(capacityEvent());
