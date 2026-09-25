@@ -120,26 +120,53 @@ train_ticket:event_dlq_entries:max
 
 ## Implementation ownership
 
-The pipeline and names are committed first so service implementations cannot
-diverge. The active checklist is maintained only in
-[the repository TODO](../TODO.md#t18-complete-low-cardinality-business-telemetry).
-Ownership is split as follows:
+The pipeline and names were committed first so service implementations could
+not diverge. Every source below is now implemented and deployed; the remaining
+work is listed in [the repository TODO](../TODO.md#t18-complete-low-cardinality-business-telemetry).
 
-- Journey Order and Booking Orchestration: order funnel and saga instruments.
-- Payment and Payment Channel: operation counters, amount counters and
-  conservation gauges; Post Sales contributes compensation outcomes only.
-- Capacity Availability and Seat Assignment: capacity, hold and allocation
-  gauges. Keep service/date/segment and physical seat identifiers out of labels.
-- Entitlement Ticketing and Fulfillment: ticket lifecycle instruments.
-- Waitlist: intent age, population and promotion outcomes.
-- Wallet Promotion: balance conservation and operation outcomes.
-- Notification: durable queue depth, oldest task age and bounded retry outcomes.
-- Shared Redis transport: current consumer lag, pending age and DLQ population. This
-  belongs in one collector/exporter component, not one copy per subscriber.
-- Non-Java platform kits: adopt the existing Java event-consumer and outbox
-  metric contract so transport rules cover all services consistently.
+| Source metric | Owning implementation |
+| --- | --- |
+| `train_ticket.order.transitions` | `journey-order` emits the `order` stage; `booking-orchestration` emits `reservation`, `payment` and `ticket`. Search and quote belong to offer management and are not emitted yet. |
+| `train_ticket.booking.saga.*` | `booking-orchestration`, rebuilt from durable saga snapshots by a leader-elected reporter. |
+| `train_ticket.payment.*` | `payment` owns the domain view and the conservation gauge; `payment-channel` publishes the edge it settles; `post-sales` publishes compensation outcomes only, with no amount and no conservation series. |
+| `train_ticket.capacity.*`, `train_ticket.seat.allocations` | `capacity-availability` folds pool documents; `seat-assignment` folds its allocations. Both publish a standing substitution with the same `travel_class` and `seat_mode`, so the supply disagreement is expressible as `capacity.units{state="confirmed"} - seat.allocations{state="allocated"}`. |
+| `train_ticket.ticketing.*` | `entitlement-ticketing` emits issue, replacement and void; `fulfillment` emits the validation stage. |
+| `train_ticket.waitlist.*` | `waitlist`, from a group-by of its durable entries. |
+| `train_ticket.wallet.*` | `wallet-promotion`, from its account, instrument and reversal snapshots. |
+| `train_ticket.notification.queue.*`, `.retries` | `notification`. Queue depth is maintained by a trigger on the delivery queue and read from that table, because a count over the queue itself is a scan of tens of millions of rows. |
+| `train_ticket.event.*` | `redis-state-collector`, one process for every stream. See [its README](../../tools/redis-state-collector/README.md). |
 
-Each implementation must add a cardinality test that records two different
-business identifiers and proves they produce the same label set. It must also
-test restart reconstruction for gauges derived from durable state; a process
-counter reset must not be mistaken for a business balance reset.
+Java services additionally emit the smaller process-level transport set that
+the `train-ticket-transport` rules consume. Porting it to the Go, Python,
+TypeScript and Rust kits is still open and is tracked in the TODO.
+
+Each implementation carries a cardinality test that records two different
+business identifiers and proves they produce the same label set, and a restart
+test for every level: a process counter reset must not be mistaken for a
+business balance reset.
+
+### Levels are read from durable rows, never adjusted in memory
+
+Every gauge above is rebuilt from stored state on a timer rather than mirrored
+from the mutation path. Two consequences are deliberate:
+
+- A restarted process republishes the same level once its first read succeeds,
+  and before that first read there is no series at all. Missing is unknown, not
+  zero.
+- A failed read keeps the previous reading. "The collector could not read the
+  source" and "the source is empty" must not produce the same series.
+
+The cost of that choice is the read. Two of them needed a change to be viable
+on this cluster's data volume: the notification queue depth is maintained by a
+database trigger because counting the queue is a sequential scan of tens of
+millions of rows, and the capacity fold streams its pool documents row by row
+because collecting them first is several gigabytes of expanded JSON.
+
+### Adding a label
+
+The Prometheus branch of the collector trims every datapoint attribute except a
+fixed list. A label named in this document but missing from that list is
+published with the label stripped — the notification `action` split and the
+disruption `signal_type`/`source` split both shipped that way. Add the label to
+`keep_keys` in `templates/_collector-configs.tpl` and to the allowlist test in
+`deploy/tests/test_observability_metrics_config.py` in the same change.

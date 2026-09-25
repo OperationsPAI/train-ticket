@@ -3,9 +3,27 @@
 ## 实现与发布状态
 
 本域实现位于 `services/notification`，使用 TypeScript、Fastify、PostgreSQL、Redis Streams 和 Nodemailer。
-本文根据仓库当前实现描述模型及运行机制，该实现已在 revision 280 部署。
+本文根据仓库当前实现描述模型及运行机制，该实现已在常驻 release 部署，当前 revision 见[当前状态](../00-current-status.md)。
 线上发送在数据库事务之外完成，发送期间不占用数据库连接及收件人事务锁。
 durable queue 来自提交 `41917b85`，事务外发送、claim、`Unknown` 和 API 追加字段已在线上生效。
+
+投递时效策略（migration `010_delivery_policy`）与队列深度指标（migration `011_delivery_queue_state_counts`）也已部署：
+
+| 通知类别 | TTL |
+|---|---|
+| 行动型通知 | 30 分钟 |
+| 订单状态通知 | 6 小时 |
+| 财务与出票类通知 | 72 小时 |
+| 运营类通知 | 6 小时 |
+| 其他 | 24 小时 |
+
+仍在 TTL 内的旧订单状态任务会被同一窗口内的后续取消、确认或状态变更取代。
+过期或被取代的任务在同一事务内转为 `Cancelled` 并更新 task、queue、attempt/evidence，同时发布 `NotificationCancelled`。
+该策略的作用是：数百万条已经失去时效的历史邮件不会在恢复后才灌给用户。
+
+队列深度由 `notification_delivery_queue_state` 维护，该表由队列表上的触发器更新。
+不能直接 `count(*)` 队列表：它保存服务接受过的全部任务，在常驻库上实测为 3.7 秒的并行 seq scan，强制走 ready 索引则要 27.8 秒。
+队列深度与最旧到期任务年龄通过 `train_ticket.notification.queue.tasks` 与 `.oldest_age` 上报，指标契约见[业务指标](../07-observability/business-metrics.md)。
 
 ## 领域边界
 
@@ -103,7 +121,6 @@ SMTP 的 5 秒期限表示本次等待结束，无法确定发送结果时使用
 字段的发布状态见[API 说明](../08-contracts/api/notification.md)。
 EMAIL 的 `Delivered` 表示 SMTP 接受邮件；PUSH、SMS、IN_APP 使用直接成功适配器，当前没有外部供应商送达验证。
 
-最新记录为 compile PASS，PostgreSQL/Mailpit durable delivery 共 10 个子项及父项 11 PASS，20.8 秒。
-完整 `npm test` 尚未运行，quota 延期恢复未专项验收。
-线上 revision 279 仍使用事务内 SMTP 路径，该验证不构成部署完成证明。
+最新记录为完整 `npm test` 108 passed、6 skipped、0 failed，PostgreSQL/Mailpit durable delivery 子项另计。
+skipped 项是需要 `TEST_DATABASE_URL` 等环境变量的用例，不代表线上路径已验证。
 待办统一见 [docs/TODO.md](../TODO.md)。

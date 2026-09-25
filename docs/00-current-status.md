@@ -1,101 +1,119 @@
 # Current project status
 
-Last verified: 2026-09-24, Asia/Beijing.
+Last verified: 2026-09-25, Asia/Beijing.
 
 ## Runtime
 
-The resident Helm release is `train-ticket` in namespace `train-ticket`, revision **330**.
-Its values come from one file, `deploy/helm/train-ticket/values.yaml`: the registry, the `local-path` storage class, the central telemetry store, the resident exporters, the 600 second load generator period and the `loadgen-resident-state` claim all live there, and the former cluster, case, resident, production and ACR overlays are deleted.
-PostgreSQL stores business snapshots, idempotency records, processed event records and transactional outboxes.
-Redis Streams carries events; the current chart has no Redis persistent volume or AOF.
-Database persistence alone does not prove recovery of every event after transport data is lost.
+The resident Helm release is `train-ticket` in namespace `train-ticket`,
+revision **374**.
+Its values come from one file, `deploy/helm/train-ticket/values.yaml`: the
+registry, the `local-path` storage class, the central telemetry store, the
+resident exporters, the load generator settings and the `loadgen-resident-state`
+claim all live there. The former cluster, case, resident, production and ACR
+overlays are deleted.
 
-The resident Go load generator uses the `loadgen-resident-state` claim, a 1800 second diurnal period, `target_rps: 20`, bursts between three and eight times the mean rate and a 10 second HTTP request timeout.
-Its configuration and persistent state remain unchanged by this documentation handoff.
-No additional business deployment is part of this handoff.
+PostgreSQL is one instance per workload shape, not one instance for everything:
+`core`, `hot`, `txn`, `read`, `user` and `event`, each with its own databases,
+resources and `pgInstance` mapping. Every service's database is named in
+`postgres.instances.<shard>.databases`; a missing entry is a service that
+starts, connects, and fails on its first query.
+Redis Streams carries events, with no persistent volume or AOF, so Redis can be
+connected to without any event having been consumed.
 
-## Implemented and deployed behavior
+The resident Go load generator uses the `loadgen-resident-state` claim, a 600
+second diurnal period, `target_rps: 20`, bursts between three and eight times
+the mean rate and a 10 second HTTP request timeout. It is scaled to zero
+between acceptance runs; the run whose evidence is below was made by scaling it
+to one and back.
 
-| Area | Current behavior |
+## Implemented and deployed
+
+| Area | Current behaviour |
 |---|---|
-| Service quality compensation | Approved `COMPENSATION` issues the approved currency and amount to the order account as wallet credit, preserving original tickets, seats, order and payment. |
-| Wallet replay | Case identity and the full issuance request prevent duplicate credit, ledger entries and issuance events; conflicting requests are rejected. |
-| Loadgen compensation | `compensation_credited` permits original ticket fulfillment; `compensation_failed` retains mismatch evidence and excludes automatic reexecution. |
-| Ticket changes | Recorded operations preserve original rights when replacement capacity, payment or target validity prevents completion; captured difference refunds remain auditable. |
-| Standing policy | Quota is ten percent of assignable second class supply, rounded down; standing has no physical SeatUnit. |
-| Seat replay | Replay validates recorded class, issue purpose, preferences and original composition. |
-| Service Plan | Segment supply returns ordered stops, interval and stop sequence version; current service creation uses two stops. |
-| Search | The Rust implementation indexes candidates by date and origin node while preserving candidates and ranking. |
-| Post Sales processing | Capacity release uses an independent subscriber; completed releases avoid order locks; evaluation performs external reads outside write transactions. |
-| HTTP concurrency | Journey Order, Post Sales and Traveler Profile use virtual HTTP threads; database connection limits and dependency checks still apply. |
-| Invoicing | Amount basis requires an order projection and matching expected total; order consumers run concurrently with per order locking. |
-| Reporting | Monetary revenue fields represent gross `PaymentCaptured` amounts; breakdown dimensions share one grouping sets scan. |
-| Retention | Published time indexes support existing outbox cleanup in Booking, Finance, Journey Order, Offer, Post Sales and Traveler Profile. |
-
-See the [standing policy](08-contracts/standing-capacity-policy.md), [APIs](08-contracts/api/README.md), service README files and [retention evidence](09-performance/outbox-retention-indexes.md).
+| Business telemetry | Every source metric in the [business metric contract](07-observability/business-metrics.md) is implemented and deployed: order funnel, booking saga, payment and its conservation invariant, capacity and seat levels, ticketing lifecycle, waitlist, wallet, the notification delivery queue and the Redis transport itself. |
+| Transport reporter | `redis-state-collector` reads consumer lag, pending entries, the oldest owed entry and the dead-letter population for every stream, once, and exports them over the same OTLP gateway the services use. |
+| Notification delivery policy | Stale and superseded notifications expire instead of being delivered late: 30 minutes for action-required, 6 hours for order state and operational, 72 hours for financial, 24 hours otherwise. A terminal state in the same TTL window supersedes an earlier one. |
+| Notification queue depth | Maintained by a trigger on the delivery queue and published as a gauge, with the oldest due task's age. Counting the queue itself is a scan of tens of millions of rows, which is why the trigger exists. |
+| Disruption recovery | A segment signal with no affected order is an audited no-op that is acknowledged; only resolver and database failures retry. |
+| Autoscaled replicas | The chart writes `spec.replicas` only on install for a Deployment that has an HPA, so an upgrade no longer resets a scaled-out replica count. |
+| Redis consumer recovery | A failed pending-entry recovery no longer ends consumption in any language kit; `XAUTOCLAIM` cursors are paged rather than restarted. |
+| Trip planning | Search reads supply on demand rather than loading every service plan at startup; a new pod is ready in seconds and holds about 3Mi. |
+| Reporting | Monetary revenue fields are gross `PaymentCaptured` amounts, and the summary views are committed rather than aggregated per request. |
+| Database sharding | Six shards by workload shape, with the copies and cutover checks recorded in the chart. |
+| Standing policy | Quota is ten percent of assignable second class supply, rounded down, and standing has no physical SeatUnit. |
+| Service quality compensation | An approved `COMPENSATION` issues the approved currency and amount to the order account as wallet credit, preserving the original tickets, seats, order and payment. |
 
 ## Verification evidence
 
 | Check | Result | Evidence |
 |---|---|---|
-| Six purchase classes on revision 279 | PASS, 86.305 seconds | `.scratch/runtime-fixes/goal-rev279-six-classes-live.log` |
-| Broad business regression on revision 278 | PASS, 232.690 seconds | `.scratch/runtime-fixes/goal-rev278-broad-live.log` |
-| Broad business regression on revision 279 | PASS, 245.364 seconds | `.scratch/runtime-fixes/goal-rev279-broad-live.log` |
-| Wallet compensation and preserved fulfillment | PASS on revisions 274 and 275; latest focused run 17.184 seconds | `.scratch/runtime-fixes/goal-rev275-wallet-compensation-live.log` |
-| Recorded invoice request | PASS after revision 276; issued invoice retained | `.scratch/runtime-fixes/goal-rev276-recorded-invoice-live.log` |
-| Traveler local module suite | 59 passed, no skips, including 220 concurrent HTTP requests | `services/traveler-profile/target/surefire-reports/` |
-| Reporting production migration | Three populated views committed in 10.359 seconds; source events preserved | `.scratch/runtime-fixes/goal-reporting-revenue-migration-online.log` |
-| Notification module suite | 109 tests, no failures, no skips, about 21 seconds | `.scratch/runtime-fixes/goal-notification-durable-full-tests.log` |
-| Notification durable delivery on revision 280 | Every subscribed stream at zero lag and zero pending; newest task age 0 seconds; 13646 tasks in five minutes | `.scratch/runtime-fixes/goal-rev280-first-window.json` and the resident notification database |
-| Booking consumer recovery on revision 281 | Lag fell from 30000 to 0 with no poll failures after deployment | `.scratch/runtime-fixes/goal-java-kit-recovery-tests.log` |
-| Payment connection pool on revision 282 | `POST /api/v1/payment-intents` P99 fell from 5419 to 283 milliseconds; no request above four seconds | `.scratch/runtime-fixes/goal-rev281-payment-routes.json`, `goal-rev282-payment-pool-window.json` |
-| Ten minute resident cycle at revision 283 | 384661 requests, 44212 journeys, P99 241 milliseconds, 4 failed journeys and 2 unexpected HTTP errors, all seat or standing rejections | `.scratch/runtime-fixes/goal-rev283-ten-minute-window.json` |
-| Ten minute resident cycle at revision 300 | 362212 requests, 41567 journeys, P99 226 milliseconds, 14 failed journeys, all seat or standing rejections | `.scratch/runtime-fixes/goal-rev300-ten-minute.json` |
-| Ten minute resident cycle at revision 306 | 451150 requests, 49821 journeys, P99 2888 milliseconds, 7143 failed journeys, 5634 reservation confirmations and 1331 post sales case status checks | `.scratch/runtime-fixes/goal-rev306-ten-minute.json` |
-| Fifteen minute window at revisions 315 to 318 | 465276 requests, 53234 journeys, P99 354 milliseconds, 17 failed journeys, 15 boarding record races and 2 post sales executions | `.scratch/runtime-fixes/goal-rev317-fifteen-minute.json` |
-| Eighteen minute window at revision 321 | 557863 requests, 64845 journeys, P99 257 milliseconds, 0 failed journeys and 0 unexpected HTTP errors | `.scratch/runtime-fixes/goal-rev321-eighteen-minute.json` |
-| Stable full peak acceptance | Not established | [TODO](TODO.md#acceptance) |
+| Resident cycle on revision 377 | 450756 requests and 50345 journeys in 600 seconds, P99 1218 milliseconds, **12211 failed journeys** | `.scratch/runtime-fixes/goal-rev377-ten-minute.json` |
+| Business metric contract | 22 chart tests pass, including the label allowlist and the recording rule targets | `deploy/tests/test_observability_metrics_config.py` |
+| Transport collector | Unit and `miniredis` tests pass; label sets, entry-id ages, dead-letter attribution and the no-poll-before-first-read case | `tools/redis-state-collector` |
+| Notification module suite | 108 passed, 6 skipped, 0 failures | `services/notification` `npm test` |
+| Booking orchestration module suite | 108 passed, 11 skipped, 0 failures | `services/booking-orchestration` |
+| Journey order module suite | 88 passed, 13 skipped, 0 failures | `services/journey-order` |
+| Payment and post sales module suites | 78 and 118 tests, 0 failures | `services/payment`, `services/post-sales` |
+| Capacity availability and entitlement ticketing | 41 and 36 tests, 0 failures | `services/capacity-availability`, `services/entitlement-ticketing` |
+| Wallet promotion module suite | 41 passed, 4 skipped, 0 failures | `services/wallet-promotion` |
+| Waitlist module suite | 99 passed, 5 skipped, 0 failures | `services/waitlist` |
+| Go service suites | All packages pass | `services/fulfillment`, `services/seat-assignment`, `services/payment-channel` |
 
-The revision 278 ten minute recording ending at 2026-09-23 15:49:14 UTC contains 601683 requests and 9163 failed journeys, with request P99 of 9744.922 milliseconds.
-The measured failures include traveler and identity timeouts and downstream waits.
-The revision 279 two minute sample ending at 15:59:48 UTC contains 63364 requests, no unexpected HTTP errors or failed journeys, and P99 of 180.621 milliseconds.
-Revision 280 kept every notification consumer at zero lag, and revision 281 restored the Booking reservation consumer after a BUSYGROUP recovery failure had stopped it for hours.
-Revision 282 raised the payment connection pool after ten connections were observed fully busy with transactions waiting in `idle in transaction` during channel calls.
-Revision 283 kept revenue recognition inside the invoice polling window, which removed the invoice amount basis failures that this cycle still shows at revision 282.
-The remaining four failures in the ten minute cycle are `no compatible seat exists and standing is not accepted` rejections, tracked as T15 because Capacity and Seat Assignment disagree about remaining supply.
-These windows cover different releases and durations; the shorter result does not certify a complete peak cycle.
-Scratch logs and module build outputs are local evidence and are not versioned repository artifacts.
+The skipped tests are the ones gated on `TEST_DATABASE_URL` and on other
+environment variables that a module run does not set. They are not a claim that
+the live path works.
 
-## Workspace and deployment boundaries
+### The resident cycle is not yet clean
 
-| Component | Workspace state | Deployment state |
+Revision 377 does not pass the acceptance in [TODO](TODO.md#acceptance). The
+measured window carries 12211 failed journeys out of 50345, and they are not a
+spread of unrelated defects:
+
+| Group | Count in the window | Cause |
 |---|---|---|
-| Capacity supply integration | Pool snapshots store unit counts, and the published supply is split into a cached composition and a per admission occupancy. | Activated in revisions 301 to 305. |
-| Booking accepted supply | Main branch contains accepted source changes. | Running image remains based on `c5bb352d` plus compensation commit `1e62d420`; do not deploy main Booking independently. |
-| Notification delivery queue | Tasks, attempts and evidence are committed before sending; SMTP runs outside the recipient transaction with stable message ids and `Unknown` for uncertain outcomes. | Deployed in revision 280 from `41917b85`. |
-| Booking consumer recovery | Consumer groups are created once per stream and a failed pending-entry recovery no longer stops new reads; all subscribed streams are at zero lag. | Deployed in revision 281 from the pinned Booking source plus the java-kit fix. |
-| Payment connection pool | The pool size is 32 instead of the default 10, which removes the multi-second waits that timed out post sales and entitlement calls. | Deployed in revision 282. |
-| Finance settlement consumers | Eight consumer threads, a 32 connection pool and a two core limit keep revenue recognition inside the load generator polling window. | Deployed in revision 283. |
-| Change reservation deadline | A change case whose replacement reservation never confirms now reaches `CHANGE_RESERVATION_TIMED_OUT` after fifteen minutes and the original tickets stay valid. | Deployed in revision 290. |
-| Traveler Profile connection pool | The pool size is 40 instead of the default 10, which removes the burst wait that timed out traveler creation. | Deployed in revision 292. |
-| Unpaid change Hold release | Compensation requests the release of a cancelled replacement whose Hold survived a transport loss. | Deployed in revision 293. |
-| Reservation supply facts | The load generator presents the accepted class, scheduled service and date and Booking persists them. | Deployed in revisions 294 and 295. |
-| Reservation supply views | Seat Assignment answers a composition view and an occupancy view, and Capacity caches the composition until its version changes. | Deployed in revisions 304 and 305. |
-| Journey Order verification lookup | The traveler containment index covers only orders that are still open, so a verification event reads 19 blocks instead of 863. | Deployed in revision 306 as an online index. |
-| Booking saga step deadline | Steps record when their wait started, and a one second sweep fails overdue steps with their recorded compensation. | Deployed in revision 317. |
-| Payment channel handoff | The channel call runs outside any transaction, and the inbound path keeps its deduplication record with the business effect. | Deployed in revision 318. |
-| Peak consumer tuning | Capacity availability, customer service, entitlement ticketing, finance settlement, post sales, reporting and traveler profile consume with more threads, the payment, finance settlement and traveler profile pools are larger, and Identity Verification runs eight workers over the same connection budget. | Deployed in revisions 286 to 300 and persisted in the chart. |
-| Notification verification | Ten focused subtests and their parent pass; full module tests and quota deferral recovery acceptance are incomplete. | Existing notification delay remains an active issue. |
-| Online retention indexes | Verified in the owning databases and represented by migration files. | Some service images do not yet include their new migration file; online index creation did not modify migration version records. |
+| `purchase` `failed_at_staff-poll-reservation` | 7694 | The segment booking reaches `CONFIRMED` without a capacity Hold: 2586 of the 2627 reservations confirmed in the five minutes around the window had no `capacityHoldId`. |
+| `refund`/`change` `failed_at_case-status` | 2521 | The post sales case does not reach `APPLIED` inside the client's poll budget, which follows the reservation it waits on. |
+| `change` `failed_at_case-evaluate` | 1089 | Post Sales answers 500 `IllegalStateException: target offer travelers differ from the original order`. |
+| `change` `failed_at_case-approve` | 367 | The decision quote had expired before approval. |
+| `disruption` `failed_at_disruption-select` | 245 | 503 `Downstream service unavailable`. |
 
-## Coordinated supply integration
+The first three are one problem. Capacity's consumer group on
+`events:booking-orchestration` sat three to five thousand entries behind
+throughout the window, with the oldest pending entry minutes old, while the load
+generator polls a reservation for ten attempts at one second. A reservation
+that confirms two minutes later has already been given up on, and the post sales
+and change cases that wait on it fail with it.
 
-The integration runs on revisions 294 to 305.
-The load generator presents the accepted class, scheduled service and date with each reservation and Booking persists them, so reservation admission reuses the accepted record instead of repeating upstream reads.
-A Hold rewrite stores unit counts, about five kilobytes instead of about one hundred and forty kilobytes.
-Capacity reads a composition view that is cached until its version changes and an occupancy view for the admission interval; the second class admission payload fell from 383324 bytes to 13988 bytes, measured with `.scratch/runtime-fixes/verify-capacity-facts-views.py`.
-The remaining peak limit is the consumer backlog on the identity verification and Booking streams, which still exceeds the reservation polling window during the load generator's bursts.
-The open requirements are recorded in [TODO](TODO.md#t03-complete-coordinated-supply-integration).
+Three defects were fixed on the way to this measurement and are deployed:
+a reservation whose cached supply facts predated the purchase source failed
+with "unsupported purchase source" and consumed five delivery attempts before
+the dead letter stream (19102 retries and 3899 dead letters in twenty minutes);
+an unresolvable historical hold failed every admission into the pool it
+occupied; and the capacity level rebuild loaded seven gigabytes of pool
+documents into memory and was OOM-killed at its four gigabyte limit. What
+remains is the throughput of admission itself, which is the open item below.
 
-All remaining work, evidence and acceptance conditions are maintained only in [TODO](TODO.md).
-This documentation handoff does not mark the full loadgen goal complete.
+### Previously recorded windows
+
+These windows cover earlier revisions and are kept for context; the current
+revision's evidence is the cycle recorded above.
+
+| Check | Result | Evidence |
+|---|---|---|
+| Eighteen minute window at revision 321 | 557863 requests, 64845 journeys, P99 257 milliseconds, 0 failed journeys and 0 unexpected HTTP errors | `.scratch/runtime-fixes/goal-rev321-eighteen-minute.json` |
+| Eighteen minute window at revision 330 | 107442 requests in the first ten minutes, 12910 journeys, boarding record races on the fulfillment path | `.scratch/runtime-fixes/goal-rev330-ten-minute.json` |
+| Ten minute resident cycle at revision 306 | 451150 requests, 49821 journeys, P99 2888 milliseconds, 7143 failed journeys | `.scratch/runtime-fixes/goal-rev306-ten-minute.json` |
+| Ten minute resident cycle at revision 300 | 362212 requests, 41567 journeys, P99 226 milliseconds, 14 failed journeys | `.scratch/runtime-fixes/goal-rev300-ten-minute.json` |
+
+Scratch logs and module build outputs are local evidence and are not versioned
+repository artifacts.
+
+## What is open
+
+Everything still open is listed once, in [TODO](TODO.md). The largest items are
+the general multistop capacity verification, the waitlist fulfillment
+acceptance, durable event recovery, and the reporting monetary edge cases.
+
+No part of this document authorises a deployment: the runtime configuration is
+the single values file, and a release is made with
+`skaffold run -p resident -d mirrors.tencent.com/microservice`.
