@@ -1,6 +1,6 @@
 # Finance Settlement 当前设计
 
-更新日期：2026年9月24日。
+更新日期：2026年9月25日。
 运行基线为 Helm revision 279，服务使用 Java、PostgreSQL 和 Redis 事件处理。
 统一待办见 [TODO](../TODO.md)。
 
@@ -43,8 +43,9 @@ Payment Channel 的 statement、冻结、匹配行和差异事件进入本地投
 渠道差异类型映射为 Finance 的差异原因，形成可查询的 `ReconciliationCase`。
 供应商确认与预订取消事件也可触发财务事实匹配。
 
-日对账和供应商结算已有应用服务方法、持久化模型和查询 API。
-当前生产代码未接入日对账定时器或供应商结算自动调用流程，查询只返回已保存结果。
+日对账和供应商结算已有应用服务方法、持久化模型、自动调度和查询 API。
+调度器按 UTC 已闭合周期执行；每个周期先获得数据库持久化租约，多副本只能有一个 owner，成功后保存业务结果 ID，失败或租约过期后可由其他副本恢复。
+供应商自动发现只接受普通 `fare` 收入中已归一化、且不等于订单号的 supplier reference，缺少归属的数据不会被静默结算。
 日对账区分 `MATCHED`、`PLATFORM_ONLY`、`CHANNEL_ONLY` 和 `AMOUNT_MISMATCH`。
 供应商结算按指定期间、佣金比例和代扣比例生成结果。
 费用与税额使用服务当前公式，详细输入、时间范围和限制见增补文档。
@@ -62,6 +63,8 @@ Payment Channel 的 statement、冻结、匹配行和差异事件进入本地投
 | `GET /api/v1/settlements/daily/{date}` | 查询已保存日对账摘要。 |
 | `GET /api/v1/settlements/reconciliation/{batchId}` | 查询对账条目。 |
 | `GET /api/v1/settlements/suppliers/{supplierId}/period` | 按 `startDate`、`endDate` 查询供应商结算。 |
+| `GET /api/v1/settlement-schedule-runs` | 查询自动调度历史、状态、尝试次数和结果引用。 |
+| `GET /api/v1/settlement-schedule-runs/{jobKey}` | 查询一个精确调度周期的持久化结果。 |
 | `GET /api/v1/benefit-costs` | 查询权益成本增量，可过滤账户。 |
 | `GET /api/v1/ancillary-financial-facts` | 查询附加服务财务事实。 |
 | `POST /api/v1/invoices` | 根据订单净收入生成或返回内部 Invoice。 |
