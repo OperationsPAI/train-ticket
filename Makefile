@@ -96,7 +96,11 @@ node-locks:
 # -mod=readonly rather than a build that may edit go.mod: what is being checked
 # is whether the file is already complete.
 go-modules:
-	@for module in $$(ls -d services/*/ platform/go-*/ | sed 's|/$$||'); do \
+	@# tools/* is included because the transport collector is a module of its
+	@# own: the check is about a module's go.mod already listing every dependency
+	@# its source imports, and a module that no target builds is exactly where
+	@# that goes unnoticed until an image build fails.
+	@for module in $$(ls -d services/*/ platform/go-*/ tools/*/ 2>/dev/null | sed 's|/$$||'); do \
 	  [ -f "$$module/go.mod" ] || continue; \
 	  printf '%-34s' "$$module"; \
 	  (cd "$$module" && GOWORK=off go build -mod=readonly ./... ) || exit 1; \
