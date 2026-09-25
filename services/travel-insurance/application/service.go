@@ -19,30 +19,32 @@ type realClock struct{}
 func (realClock) Now() time.Time { return time.Now().UTC() }
 
 type ServiceConfig struct {
-	Repository     Repository
-	Publisher      EventPublisher
-	UnitOfWork     UnitOfWork
-	Clock          Clock
-	IDGenerator    func(prefix string) string
-	VerifyPurchase func(context.Context, IssuePolicyCommand, domain.Money) error
-	VerifyRefund   func(context.Context, domain.Policy, string) error
-	PayoutExecutor PayoutExecutor
+	Repository              Repository
+	Publisher               EventPublisher
+	UnitOfWork              UnitOfWork
+	Clock                   Clock
+	IDGenerator             func(prefix string) string
+	VerifyPurchase          func(context.Context, IssuePolicyCommand, domain.Money) error
+	VerifyRefund            func(context.Context, domain.Policy, string) error
+	PayoutExecutor          PayoutExecutor
+	JourneyCoverageResolver JourneyCoverageResolver
 }
 
 type InsuranceService struct {
-	mu             sync.Mutex
-	repository     Repository
-	publisher      EventPublisher
-	uow            UnitOfWork
-	clock          Clock
-	idGenerator    func(prefix string) string
-	verifyPurchase func(context.Context, IssuePolicyCommand, domain.Money) error
-	verifyRefund   func(context.Context, domain.Policy, string) error
-	payoutExecutor PayoutExecutor
-	products       map[string]domain.InsuranceProduct
-	policies       map[string]domain.Policy
-	claims         map[string]domain.Claim
-	advices        map[string]domain.PayoutAdvice
+	mu                      sync.Mutex
+	repository              Repository
+	publisher               EventPublisher
+	uow                     UnitOfWork
+	clock                   Clock
+	idGenerator             func(prefix string) string
+	verifyPurchase          func(context.Context, IssuePolicyCommand, domain.Money) error
+	verifyRefund            func(context.Context, domain.Policy, string) error
+	payoutExecutor          PayoutExecutor
+	journeyCoverageResolver JourneyCoverageResolver
+	products                map[string]domain.InsuranceProduct
+	policies                map[string]domain.Policy
+	claims                  map[string]domain.Claim
+	advices                 map[string]domain.PayoutAdvice
 }
 
 func NewInsuranceService(cfg ServiceConfig) *InsuranceService {
@@ -58,7 +60,7 @@ func NewInsuranceService(cfg ServiceConfig) *InsuranceService {
 	if idgen == nil {
 		idgen = ids.NewPrefixed
 	}
-	s := &InsuranceService{repository: cfg.Repository, publisher: publisher, uow: cfg.UnitOfWork, clock: clock, idGenerator: idgen, verifyPurchase: cfg.VerifyPurchase, verifyRefund: cfg.VerifyRefund, payoutExecutor: cfg.PayoutExecutor, products: map[string]domain.InsuranceProduct{}, policies: map[string]domain.Policy{}, claims: map[string]domain.Claim{}, advices: map[string]domain.PayoutAdvice{}}
+	s := &InsuranceService{repository: cfg.Repository, publisher: publisher, uow: cfg.UnitOfWork, clock: clock, idGenerator: idgen, verifyPurchase: cfg.VerifyPurchase, verifyRefund: cfg.VerifyRefund, payoutExecutor: cfg.PayoutExecutor, journeyCoverageResolver: cfg.JourneyCoverageResolver, products: map[string]domain.InsuranceProduct{}, policies: map[string]domain.Policy{}, claims: map[string]domain.Claim{}, advices: map[string]domain.PayoutAdvice{}}
 	s.seedProducts()
 	return s
 }
@@ -156,6 +158,15 @@ type RefundAppliedCommand struct {
 	PolicyID       string
 	JourneyOrderID string
 	RefundID       string
+	CorrelationID  string
+	CausationID    string
+}
+
+type JourneyAdjustedCommand struct {
+	JourneyOrderID string
+	AccountID      string
+	CaseID         string
+	SegmentRefs    []string
 	CorrelationID  string
 	CausationID    string
 }
@@ -547,6 +558,74 @@ func (s *InsuranceService) CancelPolicyForRefund(ctx context.Context, cmd Refund
 	return policy, nil
 }
 
+func (s *InsuranceService) AdjustPoliciesForChangedJourney(ctx context.Context, cmd JourneyAdjustedCommand) ([]domain.Policy, error) {
+	if strings.TrimSpace(cmd.JourneyOrderID) == "" || strings.TrimSpace(cmd.AccountID) == "" || strings.TrimSpace(cmd.CaseID) == "" {
+		return nil, fmt.Errorf("%w: journeyOrderId, accountId and postSalesCaseId are required", ErrValidation)
+	}
+	if s.journeyCoverageResolver == nil {
+		return nil, fmt.Errorf("%w: journey coverage resolver is required", ErrDomainRule)
+	}
+	coverage, err := s.journeyCoverageResolver.ResolveJourneyCoverage(ctx, cmd.JourneyOrderID, cmd.CaseID)
+	if err != nil {
+		return nil, err
+	}
+	if coverage.OrderID != cmd.JourneyOrderID || coverage.AccountID != cmd.AccountID || coverage.Status != "CONFIRMED" || len(coverage.ReplacedSegmentRefs) == 0 || len(coverage.SegmentRefs) == 0 || coverage.StartsAt.IsZero() || !coverage.EndsAt.After(coverage.StartsAt) {
+		return nil, fmt.Errorf("%w: changed journey coverage does not match the applied order", ErrDomainRule)
+	}
+	if len(cmd.SegmentRefs) > 0 && !containsAll(cmd.SegmentRefs, coverage.SegmentRefs) {
+		return nil, fmt.Errorf("%w: adjusted event omits a replacement segment", ErrDomainRule)
+	}
+	updated := []domain.Policy{}
+	err = s.within(ctx, func(tx context.Context) error {
+		policies, err := s.issuedPoliciesByJourneyOrder(tx, cmd.JourneyOrderID)
+		if err != nil {
+			return err
+		}
+		for _, policy := range policies {
+			if policy.AccountID != cmd.AccountID || !containsAny(policy.SegmentRefs, coverage.ReplacedSegmentRefs) || !contains(coverage.TravelerRefs, policy.TravelerRef) {
+				continue
+			}
+			beforeVersion := policy.AggregateVersion
+			if err := policy.AdjustJourney(coverage.SegmentRefs, coverage.StartsAt, coverage.EndsAt); err != nil {
+				return fmt.Errorf("%w: %v", ErrDomainRule, err)
+			}
+			if policy.AggregateVersion == beforeVersion {
+				updated = append(updated, policy)
+				continue
+			}
+			if s.repository != nil {
+				if err := s.repository.SavePolicy(tx, policy); err != nil {
+					return mapRepoErr(err)
+				}
+			}
+			event, err := s.newEnvelope(tx, "InsurancePolicyCoverageAdjusted", cmd.CorrelationID, cmd.CausationID, map[string]any{
+				"policyId": policy.ID, "journeyOrderId": policy.JourneyOrderID, "postSalesCaseId": cmd.CaseID,
+				"segmentRefs": policy.SegmentRefs, "coverageStartAt": policy.CoverageStartAt, "coverageEndAt": policy.CoverageEndAt,
+				"status": policy.Status,
+			})
+			if err != nil {
+				return err
+			}
+			if err := s.publisher.Publish(tx, event); err != nil {
+				return fmt.Errorf("%w: %v", ErrPublish, err)
+			}
+			updated = append(updated, policy)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if s.repository == nil {
+		s.mu.Lock()
+		for _, policy := range updated {
+			s.policies[policy.ID] = policy
+		}
+		s.mu.Unlock()
+	}
+	return updated, nil
+}
+
 func (s *InsuranceService) savePolicyClaimAndPublish(ctx context.Context, policy domain.Policy, claim domain.Claim, advice domain.PayoutAdvice, envelopes []kitmsg.EventEnvelope) error {
 	if err := s.within(ctx, func(tx context.Context) error {
 		if s.repository != nil {
@@ -709,6 +788,48 @@ func (s *InsuranceService) findPayoutAdviceForClaim(ctx context.Context, claimID
 		return domain.PayoutAdvice{}, false, nil
 	}
 	return domain.PayoutAdvice{}, false, err
+}
+
+func (s *InsuranceService) issuedPoliciesByJourneyOrder(ctx context.Context, journeyOrderID string) ([]domain.Policy, error) {
+	if s.repository != nil {
+		return s.repository.FindIssuedPoliciesByJourneyOrder(ctx, journeyOrderID)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var policies []domain.Policy
+	for _, policy := range s.policies {
+		if policy.JourneyOrderID == journeyOrderID && policy.Status == domain.PolicyIssued {
+			policies = append(policies, policy)
+		}
+	}
+	return policies, nil
+}
+
+func contains(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAny(values, candidates []string) bool {
+	for _, candidate := range candidates {
+		if contains(values, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAll(values, candidates []string) bool {
+	for _, candidate := range candidates {
+		if !contains(values, candidate) {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *InsuranceService) findPoliciesForDelay(ctx context.Context, segmentRef string, occurredAt time.Time) ([]domain.Policy, error) {
