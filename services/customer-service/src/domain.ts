@@ -18,6 +18,8 @@
 
 import { newEventId, uuidV7 } from "@trainticket/ts-kit";
 
+import { deskRunsQueue } from "./handoff-queues.js";
+
 // ─── Error ────────────────────────────────────────────────────────────────────
 
 export class DomainError extends Error {
@@ -838,6 +840,15 @@ export class SupportCase {
       throw new DomainError(
         "CASE_NOT_ASSIGNABLE",
         `SupportCase ${this.id} in ${this.status} cannot be assigned`,
+      );
+    }
+    // The release owns which lanes the desk reads. A handoff to a lane nobody reads would leave
+    // the case open with no owner, so it is refused where it is asked for rather than recorded
+    // against a queue that will never pick it up.
+    if (!deskRunsQueue(command.ownerQueue)) {
+      throw new DomainError(
+        "CASE_NOT_DESK_QUEUE",
+        `SupportCase ${this.id} cannot be handed to ${command.ownerQueue}: the desk does not run that queue`,
       );
     }
 
