@@ -1,9 +1,6 @@
 # Wallet / Promotion HTTP API
 
-Last updated: 2026-09-24.
-
-Runtime baseline: Helm revision 279.
-Remaining work is tracked in [TODO](../../TODO.md).
+Last updated: 2026-09-25.
 
 `POST_SALES_COMP` issuance requires one benefit per case.
 If a benefit exists without its persisted issuance request, a new request returns HTTP 409 `CONFLICT` and preserves the existing balance.
@@ -105,6 +102,19 @@ A `WalletAccount` is the per-account ledger view for benefit balances.
 | `scopeType` | enum | yes | `ANY_TRIP`, `ORDER`, `POST_SALES_CASE`, `SERVICE_SEGMENT`, or `PRODUCT_CATEGORY`. |
 | `referenceIds` | array[string] | no | Optional IDs constraining the scope. |
 | `currency` | string | yes | ISO-4217 currency for monetary benefits. |
+
+`referenceIds` is empty for `ANY_TRIP` and required for every narrower scope.
+It contains order IDs for `ORDER`, Post Sales case IDs for `POST_SALES_CASE`,
+segment IDs for `SERVICE_SEGMENT`, and fare `productCode` values for
+`PRODUCT_CATEGORY`.
+
+Every reserve and redeem request is checked against current authoritative
+business data. Wallet / Promotion reads the Journey Order named by
+`useReference.orderId` and verifies its account, currency and segment set. A
+`POST_SALES_CASE` reference is resolved through Post Sales and must point back
+to that same order and account. A `PRODUCT_CATEGORY` scope is resolved through
+the order's accepted Offer and Fare Quote. Missing, unavailable or contradictory
+facts fail closed; request fields alone are not accepted as proof of scope.
 
 `RedemptionRule`:
 
@@ -251,7 +261,15 @@ The endpoint requires an account filter.
 | `amount` | Money | yes | Amount to freeze. Must be positive, same currency as the benefit, and not exceed available amount. |
 | `reservationRef` | string | yes | External reservation reference, for example an order or post-sales workflow reference. |
 | `reservationExpiresAt` | RFC3339 UTC | yes | Reservation expiry timestamp. |
+| `useReference` | object | yes | Authoritative order/business reference used for scope validation. See below. |
 | `businessReason` | object | yes | Business reason for freezing value. |
+
+`useReference` contains required `orderId`, optional `postSalesCaseId`, and
+optional `segmentRefs`. `segmentRefs` must belong to the order. The business
+reason must identify the same order, Post Sales case, or one of the same
+segments. For compatibility, an older request without `useReference` is
+accepted only when `businessReason.referenceType=ORDER` and its `referenceId`
+exactly equals `reservationRef`; that order is still fetched and verified.
 
 **Response (200):** `PromotionInstrument` resource with status `RESERVED`.
 
@@ -274,7 +292,13 @@ The endpoint requires an account filter.
 | `amount` | Money | yes | Amount to redeem. Must be positive, same currency as the benefit, and satisfy the redemption rule. |
 | `redemptionRef` | string | yes | Business reference for this redemption, for example `ord-<uuid>` or a post-sales workflow reference. |
 | `reservationRef` | string | no | Reservation being consumed when redemption follows `ReserveBenefit`. |
+| `useReference` | object | yes | Authoritative order/business reference used for scope validation. |
 | `businessReason` | object | yes | Business reason. The same benefit and the same reason cannot be redeemed twice. |
+
+The same `useReference` checks as reservation apply. For compatibility, an
+older request without it is accepted only when an `ORDER` business reason
+exactly matches `redemptionRef`; the referenced order is still fetched and
+verified.
 
 **Response (200):**
 
