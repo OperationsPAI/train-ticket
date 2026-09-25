@@ -78,8 +78,9 @@ def test_provider_segment_cancellation_opens_case_with_provider_source() -> None
     assert next(iter(store.cases.values())).affectedScope["disruptionType"] == "CANCELLATION"
 
 
-def test_unresolved_segment_signal_returns_transient_for_redis_retry() -> None:
-    service = DisruptionRecoveryService(InMemoryStore())
+def test_segment_signal_without_affected_orders_is_an_audited_noop() -> None:
+    store = InMemoryStore()
+    service = DisruptionRecoveryService(store)
     delayed = envelope(
         "evt-0194f2e0-7b3e-7610-8000-000000000911",
         "SegmentDelayed",
@@ -89,4 +90,27 @@ def test_unresolved_segment_signal_returns_transient_for_redis_retry() -> None:
 
     result = service.handle_inbound_event(delayed, "events:fulfillment")
 
+    assert result.status is HandlerStatus.SUCCESS
+    assert delayed.eventId in store.processed_events
+    assert not store.incidents
+    assert not store.cases
+    assert not store.take_outbox()
+
+
+def test_segment_signal_resolver_failure_remains_retryable() -> None:
+    class FailingStore(InMemoryStore):
+        def find_orders_by_segment(self, segment_ref: str) -> tuple[str, ...]:
+            raise RuntimeError("database unavailable")
+
+    service = DisruptionRecoveryService(FailingStore())
+    delayed = envelope(
+        "evt-0194f2e0-7b3e-7610-8000-000000000912",
+        "SegmentDelayed",
+        "fulfillment",
+        {"segmentRef": "seg-lookup", "scheduledServiceRef": "ssch-2", "serviceDate": "2026-08-02", "observedAt": "2026-08-02T09:00:00Z"},
+    )
+
+    result = service.handle_inbound_event(delayed, "events:fulfillment")
+
     assert result.status is HandlerStatus.TRANSIENT_ERROR
+    assert result.message == "database unavailable"
