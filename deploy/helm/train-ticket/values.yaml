@@ -1096,6 +1096,7 @@ services:
       limits: { cpu: '2', memory: 3Gi }
   traveler-profile:
     db: traveler_profile
+    pgInstance: user
     strategy:
       type: RollingUpdate
       rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
