@@ -417,6 +417,39 @@ describe("customer-service messaging ports", () => {
     }
   });
 
+  it("honors CONSUMER_BATCH_CONCURRENCY for messages from one stream", async () => {
+    const previous = process.env.CONSUMER_BATCH_CONCURRENCY;
+    process.env.CONSUMER_BATCH_CONCURRENCY = "2";
+    let releaseHandlers!: () => void;
+    const handlerGate = new Promise<void>((resolve) => { releaseHandlers = resolve; });
+    const started: string[] = [];
+    const redis = new PollBatchRedis([
+      recoveryEnvelope("events:journey-order", "evt-batch-1"),
+      recoveryEnvelope("events:journey-order", "evt-batch-2"),
+    ]);
+    const subscriber = new RedisEventSubscriber(redis as never);
+
+    try {
+      await subscriber.subscribe(
+        ["events:journey-order"],
+        "customer-service",
+        "customer-service-test",
+        async (envelope) => {
+          started.push(envelope.eventId);
+          await handlerGate;
+        },
+      );
+
+      await waitFor(() => started.length === 2, 250);
+      assert.deepEqual(started.sort(), ["evt-batch-1", "evt-batch-2"]);
+    } finally {
+      releaseHandlers();
+      await subscriber.stop();
+      if (previous === undefined) delete process.env.CONSUMER_BATCH_CONCURRENCY;
+      else process.env.CONSUMER_BATCH_CONCURRENCY = previous;
+    }
+  });
+
   it("in-memory subscriber applies consumer-side deduplication", async () => {
     const subscriber = new InMemoryEventSubscriber();
     const envelope: EventEnvelope = {
@@ -537,10 +570,10 @@ class RecoveryRedis {
   }
 }
 
-function recoveryEnvelope(stream: string): EventEnvelope {
+function recoveryEnvelope(stream: string, eventId = `evt-${stream.replace(/^events:/, "")}`): EventEnvelope {
   const producer = stream.replace(/^events:/, "");
   return {
-    eventId: `evt-${producer}`,
+    eventId,
     eventType: "RecoveryTestEvent",
     occurredAt: "2026-09-25T12:00:00.000Z",
     correlationId: `corr-${producer}`,
@@ -549,4 +582,42 @@ function recoveryEnvelope(stream: string): EventEnvelope {
     schemaVersion: 1,
     payload: {},
   };
+}
+
+class PollBatchRedis {
+  private delivered = false;
+  private disconnected = false;
+  private readonly blockedReads: Array<() => void> = [];
+
+  constructor(private readonly envelopes: readonly EventEnvelope[]) {}
+
+  disconnect(): void {
+    this.disconnected = true;
+    for (const resolve of this.blockedReads.splice(0)) resolve();
+  }
+
+  async xgroup(): Promise<void> {}
+
+  async xreadgroup(...args: unknown[]): Promise<unknown> {
+    if (!this.delivered) {
+      this.delivered = true;
+      const streamsIndex = args.indexOf("STREAMS");
+      const stream = String(args[streamsIndex + 1]);
+      return [[stream, this.envelopes.map((envelope, index) => [
+        `${index + 1}-0`,
+        ["envelope", JSON.stringify(envelope)],
+      ])]];
+    }
+    if (this.disconnected) return null;
+    await new Promise<void>((resolve) => this.blockedReads.push(resolve));
+    return null;
+  }
+
+  async xautoclaim(): Promise<unknown[]> {
+    return ["0-0", []];
+  }
+
+  async xack(): Promise<number> {
+    return 1;
+  }
 }
