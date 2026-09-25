@@ -901,6 +901,7 @@ services:
       limits: { cpu: '6', memory: 4Gi }
   journey-order:
     db: journey_order
+    image: mirrors.tencent.com/microservice/journey-order:recovery-6b90ce5d@sha256:81bd46402dcbc5bdccd5246464976355d19baaf98aa217e9cf1c0e6c7c6a88e3
     # Orders and their account/identity projections share the hot transactional
     # path with Booking Orchestration. Keeping both on the hot shard removes
     # their high-volume snapshots and connection pools from postgres-core.
