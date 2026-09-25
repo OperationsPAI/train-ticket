@@ -428,8 +428,16 @@ export class OutboxAppender {
 }
 /** Rows per retention DELETE. */
 const CLEANUP_BATCH_SIZE = 1_000;
-/** Batches per table per sweep. Bounds one pass; the next pass resumes. */
-const CLEANUP_MAX_BATCHES = 1;
+/**
+ * Batches per table per sweep. Bounds one pass; the next pass resumes.
+ *
+ * Five rather than one: one batch of 1000 rows every twenty polls is a ceiling
+ * of 200 deleted rows per second, and Notification publishes 212 rows per
+ * second into its outbox. The table therefore grew by about twelve rows per
+ * second for as long as the deployed version ran, and reached 36 million rows
+ * and 34 GB while every sweep reported that it had hit its batch budget.
+ */
+const CLEANUP_MAX_BATCHES = 5;
 export class OutboxRelay {
     pool;
     redis;
@@ -527,7 +535,12 @@ export class OutboxRelay {
         }
         const seqs = result.rows.map((row) => row.seq.toString());
         const placeholders = seqs.map((_, index) => `$${index + 1}`).join(", ");
-        await this.pool.query(`UPDATE outbox SET published_at = now() WHERE seq IN (${placeholders})`, seqs);
+        await this.pool.query(`UPDATE outbox SET published_at = now()
+      WHERE seq IN (
+        SELECT seq FROM outbox
+        WHERE seq IN (${placeholders}) AND published_at IS NULL
+        ORDER BY seq FOR UPDATE SKIP LOCKED
+      ) AND published_at IS NULL`, seqs);
         return result.rows.length;
     }
     async run() {
@@ -634,6 +647,43 @@ export class ProcessedEventsGuard {
             return undefined;
         }
         return handler();
+    }
+}
+/** PostgreSQL evidence sink used before a Redis DLQ write and XACK. */
+export class PostgresDeadLetterEvidenceStore {
+    db;
+    constructor(db) {
+        this.db = db;
+    }
+    async recordDeadLetter(evidence) {
+        const evidenceKey = evidence.eventId ?? `redis:${evidence.sourceMessageId}`;
+        const result = await this.db.query(`INSERT INTO event_dead_letters (
+         consumer_group, source_stream, evidence_key, source_message_id,
+         consumer_name, event_id, event_type, producer, original_envelope,
+         first_failure_kind, first_failure_reason, failure_kind, failure_reason,
+         attempts, first_dead_lettered_at,
+         last_dead_lettered_at, recovery_status
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$10,$11,$12,$13,$13,'OPEN')
+       ON CONFLICT (consumer_group, source_stream, evidence_key) DO UPDATE SET
+         source_message_id=EXCLUDED.source_message_id,
+         consumer_name=EXCLUDED.consumer_name,
+         failure_kind=EXCLUDED.failure_kind,
+         failure_reason=EXCLUDED.failure_reason,
+         attempts=greatest(event_dead_letters.attempts,EXCLUDED.attempts),
+         last_dead_lettered_at=EXCLUDED.last_dead_lettered_at
+       WHERE event_dead_letters.original_envelope IS NOT DISTINCT FROM EXCLUDED.original_envelope
+         AND event_dead_letters.event_id IS NOT DISTINCT FROM EXCLUDED.event_id
+         AND event_dead_letters.event_type IS NOT DISTINCT FROM EXCLUDED.event_type
+         AND event_dead_letters.producer IS NOT DISTINCT FROM EXCLUDED.producer
+       RETURNING evidence_key`, [
+            evidence.consumerGroup, evidence.sourceStream, evidenceKey, evidence.sourceMessageId,
+            evidence.consumerName, evidence.eventId ?? null, evidence.eventType ?? null,
+            evidence.producer ?? null, evidence.originalEnvelope ?? null,
+            evidence.failureKind, evidence.failureReason, evidence.attempts, evidence.deadLetteredAt,
+        ]);
+        if ((result.rowCount ?? 0) !== 1) {
+            throw new Error(`dead-letter evidence identity changed for ${evidence.consumerGroup}/${evidence.sourceStream}/${evidenceKey}`);
+        }
     }
 }
 export class PostgresIdempotencyStore {
