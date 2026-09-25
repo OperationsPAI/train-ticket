@@ -11,10 +11,12 @@ from .adapters.messaging.subscriber import RedisEventSubscriber
 from train_ticket_platform.observability import init_opentelemetry
 from train_ticket_platform.storage import DatabaseConfig, DatabasePool, OutboxRelay, PostgresIdempotencyStore, ReadinessGate, run_migrations
 
-from .adapters.messaging import TRAVELER_PROFILE_STREAM
-
-JOURNEY_ORDER_STREAM = "events:journey-order"
-RISK_COMPLIANCE_STREAM = "events:risk-compliance"
+from .adapters.messaging import (
+    JOURNEY_ORDER_STREAM,
+    RISK_COMPLIANCE_STREAM,
+    TRAVELER_PROFILE_STREAM,
+    handle_upstream_event,
+)
 from .adapters.storage.postgres import PostgresIdentityVerificationStore
 from .application.service import DeterministicSimGateway, IdentityVerificationService, InMemoryStore
 from .runtime import health, profile
@@ -74,7 +76,7 @@ def _postgres_store_from_env(app: FastAPI) -> tuple[Any, IdempotencyStore | None
     store = PostgresIdentityVerificationStore(pool); relay = OutboxRelay(pool); relay.start()
     subscriber = RedisEventSubscriber(); holder: dict[str, Any] = {}
     def handle(envelope: Any) -> None:
-        holder["service"].handle_upstream_event(envelope)
+        handle_upstream_event(holder["service"], envelope)
     thread = subscriber.start_in_background((TRAVELER_PROFILE_STREAM, JOURNEY_ORDER_STREAM, RISK_COMPLIANCE_STREAM), "identity-verification", handle)
     app.state.outbox_relay = relay; app.state.event_subscriber = subscriber; app.state.event_subscriber_thread = thread; app.state._identity_service_holder = holder
     return store, PostgresIdempotencyStore(pool)
