@@ -32,6 +32,7 @@ import {
 export const JOURNEY_ORDER_STREAM = "events:journey-order";
 export const PAYMENT_STREAM = "events:payment";
 export const POST_SALES_STREAM = "events:post-sales";
+const SOURCE_STREAMS = { payment: PAYMENT_STREAM, journeyOrder: JOURNEY_ORDER_STREAM } as const;
 
 export type BootstrapOptions = Readonly<{
   host?: string;
@@ -53,7 +54,7 @@ export async function bootstrap(options: BootstrapOptions = {}) {
   const storage = process.env.DATABASE_URL ? await startLoyaltyStorage() : undefined;
   const publisher = storage ? storage.publisher : new RedisStreamEventPublisher();
   const repository = storage?.repository ?? new InMemoryMemberRepository();
-  const application = new LoyaltyMembershipApplicationService(repository, publisher, resolveOrderAccount, resolveCapturedPaymentFacts);
+  const application = new LoyaltyMembershipApplicationService(repository, publisher, resolveOrderAccount, resolveCapturedPaymentFacts, SOURCE_STREAMS);
   const subscriber = startSubscriber(application, undefined, storage?.runCommand);
 
   const app = createApp({
@@ -201,6 +202,8 @@ export async function handlePaymentCaptured(application: LoyaltyMembershipApplic
     ticketPrice: { currency, minorUnits },
     sourceEventId: envelope.eventId,
     confirmedAt: capturedAt,
+    sourceStream: PAYMENT_STREAM,
+    sourceEventType: "PAYMENT_CAPTURED",
     correlationId: envelope.correlationId,
     causationId: envelope.eventId,
     seatClass: optionalSeatClass(payload.seatClass),
@@ -230,6 +233,8 @@ export async function handleJourneyOrderCancelled(application: LoyaltyMembership
     accountId: stringField(payload.accountId, "accountId"),
     sourceEventId: envelope.eventId,
     cancelledAt: new Date(typeof payload.cancelledAt === "string" ? payload.cancelledAt : envelope.occurredAt),
+    sourceStream: JOURNEY_ORDER_STREAM,
+    sourceEventType: "JOURNEY_ORDER_CANCELLED",
     correlationId: envelope.correlationId,
     causationId: envelope.eventId,
   });
@@ -291,7 +296,7 @@ export async function startLoyaltyStorage(pool: Pool = createPostgresPool()): Pr
     schema: () => migrations.detail(),
     runCommand: async (operation) => withTransaction(pool, async (client) => loyaltyTransaction.run(client, () =>
       operation(new LoyaltyMembershipApplicationService(new PostgresMemberRepository(client),
-        new TransactionalOutboxPublisher(new OutboxAppender(client)), resolveOrderAccount, resolveCapturedPaymentFacts)))),
+        new TransactionalOutboxPublisher(new OutboxAppender(client)), resolveOrderAccount, resolveCapturedPaymentFacts, SOURCE_STREAMS)))),
     stop: async () => {
       // Stop the migration retry first: otherwise a shutdown during the retry
       // window leaves a backoff timer running and can issue queries against a

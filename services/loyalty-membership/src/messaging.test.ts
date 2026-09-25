@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { InMemoryEventPublisher, InMemoryMemberRepository, LoyaltyMembershipApplicationService } from "./application.js";
-import { handleJourneyOrderCancelled, handleJourneyOrderConfirmed, handlePaymentCaptured, handlePostSalesApplied } from "./bootstrap.js";
+import { JOURNEY_ORDER_STREAM, PAYMENT_STREAM, handleJourneyOrderCancelled, handleJourneyOrderConfirmed, handlePaymentCaptured, handlePostSalesApplied } from "./bootstrap.js";
 import { createEventEnvelope } from "@trainticket/ts-kit";
 
 describe("journey-order event consumption", () => {
@@ -43,6 +43,8 @@ describe("journey-order event consumption", () => {
     assert.ok(restored);
     assert.equal(restored.redeemablePoints, 1_000);
     assert.equal(publisher.findByEventType("PointsRestored").length, 1);
+    const restoredFact = publisher.findByEventType("PointsRestored")[0]?.payload.sourceFactRef as { stream: string };
+    assert.equal(restoredFact.stream, JOURNEY_ORDER_STREAM);
   });
 });
 
@@ -73,7 +75,8 @@ describe("payment event consumption", () => {
     assert.ok(member);
     assert.equal(member.redeemablePoints, 1000);
     const earned = publisher.findByEventType("PointsEarned")[0];
-    const sourceFactRef = earned.payload.sourceFactRef as { eventType: string; aggregateId: string };
+    const sourceFactRef = earned.payload.sourceFactRef as { stream: string; eventType: string; aggregateId: string };
+    assert.equal(sourceFactRef.stream, PAYMENT_STREAM);
     assert.equal(sourceFactRef.eventType, "PAYMENT_CAPTURED");
     assert.equal(sourceFactRef.aggregateId, "ord-pay-msg");
   });

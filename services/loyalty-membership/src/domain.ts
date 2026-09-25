@@ -175,8 +175,8 @@ export type AccruePointsCommand = Readonly<{
   isHoliday?: boolean;
   memberBirthDate?: Date;
   tripCount?: number;
-  sourceStream?: string;
-  sourceEventType?: string;
+  sourceStream: string;
+  sourceEventType: string;
   correlationId?: string;
 }>;
 
@@ -349,8 +349,8 @@ export class Member {
     const points = PointsCalculator.calculate({ fare: command.ticketPrice, seatClass: command.seatClass ?? "SECOND_CLASS", travelDate: command.travelDate, memberTier: this.snapshot.tier, routeCode: command.routeCode, routeName: command.routeName, isHoliday: command.isHoliday, memberBirthDate: command.memberBirthDate });
     if (points === 0) throw new DomainError("NO_POINTS_TO_ACCRUE", "Ticket price is too small to accrue points");
     const ledger = PointsLedger.fromSnapshots(this.snapshot.ledger, this.snapshot.lots);
-    const sourceFactRef = freeze({ stream: command.sourceStream ?? "events:payment", eventType: command.sourceEventType ?? "PAYMENT_CAPTURED", eventId: required(command.sourceEventId, "sourceEventId"), aggregateId: required(command.orderId, "orderId"), occurredAt: command.confirmedAt });
-    const businessReason = freeze({ reasonType: "ORDER_ACCRUAL" as const, reasonCode: command.sourceEventType ?? "PAYMENT_CAPTURED", referenceType: "JOURNEY_ORDER", referenceId: command.orderId });
+    const sourceFactRef = freeze({ stream: required(command.sourceStream, "sourceStream"), eventType: required(command.sourceEventType, "sourceEventType"), eventId: required(command.sourceEventId, "sourceEventId"), aggregateId: required(command.orderId, "orderId"), occurredAt: command.confirmedAt });
+    const businessReason = freeze({ reasonType: "ORDER_ACCRUAL" as const, reasonCode: command.sourceEventType, referenceType: "JOURNEY_ORDER", referenceId: command.orderId });
     const { ledger: accruedLedger, lot } = ledger.accrue({ memberId: this.id, points, tierEligiblePoints: points, sourceFactRef, businessReason, idempotencyKey: `${this.id}:${command.sourceEventId}`, occurredAt: command.confirmedAt, expiresAt: addUtcMonths(command.confirmedAt, this.snapshot.tier === "DIAMOND" ? 36 : 24) });
     const year = command.confirmedAt.getUTCFullYear();
     const membershipYears = upsertMembershipYear(this.membershipYears(), year, (membershipYear) => freeze({ ...membershipYear, qualifyingPoints: membershipYear.qualifyingPoints + points, tripCount: membershipYear.tripCount + (command.tripCount ?? 0) }));
@@ -408,7 +408,7 @@ export class Member {
     return new Member(freeze({ ...this.snapshot, tierPoints: currentYear.qualifyingPoints, updatedAt: now, membershipYears }));
   }
 
-  restoreRedeemedTicketPoints(input: { orderId: string; sourceEventId: string; cancelledAt: Date; correlationId?: string; sourceStream?: string; sourceEventType?: string }, now = new Date()): { member: Member; events: readonly PointsRestored[] } {
+  restoreRedeemedTicketPoints(input: { orderId: string; sourceEventId: string; cancelledAt: Date; correlationId?: string; sourceStream: string; sourceEventType: string }, now = new Date()): { member: Member; events: readonly PointsRestored[] } {
     this.assertActive();
     const orderId = required(input.orderId, "orderId");
     const sourceEventId = required(input.sourceEventId, "sourceEventId");
@@ -416,7 +416,7 @@ export class Member {
     if (ledger.hasSourceFact(sourceEventId)) return { member: this, events: [] };
     const points = this.redeemedTicketPointsForOrder(orderId);
     if (points === 0) return { member: this, events: [] };
-    const sourceFactRef = freeze({ stream: input.sourceStream ?? "events:journey-order", eventType: input.sourceEventType ?? "JOURNEY_ORDER_CANCELLED", eventId: sourceEventId, aggregateId: orderId, occurredAt: input.cancelledAt });
+    const sourceFactRef = freeze({ stream: required(input.sourceStream, "sourceStream"), eventType: required(input.sourceEventType, "sourceEventType"), eventId: sourceEventId, aggregateId: orderId, occurredAt: input.cancelledAt });
     const businessReason = freeze({ reasonType: "REVERSAL" as const, reasonCode: "ORDER_CANCELLED_POINTS_RESTORED", referenceType: "JOURNEY_ORDER", referenceId: orderId });
     const { ledger: restoredLedger } = ledger.restore({ memberId: this.id, points, sourceFactRef, businessReason, idempotencyKey: `${this.id}:restore:${orderId}:${sourceEventId}`, occurredAt: input.cancelledAt, expiresAt: addUtcMonths(input.cancelledAt, this.snapshot.tier === "DIAMOND" ? 36 : 24) });
     const ledgerSnapshot = restoredLedger.toSnapshot();

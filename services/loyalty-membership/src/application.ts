@@ -54,6 +54,16 @@ export type MemberRepository = Readonly<{
   save(member: Member): Promise<void>;
 }>;
 
+export type LoyaltySourceStreams = Readonly<{
+  payment: string;
+  journeyOrder: string;
+}>;
+
+const DEFAULT_SOURCE_STREAMS: LoyaltySourceStreams = {
+  payment: "payment",
+  journeyOrder: "journey-order",
+};
+
 export class InMemoryMemberRepository implements MemberRepository {
   private readonly byMemberId = new Map<MemberId, Member>();
   private readonly accountIndex = new Map<AccountId, MemberId>();
@@ -88,6 +98,7 @@ export class LoyaltyMembershipApplicationService {
     private readonly publisher: EventPublisher,
     private readonly resolveOrderAccount?: (orderId: string) => Promise<string>,
     private readonly resolvePaymentFacts?: (paymentIntentId: string) => Promise<CapturedPaymentFacts>,
+    private readonly sourceStreams: LoyaltySourceStreams = DEFAULT_SOURCE_STREAMS,
   ) {}
 
   async reconcilePayment(paymentIntentId: string): Promise<{ paymentIntentId: string; sourceEventIds: string[]; member: MemberDetailsDto }> {
@@ -188,13 +199,20 @@ export class LoyaltyMembershipApplicationService {
     routeName?: string;
     isHoliday?: boolean;
     memberBirthDate?: Date;
+    sourceStream?: string;
+    sourceEventType?: string;
   }): Promise<MemberDetailsDto> {
     const accountId = command.accountId ?? await this.repository.findAccountIdByOrderId(command.orderId)
       ?? await this.resolveOrderAccount?.(command.orderId);
     if (!accountId) {
       throw new ApplicationError("OUT_OF_ORDER_EVENT", `No account reference found for order ${command.orderId}`, 409);
     }
-    return this.accrueFromJourneyOrderConfirmed({ ...command, accountId, sourceStream: "events:payment", sourceEventType: "PAYMENT_CAPTURED" });
+    return this.accrueFromJourneyOrderConfirmed({
+      ...command,
+      accountId,
+      sourceStream: command.sourceStream ?? this.sourceStreams.payment,
+      sourceEventType: command.sourceEventType ?? "PAYMENT_CAPTURED",
+    });
   }
 
   async accrueFromJourneyOrderConfirmed(command: {
@@ -220,7 +238,11 @@ export class LoyaltyMembershipApplicationService {
     if (member.toSnapshot().ledger.some((entry) => entry.sourceFactRef.eventId === command.sourceEventId)) {
       return memberDetails(member.toSnapshot());
     }
-    const { member: updated, events } = member.accrueFromConfirmedOrder(command);
+    const { member: updated, events } = member.accrueFromConfirmedOrder({
+      ...command,
+      sourceStream: command.sourceStream ?? this.sourceStreams.payment,
+      sourceEventType: command.sourceEventType ?? "PAYMENT_CAPTURED",
+    });
     await this.repository.save(updated);
     for (const event of events) {
       await this.publish(event, command.correlationId, command.causationId);
@@ -277,10 +299,17 @@ export class LoyaltyMembershipApplicationService {
     return memberDetails(updated.toSnapshot());
   }
 
-  async restoreRedeemedPointsForCancelledOrder(command: { orderId: string; accountId: string; sourceEventId: string; cancelledAt: Date; correlationId: string; causationId?: string }): Promise<MemberDetailsDto> {
+  async restoreRedeemedPointsForCancelledOrder(command: { orderId: string; accountId: string; sourceEventId: string; cancelledAt: Date; correlationId: string; causationId?: string; sourceStream?: string; sourceEventType?: string }): Promise<MemberDetailsDto> {
     await this.repository.saveOrderAccountRef(command.orderId, command.accountId);
     const member = (await this.repository.findByAccountId(command.accountId)) ?? Member.enroll({ accountId: command.accountId });
-    const { member: updated, events } = member.restoreRedeemedTicketPoints({ orderId: command.orderId, sourceEventId: command.sourceEventId, cancelledAt: command.cancelledAt, correlationId: command.correlationId });
+    const { member: updated, events } = member.restoreRedeemedTicketPoints({
+      orderId: command.orderId,
+      sourceEventId: command.sourceEventId,
+      cancelledAt: command.cancelledAt,
+      correlationId: command.correlationId,
+      sourceStream: command.sourceStream ?? this.sourceStreams.journeyOrder,
+      sourceEventType: command.sourceEventType ?? "JOURNEY_ORDER_CANCELLED",
+    });
     await this.repository.save(updated);
     for (const event of events) {
       await this.publish(event, command.correlationId, command.causationId);
