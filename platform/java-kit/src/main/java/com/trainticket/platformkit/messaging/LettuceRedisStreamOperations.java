@@ -157,13 +157,14 @@ public final class LettuceRedisStreamOperations implements RedisStreamOperations
     }
 
     @Override
-    public List<StreamEntry> autoClaim(String stream, String group, String consumerName) {
-        return connection.sync()
-            .xautoclaim(stream, XAutoClaimArgs.Builder.xautoclaim(Consumer.from(group, consumerName), Duration.ofMillis(AUTOCLAIM_MIN_IDLE_MS), "0-0").count(100))
-            .getMessages()
-            .stream()
-            .map(LettuceRedisStreamOperations::toEntry)
-            .toList();
+    public AutoClaimResult autoClaim(String stream, String group, String consumerName, String startId) {
+        var claimed = connection.sync()
+            .xautoclaim(stream, XAutoClaimArgs.Builder.xautoclaim(
+                Consumer.from(group, consumerName), Duration.ofMillis(AUTOCLAIM_MIN_IDLE_MS), startId).count(100));
+        return new AutoClaimResult(
+            claimed.getId(),
+            claimed.getMessages().stream().map(LettuceRedisStreamOperations::toEntry).toList()
+        );
     }
 
     @Override

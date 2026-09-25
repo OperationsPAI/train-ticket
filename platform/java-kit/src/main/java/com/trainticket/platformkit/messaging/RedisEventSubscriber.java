@@ -57,6 +57,7 @@ public class RedisEventSubscriber implements EventSubscriber {
      * above the poll cadence so the sweep's {@code XINFO CONSUMERS} per stream stays negligible.
      */
     private static final long PRUNE_INTERVAL_MS = 60 * 1_000L;
+    private static final String AUTOCLAIM_START_ID = "0-0";
     private static final int DEFAULT_CONSUMER_THREADS = 1;
     private static final String CONSUMER_THREADS_ENV = "CONSUMER_THREADS";
     private static final int MAX_REDELIVERY_ATTEMPTS = maxRedeliveryAttemptsFromEnvironment();
@@ -110,6 +111,13 @@ public class RedisEventSubscriber implements EventSubscriber {
      * time and cannot dead-letter it a second time.
      */
     private final Set<MessageKey> inFlight = ConcurrentHashMap.newKeySet();
+    /**
+     * Redis returns the start id for the next XAUTOCLAIM page. Keep that cursor per exact consumer
+     * identity so a large PEL is traversed instead of repeatedly reclaiming its first page. The
+     * mutable value is also the per-key lock: concurrent recovery calls for one consumer serialize,
+     * while different streams, groups, or consumers advance independently.
+     */
+    private final Map<RecoveryKey, RecoveryCursor> recoveryCursors = new ConcurrentHashMap<>();
     /**
      * Message ids already written to the DLQ by this process, so the DLQ write stays exactly-once
      * even if a stale pending entry for an already dead-lettered message is claimed again.
@@ -246,7 +254,7 @@ public class RedisEventSubscriber implements EventSubscriber {
     }
 
     public void recoverOnce(String stream, String group, String consumerName, EventHandler handler) {
-        for (RedisStreamOperations.StreamEntry message : streams.autoClaim(stream, group, consumerName)) {
+        for (RedisStreamOperations.StreamEntry message : claimNextRecoveryPage(stream, group, consumerName)) {
             if (!claimInFlight(stream, message.id())) {
                 continue;
             }
@@ -288,6 +296,7 @@ public class RedisEventSubscriber implements EventSubscriber {
                     }
                     if (missingGroup(exception)) {
                         createdGroups.remove(stream);
+                        recoveryCursors.remove(new RecoveryKey(stream, group, consumerName));
                     }
                     LOGGER.warn("service={} stream={} poll iteration failed; reconnecting in {}s", group, stream, backoffSeconds, exception);
                     sleepQuietly(backoffSeconds * 1_000L);
@@ -321,8 +330,26 @@ public class RedisEventSubscriber implements EventSubscriber {
     }
 
     private void recover(String stream, String group, String consumerName, EventHandler handler) {
-        for (RedisStreamOperations.StreamEntry message : streams.autoClaim(stream, group, consumerName)) {
+        for (RedisStreamOperations.StreamEntry message : claimNextRecoveryPage(stream, group, consumerName)) {
             submitHandle(stream, group, consumerName, message, handler);
+        }
+    }
+
+    private List<RedisStreamOperations.StreamEntry> claimNextRecoveryPage(
+        String stream,
+        String group,
+        String consumerName
+    ) {
+        RecoveryCursor cursor = recoveryCursors.computeIfAbsent(
+            new RecoveryKey(stream, group, consumerName), ignored -> new RecoveryCursor());
+        synchronized (cursor) {
+            RedisStreamOperations.AutoClaimResult result = streams.autoClaim(
+                stream, group, consumerName, cursor.nextStartId);
+            // Redis returns 0-0 after a complete PEL scan. Keeping it as the next start id means
+            // the following maintenance pass begins a new round and can revisit entries that are
+            // still stale, without starving entries beyond the first COUNT-sized page.
+            cursor.nextStartId = result.nextStartId();
+            return result.messages();
         }
     }
 
@@ -618,6 +645,12 @@ public class RedisEventSubscriber implements EventSubscriber {
     /** Identity of one Redis Stream entry: unique per stream and stable across redeliveries. */
     private record MessageKey(String stream, String messageId) {}
 
+    private record RecoveryKey(String stream, String group, String consumerName) {}
+
+    private static final class RecoveryCursor {
+        private String nextStartId = AUTOCLAIM_START_ID;
+    }
+
     /** Genuine handler failures observed for one message, and the most recent exception. */
     private record FailureRecord(int failures, RuntimeException lastException) {}
 
@@ -738,6 +771,7 @@ public class RedisEventSubscriber implements EventSubscriber {
         }
         // Tasks still queued when the pool shuts down never reach their finally block.
         inFlight.clear();
+        recoveryCursors.clear();
         synchronized (lastFailures) {
             lastFailures.clear();
         }
