@@ -62,6 +62,35 @@ pub struct ReservationSupply {
     pub scheduled_service_ref: String,
     pub service_date: String,
     pub class_ref: String,
+    #[serde(default)]
+    pub booking_purpose: String,
+    #[serde(default)]
+    pub offer_item_ref: String,
+    #[serde(default)]
+    pub standing_accepted: bool,
+    #[serde(default)]
+    pub source_type: String,
+    #[serde(default)]
+    pub source_ref: String,
+}
+
+impl ReservationSupply {
+    pub fn validate_source(&self) -> Result<(), AppError> {
+        let expected = if self.booking_purpose == "purchase" {
+            ("PURCHASE_ORDER", self.journey_order_id.as_str())
+        } else if let Some(case_id) = self.booking_purpose.strip_prefix("change:") {
+            require(!case_id.is_empty(), "change reservation has no case source")?;
+            ("CHANGE_CASE", case_id)
+        } else {
+            return Err(AppError::Unavailable(
+                "reservation has an unsupported purchase source".into(),
+            ));
+        };
+        require(
+            self.source_type == expected.0 && self.source_ref == expected.1,
+            "reservation purchase source is ambiguous",
+        )
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -560,6 +589,11 @@ impl SupplyClient {
                 scheduled_service_ref: text(&booking, "scheduledServiceRef")?.to_owned(),
                 service_date: date.to_owned(),
                 class_ref: text(&booking, "classRef")?.to_owned(),
+                booking_purpose: text(&booking, "bookingPurpose")?.to_owned(),
+                offer_item_ref: text(&booking, "offerItemRef")?.to_owned(),
+                standing_accepted: booking["standingAccepted"].as_bool().unwrap_or(false),
+                source_type: text(&booking, "sourceType")?.to_owned(),
+                source_ref: text(&booking, "sourceRef")?.to_owned(),
             });
         }
         let order = self
@@ -647,6 +681,11 @@ impl SupplyClient {
                     scheduled_service_ref: text(allocation, "scheduledServiceRef")?.to_owned(),
                     service_date: text(allocation, "serviceDate")?.to_owned(),
                     class_ref: class,
+                    booking_purpose: purpose.to_owned(),
+                    offer_item_ref: text(&booking, "offerItemRef")?.to_owned(),
+                    standing_accepted: booking["standingAccepted"].as_bool().unwrap_or(false),
+                    source_type: if purpose == "purchase" { "PURCHASE_ORDER".into() } else { "CHANGE_CASE".into() },
+                    source_ref: if let Some(case_id) = purpose.strip_prefix("change:") { case_id.into() } else { order_id.into() },
                 });
             }
             require(
@@ -755,6 +794,11 @@ impl SupplyClient {
                 .date_naive()
                 .to_string(),
             class_ref: text(&fare["breakdown"]["seatClassMultiplier"], "seatClass")?.to_owned(),
+            booking_purpose: purpose.to_owned(),
+            offer_item_ref: text(&booking, "offerItemRef")?.to_owned(),
+            standing_accepted: booking["standingAccepted"].as_bool().unwrap_or(false),
+            source_type: if purpose == "purchase" { "PURCHASE_ORDER".into() } else { "CHANGE_CASE".into() },
+            source_ref: if let Some(case_id) = purpose.strip_prefix("change:") { case_id.into() } else { order_id.into() },
         })
     }
 
@@ -1073,5 +1117,33 @@ fn require(condition: bool, message: &str) -> Result<(), AppError> {
         Ok(())
     } else {
         Err(AppError::Unavailable(message.into()))
+    }
+}
+
+#[cfg(test)]
+mod reservation_source_tests {
+    use super::*;
+
+    fn facts(purpose: &str, source_type: &str, source_ref: &str) -> ReservationSupply {
+        ReservationSupply {
+            segment_booking_id: "sb-1".into(), journey_order_id: "ord-1".into(),
+            traveler_ref: "tvl-1".into(), segment_ref: "seg-1".into(),
+            scheduled_service_ref: "ss-1".into(), service_date: "2026-09-25".into(),
+            class_ref: "SECOND_CLASS".into(), booking_purpose: purpose.into(),
+            offer_item_ref: "ofi-1".into(), standing_accepted: true,
+            source_type: source_type.into(), source_ref: source_ref.into(),
+        }
+    }
+
+    #[test]
+    fn purchase_and_change_sources_are_unambiguous() {
+        facts("purchase", "PURCHASE_ORDER", "ord-1").validate_source().unwrap();
+        facts("change:case-1", "CHANGE_CASE", "case-1").validate_source().unwrap();
+    }
+
+    #[test]
+    fn inconsistent_or_unknown_sources_are_rejected() {
+        assert!(facts("purchase", "CHANGE_CASE", "case-1").validate_source().is_err());
+        assert!(facts("legacy", "PURCHASE_ORDER", "ord-1").validate_source().is_err());
     }
 }
