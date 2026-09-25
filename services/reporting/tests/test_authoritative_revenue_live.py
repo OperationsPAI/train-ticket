@@ -155,7 +155,7 @@ def test_authoritative_views_install_on_empty_database(authoritative_database):
         assert conn.execute("SELECT count(*) FROM reporting_revenue_breakdowns").fetchone()[0] == 0
 
 
-def test_historical_backfill_is_batched_idempotent_and_switchable():
+def test_historical_backfill_is_streamed_idempotent_and_switchable():
     url = os.environ.get("REPORTING_TEST_DATABASE_URL")
     if not url:
         pytest.skip("REPORTING_TEST_DATABASE_URL must identify a local disposable PostgreSQL")
@@ -182,6 +182,8 @@ def test_historical_backfill_is_batched_idempotent_and_switchable():
                             ("evt-purchase", Decimal("10.01"), Jsonb({})),
                             ("evt-change", Decimal("3.00"), Jsonb({})),
                             ("evt-ancillary", Decimal("2.00"), Jsonb({})),
+                            ("evt-policy", Decimal("4.00"), Jsonb({})),
+                            ("evt-policy-only", Decimal("5.00"), Jsonb({})),
                         ],
                     )
             with psycopg.connect(source_url) as source:
@@ -197,6 +199,8 @@ def test_historical_backfill_is_batched_idempotent_and_switchable():
                             ("pi-purchase", Jsonb({"paymentIntentId": "pi-purchase", "businessRef": "ord-1", "purpose": "purchase", "domainEvents": [{"eventId": "evt-purchase", "eventType": "PaymentCaptured", "occurredAt": "2026-09-25T04:00:00Z", "payload": {}}]})),
                             ("pi-change", Jsonb({"paymentIntentId": "pi-change", "businessRef": "psc-case-1", "purpose": "change", "domainEvents": [{"eventId": "evt-change", "eventType": "PaymentCaptured", "occurredAt": "2026-09-25T04:00:00Z", "payload": {}}]})),
                             ("pi-ancillary", Jsonb({"paymentIntentId": "pi-ancillary", "businessRef": "aoi-1", "purpose": "ancillary", "domainEvents": [{"eventId": "evt-ancillary", "eventType": "PaymentCaptured", "occurredAt": "2026-09-25T04:00:00Z", "payload": {}}]})),
+                            ("pi-policy", Jsonb({"paymentIntentId": "pi-policy", "businessRef": "pol-1", "purpose": "ancillary", "domainEvents": [{"eventId": "evt-policy", "eventType": "PaymentCaptured", "occurredAt": "2026-09-25T04:00:00Z", "payload": {}}]})),
+                            ("pi-policy-only", Jsonb({"paymentIntentId": "pi-policy-only", "businessRef": "pol-2", "purpose": "ancillary", "domainEvents": [{"eventId": "evt-policy-only", "eventType": "PaymentCaptured", "occurredAt": "2026-09-25T04:00:00Z", "payload": {}}]})),
                         ],
                     )
                 source.execute(
@@ -214,6 +218,14 @@ def test_historical_backfill_is_batched_idempotent_and_switchable():
                     }),),
                 )
                 source.execute(
+                    "INSERT INTO journey_order_snapshots VALUES ('ord-2',%s,'2026-09-25T03:50:00Z')",
+                    (Jsonb({
+                        "orderId": "ord-2",
+                        "segments": [{"segmentRef": "seg-c", "departureTime": "2026-10-03T09:00:00Z"}],
+                        "travelers": [{"travelerId": "tvl-3", "travelerType": "ADULT"}],
+                    }),),
+                )
+                source.execute(
                     "INSERT INTO post_sales_case_snapshots VALUES ('case-1',%s,'2026-09-25T03:55:00Z')",
                     (Jsonb({"caseId": "case-1", "journeyOrderId": "ord-1", "scope": {"segmentRefs": ["seg-b"], "travelerRefs": ["tvl-2"]}}),),
                 )
@@ -222,12 +234,40 @@ def test_historical_backfill_is_batched_idempotent_and_switchable():
                     (Jsonb({"ancillaryOrderItemId": "aoi-1", "journeyOrderId": "ord-1", "segmentRef": "seg-a", "travelerRef": "tvl-1", "serviceType": "MEAL", "status": "CONFIRMED", "paymentIntentId": "pi-ancillary"}),),
                 )
                 source.execute(
+                    "INSERT INTO ancillary_order_items VALUES ('aoi-order-only',%s,'2026-09-25T03:56:15Z')",
+                    (Jsonb({"ancillaryOrderItemId": "aoi-order-only", "journeyOrderId": "ord-1", "segmentRef": "seg-b", "travelerRef": "tvl-2", "serviceType": "BAGGAGE", "status": "CONFIRMED", "paymentIntentId": "pi-order-only"}),),
+                )
+                source.execute(
+                    "INSERT INTO ancillary_order_items VALUES ('aoi-discovered-from-policy',%s,'2026-09-25T03:56:20Z')",
+                    (Jsonb({"ancillaryOrderItemId": "aoi-discovered-from-policy", "journeyOrderId": "ord-2", "segmentRef": "seg-c", "travelerRef": "tvl-3", "serviceType": "BAGGAGE", "status": "CONFIRMED", "paymentIntentId": "pi-order-2"}),),
+                )
+                source.execute(
+                    "INSERT INTO policy_snapshots VALUES ('pol-1',%s,'2026-09-25T03:56:30Z')",
+                    (Jsonb({"policyId": "pol-1", "ancillaryOrderItemId": "aoi-policy-1", "journeyOrderId": "ord-1", "segmentRefs": ["seg-b"], "travelerRef": "tvl-2"}),),
+                )
+                source.execute(
+                    "INSERT INTO policy_snapshots VALUES ('pol-order-only',%s,'2026-09-25T03:56:45Z')",
+                    (Jsonb({"policyId": "pol-order-only", "ancillaryOrderItemId": "aoi-policy-2", "journeyOrderId": "ord-1", "segmentRefs": ["seg-a"], "travelerRef": "tvl-1"}),),
+                )
+                source.execute(
+                    "INSERT INTO policy_snapshots VALUES ('pol-2',%s,'2026-09-25T03:56:50Z')",
+                    (Jsonb({"policyId": "pol-2", "ancillaryOrderItemId": "aoi-policy-3", "journeyOrderId": "ord-2", "segmentRefs": ["seg-c"], "travelerRef": "tvl-3"}),),
+                )
+                source.execute(
                     "INSERT INTO segment_booking_snapshots VALUES ('sb-1',%s,'2026-09-25T03:57:00Z')",
                     (Jsonb({"journeyOrderId": "ord-1", "segmentRef": "seg-a", "travelerRef": "tvl-1", "classRef": "SECOND_CLASS"}),),
                 )
                 source.execute(
+                    "INSERT INTO segment_booking_snapshots VALUES ('sb-unrelated',%s,'2026-09-25T03:57:00Z')",
+                    (Jsonb({"journeyOrderId": "ord-unrelated", "segmentRef": "seg-x", "travelerRef": "tvl-x", "classRef": "FIRST_CLASS"}),),
+                )
+                source.execute(
                     "INSERT INTO seat_allocations VALUES ('sa-1',%s,'2026-09-25T03:58:00Z')",
                     (Jsonb({"journeyOrderId": "ord-1", "segmentRef": "seg-a", "travelerRef": "tvl-1", "requestedClassRef": "FIRST_CLASS"}),),
+                )
+                source.execute(
+                    "INSERT INTO seat_allocations VALUES ('sa-unrelated',%s,'2026-09-25T03:58:00Z')",
+                    (Jsonb({"journeyOrderId": "ord-unrelated", "segmentRef": "seg-x", "travelerRef": "tvl-x", "requestedClassRef": "SECOND_CLASS"}),),
                 )
 
             source_env = {
@@ -246,13 +286,22 @@ def test_historical_backfill_is_batched_idempotent_and_switchable():
             )
             assert first["setupApplied"] and first["viewsApplied"]
             assert not second["setupApplied"] and not second["viewsApplied"]
-            assert first["backfill"]["captured_events"] == first["backfill"]["referenced_captures"] == 3
-            assert second["backfill"]["captured_events"] == second["backfill"]["referenced_captures"] == 3
+            assert first["backfill"]["captured_events"] == first["backfill"]["referenced_captures"] == 5
+            assert second["backfill"]["captured_events"] == second["backfill"]["referenced_captures"] == 5
+            assert first["backfill"]["ancillary_scopes"] == 3
+            assert first["backfill"]["insurance_scopes"] == 6
+            assert first["backfill"]["seat_classes"] == 2
             with psycopg.connect(reporting_url) as target:
-                assert target.execute("SELECT count(*) FROM reporting_capture_references").fetchone()[0] == 3
+                assert target.execute("SELECT count(*) FROM reporting_capture_references").fetchone()[0] == 5
                 assert target.execute("SELECT seat_class,source_priority FROM reporting_seat_classes WHERE order_id='ord-1'").fetchone() == ("FIRST_CLASS", 2)
-                assert target.execute("SELECT attachment_type FROM reporting_order_attachments WHERE order_id='ord-1'").fetchone()[0] == "ANCILLARY"
+                assert target.execute("SELECT count(*) FROM reporting_seat_classes").fetchone()[0] == 1
+                assert target.execute("SELECT attachment_type FROM reporting_order_attachments WHERE order_id='ord-1' ORDER BY attachment_type").fetchall() == [("ANCILLARY",), ("INSURANCE",)]
                 assert target.execute("SELECT segment_refs,traveler_refs FROM reporting_business_scopes WHERE business_ref='psc-case-1'").fetchone() == (["seg-b"], ["tvl-2"])
+                assert target.execute("SELECT business_ref,segment_refs,traveler_refs FROM reporting_business_scopes WHERE business_ref IN ('aoi-policy-1','pol-1') ORDER BY business_ref").fetchall() == [
+                    ("aoi-policy-1", ["seg-b"], ["tvl-2"]),
+                    ("pol-1", ["seg-b"], ["tvl-2"]),
+                ]
+                assert target.execute("SELECT order_id FROM reporting_business_scopes WHERE business_ref='aoi-discovered-from-policy'").fetchone()[0] == "ord-2"
                 assert target.execute(
                     "SELECT count(*) FROM schema_migrations WHERE version=ANY(%s)",
                     (["007_authoritative_revenue_facts.sql", "008_authoritative_revenue_views.sql"],),
@@ -260,7 +309,7 @@ def test_historical_backfill_is_batched_idempotent_and_switchable():
                 for dimension in ("route", "traveler_type", "seat_class", "channel", "time_period"):
                     assert target.execute(
                         "SELECT sum(revenue) FROM reporting_revenue_breakdowns WHERE dimension=%s", (dimension,)
-                    ).fetchone()[0] == Decimal("15.01")
+                    ).fetchone()[0] == Decimal("24.01")
         finally:
             admin.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(reporting_schema)))
             admin.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(source_schema)))
