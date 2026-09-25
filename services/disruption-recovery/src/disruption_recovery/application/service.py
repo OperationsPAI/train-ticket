@@ -8,7 +8,7 @@ from uuid import UUID
 from typing import Any, Mapping
 
 from train_ticket_platform.events import EventEnvelope, rfc3339_utc
-from train_ticket_platform.messaging import HandlerResult
+from train_ticket_platform.messaging import HandlerResult, HandlerStatus
 
 from disruption_recovery.domain import (
     ActorRef,
@@ -37,6 +37,15 @@ from disruption_recovery.domain import (
     require_text,
 )
 from disruption_recovery.ids import prefixed_uuid7
+from disruption_recovery.metrics import (
+    SegmentSignalMetricRecorder,
+    SegmentSignalOutcome,
+    SegmentSignalSource,
+    SegmentSignalType,
+    segment_signal_metrics_from_environment,
+    segment_signal_source,
+    segment_signal_type,
+)
 
 PRODUCER = "disruption-recovery"
 TERMINAL_STATUSES = {RecoveryCaseStatus.RECOVERED, RecoveryCaseStatus.DECLINED, RecoveryCaseStatus.FAILED, RecoveryCaseStatus.CLOSED}
@@ -300,9 +309,15 @@ def _reaccommodation_from_report(data: Mapping[str, Any], generated_at: datetime
 
 
 class DisruptionRecoveryService:
-    def __init__(self, store: Any, downstream: DownstreamPort | None = None) -> None:
+    def __init__(
+        self,
+        store: Any,
+        downstream: DownstreamPort | None = None,
+        segment_signal_metrics: SegmentSignalMetricRecorder | None = None,
+    ) -> None:
         self.store = store
         self.downstream = downstream or NoopDownstream()
+        self.segment_signal_metrics = segment_signal_metrics or segment_signal_metrics_from_environment()
 
     def transaction(self) -> Any:
         transaction = getattr(self.store, "transaction", None)
@@ -532,21 +547,40 @@ class DisruptionRecoveryService:
             return HandlerResult.transient_error(str(exc))
 
     def handle_segment_signal(self, envelope: EventEnvelope, stream: str | None = None) -> HandlerResult:
-        if envelope.eventType not in {"SegmentDelayed", "SegmentCancelled"}:
+        signal_type = segment_signal_type(envelope.eventType)
+        if signal_type is None:
             return HandlerResult.success()
-        payload = dict(envelope.payload)
+        source = segment_signal_source(envelope.producer)
+        try:
+            payload = dict(envelope.payload)
+        except (TypeError, ValueError) as exc:
+            return self._segment_signal_result(
+                signal_type, source, "invalid", HandlerResult.fatal_error(str(exc))
+            )
         segment_ref = str(payload.get("segmentRef") or "").strip()
         service_date = str(payload.get("serviceDate") or "").strip()
         scheduled = str(payload.get("scheduledServiceRef") or "").strip() or None
         if not segment_ref or not service_date:
-            return HandlerResult.fatal_error(f"{envelope.eventType} requires segmentRef and serviceDate")
+            return self._segment_signal_result(
+                signal_type,
+                source,
+                "invalid",
+                HandlerResult.fatal_error(f"{envelope.eventType} requires segmentRef and serviceDate"),
+            )
         finder = getattr(self.store, "find_orders_by_segment", None)
         if not callable(finder):
-            return HandlerResult.transient_error("segment order resolver is unavailable")
+            return self._segment_signal_result(
+                signal_type,
+                source,
+                "retry",
+                HandlerResult.transient_error("segment order resolver is unavailable"),
+            )
         try:
             affected = tuple(finder(segment_ref))
         except Exception as exc:
-            return HandlerResult.transient_error(str(exc))
+            return self._segment_signal_result(
+                signal_type, source, "retry", HandlerResult.transient_error(str(exc))
+            )
         if not affected:
             # A segment status is an operational fact, not proof that a customer
             # order exists for that segment. Empty trains, positioning services,
@@ -563,33 +597,65 @@ class DisruptionRecoveryService:
                     mark = getattr(self.store, "mark_processed", None)
                     if callable(mark):
                         mark(envelope.eventId, stream)
-                return HandlerResult.success()
+                return self._segment_signal_result(
+                    signal_type, source, "zero_impact", HandlerResult.success()
+                )
             except Exception as exc:
-                return HandlerResult.transient_error(str(exc))
-        disruption_type = "DELAY" if envelope.eventType == "SegmentDelayed" else "CANCELLATION"
-        observed_at = str(payload.get("observedAt") or payload.get("estimatedArrivalAt") or payload.get("cancelledAt") or "").strip() or None
-        report = {
-            "disruptionType": disruption_type,
-            "scheduledServiceRef": scheduled,
-            "segmentRef": segment_ref,
-            "serviceDate": service_date,
-            "evidence": {
-                "evidenceRef": envelope.eventId,
-                "sourceSystem": "PROVIDER_INTEGRATION" if envelope.producer == "provider-integration" else "FULFILLMENT",
-                "sourceRecordId": envelope.eventId,
-                "summary": _segment_signal_summary(envelope.eventType, payload),
-            },
-            "affectedOrderIds": list(affected),
-            "reportedBy": {"actorType": "SYSTEM", "actorId": envelope.producer or "segment-signal"},
-        }
-        if observed_at:
-            report["evidence"]["occurredAt"] = observed_at
-        if envelope.eventType == "SegmentDelayed":
-            delay_minutes = _delay_minutes(payload)
-            if delay_minutes is not None:
-                report["delayMinutes"] = delay_minutes
-                report["estimatedResolution"] = str(payload.get("estimatedArrivalAt"))
-        return self._handle_report_from_event(report, envelope, stream)
+                return self._segment_signal_result(
+                    signal_type, source, "retry", HandlerResult.transient_error(str(exc))
+                )
+        try:
+            disruption_type = "DELAY" if envelope.eventType == "SegmentDelayed" else "CANCELLATION"
+            observed_at = str(payload.get("observedAt") or payload.get("estimatedArrivalAt") or payload.get("cancelledAt") or "").strip() or None
+            report = {
+                "disruptionType": disruption_type,
+                "scheduledServiceRef": scheduled,
+                "segmentRef": segment_ref,
+                "serviceDate": service_date,
+                "evidence": {
+                    "evidenceRef": envelope.eventId,
+                    "sourceSystem": "PROVIDER_INTEGRATION" if envelope.producer == "provider-integration" else "FULFILLMENT",
+                    "sourceRecordId": envelope.eventId,
+                    "summary": _segment_signal_summary(envelope.eventType, payload),
+                },
+                "affectedOrderIds": list(affected),
+                "reportedBy": {"actorType": "SYSTEM", "actorId": envelope.producer or "segment-signal"},
+            }
+            if observed_at:
+                report["evidence"]["occurredAt"] = observed_at
+            if envelope.eventType == "SegmentDelayed":
+                delay_minutes = _delay_minutes(payload)
+                if delay_minutes is not None:
+                    report["delayMinutes"] = delay_minutes
+                    report["estimatedResolution"] = str(payload.get("estimatedArrivalAt"))
+        except (DomainError, TypeError, ValueError) as exc:
+            return self._segment_signal_result(
+                signal_type, source, "invalid", HandlerResult.fatal_error(str(exc))
+            )
+        result, created = self._handle_report_from_event(report, envelope, stream)
+        outcome: SegmentSignalOutcome
+        if result.status is HandlerStatus.TRANSIENT_ERROR:
+            outcome = "retry"
+        elif result.status is HandlerStatus.FATAL_ERROR:
+            outcome = "invalid"
+        else:
+            outcome = "recovery_created" if created else "zero_impact"
+        return self._segment_signal_result(signal_type, source, outcome, result)
+
+    def _segment_signal_result(
+        self,
+        signal_type: SegmentSignalType,
+        source: SegmentSignalSource,
+        outcome: SegmentSignalOutcome,
+        result: HandlerResult,
+    ) -> HandlerResult:
+        try:
+            self.segment_signal_metrics.record(signal_type, outcome, source)
+        except Exception:
+            # Telemetry is diagnostic. Its failure must not change whether the
+            # Redis message is acknowledged, retried, or sent to the DLQ.
+            pass
+        return result
 
     def handle_service_alert_published(self, envelope: EventEnvelope, stream: str | None = None) -> HandlerResult:
         if envelope.eventType != "ServiceAlertPublished":
@@ -608,20 +674,22 @@ class DisruptionRecoveryService:
         except Exception as exc:
             return HandlerResult.transient_error(str(exc))
 
-    def _handle_report_from_event(self, report: Mapping[str, Any], envelope: EventEnvelope, stream: str | None) -> HandlerResult:
+    def _handle_report_from_event(
+        self, report: Mapping[str, Any], envelope: EventEnvelope, stream: str | None
+    ) -> tuple[HandlerResult, bool]:
         transaction = getattr(self.store, "transaction", None)
         context = transaction() if callable(transaction) else nullcontext()
         try:
             with context:
                 mark = getattr(self.store, "mark_processed", None)
                 if callable(mark) and not mark(envelope.eventId, stream):
-                    return HandlerResult.success()
+                    return HandlerResult.success(), False
                 self.report_disruption(report, envelope.correlationId, envelope.eventId)
-                return HandlerResult.success()
+            return HandlerResult.success(), True
         except DomainError as exc:
-            return HandlerResult.fatal_error(str(exc))
+            return HandlerResult.fatal_error(str(exc)), False
         except Exception as exc:
-            return HandlerResult.transient_error(str(exc))
+            return HandlerResult.transient_error(str(exc)), False
 
     def _process_mass_disruption(self, disruption: Disruption, data: Mapping[str, Any], affected_order_ids: tuple[str, ...], correlation_id: str, causation_id: str, at: datetime) -> dict[str, Any]:
         batch_requested = _bool_flag(data.get("processBatches")) or len(affected_order_ids) > MassDisruptionProcessor.BATCH_SIZE
