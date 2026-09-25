@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"testing"
@@ -26,6 +27,17 @@ type failingOncePublisher struct {
 	err       error
 	attempts  int
 	envelopes []EventEnvelope
+}
+
+type stubEntitlementReader struct {
+	snapshot EntitlementSnapshot
+	err      error
+	calls    int
+}
+
+func (r *stubEntitlementReader) GetEntitlement(_ context.Context, _ domain.EntitlementRef) (EntitlementSnapshot, error) {
+	r.calls++
+	return r.snapshot, r.err
 }
 
 func (p *failingOncePublisher) Publish(_ context.Context, envelope EventEnvelope) error {
@@ -206,6 +218,141 @@ func TestVerifyBoardingRequiresPreparedTicketAndRejectsVoided(t *testing.T) {
 	cmd = VerifyBoardingCommand{EntitlementID: "ent-void1", SegmentBookingID: "sb-void1", JourneyOrderID: "ord-void1", TravelerID: "tvl-void1", SegmentRef: "seg-void1", Source: domain.FulfillmentSourceGate, SourceEventID: "scan-void", OccurredAt: time.Now().UTC()}
 	if _, err := service.VerifyBoarding(context.Background(), cmd, CommandMetadata{}); !errors.Is(err, ErrDomainRuleViolation) {
 		t.Fatalf("expected domain violation for voided ticket, got %v", err)
+	}
+}
+
+func TestVerifyBoardingRecoversMissingProjectionFromAuthoritativeEntitlement(t *testing.T) {
+	repo := NewInMemoryRepository()
+	publisher := &recordingPublisher{}
+	reader := &stubEntitlementReader{snapshot: EntitlementSnapshot{
+		EntitlementID:    "ent-recover1",
+		SegmentBookingID: "sb-recover1",
+		JourneyOrderID:   "ord-recover1",
+		TravelerID:       "tvl-recover1",
+		SegmentRef:       "seg-recover1",
+		Status:           "ISSUED",
+	}}
+	service := NewService(repo, publisher, NewInMemoryConsumedEventLog(), func(prefix string) string {
+		return prefix + "-00000000-0000-7000-8000-000000000201"
+	}, func() time.Time { return time.Date(2026, 9, 25, 4, 5, 0, 0, time.UTC) }).WithEntitlementReader(reader)
+	cmd := VerifyBoardingCommand{
+		EntitlementID:    "ent-recover1",
+		SegmentBookingID: "sb-recover1",
+		JourneyOrderID:   "ord-recover1",
+		TravelerID:       "tvl-recover1",
+		SegmentRef:       "seg-recover1",
+		Source:           domain.FulfillmentSourceGate,
+		SourceEventID:    "gate-recover1",
+		OccurredAt:       time.Date(2026, 9, 25, 4, 4, 0, 0, time.UTC),
+	}
+
+	result, err := service.VerifyBoarding(context.Background(), cmd, CommandMetadata{})
+	if err != nil {
+		t.Fatalf("verify boarding: %v", err)
+	}
+	if reader.calls != 1 {
+		t.Fatalf("entitlement lookups=%d, want 1", reader.calls)
+	}
+	if result.Status != domain.FulfillmentStatusBoarded {
+		t.Fatalf("status=%s, want BOARDED", result.Status)
+	}
+	record, err := repo.FindByEntitlementSegment(context.Background(), cmd.EntitlementID, cmd.SegmentBookingID, cmd.SegmentRef)
+	if err != nil {
+		t.Fatalf("find recovered record: %v", err)
+	}
+	if record.JourneyOrderID != cmd.JourneyOrderID || record.TravelerID != cmd.TravelerID || record.Status != domain.FulfillmentStatusBoarded {
+		t.Fatalf("recovered record=%+v", record)
+	}
+	if len(publisher.envelopes) != 1 || publisher.envelopes[0].EventType != "BoardingVerified" {
+		t.Fatalf("published envelopes=%#v", publisher.envelopes)
+	}
+}
+
+func TestVerifyBoardingDoesNotFetchEntitlementWhenProjectionExists(t *testing.T) {
+	reader := &stubEntitlementReader{err: errors.New("must not be called")}
+	service := NewService(NewInMemoryRepository(), NoopPublisher{}, NewInMemoryConsumedEventLog(), nil, nil).WithEntitlementReader(reader)
+	seedTicket(t, service, "ent-local1", "sb-local1", "ord-local1", "tvl-local1", "seg-local1")
+
+	_, err := service.VerifyBoarding(context.Background(), VerifyBoardingCommand{
+		EntitlementID: "ent-local1", SegmentBookingID: "sb-local1", JourneyOrderID: "ord-local1",
+		TravelerID: "tvl-local1", SegmentRef: "seg-local1", Source: domain.FulfillmentSourceGate,
+		SourceEventID: "gate-local1", OccurredAt: time.Date(2026, 9, 25, 4, 4, 0, 0, time.UTC),
+	}, CommandMetadata{})
+	if err != nil {
+		t.Fatalf("verify boarding: %v", err)
+	}
+	if reader.calls != 0 {
+		t.Fatalf("entitlement lookups=%d, want 0", reader.calls)
+	}
+}
+
+func TestVerifyBoardingRejectsAuthoritativeEntitlementReferenceMismatch(t *testing.T) {
+	base := EntitlementSnapshot{
+		EntitlementID: "ent-match1", SegmentBookingID: "sb-match1", JourneyOrderID: "ord-match1",
+		TravelerID: "tvl-match1", SegmentRef: "seg-match1", Status: "ISSUED",
+	}
+	cmd := VerifyBoardingCommand{
+		EntitlementID: "ent-match1", SegmentBookingID: "sb-match1", JourneyOrderID: "ord-match1",
+		TravelerID: "tvl-match1", SegmentRef: "seg-match1", Source: domain.FulfillmentSourceGate,
+		SourceEventID: "gate-match1", OccurredAt: time.Date(2026, 9, 25, 4, 4, 0, 0, time.UTC),
+	}
+	tests := map[string]func(*EntitlementSnapshot){
+		"entitlement id":     func(ticket *EntitlementSnapshot) { ticket.EntitlementID = "ent-other1" },
+		"segment booking id": func(ticket *EntitlementSnapshot) { ticket.SegmentBookingID = "sb-other1" },
+		"segment ref":        func(ticket *EntitlementSnapshot) { ticket.SegmentRef = "seg-other1" },
+		"journey order id":   func(ticket *EntitlementSnapshot) { ticket.JourneyOrderID = "ord-other1" },
+		"traveler id":        func(ticket *EntitlementSnapshot) { ticket.TravelerID = "tvl-other1" },
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			ticket := base
+			mutate(&ticket)
+			repo := NewInMemoryRepository()
+			service := NewService(repo, NoopPublisher{}, NewInMemoryConsumedEventLog(), nil, nil).
+				WithEntitlementReader(&stubEntitlementReader{snapshot: ticket})
+			_, err := service.VerifyBoarding(context.Background(), cmd, CommandMetadata{})
+			if !errors.Is(err, ErrDomainRuleViolation) {
+				t.Fatalf("error=%v, want domain rule violation", err)
+			}
+			if _, findErr := repo.FindByEntitlementSegment(context.Background(), cmd.EntitlementID, cmd.SegmentBookingID, cmd.SegmentRef); !errors.Is(findErr, ErrNotFound) {
+				t.Fatalf("mismatched entitlement created a record: %v", findErr)
+			}
+		})
+	}
+}
+
+func TestVerifyBoardingRejectsNonBoardableAuthoritativeEntitlement(t *testing.T) {
+	for _, status := range []string{"VOIDED", "SUSPENDED", "BOARDED", "NO_SHOW"} {
+		t.Run(status, func(t *testing.T) {
+			repo := NewInMemoryRepository()
+			reader := &stubEntitlementReader{snapshot: EntitlementSnapshot{
+				EntitlementID: "ent-status1", SegmentBookingID: "sb-status1", JourneyOrderID: "ord-status1",
+				TravelerID: "tvl-status1", SegmentRef: "seg-status1", Status: status,
+			}}
+			service := NewService(repo, NoopPublisher{}, NewInMemoryConsumedEventLog(), nil, nil).WithEntitlementReader(reader)
+			_, err := service.VerifyBoarding(context.Background(), VerifyBoardingCommand{
+				EntitlementID: "ent-status1", SegmentBookingID: "sb-status1", JourneyOrderID: "ord-status1",
+				TravelerID: "tvl-status1", SegmentRef: "seg-status1", Source: domain.FulfillmentSourceGate,
+				SourceEventID: "gate-status1", OccurredAt: time.Date(2026, 9, 25, 4, 4, 0, 0, time.UTC),
+			}, CommandMetadata{})
+			if !errors.Is(err, ErrDomainRuleViolation) {
+				t.Fatalf("error=%v, want domain rule violation", err)
+			}
+		})
+	}
+}
+
+func TestVerifyBoardingSurfacesEntitlementLookupFailure(t *testing.T) {
+	repo := NewInMemoryRepository()
+	reader := &stubEntitlementReader{err: fmt.Errorf("%w: timeout", ErrDependencyUnavailable)}
+	service := NewService(repo, NoopPublisher{}, NewInMemoryConsumedEventLog(), nil, nil).WithEntitlementReader(reader)
+	_, err := service.VerifyBoarding(context.Background(), VerifyBoardingCommand{
+		EntitlementID: "ent-down1", SegmentBookingID: "sb-down1", JourneyOrderID: "ord-down1",
+		TravelerID: "tvl-down1", SegmentRef: "seg-down1", Source: domain.FulfillmentSourceGate,
+		SourceEventID: "gate-down1", OccurredAt: time.Date(2026, 9, 25, 4, 4, 0, 0, time.UTC),
+	}, CommandMetadata{})
+	if !errors.Is(err, ErrDependencyUnavailable) {
+		t.Fatalf("error=%v, want dependency unavailable", err)
 	}
 }
 

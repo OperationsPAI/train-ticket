@@ -233,6 +233,28 @@ func TestFulfillmentHTTPDomainRuleViolationSurfaces(t *testing.T) {
 	}
 }
 
+type unavailableEntitlementReader struct{}
+
+func (unavailableEntitlementReader) GetEntitlement(context.Context, domain.EntitlementRef) (application.EntitlementSnapshot, error) {
+	return application.EntitlementSnapshot{}, application.ErrDependencyUnavailable
+}
+
+func TestFulfillmentHTTPMapsEntitlementLookupFailureToUnavailable(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	service := application.NewService(application.NewInMemoryRepository(), application.NoopPublisher{}, application.NewInMemoryConsumedEventLog(), nil, nil).
+		WithEntitlementReader(unavailableEntitlementReader{})
+	router := RouterWithService(service)
+	body := `{"entitlementId":"ent-down1","segmentBookingId":"sb-down1","journeyOrderId":"ord-down1","travelerId":"tvl-down1","segmentRef":"seg-down1","source":"GATE","sourceEventId":"scan-down1","occurredAt":"2026-09-25T04:00:00Z"}`
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/fulfillment-records/boarding", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b0c008")
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), `"code":"UNAVAILABLE"`) {
+		t.Fatalf("unexpected response: %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestFulfillmentHTTPCausationDoesNotReuseIdempotencyKey(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	repo := application.NewInMemoryRepository()
