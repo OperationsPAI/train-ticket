@@ -55,6 +55,7 @@ test("concurrent relays publish recorded events without waiting on another publi
       return [event.eventId, event];
     }));
     assert.equal(actual.size, recorded.length);
+    assert.equal(deliveries.length, recorded.length, "concurrent relays must not duplicate an outbox row");
     for (const row of recorded) assert.deepEqual(actual.get(row.event_id), row.envelope);
     const length = await redis.xlen(stream);
     assert.equal(await relays[0].runOnce(), 0);
