@@ -189,6 +189,42 @@ class EndpointTest(unittest.TestCase):
         self.assertEqual(len(response.json()["items"]), 1)
         self.assertNotIn("routeRevenue", response.json()["items"][0])
 
+    def test_trends_return_sixty_complete_minute_buckets(self) -> None:
+        service = ReportingApplicationService()
+        observed_at = datetime(2026, 7, 5, 11, 0, 30, tzinfo=UTC)
+        for index in range(60):
+            service.handle_event(EventEnvelope(
+                eventId=f"evt-trend-order-{index}", eventType="JourneyOrderCreated",
+                occurredAt=(observed_at - timedelta(minutes=1, seconds=index % 30)).isoformat(),
+                correlationId="corr-1", producer="journey-order", schemaVersion=1,
+                payload={"orderId": f"ord-{index}", "segments": [], "travelerRefs": []}, causationId="evt-source",
+            ))
+        service.handle_event(EventEnvelope(
+            eventId="evt-trend-current", eventType="JourneyOrderCreated",
+            occurredAt=observed_at.isoformat(), correlationId="corr-1", producer="journey-order",
+            schemaVersion=1, payload={"orderId": "ord-current", "segments": [], "travelerRefs": []}, causationId="evt-source",
+        ))
+        service.handle_event(EventEnvelope(
+            eventId="evt-trend-cny", eventType="PaymentCaptured",
+            occurredAt=(observed_at - timedelta(minutes=2)).isoformat(), correlationId="corr-1", producer="payment",
+            schemaVersion=1, payload={"businessRef": "ord-1", "capturedAmount": {"currency": "CNY", "minorUnits": 123}}, causationId="evt-source",
+        ))
+
+        body = service.trends(observed_at)
+
+        self.assertEqual(body["window"], {
+            "start": "2026-07-05T10:00:00.000Z",
+            "end": "2026-07-05T11:00:00.000Z",
+            "bucketSeconds": 60,
+            "pointCount": 60,
+        })
+        series = {item["metric"]: item for item in body["series"]}
+        self.assertEqual(len(series["orders_per_second"]["points"]), 60)
+        self.assertEqual(series["orders_per_second"]["points"][-1]["value"], 1.0)
+        self.assertEqual(series["orders_per_second"]["points"][-2]["value"], 0.0)
+        self.assertEqual(series["gross_captured_amount"]["points"][-2]["values"], [{"amount": "1.23", "currency": "CNY"}])
+        self.assertEqual(series["gross_captured_amount"]["points"][-1]["values"], [])
+
     def test_anomaly_detection_publishes_event(self) -> None:
         publisher = FakePublisher()
         service = ReportingApplicationService(publisher=publisher)
