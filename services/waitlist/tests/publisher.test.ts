@@ -43,7 +43,7 @@ test("join publishes waitlist contract facts with deterministic ids and fields",
     segmentRef: "seg-1",
     travelClass: "SECOND",
     deadline: "2026-07-20T00:00:00.000Z",
-    paymentGuaranteeRef: "pay-auth-1",
+    paymentGuaranteeRef: "pi-1",
     itineraryRef: "itn-1",
     intentFingerprint: "intent-1",
   }, "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c123");
@@ -63,14 +63,14 @@ test("join publishes waitlist contract facts with deterministic ids and fields",
   assert.equal(created.segmentRef, "seg-1");
   assert.equal(created.travelClass, "SECOND_CLASS");
   assert.equal(created.deadline, "2026-07-20T00:00:00.000Z");
-  assert.equal(created.paymentGuaranteeRef, "pay-auth-1");
+  assert.equal(created.paymentGuaranteeRef, "pi-1");
   assert.equal(created.itineraryRef, "itn-1");
   assert.equal(created.intentFingerprint, "intent-1");
   assert.equal(created.status, "DRAFT");
   assert.equal(typeof created.createdAt, "string");
 
   const payment = publisher.envelopes[1]?.payload as Record<string, unknown>;
-  assert.equal(payment.paymentGuaranteeRef, "pay-auth-1");
+  assert.equal(payment.paymentGuaranteeRef, "pi-1");
   assert.equal(payment.requestedAt, created.createdAt);
   assert.equal(payment.status, "DRAFT");
 
@@ -84,7 +84,7 @@ test("join publishes waitlist contract facts with deterministic ids and fields",
 test("cancel publishes WaitlistCancelled with supplied reason without defaulting API input", async () => {
   const publisher = new InMemoryEventPublisher();
   const service = new WaitlistApplicationService(new InMemoryWaitlistRepository(), publisher, undefined, undefined, undefined, () => new Date("2026-01-01T00:00:00.000Z"));
-  const resource = await service.join({ accountId: "acc", travelerRef: "tvl", segmentRef: "seg", departureDate: "2026-07-20", travelClass: "SECOND", paymentGuaranteeRef: "pay-auth-1", itineraryRef: "itn", intentFingerprint: "intent" });
+  const resource = await service.join({ accountId: "acc", travelerRef: "tvl", segmentRef: "seg", departureDate: "2026-07-20", travelClass: "SECOND", paymentGuaranteeRef: "pi-1", itineraryRef: "itn", intentFingerprint: "intent" });
 
   await service.cancel(resource.waitlistRequestId, { reason: "USER_REQUESTED" });
 
@@ -97,7 +97,7 @@ test("cancel publishes WaitlistCancelled with supplied reason without defaulting
 test("capacity matching records the order without publishing fulfillment", async () => {
   const publisher = new InMemoryEventPublisher();
   const service = new WaitlistApplicationService(new InMemoryWaitlistRepository(), publisher, new StubFarePricing(), new StubCapacity(), new StubJourneyOrder(), () => new Date("2026-01-01T00:00:00.000Z"), new StubOfferManagement());
-  const entry = await service.join({ accountId: "acc", travelerRef: "tvl", segmentRef: "seg", departureDate: "2026-07-20", travelClass: "SECOND", paymentGuaranteeRef: "pay-auth-1", itineraryRef: "itn", intentFingerprint: "intent" });
+  const entry = await service.join({ accountId: "acc", travelerRef: "tvl", segmentRef: "seg", departureDate: "2026-07-20", travelClass: "SECOND", paymentGuaranteeRef: "pi-1", itineraryRef: "itn", intentFingerprint: "intent" });
 
   const result = await service.handleCapacityFreed({ segmentRef: "seg", scheduledServiceRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND_CLASS", interval: { fromSeq: 0, toSeq: 1 }, stopSequenceVersion: "segment:seg", freedSlots: 1, capacityReleaseRef: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c123" });
 
