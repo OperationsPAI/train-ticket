@@ -14,6 +14,7 @@ import (
 	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
 	entitlementadapter "github.com/trainticket/greenfield/services/fulfillment/internal/adapters/entitlement"
 	"github.com/trainticket/greenfield/services/fulfillment/internal/adapters/messaging"
+	"github.com/trainticket/greenfield/services/fulfillment/internal/adapters/observability"
 	adapterpg "github.com/trainticket/greenfield/services/fulfillment/internal/adapters/postgres"
 	"github.com/trainticket/greenfield/services/fulfillment/internal/application"
 	"github.com/trainticket/greenfield/services/fulfillment/internal/domain"
@@ -72,9 +73,17 @@ func main() {
 		entitlementURL = "http://entitlement-ticketing:8080"
 	}
 	entitlementReader := entitlementadapter.NewClient(entitlementURL, &http.Client{Timeout: 5 * time.Second})
+	// train_ticket.ticketing.transitions: the validation stage of the ticket
+	// funnel. A recorder failure is fatal at startup, like the pool metrics: a
+	// missing series must be visible in a crash, not silently absent.
+	ticketingMetrics, err := observability.NewOpenTelemetryRecorder(goruntime.MeterFromEnv(domain.Profile().ServiceID))
+	if err != nil {
+		log.Fatalf("failed to build ticketing transition metrics: %v", err)
+	}
 	service := application.NewService(repo, adapterpg.NewOutboxPublisherWithProvider(transactor), consumed, nil, nil).
 		WithSegmentStatusRepository(repo).
 		WithEntitlementReader(entitlementReader).
+		WithTicketingMetrics(ticketingMetrics).
 		WithUnitOfWork(transactor.Within)
 
 	if subscriber, err := messaging.NewSubscriberFromURL(os.Getenv("REDIS_URL")); err == nil {
