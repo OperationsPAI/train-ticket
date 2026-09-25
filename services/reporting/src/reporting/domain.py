@@ -519,6 +519,9 @@ class OperationalEvent:
     insurance_attached: bool = False
     source_context: str | None = None
     anomaly_signal: bool = False
+    business_ref: str | None = None
+    payment_intent_id: str | None = None
+    payment_purpose: str | None = None
 
     def __post_init__(self) -> None:
         if not self.event_id.strip():
@@ -710,6 +713,220 @@ class RevenueReport:
 
 
 @dataclass(frozen=True, slots=True)
+class OrderRouteFact:
+    route_id: str
+    service_date: date | None
+
+
+@dataclass(frozen=True, slots=True)
+class OrderTravelerFact:
+    traveler_ref: str
+    traveler_type: str
+
+
+@dataclass(frozen=True, slots=True)
+class OrderDimensionFact:
+    routes: tuple[OrderRouteFact, ...]
+    travelers: tuple[OrderTravelerFact, ...]
+    occurred_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class SeatClassFact:
+    seat_class: str
+    occurred_at: datetime
+    source_priority: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class AttachmentFact:
+    order_id: str
+    attachment_type: str
+    occurred_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class BusinessOrderFact:
+    order_id: str
+    segment_refs: tuple[str, ...]
+    traveler_refs: tuple[str, ...]
+    occurred_at: datetime
+
+
+@dataclass(slots=True)
+class RevenueFactIndex:
+    """Authoritative business facts used to attribute captured payments."""
+
+    orders: dict[str, OrderDimensionFact] = field(default_factory=dict)
+    business_orders: dict[str, BusinessOrderFact] = field(default_factory=dict)
+    seat_classes: dict[tuple[str, str, str], SeatClassFact] = field(default_factory=dict)
+    attachments: dict[tuple[str, str], AttachmentFact] = field(default_factory=dict)
+
+    def record_capture(
+        self,
+        event_id: str,
+        business_ref: str,
+        payment_intent_id: str,
+        payment_purpose: str,
+        occurred_at: datetime,
+    ) -> None:
+        # The in-memory projection keeps these values on OperationalEvent.
+        return None
+
+    def record_order(self, order_id: str, routes: Any, traveler_types: Any, occurred_at: datetime) -> None:
+        order_id = order_id.strip()
+        if not order_id:
+            return
+        current = self.orders.get(order_id)
+        if current is not None and current.occurred_at > occurred_at:
+            return
+        self.orders[order_id] = OrderDimensionFact(self._routes(routes), self._travelers(traveler_types), occurred_at)
+        self.record_business_order(order_id, order_id, (), (), occurred_at)
+
+    def record_business_order(
+        self,
+        business_ref: str,
+        order_id: str,
+        segment_refs: Any,
+        traveler_refs: Any,
+        occurred_at: datetime,
+    ) -> None:
+        business_ref, order_id = business_ref.strip(), order_id.strip()
+        if not business_ref or not order_id:
+            return
+        current = self.business_orders.get(business_ref)
+        if current is None or current.occurred_at <= occurred_at:
+            self.business_orders[business_ref] = BusinessOrderFact(
+                order_id,
+                self._values(segment_refs) or (() if current is None else current.segment_refs),
+                self._values(traveler_refs) or (() if current is None else current.traveler_refs),
+                occurred_at,
+            )
+
+    def record_seat_class(
+        self,
+        order_id: str,
+        segment_ref: str,
+        traveler_ref: str,
+        seat_class: str,
+        occurred_at: datetime,
+        source_priority: int = 0,
+    ) -> None:
+        values = tuple(value.strip() for value in (order_id, segment_ref, traveler_ref, seat_class))
+        if not all(values):
+            return
+        key = values[:3]
+        current = self.seat_classes.get(key)
+        if current is None or (current.source_priority, current.occurred_at) <= (source_priority, occurred_at):
+            self.seat_classes[key] = SeatClassFact(values[3], occurred_at, source_priority)
+
+    def record_attachment(
+        self,
+        order_id: str,
+        attachment_type: str,
+        occurred_at: datetime,
+    ) -> None:
+        order_id, attachment_type = order_id.strip(), attachment_type.strip().upper()
+        if not order_id or attachment_type not in {"ANCILLARY", "INSURANCE"}:
+            return
+        key = (order_id, attachment_type)
+        current = self.attachments.get(key)
+        if current is None or current.occurred_at <= occurred_at:
+            self.attachments[key] = AttachmentFact(order_id, attachment_type, occurred_at)
+
+    def business_fact_for(self, event: OperationalEvent) -> BusinessOrderFact | None:
+        business_ref = (event.business_ref or "").strip()
+        if business_ref.startswith("ord-"):
+            return BusinessOrderFact(business_ref, (), (), event.occurred_at)
+        return self.business_orders.get(business_ref)
+
+    def order_id_for(self, event: OperationalEvent) -> str | None:
+        fact = self.business_fact_for(event)
+        return None if fact is None else fact.order_id
+
+    def dimension_values(self, event: OperationalEvent, dimension: str) -> tuple[str, ...]:
+        business = self.business_fact_for(event)
+        order_id = None if business is None else business.order_id
+        if dimension == "route":
+            fact = None if order_id is None else self.orders.get(order_id)
+            routes = () if fact is None else tuple(
+                route.route_id for route in fact.routes
+                if not business.segment_refs or route.route_id in business.segment_refs
+            )
+            return routes or ("unknown",)
+        if dimension == "traveler_type":
+            fact = None if order_id is None else self.orders.get(order_id)
+            travelers = () if fact is None else tuple(
+                traveler.traveler_type for traveler in fact.travelers
+                if not business.traveler_refs or traveler.traveler_ref in business.traveler_refs
+            )
+            return tuple(sorted(travelers)) or ("unknown",)
+        if dimension == "seat_class":
+            values = tuple(sorted(
+                fact.seat_class
+                for key, fact in self.seat_classes.items()
+                if order_id is not None
+                and key[0] == order_id
+                and (not business.segment_refs or key[1] in business.segment_refs)
+                and (not business.traveler_refs or key[2] in business.traveler_refs)
+            ))
+            return values or ("unknown",)
+        if dimension == "channel":
+            return ((event.channel or "unknown"),)
+        if dimension == "time_period":
+            return (event.occurred_at.astimezone(UTC).strftime("%Y-%m-%dT%H:00:00Z"),)
+        raise ReportingError("unsupported revenue report dimension")
+
+    def routes_for(self, event: OperationalEvent) -> tuple[OrderRouteFact, ...]:
+        business = self.business_fact_for(event)
+        order_id = None if business is None else business.order_id
+        fact = None if order_id is None else self.orders.get(order_id)
+        if fact is None:
+            return ()
+        return tuple(
+            route for route in fact.routes
+            if not business.segment_refs or route.route_id in business.segment_refs
+        )
+
+    def attachment_flags(self, event: OperationalEvent) -> tuple[bool, bool]:
+        types = set(self.attachment_types(event))
+        return "ANCILLARY" in types, "INSURANCE" in types
+
+    def attachment_types(self, event: OperationalEvent) -> tuple[str, ...]:
+        order_id = self.order_id_for(event)
+        return tuple(sorted({
+            fact.attachment_type
+            for fact in self.attachments.values()
+            if order_id is not None and fact.order_id == order_id
+        }))
+
+    @staticmethod
+    def _values(values: Any) -> tuple[str, ...]:
+        return tuple(sorted({str(value).strip() for value in values if str(value).strip()}))
+
+    @staticmethod
+    def _routes(values: Any) -> tuple[OrderRouteFact, ...]:
+        routes = {
+            (str(route_id).strip(), service_date)
+            for route_id, service_date in values
+            if str(route_id).strip()
+        }
+        return tuple(
+            OrderRouteFact(route_id, service_date)
+            for route_id, service_date in sorted(routes, key=lambda item: (item[0], item[1] or date.min))
+        )
+
+    @staticmethod
+    def _travelers(values: Any) -> tuple[OrderTravelerFact, ...]:
+        travelers = {
+            (str(traveler_ref).strip(), str(traveler_type).strip())
+            for traveler_ref, traveler_type in values
+            if str(traveler_ref).strip() and str(traveler_type).strip()
+        }
+        return tuple(OrderTravelerFact(*value) for value in sorted(travelers))
+
+
+@dataclass(frozen=True, slots=True)
 class AnomalyRule:
     rule_id: AnomalyRuleId
     threshold: Decimal
@@ -738,6 +955,7 @@ class MetricAggregator:
     """Production-realistic in-memory projection for real-time dashboards."""
 
     events: list[OperationalEvent] = field(default_factory=list)
+    revenue_facts: RevenueFactIndex = field(default_factory=RevenueFactIndex)
     # Index of the event ids in `events`, so recording is O(1) rather than a scan
     # of everything recorded so far. `events` stays a list because its order is
     # part of the projection and several readers iterate it directly.
@@ -779,14 +997,23 @@ class MetricAggregator:
     def route_metrics(self, at: datetime | None = None) -> tuple[RouteMetrics, ...]:
         now = at or datetime.now(UTC)
         grouped: dict[tuple[str, date], list[OperationalEvent]] = {}
+        revenue_by_route: dict[tuple[str, date], list[Money]] = {}
         for event in self.events:
+            if event.is_payment_captured and event.amount is not None:
+                routes = self.revenue_facts.routes_for(event)
+                allocations = self._split_money(event.amount, len(routes))
+                for route, amount in zip(routes, allocations, strict=True):
+                    service_date = route.service_date or event.occurred_at.astimezone(UTC).date()
+                    revenue_by_route.setdefault((route.route_id, service_date), []).append(amount)
+                continue
             if event.route_id is None:
                 continue
             service_date = event.service_date or event.occurred_at.astimezone(UTC).date()
             grouped.setdefault((event.route_id, service_date), []).append(event)
         metrics: list[RouteMetrics] = []
-        for (route_id, service_date), events in grouped.items():
-            revenue = self._money_totals(event for event in events if event.is_payment_captured)
+        for route_id, service_date in sorted(set(grouped) | set(revenue_by_route), key=lambda item: (item[1], item[0])):
+            events = grouped.get((route_id, service_date), [])
+            revenue = self._money_totals_from_money(revenue_by_route.get((route_id, service_date), ()))
             searches = sum(1 for event in events if event.is_search)
             bookings = sum(1 for event in events if event.is_order)
             confirmed = self._latest_int(events, "confirmed") or bookings
@@ -861,24 +1088,34 @@ class MetricAggregator:
         if offset < 0:
             raise ReportingError("revenue report offset cannot be negative")
         now = at or datetime.now(UTC)
-        dimensions = {
-            "route": lambda event: event.route_id,
-            "seat_class": lambda event: event.seat_class,
-            "channel": lambda event: event.channel,
-            "passenger_type": lambda event: event.passenger_type,
-            "time_period": lambda event: event.occurred_at.astimezone(UTC).strftime("%Y-%m-%dT%H:00:00Z"),
-        }
+        dimensions = {"route", "seat_class", "channel", "traveler_type", "time_period"}
         if group_by not in dimensions:
             raise ReportingError("unsupported revenue report dimension")
-        grouped: dict[tuple[str, str], list[OperationalEvent]] = {}
+        grouped: dict[tuple[str, str], dict[str, Any]] = {}
+        complete_totals: list[Money] = []
         for event in self.events:
             if not event.is_payment_captured or event.amount is None:
                 continue
-            value = dimensions[group_by](event) or "unknown"
-            grouped.setdefault((value, event.amount.currency), []).append(event)
+            values = self.revenue_facts.dimension_values(event, group_by)
+            allocations = self._split_money(event.amount, len(values))
+            ancillary_attached, insurance_attached = self.revenue_facts.attachment_flags(event)
+            complete_totals.append(event.amount)
+            event_allocations: dict[str, Decimal] = {}
+            for value, amount in zip(values, allocations, strict=True):
+                event_allocations[value] = event_allocations.get(value, Decimal("0.00")) + amount.amount
+            for value, attributed_amount in event_allocations.items():
+                bucket = grouped.setdefault(
+                    (value, event.amount.currency),
+                    {"revenue": Decimal("0.00"), "count": 0, "distance": Decimal("0"), "ancillary": 0, "insurance": 0},
+                )
+                bucket["revenue"] += attributed_amount
+                bucket["count"] += 1
+                bucket["distance"] += (event.distance_km or Decimal("0")) * Decimal(str(values.count(value))) / len(values)
+                bucket["ancillary"] += int(ancillary_attached)
+                bucket["insurance"] += int(insurance_attached)
         all_items = tuple(
             sorted(
-                (self._revenue_item(group_by, value, currency, events) for (value, currency), events in grouped.items()),
+                (self._revenue_item(group_by, value, currency, values) for (value, currency), values in grouped.items()),
                 key=lambda item: (item.revenue.currency, -item.revenue.amount, item.value),
             )
         )
@@ -887,7 +1124,7 @@ class MetricAggregator:
             now,
             group_by,
             items,
-            self._money_totals_from_money(item.revenue for item in all_items),
+            self._money_totals_from_money(complete_totals),
             len(all_items),
             limit,
             offset,
@@ -941,10 +1178,10 @@ class MetricAggregator:
             for seat_class, values in by_class.items()
         }
 
-    def _revenue_item(self, dimension: str, value: str, currency: str, events: list[OperationalEvent]) -> RevenueItem:
-        revenue = sum((event.amount.amount for event in events if event.amount is not None), Decimal("0.00"))
-        count = sum(1 for event in events if event.amount is not None)
-        distance = sum((event.distance_km or Decimal("0")) for event in events)
+    def _revenue_item(self, dimension: str, value: str, currency: str, values: Mapping[str, Any]) -> RevenueItem:
+        revenue = Decimal(values["revenue"])
+        count = int(values["count"])
+        distance = Decimal(values["distance"])
         yield_per_km = Decimal("0.00") if distance == 0 else (revenue / distance).quantize(Decimal("0.01"))
         return RevenueItem(
             dimension=dimension,
@@ -952,8 +1189,20 @@ class MetricAggregator:
             revenue=Money(revenue, currency),
             count=count,
             yield_per_km=yield_per_km,
-            ancillary_attach_rate=self._rate(sum(1 for event in events if event.ancillary_attached), len(events)),
-            insurance_attach_rate=self._rate(sum(1 for event in events if event.insurance_attached), len(events)),
+            ancillary_attach_rate=self._rate(int(values["ancillary"]), count),
+            insurance_attach_rate=self._rate(int(values["insurance"]), count),
+        )
+
+    @staticmethod
+    def _split_money(value: Money, parts: int) -> tuple[Money, ...]:
+        if parts < 1:
+            return ()
+        minor = int(value.amount * 100)
+        base, remainder = divmod(abs(minor), parts)
+        sign = -1 if minor < 0 else 1
+        return tuple(
+            Money(Decimal(sign * (base + (1 if index < remainder else 0))) / 100, value.currency)
+            for index in range(parts)
         )
 
     @staticmethod
