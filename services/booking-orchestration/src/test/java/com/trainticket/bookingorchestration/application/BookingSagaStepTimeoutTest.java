@@ -91,7 +91,7 @@ class BookingSagaStepTimeoutTest {
     }
 
     @Test
-    void confirmationThatArrivesFirstKeepsItsOutcome() {
+    void aConfirmationThatOutrunsTheHoldSettlesWhenTheHoldArrives() {
         MutableClock clock = new MutableClock(START);
         RecordingEventPublisher published = new RecordingEventPublisher();
         BookingSagaStepDeadlineRepository deadlines = new InMemoryBookingSagaStepDeadlineRepository();
@@ -103,7 +103,14 @@ class BookingSagaStepTimeoutTest {
 
         String sagaId = startPurchaseSaga(service, clock);
         String bookingId = requestReservation(service, sagaId);
+        // The provider confirms first and capacity follows: the reservation is
+        // not complete until the hold exists, so the saga waits for it.
         confirmReservation(service, bookingId);
+        assertEquals(BookingSagaStatus.RESERVING, sagas.findById(sagaId).orElseThrow().status(),
+            "a confirmation without its hold does not settle the reservation step");
+        assertEquals("HOLDING", service.getSegmentBooking(bookingId).orElseThrow().status());
+
+        holdCapacity(service, bookingId);
         assertEquals(BookingSagaStatus.AWAITING_PAYMENT, sagas.findById(sagaId).orElseThrow().status());
         assertEquals(List.of(), service.findDueStepDeadlines(10));
 
@@ -235,6 +242,20 @@ class BookingSagaStepTimeoutTest {
                 "providerReference", Map.of("providerId", "provider-1", "reservationId", "prv-1",
                     "displayReference", "PRV1"),
                 "normalizedEvidence", "confirmed")));
+    }
+
+    private static void holdCapacity(BookingOrchestrationService service, String segmentBookingId) {
+        service.handleUpstreamEvent(new EventEnvelope(PrefixedIds.newEventId(), "CapacityHeld",
+            START.plus(Duration.ofSeconds(2)), CORRELATION, PrefixedIds.newCommandId(), "capacity-availability", 1,
+            Map.ofEntries(
+                Map.entry("segmentBookingId", segmentBookingId),
+                Map.entry("holdId", "hold-1"),
+                Map.entry("inventoryPoolId", "pool:seg-001:standard"),
+                Map.entry("capacityUnitRef", "su-hold-1"),
+                Map.entry("idempotencyKey", "ord-1:seg-1:tvl-1:purchase"),
+                Map.entry("expiresAt", START.plus(Duration.ofMinutes(5)).toString()),
+                Map.entry("idempotentReplay", false),
+                Map.entry("interval", Map.of("fromSeq", 0, "toSeq", 1)))));
     }
 
     private static int count(List<String> eventTypes, String eventType) {
