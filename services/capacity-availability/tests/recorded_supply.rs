@@ -16,6 +16,8 @@ fn pending_from(allocation: &Allocation) -> PendingOccupancy {
         segment_booking_id: allocation.segment_booking_id.clone(),
         traveler_ref: allocation.traveler_ref.clone(),
         capacity_unit_ref: allocation.capacity_unit_ref.clone(),
+        effective_capacity_unit_ref: allocation.seat_ref.seat_unit_ref.clone(),
+        state: "Confirmed".into(),
         interval: allocation.interval.clone(),
     }
 }
@@ -57,6 +59,8 @@ fn recorded_full_business_class_has_no_remaining_capacity_and_deduplicates_holds
             segment_booking_id: a.segment_booking_id.clone(),
             traveler_ref: a.traveler_ref.clone(),
             capacity_unit_ref: a.capacity_unit_ref.clone(),
+            effective_capacity_unit_ref: a.seat_ref.seat_unit_ref.clone(),
+            state: "Confirmed".into(),
             interval: a.interval.clone(),
         })
         .collect();
@@ -198,6 +202,8 @@ fn composition_change_counts_recorded_allocations_and_pending_holds() {
         segment_booking_id: "sb-00000000-0000-7000-8000-000000000003".into(),
         traveler_ref: "tvl-00000000-0000-7000-8000-000000000004".into(),
         capacity_unit_ref: grown.units.last().unwrap().seat_unit_ref.clone(),
+        effective_capacity_unit_ref: grown.units.last().unwrap().seat_unit_ref.clone(),
+        state: "Held".into(),
         interval: interval.clone(),
     };
     assert_eq!(
