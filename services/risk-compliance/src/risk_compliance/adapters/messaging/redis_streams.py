@@ -8,8 +8,24 @@ from train_ticket_platform.messaging import RedisEventPublisher, RedisEventSubsc
 from risk_compliance.application import IDENTITY_PURCHASE_LIMIT_EVENT_TYPES
 
 RISK_COMPLIANCE_PRODUCER = "risk-compliance"
-RISK_COMPLIANCE_SUBSCRIPTIONS: tuple[str, ...] = ("events:journey-order", "events:booking-orchestration", "events:identity-verification")
+JOURNEY_ORDER_STREAM = "events:journey-order"
+BOOKING_ORCHESTRATION_STREAM = "events:booking-orchestration"
+IDENTITY_VERIFICATION_STREAM = "events:identity-verification"
+RISK_COMPLIANCE_SUBSCRIPTIONS: tuple[str, ...] = (
+    JOURNEY_ORDER_STREAM,
+    BOOKING_ORCHESTRATION_STREAM,
+    IDENTITY_VERIFICATION_STREAM,
+)
 RISK_COMPLIANCE_CONSUMER_GROUP = "risk-compliance"
+
+
+def source_stream_for(envelope: Any) -> str:
+    streams = {
+        "journey-order": JOURNEY_ORDER_STREAM,
+        "booking-orchestration": BOOKING_ORCHESTRATION_STREAM,
+        "identity-verification": IDENTITY_VERIFICATION_STREAM,
+    }
+    return streams.get(envelope.producer, envelope.producer)
 
 
 class RedisEventSubscriber(PlatformRedisEventSubscriber):
@@ -61,7 +77,11 @@ __all__ = [
     "RISK_COMPLIANCE_CONSUMER_GROUP",
     "RISK_COMPLIANCE_PRODUCER",
     "RISK_COMPLIANCE_SUBSCRIPTIONS",
+    "BOOKING_ORCHESTRATION_STREAM",
+    "IDENTITY_VERIFICATION_STREAM",
+    "JOURNEY_ORDER_STREAM",
     "RedisEventPublisher",
     "RedisEventSubscriber",
     "risk_compliance_consumer_name",
+    "source_stream_for",
 ]
