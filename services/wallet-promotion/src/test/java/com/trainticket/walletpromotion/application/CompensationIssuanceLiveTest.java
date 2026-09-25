@@ -127,7 +127,7 @@ class CompensationIssuanceLiveTest {
                 try (var context = start(schema)) {
                     var jdbc = new JdbcTemplate(context.getBean(DataSource.class));
                     assertEquals(schema, jdbc.queryForObject("SELECT current_schema()", String.class));
-                    assertEquals(List.of("001", "002", "003", "004", "005"),
+                    assertEquals(List.of("001", "002", "003", "004", "005", "006"),
                         jdbc.queryForList("SELECT version FROM schema_migrations ORDER BY version", String.class));
                     issued = concurrentIssue(client, endpoint(context), body, command.caseId(), schema, admin);
                     afterIssuance = assertSingleIssuance(jdbc, command, issued);

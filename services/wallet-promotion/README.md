@@ -2,7 +2,30 @@
 
 Java service for benefit issuance, wallet balances, reservations, redemption, release, revocation, reversal and expiry.
 
-Last updated: 2026-09-23.
+Last updated: 2026-09-25.
+
+## Redemption policy
+
+Reserve and redeem resolve the referenced Journey Order before changing a
+balance. Narrow scopes additionally verify their Post Sales case, service
+segments, or fare product code against that order. A request cannot establish
+eligibility by supplying matching strings alone.
+
+Reservations are durable records keyed by `(benefitId, reservationRef)` and
+retain their original amount, remaining amount, expiry, verified use reference
+and business reason. Partial redemption and release update that same record.
+An expired reservation returns only its remaining reserved amount to available;
+benefit expiry removes all still-available and still-reserved value.
+
+`redemptionRef`, `releaseRef`, and `reversalRef` are business idempotency keys.
+An identical replay returns the current persisted result without another
+balance, ledger, or event effect. Reuse with different amount, target, scope, or
+reason is a conflict. During the benefit validity window, reversal moves value
+from redeemed back to available. After benefit expiry or revocation, reversal
+only corrects redeemed history and does not restore spendable value.
+
+For every benefit, `available + reserved + redeemed <= issued`. The matching
+wallet sub-ledger receives the same deltas in the same transaction.
 
 ## Complaint compensation issuance
 
@@ -45,7 +68,8 @@ See the [HTTP API](../../docs/08-contracts/api/wallet-promotion.md), [events](..
 
 ## Owns
 
-`PromotionInstrument`, `WalletAccount`, `WalletBalance`, `BenefitRedemption` and wallet ledger entries.
+`PromotionInstrument`, `WalletAccount`, `WalletBalance`, `BenefitReservation`,
+`BenefitRedemption`, release/reversal records and wallet ledger entries.
 
 ## DDD Sources
 

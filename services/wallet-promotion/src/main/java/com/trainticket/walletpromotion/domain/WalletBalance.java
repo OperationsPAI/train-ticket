@@ -4,6 +4,7 @@ public record WalletBalance(BalanceType balanceType, Money availableBalance, Mon
     public WalletBalance {
         availableBalance.requireNonNegative("availableBalance");
         reservedBalance.requireNonNegative("reservedBalance");
+        redeemedBalance.requireNonNegative("redeemedBalance");
         availableBalance.requireSameCurrency(reservedBalance);
         availableBalance.requireSameCurrency(redeemedBalance);
     }

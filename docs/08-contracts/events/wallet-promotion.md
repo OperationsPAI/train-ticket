@@ -1,9 +1,6 @@
 # Wallet / Promotion Events & Commands
 
-Last updated: 2026-09-24.
-
-Runtime baseline: Helm revision 279.
-Remaining work is tracked in [TODO](../../TODO.md).
+Last updated: 2026-09-25.
 
 ## Scope
 
@@ -41,15 +38,19 @@ The PostgreSQL implementation serializes issuance with transaction advisory lock
 It records the case, unique benefit ID and request in `compensation_issuances` in the same transaction as the benefit, wallet ledger and event outbox.
 HTTP response replay remains separate: a stored idempotency key reused with a different request returns `IDEMPOTENCY_KEY_REUSED`.
 
-`BenefitRedeemed` additionally represents the idempotent `BenefitRedemption`
-record. The same `(benefitId, businessReason.reasonType,
-businessReason.reasonCode, businessReason.referenceType,
-businessReason.referenceId)` MUST NOT be redeemed twice.
+`BenefitReserved`, `BenefitRedeemed`, `BenefitReservationReleased`, and
+`BenefitRedemptionReversed` also persist their business operation identity.
+The unique keys are `(benefitId, reservationRef)`, `(benefitId,
+redemptionRef)`, `(benefitId, releaseRef)`, and `(redemptionId, reversalRef)`.
+Equal replays produce no second event or ledger effect; a changed request under
+the same key is rejected.
 
 ## Status enum
 
 Event payloads use the same seven-state enum as the HTTP API: `ISSUED`,
 `RESERVED`, `REDEEMED`, `RELEASED`, `EXPIRED`, `REVOKED`, `REVERSED`.
+Only `EXPIRED` and `REVOKED` prohibit new use. `REVERSED` can retain restored
+available value, while `REDEEMED` means no available or reserved value remains.
 
 ## Common payload objects
 
@@ -145,6 +146,7 @@ See [Post Sales events](post-sales.md) for the approval actions, execution plan 
 | `reservedAmount` | Money | yes | Amount reserved by this command. |
 | `reservationRef` | string | yes | Business reservation reference. |
 | `reservationExpiresAt` | RFC3339 UTC | yes | Reservation expiry timestamp. |
+| `useReference` | object | yes | Authoritative order/business reference verified before reservation. |
 | `availableAmount` | Money | yes | Benefit available amount after reservation. |
 | `totalReservedAmount` | Money | yes | Benefit reserved amount after reservation. |
 | `businessReason` | object | yes | Business reason for the freeze. |
@@ -174,10 +176,11 @@ See [Post Sales events](post-sales.md) for the approval actions, execution plan 
 | `redeemedAmount` | Money | yes | Amount redeemed by this command. |
 | `redemptionRef` | string | yes | Business reference for redemption. |
 | `reservationRef` | string | no | Consumed reservation reference when redemption was reserved first. |
+| `useReference` | object | yes | Authoritative order/business reference verified before redemption. |
 | `availableAmount` | Money | yes | Benefit available amount after redemption. |
 | `reservedAmount` | Money | yes | Benefit reserved amount after redemption. |
 | `totalRedeemedAmount` | Money | yes | Benefit cumulative redeemed amount after redemption. |
-| `businessReason` | object | yes | Idempotency/audit reason; same benefit and reason cannot redeem twice. |
+| `businessReason` | object | yes | Audit reason retained with the redemption. |
 | `walletBalanceDelta` | object | yes | Ledger delta from available or reserved into redeemed. |
 | `redeemedAt` | RFC3339 UTC | yes | Redemption timestamp. |
 | `status` | enum | yes | `REDEEMED` when fully/single-use redeemed; otherwise current lifecycle status after partial redemption. |
@@ -202,12 +205,13 @@ See [Post Sales events](post-sales.md) for the approval actions, execution plan 
 | `balanceType` | enum | yes | Affected wallet sub-ledger. |
 | `releasedAmount` | Money | yes | Amount released from reserved value. |
 | `reservationRef` | string | yes | Reservation reference being released. |
+| `releaseRef` | string | yes | Stable business idempotency identity for the release. |
 | `availableAmount` | Money | yes | Benefit available amount after release. |
 | `reservedAmount` | Money | yes | Benefit reserved amount after release. |
 | `businessReason` | object | yes | Business reason for release. |
 | `walletBalanceDelta` | object | yes | Ledger delta; reserved decreases and available increases by `releasedAmount`. |
 | `releasedAt` | RFC3339 UTC | yes | Release timestamp. |
-| `status` | enum | yes | `RELEASED`. |
+| `status` | enum | yes | `RESERVED` after a partial release; `RELEASED` when no reservation remains. |
 | `aggregateVersion` | integer | yes | Benefit version after release. |
 
 ### BenefitExpired
@@ -278,6 +282,7 @@ See [Post Sales events](post-sales.md) for the approval actions, execution plan 
 | `benefitId` | string | yes | Benefit whose redemption was reversed. |
 | `redemptionId` | string | yes | Original redemption record being reversed. |
 | `reversalId` | string | yes | Reversal record ID (`brr-<uuid>`). |
+| `reversalRef` | string | yes | Stable business idempotency identity for the reversal. |
 | `accountId` | string | yes | Owning account. |
 | `walletAccountId` | string | yes | Wallet account adjusted by reversal. |
 | `benefitType` | enum | yes | Benefit type. |
@@ -287,9 +292,9 @@ See [Post Sales events](post-sales.md) for the approval actions, execution plan 
 | `reservedAmount` | Money | yes | Benefit reserved amount after reversal. |
 | `totalRedeemedAmount` | Money | yes | Benefit cumulative redeemed amount after reversal. |
 | `businessReason` | object | yes | Business reason for reversal. |
-| `walletBalanceDelta` | object | yes | Ledger delta compensating the redeemed value. |
+| `walletBalanceDelta` | object | yes | During validity, redeemed decreases and available increases. After expiry/revocation, only redeemed decreases. |
 | `reversedAt` | RFC3339 UTC | yes | Reversal timestamp. |
-| `status` | enum | yes | `REVERSED`. |
+| `status` | enum | yes | `REVERSED` during validity; remains `EXPIRED` or `REVOKED` for terminal benefits. |
 | `aggregateVersion` | integer | yes | Benefit version after reversal. |
 
 ## Accepted Commands
