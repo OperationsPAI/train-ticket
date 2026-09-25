@@ -54,7 +54,6 @@ Customer Service 与 Admin & Audit 通过受控命令协作，目标服务保有
 
 ## 目录与引用
 
-catalog 当前登记 32 个业务服务。
-源码中另外存在 Corporate Travel、Group Booking、Loyalty Membership、Marketing Campaign 和 Travel Insurance。
-全部 37 个服务的目录与语言见[语言及源码目录](../05-service-architecture/language-selection.md)，登记差异见 [TODO T10](../TODO.md#t10-reconcile-repository-metadata-and-static-checks)。
+catalog、源码目录与业务镜像构建入口当前统一登记 37 个业务服务。
+全部服务的目录与语言见[语言及源码目录](../05-service-architecture/language-selection.md)，一致性由 `scripts/check_service_catalog.py` 校验。
 本目录保留稳定路径，工作状态统一通过 [TODO](../TODO.md)维护。

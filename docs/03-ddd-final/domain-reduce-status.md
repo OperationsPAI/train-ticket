@@ -75,7 +75,6 @@ Notification durable 发送队列已在提交 `41917b85` 中实现、尚未部�
 | Marketing Campaign | Campaign、CouponTemplate、IssuanceBatch 和活动预算。 | `POST /api/v1/campaigns`；`POST /api/v1/campaigns/{campaignId}/batches`。 | [CampaignController.java](../../services/marketing-campaign/src/main/java/com/trainticket/marketingcampaign/api/CampaignController.java)、[IssuanceBatchController.java](../../services/marketing-campaign/src/main/java/com/trainticket/marketingcampaign/api/IssuanceBatchController.java) |
 | Travel Insurance | Policy、Claim 和理赔审批。 | `POST /api/v1/policies`；`POST /api/v1/claims/:id/approve`。 | [router.go](../../services/travel-insurance/api/router.go) |
 
-上述 Corporate Travel、Group Booking、Loyalty Membership、Marketing Campaign、Travel Insurance 已有源码和 API，路径与语言见[语言及源码目录](../05-service-architecture/language-selection.md)。
-catalog 登记差异统一见 [TODO T10](../TODO.md#t10-reconcile-repository-metadata-and-static-checks)。
+上述 Corporate Travel、Group Booking、Loyalty Membership、Marketing Campaign、Travel Insurance 已有源码和 API，并已登记到统一 catalog；路径与语言见[语言及源码目录](../05-service-architecture/language-selection.md)。
 接口调用必须同时定位服务与路径。
 Finance 的 `/api/v1/invoices` 处理本域 Invoice 记录，电子发票申请路由至 Invoicing 的 `/api/v1/e-invoice-requests`。

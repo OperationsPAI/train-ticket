@@ -4,11 +4,10 @@ Updated: September 24, 2026.
 
 The deployment baseline is Helm revision 279, with evidence in [current project status](../00-current-status.md).
 The tables below match the checked source tree and build manifests.
-The catalog contains 32 business services and two platform modules.
-The source tree contains 37 business service directories, including the five additional services listed below.
+The catalog and source tree contain the same 37 business services and two cataloged platform modules.
 Unfinished capabilities and deployment work are tracked in [TODO](../TODO.md).
 
-## Catalog Services
+## Business Services
 
 Language values use the spelling in [service-catalog.json](../../service-catalog.json) and are checked against each service's build manifest.
 Each path opens the corresponding service source directory.
@@ -48,16 +47,6 @@ Registered HTTP entry points and business responsibilities are indexed in [domai
 | `wallet-promotion` | [services/wallet-promotion](../../services/wallet-promotion/) | java | Benefits, wallet balances, reservations and redemptions. |
 | `dispatch` | [services/dispatch](../../services/dispatch/) | golang | Ride requests, assignment, ETA and ride lifecycle. |
 | `identity-verification` | [services/identity-verification](../../services/identity-verification/) | python | Credential verification, eligibility certificates and purchase limit facts. |
-
-## Additional Services In Source
-
-These services have source directories, build manifests and registered API handlers.
-Their service IDs are absent from the checked catalog.
-Catalog reconciliation is tracked in [TODO T10](../TODO.md#t10-reconcile-repository-metadata-and-static-checks).
-Remaining feature work and acceptance are tracked in [TODO](../TODO.md).
-
-| Service ID | Source path | Language | Responsibility |
-|---|---|---|---|
 | `corporate-travel` | [services/corporate-travel](../../services/corporate-travel/) | python | Corporate agreements, authorizations, policy checks and monthly billing. |
 | `group-booking` | [services/group-booking](../../services/group-booking/) | java | Group booking requests, members, confirmation and cancellation. |
 | `loyalty-membership` | [services/loyalty-membership](../../services/loyalty-membership/) | typescript | Membership, points, tier evaluation and redemption. |
@@ -98,6 +87,4 @@ The selected implementation language does not transfer business ownership betwee
 
 Shared modules provide runtime, messaging, storage and common value support.
 Domain event payloads and business state remain owned by the producing service.
-Capacity's new combined supply implementation is committed as `caafa668` and undeployed.
-Notification's durable delivery queue is committed as `41917b85` and undeployed.
 Work required for these capabilities is tracked in [TODO](../TODO.md).

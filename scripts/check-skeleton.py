@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -44,6 +45,40 @@ def npm_install_command(service_root: Path) -> list[str]:
     return ["npm", "install"]
 
 
+def python_test_args(service_root: Path) -> list[str]:
+    pyproject = (service_root / "pyproject.toml").read_text(encoding="utf-8")
+    if re.search(r"(?m)^\s*[\"']?pytest[\"']?\s*(?:[=<>~!]|$)", pyproject):
+        return ["-m", "pytest", "-q"]
+    return ["-m", "unittest", "discover", "-s", "tests"]
+
+
+def java_major_version() -> int | None:
+    try:
+        result = subprocess.run(
+            ["java", "-version"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    match = re.search(r'version "([0-9]+)', result.stderr + result.stdout)
+    return int(match.group(1)) if match else None
+
+
+def required_java_major(services: list[dict]) -> int:
+    required = 0
+    for service in services:
+        if service["language"] != "java":
+            continue
+        pom = (ROOT / service["path"] / "pom.xml").read_text(encoding="utf-8")
+        match = re.search(r"<java\.version>([0-9]+)</java\.version>", pom)
+        if match:
+            required = max(required, int(match.group(1)))
+    return required
+
+
 def require(path: Path) -> None:
     if not path.exists():
         fail(f"missing required path: {path.relative_to(ROOT)}")
@@ -73,7 +108,15 @@ def validate_catalog(catalog: dict) -> list[dict]:
         if language == "golang":
             require(root / "go.mod")
             if service["path"].startswith("services/"):
-                require(root / "internal/domain/profile.go")
+                profile_paths = (
+                    root / "internal/domain/profile.go",
+                    root / "domain/profile.go",
+                )
+                if not any(path.is_file() for path in profile_paths):
+                    fail(
+                        f"missing Go service profile under {root.relative_to(ROOT)}: "
+                        "expected internal/domain/profile.go or domain/profile.go"
+                    )
         elif language == "java":
             require(root / "pom.xml")
             require(root / "src/main")
@@ -120,14 +163,22 @@ def run_available_language_checks(services: list[dict], strict: bool) -> None:
     for service in services:
         if service["language"] == "python":
             service_root = ROOT / service["path"]
-            if require_tool("uv", strict):
-                if strict:
-                    run(["uv", "sync"], service_root)
-                run(["uv", "run", "python", "-m", "unittest", "discover", "-s", "tests"], service_root)
+            test_args = python_test_args(service_root)
+            if strict:
+                require_tool("uv", True)
+                run(["uv", "sync"], service_root)
+                run(["uv", "run", "python", *test_args], service_root)
+            elif (service_root / ".venv/bin/python").is_file():
+                run([str(service_root / ".venv/bin/python"), *test_args], service_root)
             else:
                 env = os.environ.copy()
-                env["PYTHONPATH"] = str(service_root / "src")
-                run([sys.executable, "-m", "unittest", "discover", "-s", "tests"], service_root, env=env)
+                env["PYTHONPATH"] = os.pathsep.join(
+                    [
+                        str(service_root / "src"),
+                        str(ROOT / "platform/python-kit/src"),
+                    ]
+                )
+                run([sys.executable, *test_args], service_root, env=env)
 
     if require_tool("cargo", strict):
         for service in services:
@@ -136,14 +187,22 @@ def run_available_language_checks(services: list[dict], strict: bool) -> None:
     else:
         print("skip rust checks: cargo not found")
 
-    if require_tool("mvn", strict) and require_tool("java", strict) and command_ok(["java", "-version"]):
+    has_java = require_tool("mvn", strict) and require_tool("java", strict)
+    installed_java = java_major_version() if has_java else None
+    minimum_java = required_java_major(services)
+    if has_java and installed_java is not None and installed_java >= minimum_java:
         for service in services:
             if service["language"] == "java":
                 service_root = ROOT / service["path"]
                 run(["mvn", "-q", "test"], service_root)
                 run(["java", "-cp", "target/classes:target/test-classes", java_contract_check_class(service_root)], service_root)
+    elif strict and has_java:
+        fail(f"Java {minimum_java} is required, found {installed_java or 'unknown'}")
     else:
-        print("skip java checks: java or maven not available")
+        print(
+            "skip java checks: "
+            f"Java {minimum_java} is required, found {installed_java or 'unavailable'}"
+        )
 
     for service in services:
         if service["language"] != "typescript":
