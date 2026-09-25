@@ -9,8 +9,9 @@ Remaining work is tracked in [docs/TODO.md](../../docs/TODO.md).
 
 `POST /api/v1/itineraries/search` resolves origin and destination references, finds planned segments for the requested departure date, ranks candidates and stores itinerary snapshots.
 `GET /api/v1/itineraries/{itineraryRef}` reads a saved snapshot.
-The current index produces direct train itineraries with one leg each.
-The domain accepts multiple legs for validation and scoring, but the HTTP candidate lookup does not assemble connections.
+Search remains direct-only unless the request explicitly sets `maxConnections` above zero.
+When enabled, the index assembles connected train itineraries up to three connections and only accepts each connection when an applicable published minimum connection time rule is present.
+The request's `minConnectionMinutes` can make that minimum stricter but cannot weaken the published rule.
 
 `src/plan_index.rs` stores segments by reference and indexes their references by departure date and origin node.
 Node mappings support both node to place and place to nodes lookup.
@@ -20,8 +21,9 @@ An empty lookup produces an empty itinerary list.
 
 ## Events and storage
 
-The index consumes `ServicePlanChanged`, `ServiceSegmentCreated`, `TransportNodeRegistered`, `TransportNodeAdded` and `TransportNodeUpdated`.
-Segment and node changes persist to `plan_segments` and `plan_nodes`, which rebuild the index at startup.
+The index consumes `ServicePlanChanged`, `ServiceSegmentCreated`, `TransportNodeRegistered`, `TransportNodeAdded`, `TransportNodeUpdated`, `MctRulePublished` and `MctRuleRetired`.
+Segment, node and rule changes persist to `plan_segments`, `plan_nodes` and `plan_mct_rules`, which rebuild the index at startup.
+Retired rules remain as version tombstones so an out-of-order publication cannot revive them.
 The active filter does not index service publication alone, delay, cancellation, restoration or temporary service events.
 
 Search results persist to `itinerary_snapshots`, and `ItineraryProposed` is appended through the outbox.
@@ -32,8 +34,8 @@ The current publish method logs append failures, so a successful search response
 
 Trip Planning does not hold capacity, create a commercial Offer or modify orders.
 Generated price hints contain zero CNY and availability hints use `UNKNOWN`; they are not current Fare quotes or Capacity availability.
-The domain's default connection check uses five minutes, while the current direct results contain no connection.
-There is no consumed operator MCT rule table.
+Only unconditional `STATION` to `STATION` rules apply because the current Service Plan feed identifies train stops but does not publish the dimensions needed to evaluate conditional rules.
+The same stop, or two nodes mapped to the same place, is classified as `SAME_STATION`; other transfer categories fail closed until authoritative topology is available.
 The HTTP response does not expose all internal score explanations or exclusion reasons.
 
 The current Service Plan creation API defines two stops and an explicit supply interval of `[0,1)`.
