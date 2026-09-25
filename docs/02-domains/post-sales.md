@@ -45,6 +45,13 @@ Post Sales 通过这些服务的 API 和事件推进 Case，各服务保存各�
 Payment 继续使用规范 Case ID（拆分退款使用 `caseId:paymentIntentId`）去重，票证作废携带相同业务 Case 引用且对已作废票证无操作，容量释放由其拥有方状态防重。
 `APPLIED` Case 不重发任何执行事件。
 
+redrive 消费追平后，内部 `reconcile-execution` 入口可以只读核对拥有方状态并补记已完成执行。
+该入口仅支持退款形态的 `REFUND`、`CANCELLATION` 和当前 `REBOOK`，不处理 `CHANGE` 或 `COMPENSATION`。
+每个范围内票证必须为 `VOIDED`，Booking 必须为 `CANCELLED`，并且订单、旅客、行程段、票证、Booking 和 `capacityHoldId` 的引用必须相互一致。
+Capacity 返回匹配 Hold 的 `RELEASED` 可作为释放证据；只有在关联票证已作废且 Booking 已取消后，Hold 查询 404 才可作为历史释放的充分补充证据，孤立 404 不会被接受。
+Payment 的 Case 退款必须与冻结审批金额和 `refundPayments` 分配一致，零金额审批则必须没有退款记录。
+验证成功后按原执行计划幂等补记步骤、写入 `releasedOrderItemRefs`、收敛为 `APPLIED` 并发布一次 `PostSalesApplied`；整个过程不调用任何下游写接口。
+
 普通退款和取消消费 `CapacityReleased`，记录每个范围内预订的释放确认。
 范围全部释放后可发布 `PostSalesApplied` 并将 Case 置为 `APPLIED`。
 该终态表示售后业务结果已应用，资金是否结算仍需查询 Payment 的 `Refund`。
@@ -91,6 +98,7 @@ Payment 跳过补偿审批的退款处理，Journey Order 和 Finance 跳过补�
 | `POST /api/v1/post-sales-cases/{caseId}/target-offer` | 选择改签目标。 |
 | `POST /api/v1/post-sales-cases/{caseId}/execute-change` | 推进改签操作。 |
 | `POST /api/v1/post-sales-cases/{caseId}/execute-compensation` | 推进钱包补偿操作。 |
+| `POST /api/v1/internal/post-sales-cases/{caseId}/reconcile-execution` | 只读核对 redrive 后的权威副作用并收敛历史退款 Case。 |
 | `GET /api/v1/internal/compensation-mismatches/{caseId}` | 查询终态补偿不一致的完整冻结证据。 |
 | `GET /api/v1/post-sales-cases/{caseId}` | 读取决策、状态和执行证据。 |
 | `GET /api/v1/post-sales-cases/{caseId}/issue-authorization/{bookingId}` | 核验替代票签发条件。 |
