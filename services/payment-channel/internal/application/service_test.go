@@ -239,7 +239,7 @@ func TestOrderRefundStatementDiscrepancyFlow(t *testing.T) {
 		t.Fatalf("refund not succeeded")
 	}
 	statementDate := o.UpdatedAt.Format("2006-01-02")
-	st, err := svc.GenerateStatement(ctx, GenerateStatementRequest{Channel: o.Channel, StatementDate: statementDate, Currency: "CNY", SeedVersion: "v1", CorrelationID: corr, SourceCommandID: cmd, ScenarioCodes: []string{"AMOUNT_MISMATCH"}})
+	st, err := svc.GenerateStatement(ctx, GenerateStatementRequest{Channel: o.Channel, StatementDate: statementDate, Currency: "CNY", SeedVersion: "v1", OperatorRef: "ops", ReasonCode: "DAILY_CLOSE", CorrelationID: corr, SourceCommandID: cmd, ScenarioCodes: []string{"AMOUNT_MISMATCH"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,14 +327,14 @@ func TestStatementGenerationFiltersByStatementDate(t *testing.T) {
 	}
 	today := o.UpdatedAt.Format("2006-01-02")
 	yesterday := o.UpdatedAt.Add(-24 * time.Hour).Format("2006-01-02")
-	st, err := svc.GenerateStatement(ctx, GenerateStatementRequest{Channel: o.Channel, StatementDate: yesterday, Currency: "CNY", SeedVersion: "v1", CorrelationID: corr, SourceCommandID: cmd})
+	st, err := svc.GenerateStatement(ctx, GenerateStatementRequest{Channel: o.Channel, StatementDate: yesterday, Currency: "CNY", SeedVersion: "v1", OperatorRef: "ops", ReasonCode: "DAILY_CLOSE", CorrelationID: corr, SourceCommandID: cmd})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if st.LineCount != 0 {
 		t.Fatalf("expected no prior-day lines, got %d", st.LineCount)
 	}
-	st, err = svc.GenerateStatement(ctx, GenerateStatementRequest{Channel: o.Channel, StatementDate: today, Currency: "CNY", SeedVersion: "v2", CorrelationID: corr, SourceCommandID: cmd})
+	st, err = svc.GenerateStatement(ctx, GenerateStatementRequest{Channel: o.Channel, StatementDate: today, Currency: "CNY", SeedVersion: "v2", OperatorRef: "ops", ReasonCode: "DAILY_CLOSE", CorrelationID: corr, SourceCommandID: cmd})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,7 +367,7 @@ func TestStatementGenerationUsesTerminalOccurrenceInsteadOfSnapshotUpdate(t *tes
 	order.UpdatedAt = queriedAt
 
 	statement, err := svc.GenerateStatement(ctx, GenerateStatementRequest{
-		Channel: order.Channel, StatementDate: "2026-09-23", Currency: "CNY", SeedVersion: "v1",
+		Channel: order.Channel, StatementDate: "2026-09-23", Currency: "CNY", SeedVersion: "v1", OperatorRef: "ops", ReasonCode: "DAILY_CLOSE",
 		CorrelationID: corr, SourceCommandID: cmd,
 	})
 	if err != nil {
@@ -381,7 +381,7 @@ func TestStatementGenerationUsesTerminalOccurrenceInsteadOfSnapshotUpdate(t *tes
 		t.Fatalf("line occurrence page=%+v err=%v want %s", page, err, settledAt)
 	}
 	wrongDay, err := svc.GenerateStatement(ctx, GenerateStatementRequest{
-		Channel: order.Channel, StatementDate: "2026-09-25", Currency: "CNY", SeedVersion: "v2",
+		Channel: order.Channel, StatementDate: "2026-09-25", Currency: "CNY", SeedVersion: "v2", OperatorRef: "ops", ReasonCode: "DAILY_CLOSE",
 		CorrelationID: corr, SourceCommandID: cmd,
 	})
 	if err != nil {
@@ -406,7 +406,7 @@ func TestStatementGenerationPropagatesFactReadFailures(t *testing.T) {
 			test.set(repo)
 			svc := New(repo, &pub{}, nil)
 			_, err := svc.GenerateStatement(context.Background(), GenerateStatementRequest{
-				Channel: domain.ChannelAlipay, StatementDate: "2026-09-25", Currency: "CNY", SeedVersion: "v1",
+				Channel: domain.ChannelAlipay, StatementDate: "2026-09-25", Currency: "CNY", SeedVersion: "v1", OperatorRef: "ops", ReasonCode: "DAILY_CLOSE",
 				CorrelationID: ids.NewCorrelationID(), SourceCommandID: ids.NewCommandID(),
 			})
 			if err == nil || err.Error() != test.want {
