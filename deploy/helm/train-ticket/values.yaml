@@ -945,7 +945,7 @@ services:
       limits: { cpu: '6', memory: 4Gi }
   booking-orchestration:
     db: booking_orchestration
-    image: mirrors.tencent.com/microservice/booking-orchestration:final-e98069db@sha256:71174cbbaccf166d4b77781a1dfaa48a1e03c78c60563b8deecccf6744e2c9b3
+    image: mirrors.tencent.com/microservice/booking-orchestration:autoclaim-6b90ce5d@sha256:81e6e7ef776240b8f4f6e43b3bcfa7bbaaeb73fc4ef584ec67d23f27a55dd7ae
     # The booking saga and segment-booking snapshots are the hottest write
     # workload. Keep them on the dedicated hot shard so application replicas
     # and future HPA changes do not concentrate every connection on core.
@@ -1021,7 +1021,7 @@ services:
       limits: { cpu: '12', memory: 6Gi }
   payment:
     db: payment
-    image: mirrors.tencent.com/microservice/payment:final-b7b3186e@sha256:70817cea4fa54c84917cc42bf97330876b09969b942ff9d9e5fe1d08e22added
+    image: mirrors.tencent.com/microservice/payment:autoclaim-6b90ce5d@sha256:faea7424dd667b181efc086792f01ff095cb99db3724f7778c154199dcad9b3a
     strategy:
       type: RollingUpdate
       rollingUpdate:
@@ -1098,7 +1098,7 @@ services:
           command: ["sleep", "10"]
   post-sales:
     db: post_sales
-    image: mirrors.tencent.com/microservice/post-sales:reconcile-f6b15737@sha256:fdf556f407f84aa3e4e980a0e42b7fcf3d9fe5f3ebede3d08a2de0abf5528f90
+    image: mirrors.tencent.com/microservice/post-sales:autoclaim-6b90ce5d@sha256:f28373bc0ef32facaa170ec0e74245bd824eba6132e70ac7f978b49162fa8c72
     # Two replicas: the change and refund cases that the load generator polls
     # are executed here, and a burst left its journey order consumer ten thousand
     # events behind.
@@ -1189,6 +1189,7 @@ services:
       limits: { cpu: '2', memory: 3Gi }
   traveler-profile:
     db: traveler_profile
+    image: mirrors.tencent.com/microservice/traveler-profile:autoclaim-6b90ce5d@sha256:62a69989555b6d0e405e2085cdd336236fddd54cc3a808fb13c98ea056e8b7de
     pgInstance: user
     strategy:
       type: RollingUpdate
@@ -1254,6 +1255,7 @@ services:
           command: ["sleep", "10"]
   admin-audit:
     db: admin_audit
+    image: mirrors.tencent.com/microservice/admin-audit:autoclaim-6b90ce5d@sha256:93037758b9ff16c32ff9e0133fa871876ac10031660533229f93d847ed751d33
     # JVM event consumer, low traffic -- see the note on defaults.resources.
     resources:
       requests: { cpu: 50m, memory: 192Mi }
@@ -1294,7 +1296,7 @@ services:
       limits: { cpu: '4', memory: 3Gi }
   finance-settlement:
     db: finance_settlement
-    image: mirrors.tencent.com/microservice/finance-settlement:final-e98069db@sha256:5ba33fe93f948412d1cb8fb85a2a661eab2b0c4dded955927a0f4be80a132ae9
+    image: mirrors.tencent.com/microservice/finance-settlement:autoclaim-6b90ce5d@sha256:4120578bb9596d0462f123122de1d6b8be2e13c429f449612d1714edab32620f
     strategy:
       type: RollingUpdate
       rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
@@ -1362,7 +1364,7 @@ services:
       PG_MAX_POOL_SIZE: "24"
   wallet-promotion:
     db: wallet_promotion
-    image: mirrors.tencent.com/microservice/wallet-promotion:wiring-6902d2ac@sha256:1f1f90fae15814420a5a5fc553ce678f0eb88cf3b8a63fe8788f422f780d84c1
+    image: mirrors.tencent.com/microservice/wallet-promotion:autoclaim-6b90ce5d@sha256:79de2e83f778390a379a05be2486cc7226bb188a0eb43532d42a5836957cf5ae
     # JVM event consumer, low traffic -- see the note on defaults.resources.
     resources:
       requests: { cpu: 50m, memory: 192Mi }
@@ -1452,13 +1454,14 @@ services:
       limits: { cpu: '2', memory: 3Gi }
   marketing-campaign:
     db: marketing_campaign
+    image: mirrors.tencent.com/microservice/marketing-campaign:autoclaim-6b90ce5d@sha256:5efcfccf21b7cf97895cccf42b394c5ba8dc99a11d55abc2ff6f26c54d26796e
     # JVM event consumer, low traffic -- see the note on defaults.resources.
     resources:
       requests: { cpu: 50m, memory: 192Mi }
       limits: { cpu: '1', memory: 2Gi }
   group-booking:
     db: group_booking
-    image: mirrors.tencent.com/microservice/group-booking:final-e98069db@sha256:2f9b60cfd6e366b53835fb45b364715ba32f7a5e2ec9529fb018d753f3d56243
+    image: mirrors.tencent.com/microservice/group-booking:autoclaim-6b90ce5d@sha256:9a70c77799b4bb5183c4925be101b909f6d01a07bc9fe4bf28750426ed12cf84
     # JVM event consumer, low traffic -- see the note on defaults.resources.
     resources:
       requests: { cpu: 50m, memory: 192Mi }
