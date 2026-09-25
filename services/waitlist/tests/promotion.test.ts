@@ -30,7 +30,7 @@ class StubOfferManagement implements OfferManagementClient {
   public calls: string[] = [];
   async createOffer(entry: WaitlistEntry) {
     this.calls.push(entry.entryId);
-    return { offerId: `off-${entry.entryId}`, offerVersion: 1, expiresAt: "2026-01-01T00:10:00.000Z" };
+    return { offerId: `off-${entry.entryId}`, offerVersion: 1, expiresAt: "2026-01-01T00:10:00.000Z", total: { currency: "CNY", minorUnits: 10_750 } };
   }
 }
 
@@ -84,8 +84,8 @@ test("no payment-service calls are made while fulfilling a matched waitlist entr
     const url = String(input);
     calls.push(url);
     if (url.endsWith("/api/v1/fare-quotes")) return Response.json({ quoteId: "fq-http" }, { status: 201 });
-    if (url.endsWith("/api/v1/offers")) return Response.json({ offerId: "off-http", offerVersion: 1, expiresAt: "2026-01-01T00:10:00.000Z" }, { status: 201 });
-    if (url.endsWith("/api/v1/journey-orders")) return Response.json({ orderId: "ord-http" }, { status: 201 });
+    if (url.endsWith("/api/v1/offers")) return Response.json({ offerId: "off-http", offerVersion: 1, expiresAt: "2026-01-01T00:10:00.000Z", total: { currency: "CNY", minorUnits: 10_750 } }, { status: 201 });
+    if (url.endsWith("/api/v1/journey-orders")) return Response.json({ orderId: "ord-http", monetarySummary: { payableTotal: { currency: "CNY", minorUnits: 10_750 } } }, { status: 201 });
     return Response.json({ error: "unexpected" }, { status: 500 });
   }) as typeof fetch;
   try {
@@ -268,7 +268,7 @@ test("expired un-ordered promotion restores its capacity credit", async () => {
 
 test("promotion persists the earliest commercial, guarantee and waitlist expiry", async () => {
   class EarlyOffer implements OfferManagementClient {
-    async createOffer(entry: WaitlistEntry) { return { offerId: `off-${entry.entryId}`, offerVersion: 1, expiresAt: "2026-01-01T00:03:00.000Z" }; }
+    async createOffer(entry: WaitlistEntry) { return { offerId: `off-${entry.entryId}`, offerVersion: 1, expiresAt: "2026-01-01T00:03:00.000Z", total: { currency: "CNY", minorUnits: 10_750 } }; }
   }
   const repository = new InMemoryWaitlistRepository();
   const service = new WaitlistApplicationService(repository, new InMemoryEventPublisher(), new StubFarePricing(), new StubCapacity(), new StubJourneyOrder(), () => new Date("2026-01-01T00:00:00.000Z"), new EarlyOffer());
@@ -288,7 +288,7 @@ test("order started inside the offer window is linked even if the response cross
     }
   }
   class EarlyOffer implements OfferManagementClient {
-    async createOffer(entry: WaitlistEntry) { return { offerId: `off-${entry.entryId}`, offerVersion: 1, expiresAt: "2026-01-01T00:03:00.000Z" }; }
+    async createOffer(entry: WaitlistEntry) { return { offerId: `off-${entry.entryId}`, offerVersion: 1, expiresAt: "2026-01-01T00:03:00.000Z", total: { currency: "CNY", minorUnits: 10_750 } }; }
   }
   const repository = new InMemoryWaitlistRepository();
   const service = new WaitlistApplicationService(repository, new InMemoryEventPublisher(), new StubFarePricing(), new StubCapacity(), new CrossingOrder(), () => current, new EarlyOffer());
