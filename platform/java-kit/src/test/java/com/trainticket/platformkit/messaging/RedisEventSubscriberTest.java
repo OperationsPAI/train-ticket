@@ -8,6 +8,7 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.trainticket.platformkit.observability.EventConsumerMetrics;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -20,6 +21,61 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 
 class RedisEventSubscriberTest {
+    @Test
+    void recordsBoundedConsumerOutcomesAcrossSuccessRetryAndDeadLetter() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
+        EventEnvelope event = new EventEnvelopeFactory("payment").create("PaymentCaptured", Map.of("id", "1"));
+        RedeliveringStreams streams = new RedeliveringStreams(List.of(
+            new RedisStreamOperations.StreamEntry("metrics-1", objectMapper.writeValueAsString(event))
+        ));
+        streams.deliveryCount = 1;
+        RecordingEventConsumerMetrics metrics = new RecordingEventConsumerMetrics();
+        RedisEventSubscriber subscriber = new RedisEventSubscriber(
+            streams,
+            objectMapper,
+            null,
+            new InMemoryConsumedEventStore(),
+            RedisEventSubscriber.defaultEventConsumerTracer(),
+            metrics,
+            1,
+            60_000L
+        );
+
+        subscriber.recoverOnce("events:payment", "journey-order", "consumer-1", envelope -> HandlerResult.TRANSIENT_FAILURE);
+        subscriber.recoverOnce("events:payment", "journey-order", "consumer-1", envelope -> HandlerResult.SUCCESS);
+        subscriber.close();
+
+        assertThat(metrics.outcomes).containsExactly(
+            EventConsumerMetrics.Outcome.RETRY,
+            EventConsumerMetrics.Outcome.SUCCESS
+        );
+        assertThat(metrics.failures).containsExactly(EventConsumerMetrics.FailureType.TRANSIENT_RESULT);
+        assertThat(metrics.deadLetters).isEmpty();
+
+        RedeliveringStreams fatalStreams = new RedeliveringStreams(List.of(
+            new RedisStreamOperations.StreamEntry("metrics-2", objectMapper.writeValueAsString(event))
+        ));
+        fatalStreams.deliveryCount = 1;
+        RecordingEventConsumerMetrics fatalMetrics = new RecordingEventConsumerMetrics();
+        RedisEventSubscriber fatalSubscriber = new RedisEventSubscriber(
+            fatalStreams,
+            objectMapper,
+            null,
+            new InMemoryConsumedEventStore(),
+            RedisEventSubscriber.defaultEventConsumerTracer(),
+            fatalMetrics,
+            1,
+            60_000L
+        );
+
+        fatalSubscriber.recoverOnce("events:payment", "journey-order", "consumer-1", envelope -> HandlerResult.FATAL_FAILURE);
+        fatalSubscriber.close();
+
+        assertThat(fatalMetrics.outcomes).containsExactly(EventConsumerMetrics.Outcome.DEAD_LETTER);
+        assertThat(fatalMetrics.failures).containsExactly(EventConsumerMetrics.FailureType.FATAL_RESULT);
+        assertThat(fatalMetrics.deadLetters).containsExactly(EventConsumerMetrics.FailureType.FATAL_RESULT);
+    }
+
     @Test
     void handlerExceptionLeavesMessagePendingAndLoopContinues() throws Exception {
         ObjectMapper objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
@@ -580,6 +636,27 @@ class RedisEventSubscriberTest {
                     }
                 })
                 .toList();
+        }
+    }
+
+    private static final class RecordingEventConsumerMetrics implements EventConsumerMetrics {
+        private final List<Outcome> outcomes = new ArrayList<>();
+        private final List<FailureType> failures = new ArrayList<>();
+        private final List<FailureType> deadLetters = new ArrayList<>();
+
+        @Override
+        public void recordOutcome(Outcome outcome) {
+            outcomes.add(outcome);
+        }
+
+        @Override
+        public void recordFailure(FailureType failureType) {
+            failures.add(failureType);
+        }
+
+        @Override
+        public void recordDeadLetter(FailureType reason) {
+            deadLetters.add(reason);
         }
     }
 
