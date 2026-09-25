@@ -751,14 +751,13 @@ services:
   capacity-availability:
     db: capacity_availability
     image: mirrors.tencent.com/microservice/capacity-availability:final-e98069db@sha256:e880d85d81be4688528f256df1b03ef13eed8dc93aeb5e46fff13d0cac79f039
-    # Four replicas: every reservation takes a Hold here, and the pool locks are
-    # database advisory locks, so replicas coordinate through PostgreSQL. Two
-    # replicas with twenty four threads each could not clear the reservation
-    # backlog that the rejected-source defect left on the Booking stream: the
-    # consumer sat three to four thousand entries behind and a reservation
-    # confirmed minutes after the load generator gave up, which is what it
-    # reports as `failed_at_staff-poll-reservation`.
-    replicas: 4
+    # Six replicas: every reservation takes a Hold here, and the pool locks are
+    # database advisory locks, so replicas coordinate through PostgreSQL. The
+    # consumer's work is waiting rather than computing -- a replica sits under a
+    # tenth of a core -- so its throughput is the number of handler threads
+    # divided by the wall time one admission takes, and replicas are the lever
+    # that moves it.
+    replicas: 6
     env:
       # The Booking stream peaks near two hundred events per second while a Hold
       # needs several database writes. Four threads fell behind during a peak
