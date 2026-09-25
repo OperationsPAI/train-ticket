@@ -12,6 +12,11 @@ project:
 # traceability; they are not the current execution backlog unless explicitly
 # regenerated and re-approved. Legacy WP IDs in runtime profiles are
 # traceability-only metadata. See docs/00-current-status.md.
+# A requirement's `status: implemented` means only that the code/docs/tests
+# listed on that requirement exist and passed their scoped checks. It is not a
+# claim that every business scenario, cross-service flow, deployment, or load
+# acceptance is complete; those outcomes require evidence in docs/TODO.md and
+# docs/00-current-status.md.
 requirements:
   - id: REQ-001
     title: "Polyglot bounded-context skeleton"
