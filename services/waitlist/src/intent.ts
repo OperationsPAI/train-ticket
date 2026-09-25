@@ -1,5 +1,5 @@
 import { tracedFetch } from "@trainticket/ts-kit";
-import { DomainError, normalizeFareClass, type FareClass, type FareClassInput, type TravelInterval } from "./domain.js";
+import { DomainError, normalizeFareClass, type FareClass, type FareClassInput, type PaymentGuaranteeSnapshot, type TravelInterval } from "./domain.js";
 
 export type WaitlistIntentRequest = Readonly<{
   accountId: string;
@@ -23,6 +23,7 @@ export type ResolvedWaitlistIntent = Readonly<{
   seatClass: FareClass;
   interval: TravelInterval;
   stopSequenceVersion: string;
+  paymentGuarantee: PaymentGuaranteeSnapshot;
 }>;
 
 export interface WaitlistIntentResolver {
@@ -42,6 +43,16 @@ export class SuppliedWaitlistIntentResolver implements WaitlistIntentResolver {
       seatClass: normalizeFareClass(request.seatClass ?? "SECOND_CLASS"),
       interval: { ...(request.interval ?? { fromSeq: 0, toSeq: 1 }) },
       stopSequenceVersion: request.stopSequenceVersion ?? `segment:${request.segmentRef}`,
+      paymentGuarantee: {
+        paymentIntentId: request.paymentGuaranteeRef || "pi-test",
+        sourceOrderRef: "test-source-order",
+        payerRef: request.accountId,
+        amount: { currency: "CNY", minorUnits: Number.MAX_SAFE_INTEGER },
+        sourceStatus: "CREATED",
+        sourceExpiresAt: request.deadline ?? `${departureDate}T00:00:00.000Z`,
+        authorizedUntil: request.deadline ?? `${departureDate}T00:00:00.000Z`,
+        verifiedAt: new Date(0).toISOString(),
+      },
     };
   }
 }
@@ -49,12 +60,14 @@ export class SuppliedWaitlistIntentResolver implements WaitlistIntentResolver {
 /**
  * Rebuilds the accepted traveler intent from authoritative read models.
  * A pi-* guarantee points at the failed order whose traveler set and quoted
- * class the customer asked to wait for. A pay-auth-* token has no local read
- * API, so its request must carry an explicit class and remains single-party.
+ * class the customer asked to wait for. The live Payment intent proves account,
+ * amount and channel consent at enrollment; its short channel timeout is then
+ * snapshotted into a waitlist authorization lasting until the chosen deadline.
  */
 export class HttpWaitlistIntentResolver implements WaitlistIntentResolver {
   constructor(
     private readonly baseUrl = process.env.WAITLIST_FACTS_BASE_URL_TEMPLATE ?? "http://%s:8080",
+    private readonly now: () => Date = () => new Date(),
   ) {}
 
   async resolve(request: WaitlistIntentRequest, correlationId?: string): Promise<ResolvedWaitlistIntent> {
@@ -79,40 +92,67 @@ export class HttpWaitlistIntentResolver implements WaitlistIntentResolver {
       throw mismatch("waitlist itinerary route or date differs from service-plan supply");
     }
 
+    if (!request.paymentGuaranteeRef.startsWith("pi-")) throw mismatch("paymentGuaranteeRef must be a payment intent reference");
+    const deadline = requiredFutureInstant(request.deadline, "deadline", this.now());
     let travelerRefs = [...request.travelerRefs];
     let seatClass = request.seatClass ? normalizeFareClass(request.seatClass) : undefined;
-    if (request.paymentGuaranteeRef.startsWith("pi-")) {
-      const payment = await this.get("payment", `/api/v1/payment-intents/${encodeURIComponent(request.paymentGuaranteeRef)}`, correlationId);
-      if (requiredString(payment, "paymentIntentId") !== request.paymentGuaranteeRef) throw mismatch("payment guarantee identity differs");
-      const sourceOrderId = requiredString(payment, "businessRef");
-      const order = await this.get("journey-order", `/api/v1/journey-orders/${encodeURIComponent(sourceOrderId)}`, correlationId);
-      if (requiredString(order, "orderId") !== sourceOrderId || requiredString(order, "accountId") !== request.accountId) {
-        throw mismatch("payment guarantee source order differs from the waitlist account");
-      }
-      const orderTravelers = requiredStrings(order, "travelerRefs");
-      if (!sameSet(orderTravelers, request.travelerRefs) && !request.travelerRefs.every((traveler) => orderTravelers.includes(traveler))) {
-        throw mismatch("waitlist travelers are outside the guaranteed source order");
-      }
-      if (!requiredStrings(order, "segmentRefs").includes(segmentRef)) throw mismatch("waitlist segment is outside the guaranteed source order");
-      const offerId = requiredString(order, "offerId");
-      const offer = await this.get("offer-management", `/api/v1/offers/${encodeURIComponent(offerId)}`, correlationId);
-      if (requiredString(offer, "offerId") !== offerId || requiredString(offer, "accountId") !== request.accountId
-          || requiredString(offer, "itineraryRef") !== request.itineraryRef) {
-        throw mismatch("guaranteed source offer differs from the waitlist intent");
-      }
-      const offerTravelers = requiredObjects(requiredObject(offer, "passengerMix"), "travelers").map((traveler) => requiredString(traveler, "travelerId"));
-      if (!sameSet(offerTravelers, orderTravelers)) throw mismatch("guaranteed offer travelers differ from its order");
-      const quoteId = requiredString(offer, "fareQuoteRef");
-      const quote = await this.get("fare-pricing", `/api/v1/fare-quotes/${encodeURIComponent(quoteId)}`, correlationId);
-      if (requiredString(quote, "quoteId") !== quoteId) throw mismatch("fare quote identity differs from the guaranteed offer");
-      const quoteClass = normalizeFareClass(requiredString(requiredObject(requiredObject(quote, "breakdown"), "seatClassMultiplier"), "seatClass"));
-      if (seatClass && seatClass !== quoteClass) throw mismatch("requested class differs from the guaranteed fare quote");
-      travelerRefs = orderTravelers;
-      seatClass = quoteClass;
+    const payment = await this.get("payment", `/api/v1/payment-intents/${encodeURIComponent(request.paymentGuaranteeRef)}`, correlationId);
+    if (requiredString(payment, "paymentIntentId") !== request.paymentGuaranteeRef) throw mismatch("payment guarantee identity differs");
+    const paymentStatus = requiredString(payment, "status");
+    if (paymentStatus !== "CREATED" && paymentStatus !== "AUTHORIZED") throw mismatch(`payment guarantee is not available in status ${paymentStatus}`);
+    if (requiredString(payment, "purpose").toLowerCase() !== "purchase") throw mismatch("payment guarantee purpose must be purchase");
+    if (requiredString(payment, "payerRef") !== request.accountId) throw mismatch("payment guarantee payer differs from the waitlist account");
+    const sourceExpiresAt = requiredFutureInstant(requiredString(payment, "expiresAt"), "payment guarantee expiresAt", this.now());
+    const guaranteedAmount = requiredMoney(payment.amount, "payment guarantee amount");
+    if (!isZeroMoney(payment.capturedAmount) || !isZeroMoney(payment.refundedAmount)) throw mismatch("payment guarantee must not have captured or refunded funds");
+    if (paymentStatus === "AUTHORIZED") {
+      const authorizedAmount = requiredMoney(payment.authorizedAmount, "authorizedAmount");
+      if (!sameCurrencyAndAtLeast(authorizedAmount, guaranteedAmount)) throw mismatch("authorized payment guarantee is below its declared amount");
     }
+    const sourceOrderId = requiredString(payment, "businessRef");
+    const order = await this.get("journey-order", `/api/v1/journey-orders/${encodeURIComponent(sourceOrderId)}`, correlationId);
+    if (requiredString(order, "orderId") !== sourceOrderId || requiredString(order, "accountId") !== request.accountId) {
+      throw mismatch("payment guarantee source order differs from the waitlist account");
+    }
+    const sourceTotal = requiredMoney(requiredObject(order, "monetarySummary").payableTotal, "source order payableTotal");
+    if (!sameCurrencyAndAtLeast(guaranteedAmount, sourceTotal)) throw mismatch("payment guarantee amount is below the source order total");
+    const orderTravelers = requiredStrings(order, "travelerRefs");
+    if (!sameSet(orderTravelers, request.travelerRefs) && !request.travelerRefs.every((traveler) => orderTravelers.includes(traveler))) {
+      throw mismatch("waitlist travelers are outside the guaranteed source order");
+    }
+    if (!requiredStrings(order, "segmentRefs").includes(segmentRef)) throw mismatch("waitlist segment is outside the guaranteed source order");
+    const offerId = requiredString(order, "offerId");
+    const offer = await this.get("offer-management", `/api/v1/offers/${encodeURIComponent(offerId)}`, correlationId);
+    if (requiredString(offer, "offerId") !== offerId || requiredString(offer, "accountId") !== request.accountId
+        || requiredString(offer, "itineraryRef") !== request.itineraryRef) {
+      throw mismatch("guaranteed source offer differs from the waitlist intent");
+    }
+    const offerTravelers = requiredObjects(requiredObject(offer, "passengerMix"), "travelers").map((traveler) => requiredString(traveler, "travelerId"));
+    if (!sameSet(offerTravelers, orderTravelers)) throw mismatch("guaranteed offer travelers differ from its order");
+    const quoteId = requiredString(offer, "fareQuoteRef");
+    const quote = await this.get("fare-pricing", `/api/v1/fare-quotes/${encodeURIComponent(quoteId)}`, correlationId);
+    if (requiredString(quote, "quoteId") !== quoteId) throw mismatch("fare quote identity differs from the guaranteed offer");
+    const quoteClass = normalizeFareClass(requiredString(requiredObject(requiredObject(quote, "breakdown"), "seatClassMultiplier"), "seatClass"));
+    if (seatClass && seatClass !== quoteClass) throw mismatch("requested class differs from the guaranteed fare quote");
+    travelerRefs = orderTravelers;
+    seatClass = quoteClass;
     if (!seatClass) throw mismatch("waitlist class cannot be proven from the request or payment guarantee");
     if (request.departureDate && request.departureDate !== departureDate) throw mismatch("requested departure date differs from service-plan supply");
-    return { travelerRefs, segmentRef, scheduledServiceRef, departureDate, seatClass, interval, stopSequenceVersion };
+    const channelRef = optionalObject(payment.channelRef);
+    return {
+      travelerRefs, segmentRef, scheduledServiceRef, departureDate, seatClass, interval, stopSequenceVersion,
+      paymentGuarantee: {
+        paymentIntentId: request.paymentGuaranteeRef,
+        sourceOrderRef: sourceOrderId,
+        payerRef: request.accountId,
+        amount: guaranteedAmount,
+        sourceStatus: paymentStatus,
+        sourceExpiresAt: sourceExpiresAt.toISOString(),
+        authorizedUntil: deadline.toISOString(),
+        verifiedAt: this.now().toISOString(),
+        preferredChannel: channelRef ? optionalString(channelRef, "channel") : undefined,
+      },
+    };
   }
 
   private async get(service: string, path: string, correlationId?: string): Promise<Record<string, unknown>> {
@@ -131,6 +171,9 @@ function requiredObject(body: Record<string, unknown>, field: string): Record<st
   const value = body[field];
   if (!value || typeof value !== "object" || Array.isArray(value)) throw mismatch(`${field} is missing from waitlist intent facts`);
   return value as Record<string, unknown>;
+}
+function optionalObject(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 function requiredObjects(body: Record<string, unknown>, field: string): Record<string, unknown>[] {
   const value = body[field];
@@ -166,6 +209,28 @@ function requiredInterval(value: unknown): TravelInterval {
     throw mismatch("service-plan interval is invalid");
   }
   return { fromSeq, toSeq };
+}
+function requiredMoney(value: unknown, field: string): Readonly<{ currency: string; minorUnits: number }> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw mismatch(`${field} is missing`);
+  const body = value as Record<string, unknown>;
+  const currency = requiredString(body, "currency");
+  const minorUnits = Number(body.minorUnits);
+  if (!Number.isSafeInteger(minorUnits) || minorUnits <= 0) throw mismatch(`${field} must be positive integer minor units`);
+  return { currency, minorUnits };
+}
+function isZeroMoney(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const body = value as Record<string, unknown>;
+  return Number(body.minorUnits) === 0;
+}
+function sameCurrencyAndAtLeast(available: Readonly<{ currency: string; minorUnits: number }>, required: Readonly<{ currency: string; minorUnits: number }>): boolean {
+  return available.currency === required.currency && available.minorUnits >= required.minorUnits;
+}
+function requiredFutureInstant(value: unknown, field: string, now: Date): Date {
+  if (typeof value !== "string" || !value.trim()) throw mismatch(`${field} is required`);
+  const instant = new Date(value);
+  if (!Number.isFinite(instant.getTime()) || instant <= now) throw mismatch(`${field} must be in the future`);
+  return instant;
 }
 function sameSet(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value) => right.includes(value));
