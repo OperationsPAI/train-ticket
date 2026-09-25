@@ -52,13 +52,16 @@ KUBENS := $(KUBECTL) -n $(NAMESPACE)
 # read from the same place, and it cannot drift from what was actually built.
 ROLLABLE := $(shell ls deploy/docker | tr '\n' '|' | sed 's/|$$//')
 
-.PHONY: build-agent-env-image build-devcontainer check check-agent-env-image contract-lint check-devcontainer check-strict go-modules node-locks platform-tables retention-indexes service-metadata list-services observability-config observability-down observability-up observability-validate skeleton-check
+.PHONY: build-agent-env-image build-devcontainer check check-agent-env-image contract-lint check-devcontainer check-strict documented-api-routes go-modules node-locks platform-tables retention-indexes service-metadata list-services observability-config observability-down observability-up observability-validate skeleton-check
 .PHONY: deploy deploy-fast deploy-images deploy-apply deploy-db-bootstrap deploy-roll deploy-services deploy-seed deploy-check e2e smoke push-images deploy-acr deploy-acr-apply
 
-check: service-metadata skeleton-check contract-lint go-modules node-locks platform-tables retention-indexes
+check: service-metadata documented-api-routes skeleton-check contract-lint go-modules node-locks platform-tables retention-indexes
 
 service-metadata:
 	python3 scripts/check_service_catalog.py
+
+documented-api-routes:
+	python3 scripts/check_documented_api_routes.py
 
 # A service that creates any of the three platform tables creates all of them,
 # because the relay's retention sweep covers all three unconditionally.
