@@ -23,7 +23,5 @@ async fn main() {
 #[cfg(not(feature = "redis-impl"))]
 fn main() {
     trip_planning::init_logging();
-    log::error!(
-        "trip-planning binary requires the redis-impl feature for production startup"
-    );
+    log::error!("trip-planning binary requires the redis-impl feature for production startup");
 }

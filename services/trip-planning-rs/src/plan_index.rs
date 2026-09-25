@@ -47,7 +47,10 @@ impl MinimumConnectionRule {
         self.from_node_type == "STATION"
             && self.to_node_type == "STATION"
             && self.transfer_category == transfer_category
-            && self.conditions.as_object().is_some_and(serde_json::Map::is_empty)
+            && self
+                .conditions
+                .as_object()
+                .is_some_and(serde_json::Map::is_empty)
             && self.valid_from <= at
             && self.valid_until.is_none_or(|until| at < until)
     }
@@ -178,7 +181,11 @@ impl PlanIndex {
 
     pub fn upsert_minimum_connection_rule(&self, rule: MinimumConnectionRule) -> bool {
         let mut index = self.minimum_connection_rules.write().unwrap();
-        let current_version = index.versions.get(&rule.rule_id).copied().unwrap_or_default();
+        let current_version = index
+            .versions
+            .get(&rule.rule_id)
+            .copied()
+            .unwrap_or_default();
         if rule.version < current_version
             || (rule.version == current_version
                 && index.versions.contains_key(&rule.rule_id)
@@ -656,11 +663,7 @@ fn transfer_category<'a>(
     departure_stop_ref: &'a str,
     nodes: &NodeIndex,
 ) -> &'a str {
-    if refs_match(
-        arrival_stop_ref,
-        departure_stop_ref,
-        &nodes.place_by_node,
-    ) {
+    if refs_match(arrival_stop_ref, departure_stop_ref, &nodes.place_by_node) {
         "SAME_STATION"
     } else {
         // Service Plan does not publish enough topology to distinguish an
@@ -670,11 +673,7 @@ fn transfer_category<'a>(
     }
 }
 
-fn refs_match(
-    stop_ref: &str,
-    requested: &str,
-    node_place: &HashMap<String, String>,
-) -> bool {
+fn refs_match(stop_ref: &str, requested: &str, node_place: &HashMap<String, String>) -> bool {
     if stop_ref == requested {
         return true;
     }
@@ -699,9 +698,7 @@ fn applicable_rule<'a>(
     rules
         .values()
         .filter(|rule| rule.applies_at(category, at))
-        .max_by(|left, right| {
-            (left.version, &left.rule_id).cmp(&(right.version, &right.rule_id))
-        })
+        .max_by(|left, right| (left.version, &left.rule_id).cmp(&(right.version, &right.rule_id)))
 }
 
 fn segment_to_leg(entry: &SegmentEntry) -> LegCandidate {
@@ -713,7 +710,10 @@ fn segment_to_leg(entry: &SegmentEntry) -> LegCandidate {
         departure_time: entry.departure_time,
         arrival_time: entry.arrival_time,
         mode: "train".to_string(),
-        stop_refs: vec![entry.origin_stop_ref.clone(), entry.destination_stop_ref.clone()],
+        stop_refs: vec![
+            entry.origin_stop_ref.clone(),
+            entry.destination_stop_ref.clone(),
+        ],
         segment_refs: vec![entry.segment_ref.clone()],
     }
 }
@@ -772,11 +772,7 @@ mod tests {
         }
     }
 
-    fn published_rule(
-        rule_id: &str,
-        version: i64,
-        minimum_minutes: u32,
-    ) -> MinimumConnectionRule {
+    fn published_rule(rule_id: &str, version: i64, minimum_minutes: u32) -> MinimumConnectionRule {
         MinimumConnectionRule {
             rule_id: rule_id.to_string(),
             version,
@@ -953,8 +949,7 @@ mod tests {
         );
 
         assert!(index.upsert_minimum_connection_rule(published_rule("mct-1", 1, 20)));
-        let candidates =
-            index.candidates_with_connections("A", "C", date, 1, 5, 120);
+        let candidates = index.candidates_with_connections("A", "C", date, 1, 5, 120);
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(
