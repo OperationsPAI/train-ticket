@@ -22,6 +22,10 @@ from reporting.domain import MetricAggregator, Money
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / "migrations/005_gross_captured_revenue.sql"
 CURRENT_MIGRATION = ROOT / "migrations/006_exclude_incomplete_captures.sql"
+FUTURE_MIGRATIONS = {
+    ROOT / "migrations/007_authoritative_revenue_facts.sql",
+    ROOT / "migrations/008_authoritative_revenue_views.sql",
+}
 RECORDING = json.loads((ROOT / "tests/fixtures/gross_captured_recorded.json").read_text())
 VIEWS = (
     "reporting_revenue_by_route",
@@ -58,7 +62,7 @@ def test_recorded_linked_payments_are_gross_captured_once():
         aggregator.record(event)
     at = max(event.occurred_at for event in events)
     assert aggregator.snapshot(at).revenue_per_hour == (Money("1928.59", "CNY"),)
-    for dimension in ("route", "seat_class", "channel", "passenger_type", "time_period"):
+    for dimension in ("route", "seat_class", "channel", "traveler_type", "time_period"):
         report = aggregator.revenue_report(dimension, at=at)
         assert report.total_revenue == (Money("1928.59", "CNY"),)
         assert sum(item.count for item in report.items) == 20
@@ -82,7 +86,7 @@ def database():
             }) as pool:
                 with pool.connection() as conn:
                     for migration in sorted((ROOT / "migrations").glob("*.sql")):
-                        if migration not in {MIGRATION, CURRENT_MIGRATION}:
+                        if migration not in {MIGRATION, CURRENT_MIGRATION, *FUTURE_MIGRATIONS}:
                             conn.execute(migration.read_text())
                 yield pool
         finally:
@@ -348,7 +352,7 @@ def test_coordinated_runner_records_exact_version_and_skips_rebuild(database):
         schema = conn.execute("SELECT current_schema()").fetchone()[0]
         conn.execute("CREATE TABLE schema_migrations (version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())")
         for path in sorted((ROOT / "migrations").glob("*.sql")):
-            if path not in {MIGRATION, CURRENT_MIGRATION}:
+            if path not in {MIGRATION, CURRENT_MIGRATION, *FUTURE_MIGRATIONS}:
                 conn.execute("INSERT INTO schema_migrations(version) VALUES (%s)", (path.name,))
     result = module.migrate_revenue(os.environ["REPORTING_TEST_DATABASE_URL"], schema, 30)
     assert result["version"] == CURRENT_MIGRATION.name
