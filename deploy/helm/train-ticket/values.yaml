@@ -852,6 +852,11 @@ services:
               periodSeconds: 120
   trip-planning:
     db: trip_planning
+    pgInstance: read
+    # Cut over to the read shard. It is the heaviest reader on the core
+    # instance -- 45.4 million tuple fetches in one 25 second window, at 56
+    # searches a second -- and its database is the smallest of the seven that
+    # belong here, so it is the one that relieves the most load per byte moved.
     image: mirrors.tencent.com/microservice/trip-planning:ondemand-9ef6cbfe@sha256:53c48894c077ee4ab76a549ed2ce0a188ede914bb71268f58bfd7fa324c78cc5
     # Three replicas: one served 60 to 270 searches a second with its own
     # metrics reporting success while the load generator recorded fourteen
