@@ -1,7 +1,7 @@
 # Reporting 指标与投影
 
 更新日期：2026年9月25日。
-本文描述 Helm revision 279 文档核对时的 Python 实现。
+本文描述包含权威收入事实与 007/008 迁移的 Python 实现。
 领域边界见 [Reporting](../02-domains/reporting.md)，统一待办见 [TODO](../TODO.md)。
 
 ## 操作指标
@@ -30,13 +30,15 @@ PostgreSQL 的操作聚合最多加载最新10000条符合条件的事件。
 
 金额报表仅接受 `PaymentCaptured`。
 退款、收入确认和收入冲减对 gross captured 金额没有贡献。
-`groupBy` 支持 `route`、`seat_class`、`channel`、`passenger_type` 和 `time_period`。
+`groupBy` 支持 `route`、`seat_class`、`channel`、`traveler_type` 和 `time_period`；不保留旧 `passenger_type` 格式。
 `source_context` 与 `event_type` 返回事件计数报表，金额字段为零。
 
-`reporting_revenue_breakdowns` 对五个维度使用 `GROUPING SETS`，每组包含币种。
-两个独立的路线、席别物化视图各自扫描源表，因此一次完整刷新共进行三次基础关系扫描。
+`reporting_revenue_breakdowns` 关联 capture reference、订单路线/旅客、业务 scope、席别和 attachment 事实后生成五个维度；路线与席别视图从该 breakdown 派生。
 缺失维度为 `unknown`，缺失币种为 USD，时间维度按 UTC 小时归集。
-`yieldPerKm` 为 captured 金额除以记录的距离总和，附加服务和保险附加率使用 captured 行的对应标记计数。
+`route` 使用 Journey Order 的 segmentRef；`traveler_type` 使用 Journey Order traveler snapshot；`seat_class` 使用 Booking `classRef` 并由 Seat Assignment `requestedClassRef` 高优先级覆盖。
+主票、改签和附加服务支付分别通过 order、Post Sales case scope 和 ancillary item scope 解析。
+多值维度按分等分并稳定分配余数，避免重复收入；`yieldPerKm` 使用同样比例分配距离。
+附加服务与保险附加率使用对应业务上下文的权威订单事实，不读取 PaymentCaptured 上的布尔标记。
 
 缺少 amount 的 `PaymentCaptured` 保留在源事件表用于审计，但 PostgreSQL 与内存金额报表都排除该行，金额与 payment count 均不增加。
 `totalRevenue` 返回分页前完整筛选结果、按 ISO 币种代码排序的 Money 数组，不执行汇率换算；空结果返回空数组。
@@ -64,7 +66,7 @@ PostgreSQL 的操作聚合最多加载最新10000条符合条件的事件。
 每轮 worker 结束后等待30秒。
 报表读取最后完成的物化视图，`generatedAt` 表示响应生成时刻。
 
-gross captured 及 grouping sets SQL 已在 Helm revision 279 的生产基线中生效。
+gross captured 基础口径由 005/006 建立，权威维度由 007 事实表、历史回填和 008 视图切换实现。
 数据库变更保留源事件表，并保存视图原有名称、列、索引、所有权和授权。
 
-实现依据为 [领域计算](../../services/reporting/src/reporting/domain.py)、[PostgreSQL 存储](../../services/reporting/src/reporting/adapters/storage/postgres.py)、[查询入口](../../services/reporting/src/reporting/api.py)、[gross captured SQL](../../services/reporting/migrations/005_gross_captured_revenue.sql) 和 [缺失金额一致性 SQL](../../services/reporting/migrations/006_exclude_incomplete_captures.sql)。
+实现依据为 [领域计算](../../services/reporting/src/reporting/domain.py)、[PostgreSQL 存储](../../services/reporting/src/reporting/adapters/storage/postgres.py)、[查询入口](../../services/reporting/src/reporting/api.py)、[事实表 SQL](../../services/reporting/migrations/007_authoritative_revenue_facts.sql) 和 [权威维度视图 SQL](../../services/reporting/migrations/008_authoritative_revenue_views.sql)。

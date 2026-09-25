@@ -1,14 +1,21 @@
 # Reporting Event Contracts
 
-Last updated: 2026-09-24.
+Last updated: 2026-09-25.
 
-Runtime baseline: Helm revision 279.
+Implementation baseline: authoritative revenue facts and migrations 007/008.
 Remaining work is tracked in [TODO](../../TODO.md).
 
 Monetary metrics consume `PaymentCaptured` only and represent gross captured amount.
 Other events can affect counts, dashboard rebuilds and anomaly evaluation without changing that amount.
 The background worker persists `ReadModelRebuilt` and `AnomalyDetected` results and notification requests for urgent anomalies.
 Current aggregation and query limits are described in [Reporting](../../02-domains/reporting.md).
+
+Reporting also consumes authoritative attribution facts from `JourneyOrderCreated`,
+`PostSalesCaseOpened`/`PostSalesRequested`, `SegmentReservationRequested`,
+`SeatAllocated`/`StandingAssigned`, ancillary item lifecycle events, and insurance
+policy events. These facts resolve `PaymentCaptured.businessRef`; Reporting does
+not treat route, seat class, traveler type, or attachment fields on the payment
+payload as authoritative.
 
 ## MetricDefined
 

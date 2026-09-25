@@ -39,9 +39,8 @@ These fields do not represent net revenue or accounting recognized revenue.
 Other consumed event types can still affect event counts, dashboard rebuilds, and anomaly rules.
 Existing stored metric definitions are retained; the default catalog description applies to newly initialized definitions.
 
-`reporting_revenue_breakdowns` groups five dimensions with `GROUPING SETS` over one scan of `reporting_metric_events`.
+`reporting_revenue_breakdowns` groups five dimensions: `route`, `seat_class`, `channel`, `traveler_type`, and `time_period`.
 The route and seat class materialized views retain their original columns, types, nullable dimension values, and unique index names.
-Each refresh therefore uses three base relation scans.
 Currency is part of every grouping key.
 Breakdowns map missing dimensions to `unknown`, default missing currency to USD, and bucket event timestamps by UTC hour.
 Both PostgreSQL and the in-memory aggregator retain a `PaymentCaptured` event with no amount for operational audit but exclude it from monetary totals and payment counts.
@@ -51,11 +50,39 @@ An empty monetary result is represented by an empty array rather than by a synth
 The revenue endpoint paginates grouped `items` with `limit` and `offset` while `totalRevenue` always covers the complete filtered result.
 `total` is the number of grouped rows before pagination; requesting an offset beyond the last row returns an empty `items` array with the same complete totals.
 
+Revenue dimensions never trust route, seat class, traveler type, or attachment flags copied onto `PaymentCaptured`.
+They resolve the payment `businessRef` to authoritative facts owned by Journey Order, Post Sales, Booking Orchestration, Seat Assignment, Ancillary Service, and Travel Insurance.
+For a payment covering multiple segments or travelers, the amount is divided in minor units with any remainder assigned by stable dimension order; each dimension therefore sums exactly to the per-currency `totalRevenue`.
+`ancillaryAttachRate` and `insuranceAttachRate` use order-level purchased attachment facts, not payment payload booleans.
+Unknown is returned only when the authoritative relationship is absent after backfill.
+
 ## Coordinated revenue migrations
 
 `005_gross_captured_revenue.sql` established the gross captured projection.
 `006_exclude_incomplete_captures.sql` aligns PostgreSQL with the in-memory rule for captures that have no amount.
 Both require an explicit `reporting.allow_revenue_rebuild=on` setting when source data exists.
+
+`007_authoritative_revenue_facts.sql` adds staging tables without changing active views.
+`scripts/backfill_revenue_dimensions.py` then reads source snapshots in bounded batches and writes only Reporting-owned facts.
+`008_authoritative_revenue_views.sql` refuses to switch populated views unless the `authoritative-revenue-v1` completion marker exists and every captured payment has a reference.
+Use `scripts/migrate_authoritative_revenue.py` for the coordinated 007 → backfill → 008 sequence while Reporting consumers are stopped.
+Set explicit source database URLs when services are on different PostgreSQL instances; otherwise the script derives database names from the Reporting connection.
+For a large installation, run `backfill_revenue_dimensions.py` once online without `--mark-complete`, record its UTC start time, then stop Reporting and run the coordinated command with `--since=<recorded-time>`.
+Only the coordinated runner writes the completion marker by default; 008 also locks source metric rows and rechecks complete capture-reference coverage before building and swapping views.
+
+```bash
+REPORTING_DATABASE_URL=postgresql://.../reporting \
+PAYMENT_DATABASE_URL=postgresql://.../payment \
+JOURNEY_ORDER_DATABASE_URL=postgresql://.../journey_order \
+POST_SALES_DATABASE_URL=postgresql://.../post_sales \
+BOOKING_ORCHESTRATION_DATABASE_URL=postgresql://.../booking_orchestration \
+SEAT_ASSIGNMENT_DATABASE_URL=postgresql://.../seat_assignment \
+ANCILLARY_SERVICE_DATABASE_URL=postgresql://.../ancillary_service \
+TRAVEL_INSURANCE_DATABASE_URL=postgresql://.../travel_insurance \
+services/reporting/.venv/bin/python services/reporting/scripts/migrate_authoritative_revenue.py \
+  --allow-rebuild --batch-size 2000 --batch-delay-ms 25 \
+  --since 2026-09-25T04:00:00Z
+```
 An empty installation can apply the migration through normal startup.
 The migration never deletes or updates `reporting_metric_events`.
 It creates three replacement materialized views with data and unique indexes before dropping the previous derived views and restoring their names.
@@ -119,7 +146,9 @@ No recorded multi currency payment dataset was available, so a full multi curren
 A read-only production audit on 2026-09-25 found 2,904,448 `PaymentCaptured` rows, all with amount and currency; the only currency present was CNY.
 The missing-amount regression therefore appends one synthetic incomplete capture to unchanged recorded production rows and proves that the source row is retained while both PostgreSQL and in-memory revenue stay at 20 payments and CNY 1928.59.
 
-The local verification on 2026-09-23 completed with 83 tests passed and zero skipped in 4.87 seconds, including PostgreSQL and Redis tests.
+The current local verification on 2026-09-25 completed with 94 tests passed and one external-fixture test skipped, including PostgreSQL and Redis tests.
+It covers online fact projection, out-of-order arrival, untrusted payment dimensions, minor-unit allocation, 007/008 gates, full and repeated batched backfill, empty installation, and the existing 005/006 migration regressions.
+The earlier 2026-09-23 verification completed with 83 tests passed and zero skipped in 4.87 seconds.
 The built reporting image also passed all 83 tests with zero skipped in 5.09 seconds using its installed runtime dependencies.
 For the 40 recorded linked rows, migration SQL took 33.38 milliseconds; the coordinated runner took 53.26 milliseconds and reported 8.12 milliseconds for the final swap.
 Reads of all three original views completed in 2.67 milliseconds while the replacement build was deliberately blocked on the local source relation.
