@@ -36,6 +36,7 @@ type Repository interface {
 	UpdateSeatMap(context.Context, *domain.ContractSeatMap, int64) error
 	GetSeatMap(context.Context, string) (*domain.ContractSeatMap, int64, error)
 	FindSeatMaps(context.Context, string, string, string, int, int) ([]domain.ContractSeatMap, int, error)
+	LockSeatMapPublication(context.Context, string, string) error
 	SaveSeatAllocation(context.Context, *domain.ContractSeatAllocation) error
 	UpdateSeatAllocation(context.Context, *domain.ContractSeatAllocation, int64) error
 	GetSeatAllocation(context.Context, string) (*domain.ContractSeatAllocation, int64, error)
