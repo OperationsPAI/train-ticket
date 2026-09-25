@@ -4,6 +4,7 @@ import { SuppliedWaitlistIntentResolver, type WaitlistIntentResolver } from "./i
 import { HttpWaitlistFulfillmentClient, WaitlistFulfillmentOrchestrator, type WaitlistFulfillmentClient } from "./fulfillment.js";
 import { HttpCapacityAvailabilityClient, HttpFarePricingClient, HttpOfferManagementClient, PromotionOrchestrator, type CapacityAvailabilityClient, type FarePricingClient, type JourneyOrderClient, type OfferManagementClient, type WaitlistCapacityFreed, type WaitlistMatchCriteria, type WaitlistRepository } from "./promotion.js";
 import { publishAll, waitlistCancelled, waitlistExpired, waitlistFulfilled, waitlistPaymentAuthorizationRequested, waitlistQueued, waitlistRequestCreated } from "./publisher.js";
+import { travelClassLabel, waitlistIntentState, type WaitlistIntentMetricSample, type WaitlistIntentState } from "./metrics.js";
 
 export type JoinWaitlistRequest = Readonly<{
   accountId: string;
@@ -210,6 +211,33 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
       .filter((entry) => entry.travelerRefs.includes(travelerRef))
       .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime())
       .map((entry) => this.snapshot(entry));
+  }
+
+  /**
+   * Durable population/age buckets. Reading straight from the entry map (which
+   * stands in for the persisted table) is what lets a fresh process reconstruct
+   * the gauges without any in-memory accumulation.
+   */
+  intentMetricSamples(): readonly WaitlistIntentMetricSample[] {
+    const groups = new Map<string, { state: WaitlistIntentState; travelClass: string; count: number; oldest: number | null }>();
+    for (const entry of this.entries.values()) {
+      const state = waitlistIntentState(entry.status);
+      const travelClass = travelClassLabel(entry.seatClass);
+      const created = entry.createdAt.getTime();
+      const bucket = groups.get(`${state}|${travelClass}`);
+      if (!bucket) {
+        groups.set(`${state}|${travelClass}`, { state, travelClass, count: 1, oldest: created });
+        continue;
+      }
+      bucket.count += 1;
+      bucket.oldest = bucket.oldest === null ? created : Math.min(bucket.oldest, created);
+    }
+    return [...groups.values()].map((bucket) => ({
+      state: bucket.state,
+      travelClass: bucket.travelClass,
+      count: bucket.count,
+      oldestCreatedAt: bucket.oldest === null ? null : new Date(bucket.oldest).toISOString(),
+    }));
   }
 
   clear(): void { this.entries.clear(); this.capacityCredits.clear(); this.creditSequence = 0; }

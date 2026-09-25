@@ -198,3 +198,31 @@ test("fulfillment recovery has a partial matching-order index", async () => {
   assert.match(migration, /status = 'MATCHING'/u);
   assert.match(migration, /journeyOrderRef/u);
 });
+
+test("intent metric samples aggregate durable rows into bounded buckets", async () => {
+  const calls: Array<{ sql: string; params: readonly unknown[] }> = [];
+  const db = {
+    async query(sql: string, params: readonly unknown[] = []) {
+      calls.push({ sql, params });
+      return {
+        rows: [
+          { status: "QUEUED", seat_class: "SECOND_CLASS", intent_count: "3", oldest_created_at: new Date("2026-01-01T00:00:00.000Z") },
+          { status: "UNKNOWN_STATE", seat_class: "MYSTERY", intent_count: 1, oldest_created_at: null },
+        ],
+        rowCount: 2,
+      };
+    },
+  };
+
+  const samples = await new PostgresWaitlistRepository(db as never).intentMetricSamples();
+
+  assert.match(calls[0]!.sql, /count\(\*\)::int AS intent_count/u);
+  assert.match(calls[0]!.sql, /min\(created_at\) AS oldest_created_at/u);
+  assert.match(calls[0]!.sql, /GROUP BY status, seat_class/u);
+  // Counting and the oldest timestamp are the database's job; an unmapped
+  // status or class collapses to the bounded `other` label rather than leaking.
+  assert.deepEqual(samples, [
+    { state: "queued", travelClass: "second_class", count: 3, oldestCreatedAt: "2026-01-01T00:00:00.000Z" },
+    { state: "other", travelClass: "other", count: 1, oldestCreatedAt: null },
+  ]);
+});

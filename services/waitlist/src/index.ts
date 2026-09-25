@@ -9,3 +9,4 @@ export * from "./subscriber.js";
 export * from "./storage.js";
 export * from "./publisher.js";
 export * from "./profile.js";
+export * from "./metrics.js";

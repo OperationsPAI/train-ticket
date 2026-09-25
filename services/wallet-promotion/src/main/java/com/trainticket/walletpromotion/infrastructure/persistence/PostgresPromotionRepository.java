@@ -18,6 +18,9 @@ import com.trainticket.walletpromotion.domain.ReservationRelease;
 import com.trainticket.walletpromotion.domain.ReversalRecord;
 import com.trainticket.walletpromotion.domain.WalletAccount;
 import com.trainticket.walletpromotion.domain.WalletPromotionEvent;
+import com.trainticket.walletpromotion.metrics.WalletBalanceAccumulator;
+import com.trainticket.walletpromotion.metrics.WalletBalanceSample;
+import com.trainticket.walletpromotion.metrics.WalletBalanceState;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -239,6 +242,52 @@ public class PostgresPromotionRepository implements PromotionRepository {
             redemptionId,
             reversalRef
         );
+    }
+
+    /**
+     * Aggregates wallet-held balances, expired amounts and reversed amounts per
+     * currency straight from the snapshot tables. The sums happen in SQL because
+     * a scrape must not load every wallet into the process.
+     */
+    @Override
+    public List<WalletBalanceSample> walletBalanceSnapshot() {
+        WalletBalanceAccumulator accumulator = new WalletBalanceAccumulator();
+        jdbc.query("""
+            SELECT b->'availableBalance'->>'currency' AS currency,
+                   COALESCE(SUM((b->'availableBalance'->>'minorUnits')::bigint), 0) AS available,
+                   COALESCE(SUM((b->'reservedBalance'->>'minorUnits')::bigint), 0) AS reserved,
+                   COALESCE(SUM((b->'redeemedBalance'->>'minorUnits')::bigint), 0) AS redeemed
+              FROM wallet_account_snapshots w
+              CROSS JOIN LATERAL jsonb_array_elements(w.data->'balances') b
+             GROUP BY 1
+            """, (java.sql.ResultSet rs, int rowNumber) -> {
+                String currency = rs.getString("currency");
+                accumulator.add(WalletBalanceState.AVAILABLE, currency, rs.getLong("available"));
+                accumulator.add(WalletBalanceState.RESERVED, currency, rs.getLong("reserved"));
+                accumulator.add(WalletBalanceState.REDEEMED, currency, rs.getLong("redeemed"));
+                return null;
+            });
+        jdbc.query("""
+            SELECT data->'issuedAmount'->>'currency' AS currency,
+                   COALESCE(SUM((data->'issuedAmount'->>'minorUnits')::bigint
+                              - (data->'redeemedAmount'->>'minorUnits')::bigint), 0) AS expired
+              FROM promotion_instrument_snapshots
+             WHERE data->>'status' = 'EXPIRED'
+             GROUP BY 1
+            """, (java.sql.ResultSet rs, int rowNumber) -> {
+                accumulator.add(WalletBalanceState.EXPIRED, rs.getString("currency"), rs.getLong("expired"));
+                return null;
+            });
+        jdbc.query("""
+            SELECT data->'amount'->>'currency' AS currency,
+                   COALESCE(SUM((data->'amount'->>'minorUnits')::bigint), 0) AS reversed
+              FROM redemption_reversals
+             GROUP BY 1
+            """, (java.sql.ResultSet rs, int rowNumber) -> {
+                accumulator.add(WalletBalanceState.REVERSED, rs.getString("currency"), rs.getLong("reversed"));
+                return null;
+            });
+        return accumulator.samples();
     }
 
     @Override
