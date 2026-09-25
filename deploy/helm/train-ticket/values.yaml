@@ -765,6 +765,15 @@ services:
       # window. Twenty four holds the ramped peak at zero lag; a burst still
       # moves faster than this consumer.
       CONSUMER_THREADS: "24"
+      # Twenty four consumer threads share this pool, and each reservation needs
+      # a connection for several statements while it holds the supply lock. At
+      # the platform default of ten the pool timed out waiting for a connection
+      # under load -- "pool timed out while waiting for an open connection", 35
+      # times in four minutes -- and every one of those reservations reached
+      # HOLDING with no hold, which the load generator reports as a reservation
+      # that did not confirm. The core instance allows 1200 connections and was
+      # holding 538 when this was measured.
+      PG_MAX_POOL_SIZE: "24"
       # The capacity levels are folded from every pool document, holds inline.
       # Measured on this cluster: seven hundred thousand documents and about a
       # hundred seconds of database work per rebuild, because every hold array
@@ -1445,6 +1454,10 @@ services:
       PLACE_NETWORK_URL: http://place-network:8080
   seat-assignment:
     db: seat_assignment
+    env:
+      # Same default-ten pool as capacity, and it is the service capacity reads
+      # twice per admission plus every seat allocation.
+      PG_MAX_POOL_SIZE: "24"
     image: mirrors.tencent.com/microservice/seat-assignment:final-e98069db@sha256:d62c76155ae04510db2823407797f9a4704487071fb54311c5dc105d24268abb
     # Two replicas: the seat allocation runs once per issued ticket and its
     # consumers read the capacity stream.
