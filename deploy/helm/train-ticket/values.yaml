@@ -912,6 +912,7 @@ services:
       limits: { cpu: '6', memory: 4Gi }
   identity-verification:
     db: identity_verification
+    pgInstance: user
     strategy:
       type: RollingUpdate
       rollingUpdate:
