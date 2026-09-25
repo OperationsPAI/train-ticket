@@ -24,10 +24,15 @@ deployment_body() {
   local name=$1
   awk -v target="${name}" '
     /^---$/ {
-      if (capture) exit
+      if (capture) {
+        capture = 0
+        found = 1
+      }
       kind = ""
       metadata = 0
+      next
     }
+    found { next }
     /^kind: Deployment$/ { kind = "Deployment" }
     /^metadata:$/ { metadata = 1; next }
     metadata && /^  name: / {
