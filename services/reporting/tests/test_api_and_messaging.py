@@ -195,14 +195,18 @@ class EndpointTest(unittest.TestCase):
         service.handle_event(EventEnvelope(eventId="evt-r-a", eventType="PaymentCaptured", occurredAt="2026-07-05T10:30:00.000Z", correlationId="corr-1", producer="payment", schemaVersion=1, payload={"routeId": "A", "amount": "50.00", "currency": "USD"}, causationId="evt-source"))
         service.handle_event(EventEnvelope(eventId="evt-r-b", eventType="PaymentCaptured", occurredAt="2026-07-05T10:30:00.000Z", correlationId="corr-1", producer="payment", schemaVersion=1, payload={"routeId": "B", "amount": "75.00", "currency": "CNY"}, causationId="evt-source"))
 
-        response = TestClient(create_app(service=service)).get("/api/v1/metrics/revenue?groupBy=route")
+        response = TestClient(create_app(service=service)).get("/api/v1/metrics/revenue?groupBy=route&limit=1&offset=1")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["items"][0]["value"], "B")
+        self.assertEqual(response.json()["items"][0]["value"], "A")
         self.assertEqual(response.json()["totalRevenue"], [
             {"amount": "75.00", "currency": "CNY"},
             {"amount": "50.00", "currency": "USD"},
         ])
+        self.assertEqual(
+            {key: response.json()[key] for key in ("total", "limit", "offset")},
+            {"total": 2, "limit": 1, "offset": 1},
+        )
 
     def test_new_context_events_increment_context_rollup_and_anomaly_signal(self) -> None:
         service = ReportingApplicationService()
@@ -241,14 +245,18 @@ class EndpointTest(unittest.TestCase):
         service.handle_event(EventEnvelope(eventId="evt-waitlist-queued", eventType="WaitlistQueued", occurredAt="2026-07-05T10:30:02.000Z", correlationId="corr-1", producer="waitlist", schemaVersion=1, payload={"waitlistRequestId": "wlr-1"}, causationId="evt-source"))
         service.handle_event(EventEnvelope(eventId="evt-ancillary-quoted", eventType="AncillaryQuoted", occurredAt="2026-07-05T10:30:03.000Z", correlationId="corr-1", producer="ancillary-service", schemaVersion=1, payload={"quoteId": "anc-1"}, causationId="evt-source"))
 
-        response = TestClient(create_app(service=service)).get("/api/v1/metrics/revenue?groupBy=source_context")
+        response = TestClient(create_app(service=service)).get("/api/v1/metrics/revenue?groupBy=source_context&limit=1&offset=1")
 
         self.assertEqual(response.status_code, 200)
         body = response.json()
-        self.assertEqual([item["value"] for item in body["items"]], ["dispatch", "ancillary-service", "waitlist"])
-        self.assertEqual([item["count"] for item in body["items"]], [2, 1, 1])
+        self.assertEqual([item["value"] for item in body["items"]], ["ancillary-service"])
+        self.assertEqual([item["count"] for item in body["items"]], [1])
         self.assertEqual(body["items"][0]["revenue"], {"amount": "0.00", "currency": "USD"})
         self.assertEqual(body["totalRevenue"], [])
+        self.assertEqual(
+            {key: body[key] for key in ("total", "eventCount", "limit", "offset")},
+            {"total": 3, "eventCount": 4, "limit": 1, "offset": 1},
+        )
 
 
 class MessagingTest(unittest.TestCase):
