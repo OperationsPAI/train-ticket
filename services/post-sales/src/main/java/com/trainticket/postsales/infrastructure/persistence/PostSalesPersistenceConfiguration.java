@@ -5,6 +5,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.trainticket.platformkit.idempotency.IdempotencyStore;
 import com.trainticket.platformkit.persistence.DataSources;
 import com.trainticket.platformkit.persistence.DbIdempotencyStore;
+import com.trainticket.platformkit.persistence.EventReplayArchive;
+import com.trainticket.platformkit.persistence.EventReplayArchiveController;
+import com.trainticket.platformkit.persistence.EventReplayRetentionLifecycle;
+import com.trainticket.platformkit.persistence.EventReplayRetentionPolicy;
 import com.trainticket.platformkit.persistence.LazyRedisOutboxRelayLifecycle;
 import com.trainticket.platformkit.persistence.MigrationRunner;
 import com.trainticket.platformkit.persistence.OutboxAppender;
@@ -47,7 +51,23 @@ public class PostSalesPersistenceConfiguration {
 
     @Bean
     OutboxAppender outboxAppender(DataSource dataSource, ObjectMapper objectMapper) {
-        return new OutboxAppender(dataSource, objectMapper);
+        return new OutboxAppender(dataSource, objectMapper, EventReplayRetentionPolicy.fromEnvironment(),
+            java.util.Set.of("PostSalesApproved", "PostSalesApplied", "PostSalesFailed"));
+    }
+
+    @Bean
+    EventReplayArchive eventReplayArchive(DataSource dataSource) {
+        return new EventReplayArchive(dataSource);
+    }
+
+    @Bean
+    EventReplayArchiveController eventReplayArchiveController(EventReplayArchive archive) {
+        return new EventReplayArchiveController(archive, "post-sales");
+    }
+
+    @Bean(destroyMethod = "close")
+    EventReplayRetentionLifecycle eventReplayRetentionLifecycle(EventReplayArchive archive) {
+        return new EventReplayRetentionLifecycle(archive);
     }
 
     @Bean
