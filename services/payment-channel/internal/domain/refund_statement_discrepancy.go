@@ -325,6 +325,9 @@ func NewStatement(id, channel, date, currency, seed string, lines []StatementLin
 	return st, nil
 }
 func (s *ChannelStatement) Freeze(hash string, expected int64, now time.Time, operator, reason, corr, cause string) error {
+	if strings.TrimSpace(operator) == "" || strings.TrimSpace(reason) == "" {
+		return fmt.Errorf("operatorRef and reasonCode are required")
+	}
 	if s.Status == "FROZEN" {
 		if hash != s.StatementHash {
 			return fmt.Errorf("statement hash mismatch")
