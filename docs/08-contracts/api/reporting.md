@@ -2,7 +2,7 @@
 
 Last updated: 2026-09-25.
 
-Runtime baseline: Helm revision 279.
+Implementation baseline: authoritative revenue facts and migrations 007/008.
 Remaining work is tracked in [TODO](../../TODO.md).
 
 ## Overview
@@ -65,7 +65,7 @@ Events accepted during a refresh remain pending for the next refresh.
 
 **GET** `/api/v1/metrics/revenue?groupBy=route&limit=20&offset=0`
 
-`groupBy` supports `route`, `seat_class`, `channel`, `passenger_type`, and `time_period` for monetary reports.
+`groupBy` supports `route`, `seat_class`, `channel`, `traveler_type`, and `time_period` for monetary reports.
 All monetary revenue fields use `PaymentCaptured` only and represent gross captured payment amount.
 Refunds, `RevenueRecognized`, `RevenueRecognitionReversed`, and `PaymentSucceeded` contribute no monetary revenue to these metrics.
 This definition also applies to `routeRevenue` from `/api/v1/metrics/routes` and `revenue_per_hour` from `/api/v1/metrics/operational` and trend reports.
@@ -82,8 +82,8 @@ The default metric catalog describes this meaning; existing stored metric descri
 | `items[].revenue` | Gross captured amount for the dimension value and currency. |
 | `items[].count` | Count of valid captured payments with an amount. A `PaymentCaptured` fact with no amount is retained for audit but contributes neither amount nor count. |
 | `items[].yieldPerKm` | Captured amount divided by the sum of recorded distance, or zero when the distance sum is zero. |
-| `items[].ancillaryAttachRate` | Captured rows with the ancillary flag divided by captured row count. |
-| `items[].insuranceAttachRate` | Captured rows with the insurance flag divided by captured row count. |
+| `items[].ancillaryAttachRate` | Captured payments whose resolved order has an authoritative non-insurance ancillary purchase, divided by captured payment count in the group. |
+| `items[].insuranceAttachRate` | Captured payments whose resolved order has an authoritative insurance policy/item, divided by captured payment count in the group. |
 | `totalRevenue` | Complete filtered-result totals before pagination, one Money value per currency ordered by ISO currency code. An empty result returns `[]`. |
 
 PostgreSQL projection groups always include currency.
@@ -91,7 +91,12 @@ PostgreSQL projection groups always include currency.
 Only `items` is paginated. Changing `limit` or `offset`, including requesting an offset beyond the last row, does not change `totalRevenue` or `total`.
 Items are ordered by currency, then revenue descending, then dimension value; this gives stable pagination.
 Trend points for `revenue_per_hour` expose the same array in `points[].values`; non-monetary trend points continue to use `points[].value`.
-Missing dimension values appear as `unknown`; `time_period` uses UTC hour labels such as `2026-09-23T15:00:00Z`.
+`route` values are accepted Journey Order `segments[].segmentRef`; `traveler_type` values are accepted Journey Order traveler types.
+`seat_class` uses Booking Orchestration `classRef`, superseded by Seat Assignment `requestedClassRef` for the same order/segment/traveler key.
+Purchase payments resolve directly by order ID, change payments through Post Sales case scope, and ancillary payments through Ancillary Service item scope.
+Fields with the same names on `PaymentCaptured` are ignored because Payment does not own those facts.
+When a payment covers multiple values, its amount is split in minor units and remainder units are assigned by stable value/key order; grouped amounts for every dimension exactly preserve each currency total.
+Missing authoritative relationships appear as `unknown`; `time_period` uses UTC hour labels such as `2026-09-23T15:00:00Z`.
 The report covers stored history and reads the last completed materialized refresh.
 Refresh work runs when requests are pending and waits 30 seconds after each completed worker iteration.
 PostgreSQL and the in-memory implementation both exclude a capture whose amount is absent from monetary totals and payment counts.
