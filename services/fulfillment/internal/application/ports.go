@@ -303,7 +303,7 @@ func (s *Service) VerifyBoarding(ctx context.Context, cmd VerifyBoardingCommand,
 	if err := validateVerifyBoarding(cmd); err != nil {
 		return BoardingResult{}, err
 	}
-	if err := s.recoverBoardingRecord(ctx, cmd); err != nil {
+	if err := s.recoverMissingRecord(ctx, cmd.EntitlementID, cmd.SegmentBookingID, cmd.JourneyOrderID, cmd.TravelerID, cmd.SegmentRef, "boarding"); err != nil {
 		return BoardingResult{}, err
 	}
 	var result BoardingResult
@@ -327,8 +327,8 @@ func (s *Service) VerifyBoarding(ctx context.Context, cmd VerifyBoardingCommand,
 	return result, nil
 }
 
-func (s *Service) recoverBoardingRecord(ctx context.Context, cmd VerifyBoardingCommand) error {
-	_, err := s.repo.FindByEntitlementSegment(ctx, cmd.EntitlementID, cmd.SegmentBookingID, cmd.SegmentRef)
+func (s *Service) recoverMissingRecord(ctx context.Context, entitlementID domain.EntitlementRef, segmentBookingID domain.SegmentBookingRef, journeyOrderID domain.OrderRef, travelerID domain.TravelerRef, segmentRef domain.SegmentRef, operation string) error {
+	_, err := s.repo.FindByEntitlementSegment(ctx, entitlementID, segmentBookingID, segmentRef)
 	if err == nil || s.entitlements == nil {
 		return err
 	}
@@ -336,18 +336,18 @@ func (s *Service) recoverBoardingRecord(ctx context.Context, cmd VerifyBoardingC
 		return err
 	}
 
-	ticket, err := s.entitlements.GetEntitlement(ctx, cmd.EntitlementID)
+	ticket, err := s.entitlements.GetEntitlement(ctx, entitlementID)
 	if err != nil {
 		return err
 	}
-	if ticket.EntitlementID != cmd.EntitlementID || ticket.SegmentBookingID != cmd.SegmentBookingID ||
-		ticket.JourneyOrderID != cmd.JourneyOrderID || ticket.TravelerID != cmd.TravelerID || ticket.SegmentRef != cmd.SegmentRef {
-		return fmt.Errorf("%w: boarding references do not match the authoritative entitlement", ErrDomainRuleViolation)
+	if ticket.EntitlementID != entitlementID || ticket.SegmentBookingID != segmentBookingID ||
+		ticket.JourneyOrderID != journeyOrderID || ticket.TravelerID != travelerID || ticket.SegmentRef != segmentRef {
+		return fmt.Errorf("%w: %s references do not match the authoritative entitlement", ErrDomainRuleViolation, operation)
 	}
 	switch strings.ToUpper(strings.TrimSpace(ticket.Status)) {
 	case "ISSUED":
 	default:
-		return fmt.Errorf("%w: entitlement status %s cannot board", ErrDomainRuleViolation, ticket.Status)
+		return fmt.Errorf("%w: entitlement status %s cannot be used for %s", ErrDomainRuleViolation, ticket.Status, operation)
 	}
 
 	projection := TicketProjection{
@@ -367,7 +367,7 @@ func (s *Service) recoverBoardingRecord(ctx context.Context, cmd VerifyBoardingC
 		if !errors.Is(err, ErrConflict) {
 			return err
 		}
-		_, findErr := s.repo.FindByEntitlementSegment(ctx, cmd.EntitlementID, cmd.SegmentBookingID, cmd.SegmentRef)
+		_, findErr := s.repo.FindByEntitlementSegment(ctx, entitlementID, segmentBookingID, segmentRef)
 		return findErr
 	}
 	return nil
@@ -378,6 +378,9 @@ func (s *Service) RecordNoShow(ctx context.Context, cmd RecordNoShowCommand, met
 		return NoShowResult{}, errors.New("fulfillment service is not configured")
 	}
 	if err := validateNoShow(cmd); err != nil {
+		return NoShowResult{}, err
+	}
+	if err := s.recoverMissingRecord(ctx, cmd.EntitlementID, cmd.SegmentBookingID, cmd.JourneyOrderID, cmd.TravelerID, cmd.SegmentRef, "no-show"); err != nil {
 		return NoShowResult{}, err
 	}
 	var result NoShowResult
