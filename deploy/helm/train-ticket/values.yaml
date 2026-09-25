@@ -770,7 +770,10 @@ services:
       enabled: false
       minReplicas: 1
       maxReplicas: 2
-      targetCPUUtilizationPercentage: 70
+      # Utilization is relative to the 250m request, so 200% means 500m per
+      # Pod. The measured median is about 457m; a conventional 70% target
+      # would therefore keep this candidate pinned at maxReplicas.
+      targetCPUUtilizationPercentage: 200
       # Memory scaling is optional. Enable only after verifying that resident
       # growth follows request load rather than retained Python heap/cache.
       # targetMemoryUtilizationPercentage: 80
