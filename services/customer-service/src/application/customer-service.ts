@@ -30,6 +30,7 @@ import {
 import { newCommandId, newCorrelationId, toEventEnvelope, type EventEnvelope, type EventPublisher } from "./messaging.js";
 import { OptimisticConcurrencyConflict, uuidV7 } from "@trainticket/ts-kit";
 import { type CustomerServiceRepository } from "./ports/customer-service-repository.js";
+import { assertHandoffQueueIsPolled } from "../settings.js";
 
 export type SupportCaseDetails = SupportCaseSnapshot &
   Readonly<{
@@ -208,6 +209,7 @@ export class CustomerServiceApplication {
     const { aggregate: current, version } = await this.requireVersionedCase(caseId);
     const snapshot = current.toSnapshot();
     if (snapshot.ownerQueue === request.ownerQueue && snapshot.assignedTo === request.assignedTo) return snapshot;
+    assertHandoffQueueIsPolled(caseId, request.ownerQueue);
     const { case: updated, event } = current.assign({
       caseId,
       ownerQueue: request.ownerQueue,
