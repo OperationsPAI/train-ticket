@@ -16,6 +16,9 @@ receivers:
       http:
         endpoint: 0.0.0.0:4318
 
+connectors:
+  forward/prometheus_application: {}
+
 processors:
   memory_limiter:
     check_interval: 5s
@@ -24,6 +27,31 @@ processors:
     # container limit. Must stay above the sending_queue below: a limiter
     # smaller than the queue makes the collector refuse spans it could buffer.
     limit_mib: 768
+  # The local baseline mirrors the cluster gateway: ClickHouse receives the
+  # complete OTLP metric signal, while the Prometheus endpoint below publishes
+  # only bounded runtime families and the train_ticket.* business contract.
+  filter/prometheus_application:
+    error_mode: ignore
+    metrics:
+      metric:
+        - 'not IsMatch(name, "^(http[.](server[.](request[.]duration|active_requests)|client[.]request[.]duration)|db[.]client[.]connection[.].+|hikaricp[.]connections([.].*)?|jvm[.](memory[.].+|gc[.]pause|threads[.]live)|go[.].+|process[.].+|cpython[.]gc[.].+|v8js[.].+|nodejs[.].+|train_ticket[.].+)$")'
+        - 'resource.attributes["service.name"] == nil'
+  transform/prometheus_application:
+    error_mode: ignore
+    metric_statements:
+      - context: resource
+        statements:
+          - 'keep_keys(attributes, ["service.name", "service.namespace", "service.instance.id"])'
+      - context: datapoint
+        statements:
+          - 'set(attributes["service"], resource.attributes["service.name"]) where resource.attributes["service.name"] != nil'
+          - 'set(attributes["namespace"], resource.attributes["service.namespace"]) where resource.attributes["service.namespace"] != nil'
+          - 'set(attributes["http.request.method"], attributes["http.method"]) where attributes["http.request.method"] == nil and attributes["http.method"] != nil'
+          - 'set(attributes["http.response.status_code"], attributes["http.status_code"]) where attributes["http.response.status_code"] == nil and attributes["http.status_code"] != nil'
+          - 'keep_keys(attributes, ["service", "namespace", "http.route", "http.request.method", "http.response.status_code", "network.protocol.version", "url.scheme", "db.client.connection.pool.name", "db.client.connection.state", "pool", "jvm.memory.pool.name", "jvm.memory.type", "jvm.gc.name", "jvm.gc.action", "jvm.gc.cause", "go.memory.type", "go.gc.type", "v8js.heap.space.name", "v8js.gc.type", "nodejs.eventloop.state", "workflow", "stage", "state", "outcome", "reason_code", "currency", "channel", "operation", "travel_class", "seat_mode", "ticket_type", "queue", "event_stream", "consumer_group", "event_type", "source_service", "target_service"])'
+  batch/prometheus_application:
+    timeout: 2s
+    send_batch_size: 1024
   batch:
     timeout: 2s
     send_batch_size: 1024
@@ -68,6 +96,13 @@ exporters:
       enabled: true
       num_consumers: 4
       queue_size: 4000
+  prometheus/application:
+    endpoint: 0.0.0.0:9464
+    metric_expiration: 2m
+    enable_open_metrics: true
+    add_metric_suffixes: true
+    resource_to_telemetry_conversion:
+      enabled: false
 
 extensions:
   health_check:
@@ -103,6 +138,16 @@ service:
         - batch
       exporters:
         - clickhouse
+    metrics/prometheus_application:
+      receivers:
+        - forward/prometheus_application
+      processors:
+        - memory_limiter
+        - filter/prometheus_application
+        - transform/prometheus_application
+        - batch/prometheus_application
+      exporters:
+        - prometheus/application
     metrics:
       receivers:
         - otlp
@@ -111,6 +156,7 @@ service:
         - batch
       exporters:
         - clickhouse
+        - forward/prometheus_application
     logs:
       receivers:
         - otlp

@@ -13,7 +13,7 @@ split by what a receiver can physically see rather than by preference:
 
 | Collector | Workload | Receivers | What it is the only source of |
 | --- | --- | --- | --- |
-| `otel-collector` | Deployment | `otlp` (4317 gRPC, 4318 HTTP) | Application traces. Every service points `OTEL_EXPORTER_OTLP_ENDPOINT` here. |
+| `otel-collector` | Deployment | `otlp` (4317 gRPC, 4318 HTTP) | Application traces and metrics. Every service points `OTEL_EXPORTER_OTLP_ENDPOINT` here; a bounded copy of application metrics is exposed for Prometheus on 9464. |
 | `otel-agent` | DaemonSet | `filelog`, `kubeletstats`, `hostmetrics` | Application logs, per-pod/node resource usage. |
 | `otel-cluster` | Deployment (1 replica) | `k8s_cluster`, `k8sobjects`, `prometheus` | Workload state, Kubernetes events, federated Prometheus metrics. |
 
@@ -63,6 +63,21 @@ receiver outside the container can observe any of it, so the only path is the
 service's own SDK. `OTEL_METRICS_EXPORTER=otlp` is set on every service in the
 shared env block of `templates/services.yaml`, and the points go over the same
 OTLP connection as the spans, into the gateway's metrics pipeline.
+
+The business services do **not** expose one common Prometheus `/metrics`
+endpoint. The chart therefore does not add scrape annotations to their pods.
+The OTLP gateway keeps the complete metric signal in ClickHouse and fans out a
+second, bounded copy through its Prometheus exporter on `otel-collector:9464`.
+Prometheus scrapes that one target as `train-ticket-applications`.
+
+That branch has two cardinality guards. It accepts only the known HTTP,
+connection-pool, managed-runtime and `train_ticket.*` metric families, then
+keeps only bounded datapoint labels such as service, route template, status,
+state, outcome and currency. Resource metadata is reduced to service namespace,
+service name and the current process instance. Order, account, traveler,
+request and correlation identifiers, raw URL paths and exception text are not
+Prometheus labels. The complete attributes remain available in ClickHouse; the
+filter applies only to the short-window Prometheus copy.
 
 The case that settled it: a fault forced HikariCP's `minimumIdle` to 1 and cut
 `connectionTimeout` to 5s. It worked — 8858 purchase journeys timed out in 20
@@ -254,6 +269,7 @@ The gateway listens on the same ports as the local baseline:
 - OTLP HTTP: `otel-collector:4318` inside the cluster.
 - Health check: `otel-collector:13133`.
 - zPages: container port `55679` for direct pod access or port-forwarding.
+- Bounded application metrics for Prometheus: `otel-collector:9464/metrics`.
 
 Verify the health extension from a local shell with port-forwarding:
 
@@ -453,6 +469,14 @@ window:
 
 ```bash
 kubectl -n train-ticket port-forward svc/prometheus 9090:9090
+```
+
+The application scrape must appear as one healthy target and expose service
+labels without request-specific dimensions:
+
+```promql
+up{job="train-ticket-applications"}
+count by (service) (http_server_request_duration_seconds_count)
 ```
 
 ## Retention and Storage
