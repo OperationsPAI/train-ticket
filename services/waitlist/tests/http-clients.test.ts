@@ -45,8 +45,8 @@ test("HTTP downstream clients use documented endpoint shapes and idempotency key
   ]);
   assert.equal(calledPaths.some(([, path]) => String(path).includes("payment") || String(path).includes("capture")), false);
   assert.ok(calls.every((call) => call.headers.has("Idempotency-Key")));
-  assert.deepEqual(calls[0]?.body, { travelerRefs: ["tvl-1", "tvl-2"], channel: "WEB", segmentRefs: ["seg-1"], productCode: "rail-standard" });
-  assert.deepEqual({ ...(calls[2]?.body as Record<string, unknown>), segmentBookingId: undefined }, { segmentRef: "seg-1", travelerRef: "tvl-1", classRef: "SECOND", quantity: 2, segmentBookingId: undefined });
+  assert.deepEqual(calls[0]?.body, { travelerRefs: ["tvl-1", "tvl-2"], channel: "WEB", segmentRefs: ["seg-1"], seatClass: "SECOND_CLASS", productCode: "rail-standard" });
+  assert.deepEqual({ ...(calls[2]?.body as Record<string, unknown>), segmentBookingId: undefined }, { segmentRef: "seg-1", travelerRef: "tvl-1", classRef: "SECOND_CLASS", quantity: 2, segmentBookingId: undefined });
   assert.match(String((calls[2]?.body as Record<string, unknown>).segmentBookingId), /^sb-[0-9a-f-]{36}$/u);
   assert.deepEqual(calls[4]?.body, { accountId: "acc", offerId: "off-1", offerVersion: 1, travelerRefs: ["tvl-1", "tvl-2"], segmentRefs: ["seg-1"], journeyDate: "2026-07-20", productCode: "rail-standard" });
 });

@@ -2,8 +2,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { OptimisticConcurrencyConflict, OutboxAppender, OutboxRelay, PostgresIdempotencyStore, connectRedisWithRetry, createPostgresPool, createRedisClient, migrationsAwareReadiness, redisClientLiveness, startMigrations, streamForProducer, withTransaction, type EventEnvelope, type SchemaDetail } from "@trainticket/ts-kit";
 import type { Pool, PoolClient, QueryResult } from "pg";
-import { DomainError, WaitlistEntry, type WaitlistEntrySnapshot } from "./domain.js";
-import type { WaitlistRepository } from "./promotion.js";
+import { DomainError, WaitlistEntry, normalizeFareClass, type TravelInterval, type WaitlistEntrySnapshot } from "./domain.js";
+import type { WaitlistMatchCriteria, WaitlistRepository } from "./promotion.js";
 
 export class PostgresWaitlistRepository implements WaitlistRepository {
   constructor(private readonly db: Pool | PoolClient) {}
@@ -45,20 +45,25 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
     return this.snapshot(entry);
   }
 
-  // A segmentRef (seg-<uuid>) is minted per service-segment instance, so it already
-  // identifies the service and its date — departureDate is redundant here, and it is
-  // also unreliable on the entry: when the create request omits it the entry's
-  // departure_date is derived from the request deadline rather than the segment's
-  // real date, and the CapacityReleased fulfillment trigger carries no departureDate
-  // at all. Keying the queue on segment_ref (plus class) is what lets freed capacity
-  // actually promote the queued entry.
-  async findTopQueued(segmentRef: string, _departureDate: string, seatClass?: string): Promise<WaitlistEntry | undefined> {
-    const params: unknown[] = [segmentRef];
-    const seatClause = seatClass ? "AND seat_class = $2" : "";
-    if (seatClass) params.push(seatClass);
+  async findTopQueued(criteria: WaitlistMatchCriteria): Promise<WaitlistEntry | undefined> {
     const result = await this.db.query(
-      `SELECT * FROM waitlist_entries WHERE segment_ref = $1 ${seatClause} AND status = 'QUEUED' ORDER BY priority_score DESC, created_at ASC, entry_id ASC LIMIT 1`,
-      params,
+      `SELECT * FROM waitlist_entries
+       WHERE segment_ref = $1
+         AND departure_date = $2
+         AND seat_class = $3
+         AND data->>'scheduledServiceRef' = $4
+         AND data->>'stopSequenceVersion' = $5
+         AND (data->'interval'->>'fromSeq')::integer >= $6
+         AND (data->'interval'->>'toSeq')::integer <= $7
+         AND jsonb_array_length(traveler_refs) <= $8
+         AND ($9::text IS NULL OR data->>'intentFingerprint' = $9)
+         AND status = 'QUEUED'
+       ORDER BY priority_score DESC, created_at ASC, entry_id ASC
+       LIMIT 1
+       FOR UPDATE SKIP LOCKED`,
+      [criteria.segmentRef, criteria.departureDate, criteria.seatClass, criteria.scheduledServiceRef,
+        criteria.stopSequenceVersion, criteria.interval.fromSeq, criteria.interval.toSeq,
+        criteria.maxTravelers, criteria.intentFingerprint ?? null],
     ) as QueryResult<WaitlistRow>;
     return result.rows[0] ? entryFromRow(result.rows[0]) : undefined;
   }
@@ -85,14 +90,12 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
     return result.rows[0] ? entryFromRow(result.rows[0]) : undefined;
   }
 
-  // Queue identity keys on segment_ref alone (see findTopQueued) so the queue is not
-  // split by unreliable deadline-derived departure_date values.
-  async queueFor(segmentRef: string, _departureDate: string, seatClass?: string): Promise<readonly WaitlistEntrySnapshot[]> {
-    const params: unknown[] = [segmentRef];
-    const seatClause = seatClass ? "AND seat_class = $2" : "";
-    if (seatClass) params.push(seatClass);
+  async queueFor(segmentRef: string, departureDate: string, seatClass?: string): Promise<readonly WaitlistEntrySnapshot[]> {
+    const params: unknown[] = [segmentRef, departureDate];
+    const seatClause = seatClass ? "AND seat_class = $3" : "";
+    if (seatClass) params.push(normalizeFareClass(seatClass));
     const result = await this.db.query(
-      `SELECT * FROM waitlist_entries WHERE segment_ref = $1 ${seatClause} AND status <> 'CLOSED' ORDER BY priority_score DESC, created_at ASC, entry_id ASC`,
+      `SELECT * FROM waitlist_entries WHERE segment_ref = $1 AND departure_date = $2 ${seatClause} AND status <> 'CLOSED' ORDER BY priority_score DESC, created_at ASC, entry_id ASC`,
       params,
     ) as QueryResult<WaitlistRow>;
     const entries = result.rows.map(entryFromRow);
@@ -170,13 +173,21 @@ export function migrationsDirectory(): string { return process.env.MIGRATIONS_DI
 
 function entryFromRow(row: WaitlistRow): WaitlistEntry {
   const data = row.data ?? {};
+  const interval = intervalFrom(data.interval) ?? { fromSeq: 0, toSeq: 1 };
+  const scheduledServiceRef = typeof data.scheduledServiceRef === "string" && data.scheduledServiceRef.trim()
+    ? data.scheduledServiceRef : row.segment_ref;
+  const stopSequenceVersion = typeof data.stopSequenceVersion === "string" && data.stopSequenceVersion.trim()
+    ? data.stopSequenceVersion : `legacy:${row.segment_ref}`;
   const entry = WaitlistEntry.fromSnapshot({
     entryId: row.entry_id,
     accountId: row.account_id,
     travelerRefs: Array.isArray(row.traveler_refs) ? row.traveler_refs.map(String) : [],
     segmentRef: row.segment_ref,
+    scheduledServiceRef,
     departureDate: dateString(row.departure_date),
-    seatClass: row.seat_class as WaitlistEntrySnapshot["seatClass"],
+    seatClass: normalizeFareClass(row.seat_class),
+    interval,
+    stopSequenceVersion,
     priorityScore: row.priority_score,
     status: row.status as WaitlistEntrySnapshot["status"],
     queuePosition: 0,
@@ -215,6 +226,14 @@ function deadlineFromDepartureDate(departureDate: string): string { return `${de
 function defaultIntentFingerprint(travelerRefs: unknown, segmentRef: string, departureDate: string, seatClass: string): string {
   const travelerRef = Array.isArray(travelerRefs) ? String(travelerRefs[0] ?? "unknown") : "unknown";
   return `${travelerRef}:${segmentRef}:${departureDate}:${seatClass}`;
+}
+function intervalFrom(value: unknown): TravelInterval | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const body = value as Record<string, unknown>;
+  const fromSeq = Number(body.fromSeq);
+  const toSeq = Number(body.toSeq);
+  return Number.isSafeInteger(fromSeq) && Number.isSafeInteger(toSeq) && fromSeq >= 0 && toSeq > fromSeq
+    ? { fromSeq, toSeq } : undefined;
 }
 function isUniqueViolation(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;

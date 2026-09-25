@@ -2,7 +2,9 @@ import { uuidV7 } from "@trainticket/ts-kit";
 
 export type WaitlistStatus = "DRAFT" | "QUEUED" | "MATCHING" | "FULFILLED" | "EXPIRED" | "CANCELLED" | "SUSPENDED" | "CLOSED";
 export type LoyaltyTier = "PLATINUM" | "GOLD" | "SILVER" | "NONE";
-export type FareClass = "BUSINESS" | "FIRST" | "SECOND" | "SECOND_CLASS" | "STANDING";
+export type FareClass = "BUSINESS_CLASS" | "FIRST_CLASS" | "SECOND_CLASS" | "STANDING" | "SLEEPER_HARD" | "SLEEPER_SOFT";
+export type FareClassInput = FareClass | "BUSINESS" | "FIRST" | "SECOND";
+export type TravelInterval = Readonly<{ fromSeq: number; toSeq: number }>;
 export type SpecialStatus = "MILITARY" | "DISABLED" | "STUDENT" | "NONE";
 
 export type PriorityInput = Readonly<{
@@ -10,7 +12,7 @@ export type PriorityInput = Readonly<{
   tripCount?: number;
   daysBefore?: number;
   groupSize: number;
-  fareClass: FareClass;
+  fareClass: FareClassInput;
   specialStatus?: SpecialStatus | readonly SpecialStatus[];
 }>;
 
@@ -19,8 +21,11 @@ export type WaitlistEntrySnapshot = Readonly<{
   accountId: string;
   travelerRefs: readonly string[];
   segmentRef: string;
+  scheduledServiceRef: string;
   departureDate: string;
   seatClass: FareClass;
+  interval: TravelInterval;
+  stopSequenceVersion: string;
   priorityScore: number;
   status: WaitlistStatus;
   queuePosition: number;
@@ -49,8 +54,11 @@ export type CreateWaitlistEntry = Readonly<{
   accountId: string;
   travelerRefs: readonly string[];
   segmentRef: string;
+  scheduledServiceRef?: string;
   departureDate: string;
-  seatClass: FareClass;
+  seatClass: FareClassInput;
+  interval?: TravelInterval;
+  stopSequenceVersion?: string;
   priority: Omit<PriorityInput, "groupSize" | "fareClass"> & Partial<Pick<PriorityInput, "groupSize" | "fareClass">>;
   itineraryRef?: string;
   deadline?: string;
@@ -72,8 +80,11 @@ export class WaitlistEntry {
     public readonly accountId: string,
     public readonly travelerRefs: readonly string[],
     public readonly segmentRef: string,
+    public readonly scheduledServiceRef: string,
     public readonly departureDate: string,
     public readonly seatClass: FareClass,
+    public readonly interval: TravelInterval,
+    public readonly stopSequenceVersion: string,
     public readonly priorityScore: number,
     public readonly createdAt: Date,
     private _status: WaitlistStatus,
@@ -86,7 +97,7 @@ export class WaitlistEntry {
     public readonly itineraryRef?: string,
     public readonly deadline: string = deadlineFromDepartureDate(departureDate),
     public readonly paymentGuaranteeRef: string = `pay-auth-${uuidV7()}`,
-    public readonly intentFingerprint: string = defaultIntentFingerprint(travelerRefs[0] ?? "unknown", segmentRef, departureDate, seatClass),
+    public readonly intentFingerprint: string = defaultIntentFingerprint(travelerRefs, scheduledServiceRef, departureDate, seatClass, interval),
     private _journeyOrderRef?: string,
     private _fareQuoteIdempotencyKey: string = uuidV7(),
     private _offerIdempotencyKey: string = uuidV7(),
@@ -102,16 +113,26 @@ export class WaitlistEntry {
     if (command.travelerRefs.length === 0) throw new DomainError("VALIDATION_FAILED", "travelerRefs must contain at least one traveler");
     assertNonEmpty(command.segmentRef, "segmentRef");
     assertNonEmpty(command.departureDate, "departureDate");
+    const scheduledServiceRef = command.scheduledServiceRef ?? command.segmentRef;
+    const interval = command.interval ?? { fromSeq: 0, toSeq: 1 };
+    const stopSequenceVersion = command.stopSequenceVersion ?? `segment:${command.segmentRef}`;
+    assertNonEmpty(scheduledServiceRef, "scheduledServiceRef");
+    assertTravelInterval(interval);
+    assertNonEmpty(stopSequenceVersion, "stopSequenceVersion");
+    const seatClass = normalizeFareClass(command.seatClass);
     const groupSize = command.priority.groupSize ?? command.travelerRefs.length;
-    const fareClass = command.priority.fareClass ?? command.seatClass;
+    const fareClass = command.priority.fareClass ?? seatClass;
     const priorityScore = PriorityCalculator.calculate({ ...command.priority, groupSize, fareClass });
     return new WaitlistEntry(
       command.entryId ?? `wlr-${uuidV7()}`,
       command.accountId,
       [...command.travelerRefs],
       command.segmentRef,
+      scheduledServiceRef,
       command.departureDate,
-      command.seatClass,
+      seatClass,
+      { ...interval },
+      stopSequenceVersion,
       priorityScore,
       command.createdAt ?? new Date(),
       "QUEUED",
@@ -124,7 +145,7 @@ export class WaitlistEntry {
       command.itineraryRef ?? command.segmentRef,
       command.deadline ?? deadlineFromDepartureDate(command.departureDate),
       command.paymentGuaranteeRef ?? `pay-auth-${uuidV7()}`,
-      command.intentFingerprint ?? defaultIntentFingerprint(command.travelerRefs[0] ?? "unknown", command.segmentRef, command.departureDate, command.seatClass),
+      command.intentFingerprint ?? defaultIntentFingerprint(command.travelerRefs, scheduledServiceRef, command.departureDate, seatClass, interval),
     );
   }
 
@@ -134,8 +155,11 @@ export class WaitlistEntry {
       snapshot.accountId,
       [...snapshot.travelerRefs],
       snapshot.segmentRef,
+      snapshot.scheduledServiceRef,
       snapshot.departureDate,
       snapshot.seatClass,
+      { ...snapshot.interval },
+      snapshot.stopSequenceVersion,
       snapshot.priorityScore,
       new Date(snapshot.createdAt),
       snapshot.status,
@@ -251,8 +275,11 @@ export class WaitlistEntry {
       accountId: this.accountId,
       travelerRefs: [...this.travelerRefs],
       segmentRef: this.segmentRef,
+      scheduledServiceRef: this.scheduledServiceRef,
       departureDate: this.departureDate,
       seatClass: this.seatClass,
+      interval: { ...this.interval },
+      stopSequenceVersion: this.stopSequenceVersion,
       priorityScore: this.priorityScore,
       status: this._status,
       queuePosition,
@@ -294,11 +321,14 @@ export class WaitlistQueue {
   constructor(
     public readonly segmentRef: string,
     public readonly departureDate: string,
-    public readonly seatClass: FareClass,
+    seatClass: FareClassInput,
     entries: readonly WaitlistEntry[] = [],
   ) {
+    this.seatClass = normalizeFareClass(seatClass);
     for (const entry of entries) this.add(entry);
   }
+
+  public readonly seatClass: FareClass;
 
   add(entry: WaitlistEntry): void {
     if (entry.segmentRef !== this.segmentRef || entry.departureDate !== this.departureDate || entry.seatClass !== this.seatClass) {
@@ -369,9 +399,9 @@ function groupPoints(groupSize: number): number {
   return 2;
 }
 
-function farePoints(fareClass: FareClass): number {
-  const normalized = fareClass === "SECOND_CLASS" ? "SECOND" : fareClass;
-  return ({ BUSINESS: 15, FIRST: 12, SECOND: 8, STANDING: 3 } as const)[normalized] ?? 0;
+function farePoints(fareClass: FareClassInput): number {
+  const normalized = normalizeFareClass(fareClass);
+  return ({ BUSINESS_CLASS: 15, FIRST_CLASS: 12, SECOND_CLASS: 8, STANDING: 3, SLEEPER_HARD: 10, SLEEPER_SOFT: 13 } as const)[normalized];
 }
 
 function specialPoints(status: SpecialStatus | readonly SpecialStatus[] = "NONE"): number {
@@ -389,6 +419,35 @@ function deadlineFromDepartureDate(departureDate: string): string {
   return `${departureDate}T00:00:00.000Z`;
 }
 
-function defaultIntentFingerprint(travelerRef: string, segmentRef: string, departureDate: string, seatClass: FareClass): string {
-  return `${travelerRef}:${segmentRef}:${departureDate}:${seatClass}`;
+export function normalizeFareClass(value: string): FareClass {
+  const normalized = value.trim().toUpperCase();
+  const aliases: Readonly<Record<string, FareClass>> = {
+    BUSINESS: "BUSINESS_CLASS",
+    BUSINESS_CLASS: "BUSINESS_CLASS",
+    FIRST: "FIRST_CLASS",
+    FIRST_CLASS: "FIRST_CLASS",
+    SECOND: "SECOND_CLASS",
+    SECOND_CLASS: "SECOND_CLASS",
+    STANDING: "STANDING",
+    SLEEPER_HARD: "SLEEPER_HARD",
+    SLEEPER_SOFT: "SLEEPER_SOFT",
+  };
+  const result = aliases[normalized];
+  if (!result) throw new DomainError("VALIDATION_FAILED", `Unsupported travel class ${value}`);
+  return result;
+}
+
+export function intervalContains(container: TravelInterval, requested: TravelInterval): boolean {
+  return container.fromSeq <= requested.fromSeq && container.toSeq >= requested.toSeq;
+}
+
+function assertTravelInterval(interval: TravelInterval): void {
+  if (!Number.isSafeInteger(interval.fromSeq) || !Number.isSafeInteger(interval.toSeq)
+      || interval.fromSeq < 0 || interval.toSeq <= interval.fromSeq) {
+    throw new DomainError("VALIDATION_FAILED", "interval must contain nonnegative fromSeq and a greater toSeq");
+  }
+}
+
+function defaultIntentFingerprint(travelerRefs: readonly string[], scheduledServiceRef: string, departureDate: string, seatClass: FareClass, interval: TravelInterval): string {
+  return `${[...travelerRefs].sort().join(",")}:${scheduledServiceRef}:${departureDate}:${seatClass}:${interval.fromSeq}-${interval.toSeq}`;
 }
