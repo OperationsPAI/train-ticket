@@ -5,6 +5,7 @@ import json
 import logging
 import threading
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -16,6 +17,7 @@ from reporting.application.service import (
     dashboard_consumes_event,
     default_repository,
     operational_event_from_envelope,
+    project_revenue_facts,
     reporting_applies_event_type,
     rfc3339_utc,
     utc_now,
@@ -38,6 +40,7 @@ from reporting.domain import (
     ReadModelSnapshot,
     ReadModelStatus,
     RevenueItem,
+    RevenueFactIndex,
     RevenueReport,
     RouteMetrics,
 )
@@ -50,6 +53,22 @@ from psycopg.types.json import Jsonb
 logger = logging.getLogger(__name__)
 
 _PAYMENT_CAPTURED_EVENT_TYPES = ("PaymentCaptured",)
+_REVENUE_PROJECTION_EVENT_TYPES = frozenset({
+    "PaymentCaptured",
+    "JourneyOrderCreated",
+    "PostSalesCaseOpened",
+    "PostSalesRequested",
+    "SegmentReservationRequested",
+    "SeatAllocated",
+    "StandingAssigned",
+    "AncillaryOrderItemSelected",
+    "AncillaryOrderItemConfirmed",
+    "AncillaryOrderItemFulfilled",
+    "AncillaryOrderItemCancelled",
+    "AncillaryOrderItemRefunded",
+    "InsurancePolicyIssued",
+    "InsurancePolicyCancelled",
+})
 _REVENUE_REFRESH_INTERVAL = 30.0
 
 # How far back the anomaly rules can see. REVENUE_DROP compares the last hour
@@ -196,6 +215,9 @@ def _flags_from_event(event: OperationalEvent) -> dict[str, Any]:
         "insuranceAttached": event.insurance_attached,
         "sourceContext": event.source_context,
         "anomalySignal": event.anomaly_signal,
+        "businessRef": event.business_ref,
+        "paymentIntentId": event.payment_intent_id,
+        "paymentPurpose": event.payment_purpose,
     }
 
 
@@ -248,7 +270,116 @@ def _event_from_row(row: Sequence[Any]) -> OperationalEvent:
         insurance_attached=_bool_flag(flags, "insuranceAttached"),
         source_context=None if flags.get("sourceContext") is None else str(flags.get("sourceContext")),
         anomaly_signal=_bool_flag(flags, "anomalySignal"),
+        business_ref=None if flags.get("businessRef") is None else str(flags.get("businessRef")),
+        payment_intent_id=None if flags.get("paymentIntentId") is None else str(flags.get("paymentIntentId")),
+        payment_purpose=None if flags.get("paymentPurpose") is None else str(flags.get("paymentPurpose")),
     )
+
+
+class _PostgresRevenueFactIndex:
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
+        self.changed = False
+
+    def _record(self, cursor: Any) -> None:
+        self.changed = self.changed or cursor.rowcount > 0
+
+    def record_capture(self, event_id: str, business_ref: str, payment_intent_id: str, payment_purpose: str, occurred_at: datetime) -> None:
+        if not event_id.strip():
+            return
+        business_ref = business_ref.strip() or f"unresolved:{event_id}"
+        self._record(self._conn.execute(
+            """
+            INSERT INTO reporting_capture_references(event_id,business_ref,payment_intent_id,payment_purpose,source_occurred_at)
+            VALUES (%s,%s,NULLIF(%s,''),NULLIF(%s,''),%s)
+            ON CONFLICT(event_id) DO UPDATE SET
+              business_ref=EXCLUDED.business_ref,
+              payment_intent_id=EXCLUDED.payment_intent_id,
+              payment_purpose=EXCLUDED.payment_purpose,
+              source_occurred_at=EXCLUDED.source_occurred_at
+            WHERE reporting_capture_references.source_occurred_at < EXCLUDED.source_occurred_at
+            """,
+            (event_id, business_ref, payment_intent_id, payment_purpose, occurred_at),
+        ))
+
+    def record_order(self, order_id: str, routes: Any, travelers: Any, occurred_at: datetime) -> None:
+        if not order_id.strip():
+            return
+        route_rows = [(order_id, route_id, service_date, occurred_at) for route_id, service_date in routes if str(route_id).strip()]
+        if route_rows:
+            with self._conn.cursor() as cursor:
+                cursor.executemany(
+                    """
+                    INSERT INTO reporting_order_routes(order_id,route_id,service_date,source_occurred_at)
+                    VALUES (%s,%s,%s,%s)
+                    ON CONFLICT(order_id,route_id) DO UPDATE SET
+                      service_date=EXCLUDED.service_date,source_occurred_at=EXCLUDED.source_occurred_at
+                    WHERE reporting_order_routes.source_occurred_at < EXCLUDED.source_occurred_at
+                    """,
+                    route_rows,
+                )
+                self._record(cursor)
+        traveler_rows = [(order_id, traveler_ref, traveler_type, occurred_at) for traveler_ref, traveler_type in travelers if str(traveler_ref).strip() and str(traveler_type).strip()]
+        if traveler_rows:
+            with self._conn.cursor() as cursor:
+                cursor.executemany(
+                    """
+                    INSERT INTO reporting_order_travelers(order_id,traveler_ref,traveler_type,source_occurred_at)
+                    VALUES (%s,%s,%s,%s)
+                    ON CONFLICT(order_id,traveler_ref) DO UPDATE SET
+                      traveler_type=EXCLUDED.traveler_type,source_occurred_at=EXCLUDED.source_occurred_at
+                    WHERE reporting_order_travelers.source_occurred_at < EXCLUDED.source_occurred_at
+                    """,
+                    traveler_rows,
+                )
+                self._record(cursor)
+        self.record_business_order(order_id, order_id, (), (), occurred_at)
+
+    def record_business_order(self, business_ref: str, order_id: str, segment_refs: Any, traveler_refs: Any, occurred_at: datetime) -> None:
+        if not business_ref.strip() or not order_id.strip():
+            return
+        self._record(self._conn.execute(
+            """
+            INSERT INTO reporting_business_scopes(business_ref,order_id,segment_refs,traveler_refs,source_occurred_at)
+            VALUES (%s,%s,%s,%s,%s)
+            ON CONFLICT(business_ref) DO UPDATE SET
+              order_id=EXCLUDED.order_id,
+              segment_refs=CASE WHEN cardinality(EXCLUDED.segment_refs)>0 THEN EXCLUDED.segment_refs ELSE reporting_business_scopes.segment_refs END,
+              traveler_refs=CASE WHEN cardinality(EXCLUDED.traveler_refs)>0 THEN EXCLUDED.traveler_refs ELSE reporting_business_scopes.traveler_refs END,
+              source_occurred_at=EXCLUDED.source_occurred_at
+            WHERE reporting_business_scopes.source_occurred_at <= EXCLUDED.source_occurred_at
+            """,
+            (business_ref, order_id, list(segment_refs), list(traveler_refs), occurred_at),
+        ))
+
+    def record_seat_class(self, order_id: str, segment_ref: str, traveler_ref: str, seat_class: str, occurred_at: datetime, source_priority: int = 0) -> None:
+        if not all(value.strip() for value in (order_id, segment_ref, traveler_ref, seat_class)):
+            return
+        self._record(self._conn.execute(
+            """
+            INSERT INTO reporting_seat_classes(order_id,segment_ref,traveler_ref,seat_class,source_priority,source_occurred_at)
+            VALUES (%s,%s,%s,%s,%s,%s)
+            ON CONFLICT(order_id,segment_ref,traveler_ref) DO UPDATE SET
+              seat_class=EXCLUDED.seat_class,source_priority=EXCLUDED.source_priority,source_occurred_at=EXCLUDED.source_occurred_at
+            WHERE (reporting_seat_classes.source_priority,reporting_seat_classes.source_occurred_at)
+               < (EXCLUDED.source_priority,EXCLUDED.source_occurred_at)
+            """,
+            (order_id, segment_ref, traveler_ref, seat_class, source_priority, occurred_at),
+        ))
+
+    def record_attachment(self, order_id: str, attachment_type: str, occurred_at: datetime) -> None:
+        if not order_id.strip() or attachment_type not in {"ANCILLARY", "INSURANCE"}:
+            return
+        self._record(self._conn.execute(
+            """
+            INSERT INTO reporting_order_attachments(order_id,attachment_type,source_occurred_at)
+            VALUES (%s,%s,%s)
+            ON CONFLICT(order_id,attachment_type) DO UPDATE SET
+              source_occurred_at=EXCLUDED.source_occurred_at
+            WHERE reporting_order_attachments.source_occurred_at < EXCLUDED.source_occurred_at
+            """,
+            (order_id, attachment_type, occurred_at),
+        ))
 
 
 class PostgresReportingApplicationService:
@@ -315,7 +446,10 @@ class PostgresReportingApplicationService:
                     if not self._processed.try_mark_processed(conn, envelope.eventId, f"events:{envelope.producer}"):
                         return HandlerResult.success()
                     normalized = operational_event_from_envelope(envelope)
-                    if not self._save_metric_event(conn, normalized):
+                    metric_inserted = self._save_metric_event(conn, normalized)
+                    fact_index = _PostgresRevenueFactIndex(conn)
+                    project_revenue_facts(fact_index, envelope)
+                    if not metric_inserted and not fact_index.changed:
                         return HandlerResult.success()
                     conn.execute(
                         "INSERT INTO reporting_projection_refresh_requests(event_type,generation,source_event) VALUES (%s,1,%s) "
@@ -374,7 +508,7 @@ class PostgresReportingApplicationService:
                 if not pending:
                     return 0
                 source = EventEnvelope.from_json_dict(pending[-1][3])
-                if any(row[0] in _PAYMENT_CAPTURED_EVENT_TYPES for row in pending):
+                if any(row[0] in _REVENUE_PROJECTION_EVENT_TYPES for row in pending):
                     self._refresh_revenue_views(conn)
                 aggregator = self._load_aggregator(conn, since=utc_now() - _DETECTION_WINDOW)
                 self._detector.evaluate(aggregator)
@@ -424,9 +558,9 @@ class PostgresReportingApplicationService:
 
     def _refresh_revenue_views(self, conn: Any) -> None:
         for view_name in (
+            "reporting_revenue_breakdowns",
             "reporting_revenue_by_route",
             "reporting_revenue_by_seat_class",
-            "reporting_revenue_breakdowns",
         ):
             conn.execute(f"REFRESH MATERIALIZED VIEW CONCURRENTLY {view_name}")
 
@@ -449,10 +583,114 @@ class PostgresReportingApplicationService:
             params,
         ).fetchall()
         rows.reverse()
-        aggregator = MetricAggregator()
-        for row in rows:
-            aggregator.record(_event_from_row(row))
+        events = [_event_from_row(row) for row in rows]
+        capture_ids = [event.event_id for event in events if event.event_type == "PaymentCaptured"]
+        capture_refs: dict[str, tuple[str, str | None, str | None]] = {}
+        if capture_ids:
+            capture_refs = {
+                str(row[0]): (
+                    str(row[1]),
+                    None if row[2] is None else str(row[2]),
+                    None if row[3] is None else str(row[3]),
+                )
+                for row in conn.execute(
+                    """
+                    SELECT event_id,business_ref,payment_intent_id,payment_purpose
+                    FROM reporting_capture_references
+                    WHERE event_id = ANY(%s)
+                    """,
+                    (capture_ids,),
+                ).fetchall()
+            }
+        events = [
+            replace(
+                event,
+                business_ref=capture_refs[event.event_id][0],
+                payment_intent_id=capture_refs[event.event_id][1],
+                payment_purpose=capture_refs[event.event_id][2],
+            )
+            if event.event_id in capture_refs else event
+            for event in events
+        ]
+        facts = self._load_revenue_facts(conn, events)
+        aggregator = MetricAggregator(revenue_facts=facts)
+        for event in events:
+            aggregator.record(event)
         return aggregator
+
+    @staticmethod
+    def _load_revenue_facts(conn: Any, events: Sequence[OperationalEvent]) -> RevenueFactIndex:
+        facts = RevenueFactIndex()
+        business_refs = sorted({event.business_ref for event in events if event.business_ref})
+        scopes: list[Sequence[Any]] = []
+        if business_refs:
+            scopes = conn.execute(
+                """
+                SELECT business_ref,order_id,segment_refs,traveler_refs,source_occurred_at
+                FROM reporting_business_scopes
+                WHERE business_ref = ANY(%s)
+                """,
+                (business_refs,),
+            ).fetchall()
+            for row in scopes:
+                facts.record_business_order(str(row[0]), str(row[1]), row[2] or (), row[3] or (), _row_datetime(row[4]))
+        order_ids = sorted(
+            {ref for ref in business_refs if ref.startswith("ord-")}
+            | {str(row[1]) for row in scopes}
+        )
+        if not order_ids:
+            return facts
+        for row in conn.execute(
+            """
+            SELECT order_id,attachment_type,source_occurred_at
+            FROM reporting_order_attachments
+            WHERE order_id = ANY(%s)
+            """,
+            (order_ids,),
+        ).fetchall():
+            facts.record_attachment(str(row[0]), str(row[1]), _row_datetime(row[2]))
+        routes_by_order: dict[str, list[tuple[str, date | None]]] = {}
+        travelers_by_order: dict[str, list[tuple[str, str]]] = {}
+        occurred_by_order: dict[str, datetime] = {}
+        for row in conn.execute(
+            """
+            SELECT order_id,route_id,service_date,source_occurred_at
+            FROM reporting_order_routes
+            WHERE order_id = ANY(%s)
+            """,
+            (order_ids,),
+        ).fetchall():
+            order_id = str(row[0])
+            service_date = None if row[2] is None else _row_date(row[2], _row_datetime(row[3]))
+            routes_by_order.setdefault(order_id, []).append((str(row[1]), service_date))
+            occurred_by_order[order_id] = max(occurred_by_order.get(order_id, _row_datetime(row[3])), _row_datetime(row[3]))
+        for row in conn.execute(
+            """
+            SELECT order_id,traveler_ref,traveler_type,source_occurred_at
+            FROM reporting_order_travelers
+            WHERE order_id = ANY(%s)
+            """,
+            (order_ids,),
+        ).fetchall():
+            order_id = str(row[0])
+            travelers_by_order.setdefault(order_id, []).append((str(row[1]), str(row[2])))
+            occurred_by_order[order_id] = max(occurred_by_order.get(order_id, _row_datetime(row[3])), _row_datetime(row[3]))
+        for order_id in order_ids:
+            occurred_at = occurred_by_order.get(order_id)
+            if occurred_at is not None:
+                facts.record_order(order_id, routes_by_order.get(order_id, ()), travelers_by_order.get(order_id, ()), occurred_at)
+        for row in conn.execute(
+            """
+            SELECT order_id,segment_ref,traveler_ref,seat_class,source_occurred_at,source_priority
+            FROM reporting_seat_classes
+            WHERE order_id = ANY(%s)
+            """,
+            (order_ids,),
+        ).fetchall():
+            facts.record_seat_class(
+                str(row[0]), str(row[1]), str(row[2]), str(row[3]), _row_datetime(row[4]), int(row[5])
+            )
+        return facts
 
     def _all_dashboards(self, conn: Any, *, for_update: bool = False) -> list[tuple[DashboardReadModel, int]]:
         # FOR UPDATE on the write path: every consumer rebuilds the same handful of
@@ -544,7 +782,7 @@ class PostgresReportingApplicationService:
             return self._load_aggregator(conn).context_count_report(group_by=group_by, limit=limit, offset=offset, at=at)
 
     def revenue_report(self, group_by: str = "route", limit: int = 20, offset: int = 0, at: datetime | None = None) -> RevenueReport:
-        if group_by not in {"route", "seat_class", "channel", "passenger_type", "time_period"}:
+        if group_by not in {"route", "seat_class", "channel", "traveler_type", "time_period"}:
             with self._pool.connection() as conn:
                 return self._load_aggregator(conn).revenue_report(group_by=group_by, limit=limit, offset=offset, at=at)
         with self._pool.connection() as conn:

@@ -464,16 +464,16 @@ class RealTimeMetricsEnrichmentTest(unittest.TestCase):
         aggregator = MetricAggregator()
         payments = [("A", "100.00"), ("B", "300.00"), ("A", "50.00")]
         for index, (route, amount) in enumerate(payments):
+            order_id = f"ord-{index}"
+            aggregator.revenue_facts.record_order(order_id, [(route, NOW.date())], (), NOW)
             aggregator.record(
                 OperationalEvent(
                     event_id=f"payment-{index}",
                     event_type="PaymentCaptured",
                     occurred_at=NOW + timedelta(minutes=index),
-                    route_id=route,
                     amount=Money(amount, "USD"),
+                    business_ref=order_id,
                     distance_km=Decimal("100"),
-                    ancillary_attached=index != 1,
-                    insurance_attached=index == 0,
                 )
             )
 
@@ -486,8 +486,9 @@ class RealTimeMetricsEnrichmentTest(unittest.TestCase):
 
     def test_revenue_totals_preserve_each_currency(self) -> None:
         aggregator = MetricAggregator()
-        aggregator.record(OperationalEvent("cny", "PaymentCaptured", NOW, route_id="A", amount=Money("12.00", "CNY")))
-        aggregator.record(OperationalEvent("usd", "PaymentCaptured", NOW, route_id="A", amount=Money("3.50", "USD")))
+        aggregator.revenue_facts.record_order("ord-a", [("A", NOW.date())], (), NOW)
+        aggregator.record(OperationalEvent("cny", "PaymentCaptured", NOW, amount=Money("12.00", "CNY"), business_ref="ord-a"))
+        aggregator.record(OperationalEvent("usd", "PaymentCaptured", NOW, amount=Money("3.50", "USD"), business_ref="ord-a"))
 
         snapshot = aggregator.snapshot(NOW)
         report = aggregator.revenue_report("route", at=NOW)
@@ -502,7 +503,9 @@ class RealTimeMetricsEnrichmentTest(unittest.TestCase):
     def test_revenue_pagination_does_not_change_complete_totals(self) -> None:
         aggregator = MetricAggregator()
         for route, amount in (("A", "10.00"), ("B", "20.00"), ("C", "30.00")):
-            aggregator.record(OperationalEvent(route, "PaymentCaptured", NOW, route_id=route, amount=Money(amount, "CNY")))
+            order_id = f"ord-{route.lower()}"
+            aggregator.revenue_facts.record_order(order_id, [(route, NOW.date())], (), NOW)
+            aggregator.record(OperationalEvent(route, "PaymentCaptured", NOW, amount=Money(amount, "CNY"), business_ref=order_id))
 
         report = aggregator.revenue_report("route", limit=1, offset=1, at=NOW)
 
