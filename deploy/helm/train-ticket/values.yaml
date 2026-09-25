@@ -1137,6 +1137,30 @@ services:
   notification:
     db: notification
     image: mirrors.tencent.com/microservice/notification:hpa-d9048788@sha256:c867e29abe549b09d4e5d08faf494b770a5b8bc9b1d80c4e4c6c6e8f506b95e0
+    replicas: 2
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 3
+      # Scale above roughly 500m CPU per pod. The request is calibrated to the
+      # observed backlog-drain footprint so normal recovery does not scale to
+      # the maximum immediately.
+      targetCPUUtilizationPercentage: 200
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 60
+          selectPolicy: Min
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 60
+        scaleDown:
+          stabilizationWindowSeconds: 600
+          selectPolicy: Min
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 120
     strategy:
       type: RollingUpdate
       rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
@@ -1160,7 +1184,7 @@ services:
     # could not answer /healthz within the probe timeout, and kubelet restarted
     # the pod every 64 seconds. Threads and CPU must be raised together.
     resources:
-      requests: { cpu: 100m, memory: 256Mi }
+      requests: { cpu: 250m, memory: 256Mi }
       limits: { cpu: '2', memory: 3Gi }
   traveler-profile:
     db: traveler_profile
