@@ -827,17 +827,26 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
         var refs=new java.util.HashSet<String>();
         var matched=new java.util.LinkedHashMap<String,RevenueRecognition>();
         var amounts=new java.util.LinkedHashMap<String,Money>();
+        var paymentFacts=new java.util.HashMap<String,PaymentRefundFacts>();
+        var projectedReversals=new java.util.HashMap<String,Money>();
         for(var refund:refunds.path("items")) {
             String refundId=refund.path("refundId").asText(),paymentId=refund.path("paymentIntentId").asText();
-            if(refundId.isBlank() || !refs.add(refundId) || !caseId.equals(refund.path("businessCaseRef").asText()))throw new DomainRuleViolation("change refund identity mismatch");
+            if(refundId.isBlank() || paymentId.isBlank() || !refs.add(refundId) || !caseId.equals(refund.path("businessCaseRef").asText()))throw new DomainRuleViolation("change refund identity mismatch");
             if(!"SETTLED".equals(refund.path("status").asText()))throw new OutOfOrderEventException("change refund has not settled");
             Money amount=jsonMoney(refund.path("amount"));
-            var facts=changePayments.read("payment","/api/v1/internal/payment-intents/"+paymentId+"/captured-facts",envelope.correlationId());
-            var sourceIds=new java.util.HashSet<String>();
-            facts.path("events").forEach(event->sourceIds.add(event.path("eventId").asText()));
-            var recognition=revenues.stream().filter(item->sourceIds.contains(item.sourceEventId())).findFirst()
-                .orElseThrow(()->new OutOfOrderEventException("refunded payment revenue is not assigned to this order"));
-            if(!recognition.amount().equals(jsonMoney(facts.path("capturedAmount"))) || jsonMoney(facts.path("refundedAmount")).compareTo(amount)<0)throw new DomainRuleViolation("refund exceeds its actual payment facts");
+            if(amount.isZero() || amount.isNegative())throw new DomainRuleViolation("change refund amount must be positive");
+            var facts=paymentFacts.computeIfAbsent(paymentId,id->readPaymentRefundFacts(id,envelope.correlationId()));
+            var matching=revenues.stream().filter(item->facts.sourceEventIds().contains(item.sourceEventId())).toList();
+            if(matching.isEmpty())throw new OutOfOrderEventException("refunded payment revenue is not assigned to this order");
+            if(matching.size()!=1)throw new DomainRuleViolation("refunded payment has duplicate revenue recognitions");
+            var recognition=matching.getFirst();
+            if(!recognition.amount().equals(facts.capturedAmount()))throw new DomainRuleViolation("refund differs from its actual payment capture");
+            Money recorded=recognition.reversalAmounts().get(refundId);
+            if(recorded!=null && !recorded.equals(amount))throw new DomainRuleViolation("refund reference was reused with a different amount");
+            Money projected=projectedReversals.getOrDefault(paymentId,recognition.reversedAmount());
+            if(recorded==null)projected=projected.plus(amount);
+            if(projected.compareTo(facts.refundedAmount())>0 || facts.refundedAmount().compareTo(facts.capturedAmount())>0)throw new DomainRuleViolation("refund exceeds its actual payment facts");
+            projectedReversals.put(paymentId,projected);
             matched.put(refundId,recognition);amounts.put(refundId,amount);total=total.plus(amount);
         }
         if(!total.equals(expected))throw new DomainRuleViolation("settled change refunds differ from approved total");
@@ -848,6 +857,21 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             if(recognition.domainEvents().size()>first)service.saveAndPublish(recognition,first);
         }
     }
+
+    private PaymentRefundFacts readPaymentRefundFacts(String paymentId,String correlationId) {
+        var facts=changePayments.read("payment","/api/v1/internal/payment-intents/"+paymentId+"/captured-facts",correlationId);
+        if(!paymentId.equals(facts.path("paymentIntentId").asText()) || !facts.path("events").isArray() || facts.path("events").isEmpty()) {
+            throw new DomainRuleViolation("captured payment facts are incomplete");
+        }
+        var sourceIds=new java.util.HashSet<String>();
+        facts.path("events").forEach(event->{
+            String sourceId=event.path("eventId").asText();
+            if(sourceId.isBlank() || !sourceIds.add(sourceId))throw new DomainRuleViolation("captured payment event identity is invalid");
+        });
+        return new PaymentRefundFacts(jsonMoney(facts.path("capturedAmount")),jsonMoney(facts.path("refundedAmount")),sourceIds);
+    }
+
+    private record PaymentRefundFacts(Money capturedAmount,Money refundedAmount,java.util.Set<String> sourceEventIds) {}
 
     @Transactional
     public void reconcileChange(String caseId,String correlationId) {
