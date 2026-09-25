@@ -6,4 +6,5 @@ export * from "./metrics.js";
 export * from "./storage.js";
 export * from "./observability.js";
 export * from "./outbound.js";
+export * from "./replay.js";
 export * from "./trace-logging.js";
