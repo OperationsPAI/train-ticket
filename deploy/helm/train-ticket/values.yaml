@@ -1132,6 +1132,11 @@ services:
   account:
     db: account
     pgInstance: user
+    env:
+      # The resident peak exhausted the TypeScript default of ten connections:
+      # more than 2500 account creates waited for the pool and then hit the
+      # client's ten second deadline while postgres-user still had capacity.
+      PG_MAX_POOL_SIZE: "48"
   loyalty-membership:
     db: loyalty_membership
     env:
