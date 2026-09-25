@@ -443,14 +443,19 @@ impl CapacityService {
                 )
                 .is_some()
             {
-                match pool.confirm_hold(
+                match pool.confirm_or_expire_hold(
                     &HoldId::new(hold_id)
                         .map_err(|_| AppError::NotFound("hold not found".into()))?,
                     now,
                 ) {
-                    Ok(events) => {
+                    Ok((events, expired)) => {
                         self.publish_domain_events(&events, correlation_id)
                             .map_err(AppError::from_publish_failed)?;
+                        if expired {
+                            return Err(AppError::PreconditionFailed(
+                                "Hold expired before confirmation".into(),
+                            ));
+                        }
                         let resp = ConfirmHoldResponse {
                             hold_id: hold_id.to_string(),
                             status: "CONFIRMED".to_string(),
