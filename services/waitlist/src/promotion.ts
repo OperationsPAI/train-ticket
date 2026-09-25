@@ -1,5 +1,6 @@
 import { isPrefixedUuidV7, tracedFetch, type EventPublisher } from "@trainticket/ts-kit";
 import { DomainError, normalizeFareClass, type FareClass, type TravelInterval, type WaitlistEntry, type WaitlistEntrySnapshot } from "./domain.js";
+import { promotionReasonCode, travelClassLabel, waitlistMetrics, type WaitlistIntentMetricSample, type WaitlistMetricRecorder, type WaitlistPromotionOutcome } from "./metrics.js";
 import { publishAll, waitlistExpired, waitlistMatchStarted } from "./publisher.js";
 
 export type WaitlistCapacityFreed = Readonly<{
@@ -56,6 +57,12 @@ export interface WaitlistRepository {
   findArchivable(): Promise<readonly WaitlistEntry[]> | readonly WaitlistEntry[];
   queueFor(segmentRef: string, departureDate: string, seatClass?: string): Promise<readonly WaitlistEntrySnapshot[]> | readonly WaitlistEntrySnapshot[];
   listByTraveler(travelerRef: string): Promise<readonly WaitlistEntrySnapshot[]> | readonly WaitlistEntrySnapshot[];
+  /**
+   * Durable population/age buckets for the business gauges. Optional so a test
+   * double that does not exercise telemetry stays valid; the service's two real
+   * repositories both implement it.
+   */
+  intentMetricSamples?(): Promise<readonly WaitlistIntentMetricSample[]> | readonly WaitlistIntentMetricSample[];
 }
 
 export interface FarePricingClient {
@@ -173,6 +180,7 @@ export class PromotionOrchestrator {
     private readonly publisher: EventPublisher,
     private readonly offerManagement: OfferManagementClient = new HttpOfferManagementClient(),
     private readonly now: () => Date = () => new Date(),
+    private readonly metrics: WaitlistMetricRecorder = waitlistMetrics(),
   ) {}
 
   async onCapacityFreed(event: WaitlistCapacityFreed, journeyOrder: JourneyOrderClient, correlationId?: string): Promise<PromotionResult> {
@@ -206,6 +214,7 @@ export class PromotionOrchestrator {
       const claimed = await this.repository.save(entry);
       const now = this.now();
       await publishAll(this.publisher, [waitlistMatchStarted(claimed, entry.loadedVersion, entry.matchedCapacityCredits.map((credit) => credit.capacityReleaseRef), correlationId, now.toISOString())]);
+      this.recordPromotion("claimed", "capacity_claimed", entry);
       return claimed;
     }
     return this.advancePromotion(entry, journeyOrder, correlationId);
@@ -214,20 +223,25 @@ export class PromotionOrchestrator {
   private async advancePromotion(entry: WaitlistEntry, journeyOrder: JourneyOrderClient, correlationId?: string): Promise<WaitlistEntrySnapshot | undefined> {
     if (entry.status !== "MATCHING" || entry.journeyOrderRef) return undefined;
     const now = this.now();
-    if (new Date(entry.deadline) <= now || (entry.offerExpiresAt && entry.offerExpiresAt <= now)) {
+    const offerDeadlinePassed = entry.offerExpiresAt !== null && entry.offerExpiresAt <= now;
+    if (new Date(entry.deadline) <= now || offerDeadlinePassed) {
       await this.repository.restoreCapacityCredits(entry);
       entry.expire();
       const expired = await this.repository.save(entry);
       await publishAll(this.publisher, [waitlistExpired(expired, entry.loadedVersion, correlationId, now.toISOString())]);
+      this.recordPromotion("expired", offerDeadlinePassed ? "offer_expired" : "deadline_passed", entry);
       return expired;
     }
     if (!entry.fareQuoteId) {
-      const quote = await this.farePricing.quote(entry);
+      const quote = await this.externalPromotionCall(entry, () => this.farePricing.quote(entry));
       entry.recordFareQuote(quote.fareQuoteId);
-      return this.repository.save(entry);
+      const quoted = await this.repository.save(entry);
+      this.recordPromotion("fare_quoted", "none", entry);
+      return quoted;
     }
     if (!entry.offerId) {
-      const commercialOffer = await this.offerManagement.createOffer(entry, entry.fareQuoteId!);
+      const fareQuoteId = entry.fareQuoteId;
+      const commercialOffer = await this.externalPromotionCall(entry, () => this.offerManagement.createOffer(entry, fareQuoteId));
       const offerNow = this.now();
       const expiresAt = earliestInstant(commercialOffer.expiresAt, entry.paymentGuarantee.authorizedUntil, entry.deadline);
       if (expiresAt <= offerNow) {
@@ -235,23 +249,30 @@ export class PromotionOrchestrator {
         entry.expire();
         const expired = await this.repository.save(entry);
         await publishAll(this.publisher, [waitlistExpired(expired, entry.loadedVersion, correlationId, offerNow.toISOString())]);
+        this.recordPromotion("expired", "offer_expired", entry);
         return expired;
       }
       if (!guaranteeCovers(entry, commercialOffer.total)) {
         await this.repository.restoreCapacityCredits(entry);
         entry.forgetMatchedCapacityCredits();
         entry.suspend();
-        return this.repository.save(entry);
+        const suspended = await this.repository.save(entry);
+        this.recordPromotion("suspended", "guarantee_insufficient", entry);
+        return suspended;
       }
       entry.recordOrderAmount(commercialOffer.total);
-      entry.offer(commercialOffer.offerId, commercialOffer.offerVersion, entry.fareQuoteId!, undefined, offerNow, expiresAt);
-      return this.repository.save(entry);
+      entry.offer(commercialOffer.offerId, commercialOffer.offerVersion, fareQuoteId, undefined, offerNow, expiresAt);
+      const offered = await this.repository.save(entry);
+      this.recordPromotion("offer_created", "none", entry);
+      return offered;
     }
     const orderRequestedAt = this.now();
     entry.ensureOfferAcceptable(orderRequestedAt);
-    const order = await journeyOrder.createOrder(entry);
+    const order = await this.externalPromotionCall(entry, () => journeyOrder.createOrder(entry));
     entry.linkJourneyOrder(orderRequestedAt, order.orderId, order.amount);
-    return this.repository.save(entry);
+    const ordered = await this.repository.save(entry);
+    this.recordPromotion("order_created", "none", entry);
+    return ordered;
   }
 
   async expireDueOffers(correlationId?: string): Promise<readonly WaitlistEntrySnapshot[]> {
@@ -260,13 +281,37 @@ export class PromotionOrchestrator {
     for (const entry of await this.repository.findExpiredOffers(now)) {
       const capacityHoldId = entry.capacityHoldId;
       if (entry.status === "MATCHING" && !entry.journeyOrderRef && entry.matchedCapacityCredits.length > 0) await this.repository.restoreCapacityCredits(entry);
+      const offerDeadlinePassed = entry.offerExpiresAt !== null && entry.offerExpiresAt <= now;
       entry.expire();
-      if (capacityHoldId) await this.capacityAvailability.releaseHold(entry, capacityHoldId);
+      if (capacityHoldId) await this.externalPromotionCall(entry, () => this.capacityAvailability.releaseHold(entry, capacityHoldId));
       const snapshot = await this.repository.save(entry);
       expired.push(snapshot);
       await publishAll(this.publisher, [waitlistExpired(snapshot, entry.loadedVersion, correlationId, now.toISOString())]);
+      this.recordPromotion("expired", offerDeadlinePassed ? "offer_expired" : "deadline_passed", entry);
     }
     return expired;
+  }
+
+  /**
+   * Runs one outbound promotion call, recording a bounded `failed` outcome if it
+   * rejects. The transition itself is recorded only after the durable write, so
+   * a single attempt cannot emit both a transition and a failure point.
+   */
+  private async externalPromotionCall<T>(entry: WaitlistEntry, call: () => Promise<T>): Promise<T> {
+    try {
+      return await call();
+    } catch (error) {
+      this.recordPromotion("failed", "other", entry);
+      throw error;
+    }
+  }
+
+  private recordPromotion(outcome: WaitlistPromotionOutcome, reason: string, entry: WaitlistEntry): void {
+    try {
+      this.metrics.promotion(outcome, promotionReasonCode(reason), travelClassLabel(entry.seatClass));
+    } catch {
+      // Telemetry is diagnostic: a recorder fault must never fail a promotion.
+    }
   }
 }
 

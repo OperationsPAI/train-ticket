@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { InMemoryEventPublisher } from "@trainticket/ts-kit";
 import { HttpJourneyOrderClient, InMemoryWaitlistRepository, WaitlistApplicationService } from "../src/application.js";
-import { HttpFarePricingClient, HttpOfferManagementClient, type CapacityAvailabilityClient, type FarePricingClient, type JourneyOrderClient, type OfferManagementClient, type WaitlistCapacityFreed } from "../src/promotion.js";
+import { HttpFarePricingClient, HttpOfferManagementClient, PromotionOrchestrator, type CapacityAvailabilityClient, type FarePricingClient, type JourneyOrderClient, type OfferManagementClient, type WaitlistCapacityFreed } from "../src/promotion.js";
+import type { WaitlistMetricRecorder, WaitlistPromotionOutcome, WaitlistPromotionReasonCode } from "../src/metrics.js";
 import { WaitlistEntry } from "../src/domain.js";
 
 const CAPACITY_RELEASE_REF = "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c123";
@@ -368,4 +369,59 @@ test("order started inside the offer window is linked even if the response cross
   await service.handleCapacityFreed(capacityEvent());
 
   assert.equal((await repository.get(created.waitlistRequestId))?.journeyOrderRef, `ord-${created.waitlistRequestId}`);
+});
+
+test("promotion records a bounded outcome per transition without any identifier", async () => {
+  const repository = new InMemoryWaitlistRepository();
+  const publisher = new InMemoryEventPublisher();
+  const recorded: Array<{ outcome: WaitlistPromotionOutcome; reasonCode: WaitlistPromotionReasonCode; travelClass: string }> = [];
+  const metrics: WaitlistMetricRecorder = {
+    promotion: (outcome, reasonCode, travelClass) => { recorded.push({ outcome, reasonCode, travelClass }); },
+  };
+  const now = () => new Date("2026-01-01T00:00:00.000Z");
+  const orchestrator = new PromotionOrchestrator(repository, new StubFarePricing(), new StubCapacity(), publisher, new StubOfferManagement(), now, metrics);
+  const service = new WaitlistApplicationService(repository, new InMemoryEventPublisher(), new StubFarePricing(), new StubCapacity(), new StubJourneyOrder(), now, new StubOfferManagement());
+  const entry = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "NONE", tripCount: 0, daysBefore: 20 });
+
+  await orchestrator.recordCapacityFreed(capacityEvent());
+  const journeyOrder = new StubJourneyOrder();
+  for (let step = 0; step < 8; step++) {
+    if (!await orchestrator.advanceNextPromotion(journeyOrder)) break;
+  }
+
+  assert.deepEqual(recorded.map((point) => point.outcome), ["claimed", "fare_quoted", "offer_created", "order_created"]);
+  assert.deepEqual(recorded.map((point) => point.reasonCode), ["capacity_claimed", "none", "none", "none"]);
+  for (const point of recorded) {
+    assert.equal(point.travelClass, "second_class");
+    assert.ok(!JSON.stringify(point).includes(entry.waitlistRequestId), "metric labels must not carry the request id");
+  }
+});
+
+test("a failed promotion call records the bounded failed outcome", async () => {
+  class FailingJourneyOrder implements JourneyOrderClient {
+    async createOrder(): Promise<never> { throw new Error("downstream unavailable"); }
+  }
+  const repository = new InMemoryWaitlistRepository();
+  const recorded: Array<{ outcome: WaitlistPromotionOutcome; reasonCode: WaitlistPromotionReasonCode }> = [];
+  const now = () => new Date("2026-01-01T00:00:00.000Z");
+  const orchestrator = new PromotionOrchestrator(
+    repository,
+    new StubFarePricing(),
+    new StubCapacity(),
+    new InMemoryEventPublisher(),
+    new StubOfferManagement(),
+    now,
+    { promotion: (outcome, reasonCode) => { recorded.push({ outcome, reasonCode }); } },
+  );
+  const service = new WaitlistApplicationService(repository, new InMemoryEventPublisher(), new StubFarePricing(), new StubCapacity(), new StubJourneyOrder(), now, new StubOfferManagement());
+  await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "NONE", tripCount: 0, daysBefore: 20 });
+
+  await orchestrator.recordCapacityFreed(capacityEvent());
+  await orchestrator.advanceNextPromotion(new StubJourneyOrder());
+  await orchestrator.advanceNextPromotion(new StubJourneyOrder());
+  await orchestrator.advanceNextPromotion(new StubJourneyOrder());
+  await assert.rejects(() => orchestrator.advanceNextPromotion(new FailingJourneyOrder()), /downstream unavailable/u);
+
+  assert.deepEqual(recorded.map((point) => point.outcome), ["claimed", "fare_quoted", "offer_created", "failed"]);
+  assert.equal(recorded.at(-1)?.reasonCode, "other");
 });
