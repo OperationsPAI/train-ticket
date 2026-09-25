@@ -579,18 +579,18 @@ export class OutboxRelay {
        WHERE published_at IS NOT NULL AND published_at < now() - interval '30 seconds'
        LIMIT $1 FOR UPDATE SKIP LOCKED)`);
         await this.sweep("processed_events", `DELETE FROM processed_events WHERE ctid IN (SELECT ctid FROM processed_events
-       WHERE processed_at < now() - interval '5 minutes'
-       LIMIT $1 FOR UPDATE SKIP LOCKED)`);
+       WHERE processed_at < now() - ($2::bigint * interval '1 millisecond')
+       LIMIT $1 FOR UPDATE SKIP LOCKED)`, [CLEANUP_BATCH_SIZE, this.processedEventRetentionMs()]);
         await this.sweep("idempotency_records", `DELETE FROM idempotency_records WHERE ctid IN (SELECT ctid FROM idempotency_records
        WHERE created_at < now() - interval '10 minutes'
        LIMIT $1 FOR UPDATE SKIP LOCKED)`);
     }
-    async sweep(table, batchedDelete) {
+    async sweep(table, batchedDelete, parameters = [CLEANUP_BATCH_SIZE]) {
         let removed = 0;
         for (let batch = 0; batch < CLEANUP_MAX_BATCHES; batch++) {
             let affected;
             try {
-                const result = await this.pool.query(batchedDelete, [CLEANUP_BATCH_SIZE]);
+                const result = await this.pool.query(batchedDelete, [...parameters]);
                 affected = result.rowCount ?? 0;
             }
             catch (error) {
@@ -614,6 +614,10 @@ export class OutboxRelay {
             removed,
             message: "retention sweep hit its batch budget; the table is still above retention",
         });
+    }
+    processedEventRetentionMs() {
+        const configured = this.options.processedEventRetentionMs;
+        return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 5 * 60 * 1_000;
     }
 }
 export class ProcessedEventsGuard {

@@ -337,6 +337,18 @@ describe("OutboxRelay retention sweep", () => {
       assert.ok(sql.includes("LIMIT $1"), `an unbounded sweep deletes the backlog in one transaction: ${sql}`);
     }
   });
+
+  it("can retain consumed event identities for the full durable replay window", async () => {
+    const pool = new FakeSweepPool();
+    const relay = new OutboxRelay(pool as never, new FakePipelineRedis() as never, {
+      trackLiveness: false,
+      processedEventRetentionMs: 7 * 86_400_000,
+    });
+    await (relay as unknown as { cleanup: () => Promise<void> }).cleanup();
+    const call = pool.calls.find(candidate => candidate.sql.includes("DELETE FROM processed_events"));
+    assert.ok(call);
+    assert.deepEqual(call.params, [1_000, 7 * 86_400_000]);
+  });
 });
 
 describe("OutboxRelay stream cap", () => {
