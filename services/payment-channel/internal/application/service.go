@@ -28,6 +28,7 @@ type Repository interface {
 	SaveRefund(context.Context, *domain.ChannelRefund) error
 	UpdateRefund(context.Context, *domain.ChannelRefund, int64) error
 	GetRefund(context.Context, string) (*domain.ChannelRefund, error)
+	FindRefundForOrder(context.Context, string, string) (*domain.ChannelRefund, error)
 	ListRefundsForStatement(context.Context, string, string, string) ([]domain.ChannelRefund, error)
 	SumRefundsForOrder(context.Context, string) (int64, error)
 	SaveStatement(context.Context, *domain.ChannelStatement) error
@@ -160,6 +161,18 @@ func (s *Service) CreateRefund(ctx context.Context, r CreateRefundRequest) (*dom
 		if err := r.Amount.ValidatePositive(); err != nil {
 			return derr("VALIDATION_FAILED", err.Error())
 		}
+		existing, err := s.repo.FindRefundForOrder(tx, r.ChannelOrderID, r.RefundID)
+		if err != nil {
+			return err
+		}
+		if existing != nil {
+			if !existing.MatchesBusinessRequest(r.RefundID, r.PaymentIntentID, r.ChannelOrderID,
+				r.OriginalChannelTransactionID, r.Channel, r.Amount, r.RefundReasonCode, r.FaultSeed) {
+				return derr("DOMAIN_RULE_VIOLATION", "refund identity was reused with different request details")
+			}
+			rf = existing
+			return nil
+		}
 		sum, err := s.repo.SumRefundsForOrder(tx, r.ChannelOrderID)
 		if err != nil {
 			return err
@@ -182,15 +195,21 @@ func (s *Service) CreateRefund(ctx context.Context, r CreateRefundRequest) (*dom
 	return rf, nil
 }
 func (s *Service) SubmitRefund(ctx context.Context, id string, expected int64, fp string) (*domain.ChannelRefund, error) {
-	r, err := s.repo.GetRefund(ctx, id)
-	if err != nil {
-		return nil, derr("NOT_FOUND", "channel refund not found")
-	}
-	old := r.Version
-	if err := r.Submit(expected, fp, time.Now().UTC()); err != nil {
-		return nil, mapRule(err)
-	}
-	err = s.tx(ctx, func(tx context.Context) error {
+	var r *domain.ChannelRefund
+	err := s.tx(ctx, func(tx context.Context) error {
+		var err error
+		r, err = s.repo.GetRefund(tx, id)
+		if err != nil {
+			return derr("NOT_FOUND", "channel refund not found")
+		}
+		terminal := domain.IsTerminal(r.Status)
+		old := r.Version
+		if err := r.Submit(expected, fp, time.Now().UTC()); err != nil {
+			return mapRule(err)
+		}
+		if terminal {
+			return nil
+		}
 		if err := s.repo.UpdateRefund(tx, r, old); err != nil {
 			return derr("CONFLICT", err.Error())
 		}

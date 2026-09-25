@@ -56,15 +56,31 @@ func NewChannelRefund(id, refundID, pi, orderID, origTxn, channel string, amount
 	r.addEvent("ChannelRefundCreated", map[string]any{"channelRefundId": id, "refundId": refundID, "paymentIntentId": pi, "channelOrderId": orderID, "originalChannelTransactionId": origTxn, "channel": channel, "amount": amount, "refundReasonCode": reason, "idempotencyKey": idem, "requestFingerprint": fp, "sourceCommandId": sourceCmd, "faultSeed": seed, "status": StatusCreated, "createdAt": now.UTC(), "aggregateVersion": r.Version}, now, sourceCmd, corr)
 	return r, nil
 }
+
+func (r *ChannelRefund) MatchesBusinessRequest(refundID, pi, orderID, origTxn, channel string, amount Money, reason string, seed *FaultSeed) bool {
+	seedRef := ""
+	if seed != nil {
+		seedRef = seed.Ref()
+	}
+	return r.RefundID == refundID &&
+		r.PaymentIntentID == pi &&
+		r.ChannelOrderID == orderID &&
+		r.OriginalChannelTransactionID == origTxn &&
+		r.Channel == channel &&
+		r.Amount == amount &&
+		r.RefundReasonCode == reason &&
+		r.FaultSeedRef == seedRef
+}
+
 func (r *ChannelRefund) Submit(expected int64, requestFingerprint string, now time.Time) error {
+	if requestFingerprint != "" && requestFingerprint != r.RequestFingerprint {
+		return fmt.Errorf("request fingerprint mismatch")
+	}
 	if IsTerminal(r.Status) {
 		return nil
 	}
 	if r.Version != expected {
 		return fmt.Errorf("version conflict")
-	}
-	if requestFingerprint != "" && requestFingerprint != r.RequestFingerprint {
-		return fmt.Errorf("request fingerprint mismatch")
 	}
 	attempt := ChannelAttempt{AttemptNo: len(r.Attempts) + 1, AttemptType: "SUBMIT", RequestFingerprint: r.RequestFingerprint, SimStatus: "SUBMITTED", AttemptedAt: now.UTC()}
 	r.Status = StatusSubmitted
