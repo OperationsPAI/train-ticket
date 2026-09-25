@@ -85,7 +85,7 @@ class CompensationIssuanceLiveTest {
                     JsonNode issued = successfulIssue(client, endpoint(context), body);
                     var original = assertSingleIssuance(jdbc, command, issued);
                     // Preserve actual service output and remove only dedup metadata in this isolated schema.
-                    assertEquals(1, jdbc.update("DELETE FROM compensation_issuances WHERE case_id = ?", command.caseId()));
+                    assertEquals(1, jdbc.update("DELETE FROM benefit_issuances WHERE issuance_key = ?", command.issuanceKey()));
                     beforeReplay = new PersistedState(original.benefits(), original.wallets(), original.ledgers(),
                         List.of(), original.events());
                 }
@@ -100,7 +100,7 @@ class CompensationIssuanceLiveTest {
                     assertEquals("CONFLICT", mapper.readTree(response.body()).required("code").asText());
                     assertEquals(beforeReplay, new PersistedState(rows(jdbc, "promotion_instrument_snapshots"),
                         rows(jdbc, "wallet_account_snapshots"), rows(jdbc, "wallet_ledger_entries"),
-                        rows(jdbc, "compensation_issuances"), rows(jdbc, "outbox")));
+                        rows(jdbc, "benefit_issuances"), rows(jdbc, "outbox")));
                 }
             } finally {
                 dropSchema(admin, schema);
@@ -127,7 +127,7 @@ class CompensationIssuanceLiveTest {
                 try (var context = start(schema)) {
                     var jdbc = new JdbcTemplate(context.getBean(DataSource.class));
                     assertEquals(schema, jdbc.queryForObject("SELECT current_schema()", String.class));
-                    assertEquals(List.of("001", "002", "003", "004", "005", "006"),
+                    assertEquals(List.of("001", "002", "003", "004", "005", "006", "007"),
                         jdbc.queryForList("SELECT version FROM schema_migrations ORDER BY version", String.class));
                     issued = concurrentIssue(client, endpoint(context), body, command.caseId(), schema, admin);
                     afterIssuance = assertSingleIssuance(jdbc, command, issued);
@@ -288,7 +288,7 @@ class CompensationIssuanceLiveTest {
         var benefits = rows(jdbc, "promotion_instrument_snapshots");
         var wallets = rows(jdbc, "wallet_account_snapshots");
         var ledgers = rows(jdbc, "wallet_ledger_entries");
-        var issuances = rows(jdbc, "compensation_issuances");
+        var issuances = rows(jdbc, "benefit_issuances");
         var events = rows(jdbc, "outbox");
         assertEquals(1, benefits.size());
         assertEquals(1, wallets.size());
@@ -304,7 +304,7 @@ class CompensationIssuanceLiveTest {
         assertEquals("PROMOTION_CREDIT", text(benefit, "balanceType"));
         assertEquals(command.amount(), mapper.treeToValue(benefit.required("issuedAmount"), Money.class));
         var issuance = mapper.readTree(issuances.getFirst());
-        assertEquals(command.caseId(), text(issuance, "case_id"));
+        assertEquals(command.issuanceKey(), text(issuance, "issuance_key"));
         assertEquals(text(issued, "benefitId"), text(issuance, "benefit_id"));
         assertEquals(command, mapper.treeToValue(issuance.required("request"), IssueBenefitCommand.class));
         var wallet = mapper.readTree(wallets.getFirst()).required("data");
