@@ -5,6 +5,10 @@ import com.trainticket.payment.application.EventPublisher;
 import com.trainticket.platformkit.idempotency.IdempotencyStore;
 import com.trainticket.platformkit.persistence.DataSources;
 import com.trainticket.platformkit.persistence.DbIdempotencyStore;
+import com.trainticket.platformkit.persistence.EventReplayArchive;
+import com.trainticket.platformkit.persistence.EventReplayArchiveController;
+import com.trainticket.platformkit.persistence.EventReplayRetentionLifecycle;
+import com.trainticket.platformkit.persistence.EventReplayRetentionPolicy;
 import com.trainticket.platformkit.persistence.MigrationRunner;
 import com.trainticket.platformkit.persistence.OutboxAppender;
 import com.trainticket.platformkit.messaging.LettuceRedisStreamOperations;
@@ -48,7 +52,23 @@ public class PaymentPersistenceConfiguration {
 
     @Bean
     OutboxAppender paymentOutboxAppender(DataSource dataSource, ObjectMapper objectMapper) {
-        return new OutboxAppender(dataSource, objectMapper);
+        return new OutboxAppender(dataSource, objectMapper, EventReplayRetentionPolicy.fromEnvironment(),
+            java.util.Set.of("PaymentCaptured", "RefundRequested", "RefundSettled", "RefundFailed", "PaymentRefunded"));
+    }
+
+    @Bean
+    EventReplayArchive paymentEventReplayArchive(DataSource dataSource) {
+        return new EventReplayArchive(dataSource);
+    }
+
+    @Bean
+    EventReplayArchiveController paymentEventReplayArchiveController(EventReplayArchive archive) {
+        return new EventReplayArchiveController(archive, "payment");
+    }
+
+    @Bean(destroyMethod = "close")
+    EventReplayRetentionLifecycle paymentEventReplayRetentionLifecycle(EventReplayArchive archive) {
+        return new EventReplayRetentionLifecycle(archive);
     }
 
     @Bean
