@@ -36,13 +36,12 @@ postgres:
   # used by every service that does not set its own `pgInstance`. Must be a key
   # of `postgres.instances` below; the template fails the render if it is not.
   defaultInstance: core
-  # Postgres shards. The default profile is a single shard (`core`) holding all
-  # 38 databases, which is what a local kind node wants: one Deployment, one
-  # PVC, one connection ceiling to reason about.
-  # A cluster that wants the sharded layout lists more entries here and sets
-  # `pgInstance` per service; this repository keeps one file, so the sharded
-  # topology lives in that cluster's own values file rather than in a second
-  # committed profile.
+  # PostgreSQL is split by workload shape. The five non-core shards are pinned
+  # to the roomier second node; `core` keeps the long-lived source volume on its
+  # original node. During an online migration the database names temporarily
+  # exist in both `core` and their target shard. Services continue to use core
+  # until their database has been copied and checked, then `pgInstance` is
+  # switched in a separate release.
   #
   # The union of all shards' `databases` MUST cover every `services.<name>.db`
   # below -- a missing entry means the service starts, connects, and fails on
@@ -55,6 +54,93 @@ postgres:
   # node selected for its first database Pod, so placement and disk headroom
   # must be explicit rather than left to scheduler order.
   instances:
+    hot:
+      databases:
+        - journey_order
+        - booking_orchestration
+      storageSize: 100Gi
+      maxConnections: 300
+      sharedBuffers: 4GB
+      workMem: 8MB
+      maxWalSize: 16GB
+      walCompression: lz4
+      shmSize: 2Gi
+      nodeSelector: &database_target_node
+        kubernetes.io/hostname: vm-197-212-tencentos
+      resources:
+        requests: { cpu: '2', memory: 4Gi }
+        limits: { cpu: '20', memory: 20Gi }
+    txn:
+      databases:
+        - payment
+        - entitlement_ticketing
+        - payment_channel
+        - post_sales
+        - finance_settlement
+      storageSize: 120Gi
+      maxConnections: 400
+      sharedBuffers: 6GB
+      workMem: 8MB
+      maxWalSize: 16GB
+      walCompression: lz4
+      shmSize: 2Gi
+      nodeSelector: *database_target_node
+      resources:
+        requests: { cpu: '2', memory: 4Gi }
+        limits: { cpu: '24', memory: 24Gi }
+    read:
+      databases:
+        - trip_planning
+        - fare_pricing
+        - offer_management
+        - capacity_availability
+        - seat_assignment
+        - service_plan
+        - place_network
+      storageSize: 230Gi
+      maxConnections: 450
+      sharedBuffers: 10GB
+      workMem: 8MB
+      maxWalSize: 24GB
+      walCompression: lz4
+      shmSize: 2Gi
+      nodeSelector: *database_target_node
+      resources:
+        requests: { cpu: '3', memory: 8Gi }
+        limits: { cpu: '32', memory: 40Gi }
+    user:
+      databases:
+        - account
+        - traveler_profile
+        - identity_verification
+      storageSize: 130Gi
+      maxConnections: 300
+      sharedBuffers: 6GB
+      workMem: 8MB
+      maxWalSize: 16GB
+      walCompression: lz4
+      shmSize: 2Gi
+      nodeSelector: *database_target_node
+      resources:
+        requests: { cpu: '2', memory: 4Gi }
+        limits: { cpu: '24', memory: 24Gi }
+    event:
+      databases:
+        - reporting
+        - invoicing
+        - notification
+        - risk_compliance
+      storageSize: 250Gi
+      maxConnections: 350
+      sharedBuffers: 12GB
+      workMem: 8MB
+      maxWalSize: 24GB
+      walCompression: lz4
+      shmSize: 2Gi
+      nodeSelector: *database_target_node
+      resources:
+        requests: { cpu: '3', memory: 8Gi }
+        limits: { cpu: '32', memory: 48Gi }
     core:
       databases:
         - account
