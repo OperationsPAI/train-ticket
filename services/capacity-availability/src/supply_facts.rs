@@ -687,19 +687,13 @@ impl SeatSupply {
                     // that blocks the reservation behind it. Measured before
                     // this: "standing occupancy has no valid quota slot", 999
                     // times in four minutes across the replicas.
-                    let candidate = refs
-                        .iter()
-                        .find(|candidate| !occupied_refs.contains(candidate.as_str()))
-                        .or_else(|| refs.first());
-                    match candidate {
-                        // A quota that no longer exists at all leaves nothing to
-                        // subtract, so the hold cannot reduce availability --
-                        // there is none -- and refusing here would only put the
-                        // reservation into a retry loop.
-                        None => continue,
-                        Some(reference) => {
-                            occupied_refs.insert(reference.to_owned());
-                        }
+                    // A standing allocation whose slot the current quota no
+                    // longer names belongs to a policy that has moved. It is
+                    // left out of the occupancy fold on both sides -- here and in
+                    // the admission -- so the two stay equal, rather than being
+                    // refused, which put every reservation into a retry loop.
+                    if refs.iter().any(|candidate| candidate == value.3) {
+                        occupied_refs.insert(value.3.to_owned());
                     }
                 }
             }
