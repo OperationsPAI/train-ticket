@@ -49,7 +49,8 @@ to one and back.
 |---|---|---|
 | Resident cycle on revision 377 | 450756 requests and 50345 journeys in 600 seconds, P99 1218 milliseconds, **12211 failed journeys** | `.scratch/runtime-fixes/goal-rev377-ten-minute.json` |
 | Resident cycle on revision 386 | 455602 requests and 96165 journeys in 600 seconds, **19569 failed journeys**, dominated by Trip Planning search | `.scratch/runtime-fixes/goal-rev386-ten-minute.json` |
-| Peak window inside revision 386's run | 0 failed journeys of 10670 in one window and 36 of 8924 in the next, both after the reservation fixes | resident load generator logs |
+| Resident window on revision 390 | 488382 requests and 64690 journeys in 600 seconds, **10033 failed journeys** | `.scratch/runtime-fixes/goal-rev388-ten-minute.json` |
+| Resident window on revision 391 | 173869 requests and 61293 journeys, **1046 failed journeys** (1.7%), no failed reservations at all in the shop | `.scratch/runtime-fixes/goal-rev391-ten-minute.json` |
 | Business metric contract | 22 chart tests pass, including the label allowlist and the recording rule targets | `deploy/tests/test_observability_metrics_config.py` |
 | Transport collector | Unit and `miniredis` tests pass; label sets, entry-id ages, dead-letter attribution and the no-poll-before-first-read case | `tools/redis-state-collector` |
 | Notification module suite | 108 passed, 6 skipped, 0 failures | `services/notification` `npm test` |
@@ -67,11 +68,14 @@ the live path works.
 
 ### The resident cycle is not yet clean
 
-The cycle does not pass the acceptance in [TODO](TODO.md#acceptance) yet. The
-last measured windows carry 400 to 1000 failed journeys per 2500, and the
-reservation path is no longer what produces them: capacity logs no transient
-failure at all across its replicas while the load generator reports reservations
-that did not confirm.
+The cycle does not pass the acceptance in [TODO](TODO.md#acceptance) yet, but
+the shape of what fails has changed. The reservation path is clean: no segment
+booking has failed for its own reasons in the last measured six minutes, none of
+the 457609 holds that were missing their reservation facts is missing them now,
+and capacity logs no transient failure across its replicas. The last window
+carries 1046 failed journeys out of 61293, down from 10033 of 64690 an hour
+earlier, and what is left is smaller and named: 403 change executions answered
+422, 61 disruption selections answered 503.
 
 What the measurements say is left is one instance doing the whole system's work.
 The chart defines six PostgreSQL shards, but only six of the thirty-seven
@@ -143,6 +147,9 @@ Each of these was measured, reproduced, fixed and deployed, one commit each:
 | Post Sales compared a change's target offer with every traveler on the order instead of the case's scope. | 1637 evaluate calls answered 500 in one window. |
 | A segment booking was confirmed by whichever of the provider confirmation and the capacity Hold arrived first. | 2586 of 2627 confirmed reservations had no `capacityHoldId`. |
 | Trip Planning's search read the heap for the columns it selects, at 1366 milliseconds per search. | 14425 searches answered 503 in one window; 130-210 milliseconds after a covering index. |
+| 457609 live holds, 17.6% of the table, had no cached reservation facts, so the admission's occupancy fold never saw them and handed out the seats they occupied. | 2739 `OVERLAPPING_HOLD` failures in four minutes. Backfilled from the pool each hold belongs to; no confirmed hold is missing its facts now. |
+| The fold counted a hold's replacement allocation instead of the unit the pool aggregate refuses on. | The same 2739 refusals, each one a purchase the user lost. |
+| A change's replacement reservation was refused as a double booking while the ticket it replaces still held the seat, for the same traveler. | 4801 failed journeys in one minute; 1910 change executions in a window. |
 
 ### Previously recorded windows
 
