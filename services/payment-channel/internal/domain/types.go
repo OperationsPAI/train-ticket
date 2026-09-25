@@ -2,6 +2,7 @@ package domain
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -117,6 +118,24 @@ func DeterministicTxn(prefix, id string) string {
 		h = h[:24]
 	}
 	return prefix + "-" + h
+}
+
+// DeterministicTimeID returns a UUID-v7-shaped identifier whose timestamp is
+// the immutable business occurrence time and whose remaining bits come from
+// canonical business material. It is intended for replay-stable child entity
+// identities, not for commands or aggregate roots created by a caller.
+func DeterministicTimeID(prefix string, occurredAt time.Time, parts ...any) string {
+	material, _ := json.Marshal(parts)
+	sum := sha256.Sum256(material)
+	var value [16]byte
+	copy(value[:], sum[:16])
+	millis := uint64(occurredAt.UTC().UnixMilli())
+	var timestamp [8]byte
+	binary.BigEndian.PutUint64(timestamp[:], millis)
+	copy(value[0:6], timestamp[2:8])
+	value[6] = (value[6] & 0x0f) | 0x70
+	value[8] = (value[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%s-%x-%x-%x-%x-%x", strings.TrimSpace(prefix), value[0:4], value[4:6], value[6:8], value[8:10], value[10:16])
 }
 
 func DeterministicEventID(eventType, aggregateID string, version int64, materialHash string) string {
