@@ -1064,6 +1064,15 @@ services:
       # capture and refund paths held transactions open across channel calls,
       # which pushed P99 of payment intent creation to five seconds.
       HIKARI_MAX_POOL_SIZE: "32"
+      # The conservation gauge reads every captured amount and every settled
+      # refund from the durable snapshots. Measured on this cluster's payment
+      # database -- four million snapshot rows in nine gigabytes -- the aggregate
+      # takes 33 seconds with the covering indexes and 59 seconds without, which
+      # is a scan the request path should not share every ten minutes. It is a
+      # money-conservation level, not a latency signal, so half-hour resolution
+      # is worth far more than the scanning it saves.
+      PAYMENT_CONSERVATION_INITIAL_DELAY_MS: "900000"
+      PAYMENT_CONSERVATION_REFRESH_MS: "1800000"
     # JVM event consumer on 4 streams. 512Mi is not enough at
     # MaxRAMPercentage=70 -- see the note on defaults.resources. The CPU limit
     # goes with CONSUMER_THREADS above: 4 threads do not fit in 500m, and
