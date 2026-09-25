@@ -141,6 +141,12 @@ groups:
         expr: max by (namespace, service, state, channel) (train_ticket_notification_queue_oldest_age_seconds{job="train-ticket-applications"})
       - record: train_ticket:notification_retries:rate5m
         expr: sum by (namespace, service, channel, outcome, reason_code) (rate(train_ticket_notification_retries_total{job="train-ticket-applications"}[5m]))
+      - record: train_ticket:notification_policy_actions:rate5m
+        expr: sum by (namespace, service, action, channel, outcome, reason_code) (rate(train_ticket_notification_policy_actions_total{job="train-ticket-applications"}[5m]))
+      - record: train_ticket:notification_delivery_results:rate5m
+        expr: sum by (namespace, service, channel, outcome, reason_code) (rate(train_ticket_notification_delivery_results_total{job="train-ticket-applications"}[5m]))
+      - record: train_ticket:disruption_segment_signals:rate5m
+        expr: sum by (namespace, service, signal_type, outcome, source) (rate(train_ticket_disruption_segment_signals_total{job="train-ticket-applications"}[5m]))
       - record: train_ticket:event_consumer_lag:max
         expr: max by (namespace, service, event_stream, consumer_group) (train_ticket_event_consumer_lag{job="train-ticket-applications"})
       - record: train_ticket:event_consumer_pending:max
