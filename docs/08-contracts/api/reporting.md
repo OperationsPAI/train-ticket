@@ -105,7 +105,7 @@ For those reports, `total` is the number of grouped values and `eventCount` is t
 
 Operational, route and anomaly calculations currently load at most the latest 10000 matching events; monetary calculations preserve currencies independently.
 Their time windows are limited by that loaded input.
-`orders_per_second` currently returns the number of order events in the last 60 seconds.
+`orders_per_second` is the rolling average order-event rate over the preceding 60 seconds: matching event count divided by 60, rounded to four decimal places.
 The trends endpoint returns one current point per metric.
 
 ## Bus-only commands
