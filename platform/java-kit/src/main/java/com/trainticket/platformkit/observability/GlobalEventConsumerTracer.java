@@ -1,7 +1,6 @@
 package com.trainticket.platformkit.observability;
 
 import com.trainticket.platformkit.messaging.EventEnvelope;
-import io.opentelemetry.api.GlobalOpenTelemetry;
 
 public final class GlobalEventConsumerTracer implements EventConsumerTracer {
     private final String instrumentationName;
@@ -12,7 +11,8 @@ public final class GlobalEventConsumerTracer implements EventConsumerTracer {
 
     @Override
     public SpanScope start(String stream, String consumerGroup, EventEnvelope envelope) {
-        return new OtelEventConsumerTracer(GlobalOpenTelemetry.get(), GlobalOpenTelemetry.getTracer(instrumentationName))
+        var openTelemetry = ProcessOpenTelemetry.get();
+        return new OtelEventConsumerTracer(openTelemetry, openTelemetry.getTracer(instrumentationName))
             .start(stream, consumerGroup, envelope);
     }
 }
