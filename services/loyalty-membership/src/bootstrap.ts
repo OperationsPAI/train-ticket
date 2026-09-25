@@ -13,6 +13,7 @@ import { superviseSubscribe, type SubscribeSupervisor, type SupervisedConsumer, 
 import {
   OutboxAppender,
   OutboxRelay,
+  DurableEventReplayWorker,
   PostgresDeadLetterEvidenceStore,
   PostgresIdempotencyStore,
   RedisStreamEventPublisher,
@@ -27,6 +28,7 @@ import {
   withTransaction,
   type Database,
   type DeadLetterEvidenceSink,
+  type EventReplaySource,
   type IdempotencyStore,
   type SchemaDetail,
 } from "@trainticket/ts-kit";
@@ -122,30 +124,7 @@ async function subscribeOnce(application: LoyaltyMembershipApplicationService, r
   const subscriber = new RedisStreamEventSubscriber(undefined, undefined, { thrownHandlerErrors: "retry", deadLetterEvidenceSink });
   try {
     await subscriber.subscribe([JOURNEY_ORDER_STREAM, PAYMENT_STREAM, POST_SALES_STREAM], "loyalty-membership", consumerName(), async (envelope) => {
-      const dispatch = async (application: LoyaltyMembershipApplicationService) => {
-        const db = loyaltyTransaction.getStore();
-        if (db) {
-          const claimed = await db.query("INSERT INTO processed_events(event_id,stream) VALUES($1,$2) ON CONFLICT DO NOTHING RETURNING event_id", [envelope.eventId, `events:${envelope.producer}`]);
-          if (!claimed.rowCount) return;
-        }
-        if (envelope.eventType === "JourneyOrderCreated") {
-          await handleJourneyOrderCreated(application, envelope);
-        }
-        if (envelope.eventType === "JourneyOrderCancelled") {
-          await handleJourneyOrderCancelled(application, envelope);
-        }
-        if (envelope.eventType === "PaymentCaptured") {
-          await handlePaymentCaptured(application, envelope);
-        }
-        if (envelope.eventType === "PostSalesApplied") {
-          await handlePostSalesApplied(application, envelope);
-        }
-      };
-      if (["JourneyOrderCreated", "JourneyOrderCancelled", "PaymentCaptured", "PostSalesApplied"].includes(envelope.eventType)) {
-        if (runCommand) await runCommand(dispatch);
-        else await dispatch(application);
-      }
-      return { ok: true };
+      return handleLoyaltyEvent(application, envelope, runCommand);
     });
     return subscriber;
   } catch (error) {
@@ -155,6 +134,32 @@ async function subscribeOnce(application: LoyaltyMembershipApplicationService, r
     await subscriber.close().catch(() => undefined);
     throw error;
   }
+}
+
+export async function handleLoyaltyEvent(
+  application: LoyaltyMembershipApplicationService,
+  envelope: EventEnvelope,
+  runCommand?: LoyaltyStorage["runCommand"],
+): Promise<{ ok: true }> {
+  const dispatch = async (transactionalApplication: LoyaltyMembershipApplicationService) => {
+    const db = loyaltyTransaction.getStore();
+    if (db) {
+      const claimed = await db.query(
+        "INSERT INTO processed_events(event_id,stream) VALUES($1,$2) ON CONFLICT DO NOTHING RETURNING event_id",
+        [envelope.eventId, `events:${envelope.producer}`],
+      );
+      if (!claimed.rowCount) return;
+    }
+    if (envelope.eventType === "JourneyOrderCreated") await handleJourneyOrderCreated(transactionalApplication, envelope);
+    if (envelope.eventType === "JourneyOrderCancelled") await handleJourneyOrderCancelled(transactionalApplication, envelope);
+    if (envelope.eventType === "PaymentCaptured") await handlePaymentCaptured(transactionalApplication, envelope);
+    if (envelope.eventType === "PostSalesApplied") await handlePostSalesApplied(transactionalApplication, envelope);
+  };
+  if (["JourneyOrderCreated", "JourneyOrderCancelled", "PaymentCaptured", "PostSalesApplied"].includes(envelope.eventType)) {
+    if (runCommand) await runCommand(dispatch);
+    else await dispatch(application);
+  }
+  return { ok: true };
 }
 
 export async function handleJourneyOrderCreated(application: LoyaltyMembershipApplicationService, envelope: EventEnvelope): Promise<void> {
@@ -289,20 +294,31 @@ export async function startLoyaltyStorage(pool: Pool = createPostgresPool()): Pr
   const relay = new OutboxRelay(pool, redis, { name: "loyalty-membership-outbox-relay", onFailure: (error: unknown) => console.warn({ service: "loyalty-membership", dependency: "outbox", errorName: error instanceof Error ? error.name : "UnknownError" }) });
   relay.start();
   const idempotencyStore = new PostgresIdempotencyStore(pool);
+  const deadLetterEvidenceSink = new PostgresDeadLetterEvidenceStore(pool);
+  const runCommand: LoyaltyStorage["runCommand"] = async (operation) => withTransaction(pool, async (client) => loyaltyTransaction.run(client, () =>
+    operation(new LoyaltyMembershipApplicationService(new PostgresMemberRepository(client),
+      new TransactionalOutboxPublisher(new OutboxAppender(client)), resolveOrderAccount, resolveCapturedPaymentFacts, SOURCE_STREAMS))));
+  const replayApplication = new LoyaltyMembershipApplicationService(repository, publisher, resolveOrderAccount, resolveCapturedPaymentFacts, SOURCE_STREAMS);
+  const replay = new DurableEventReplayWorker(pool, loyaltyReplaySources(),
+    (envelope) => handleLoyaltyEvent(replayApplication, envelope, runCommand),
+    { consumerGroup: "loyalty-membership", pollIntervalMs: replayPollIntervalMs(), deadLetterEvidenceSink });
+  let stopping = false;
+  if (migrations.isReady()) replay.start();
+  else void migrations.applied().then(() => { if (!stopping) replay.start(); });
   return {
     repository,
     publisher,
     idempotencyStore,
-    deadLetterEvidenceSink: new PostgresDeadLetterEvidenceStore(pool),
+    deadLetterEvidenceSink,
     // Gate on migrations as the other six services already did. Without this,
     // a pod whose schema is missing answers /readyz 200 and takes traffic that
     // can only 500.
     ready: migrationsAwareReadiness(migrations, pool),
     schema: () => migrations.detail(),
-    runCommand: async (operation) => withTransaction(pool, async (client) => loyaltyTransaction.run(client, () =>
-      operation(new LoyaltyMembershipApplicationService(new PostgresMemberRepository(client),
-        new TransactionalOutboxPublisher(new OutboxAppender(client)), resolveOrderAccount, resolveCapturedPaymentFacts, SOURCE_STREAMS)))),
+    runCommand,
     stop: async () => {
+      stopping = true;
+      await replay.stop();
       // Stop the migration retry first: otherwise a shutdown during the retry
       // window leaves a backoff timer running and can issue queries against a
       // pool that is being torn down.
@@ -313,6 +329,18 @@ export async function startLoyaltyStorage(pool: Pool = createPostgresPool()): Pr
       await pool.end();
     },
   };
+}
+
+export function loyaltyReplaySources(): readonly EventReplaySource[] {
+  return [
+    { name: "payment", producer: "payment", endpoint: process.env.PAYMENT_EVENT_REPLAY_URL ?? "http://payment:8080/api/v1/internal/event-replay" },
+    { name: "post-sales", producer: "post-sales", endpoint: process.env.POST_SALES_EVENT_REPLAY_URL ?? "http://post-sales:8080/api/v1/internal/event-replay" },
+  ];
+}
+
+function replayPollIntervalMs(): number {
+  const configured = Number(process.env.EVENT_REPLAY_POLL_INTERVAL_MS ?? "5000");
+  return Number.isFinite(configured) && configured >= 100 ? configured : 5_000;
 }
 
 class TransactionalOutboxPublisher implements EventPublisher {
