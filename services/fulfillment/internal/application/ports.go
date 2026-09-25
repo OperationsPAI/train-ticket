@@ -25,14 +25,15 @@ const (
 )
 
 var (
-	ErrNotFound            = errors.New("not found")
-	ErrConflict            = errors.New("conflict")
-	ErrDomainRuleViolation = errors.New("domain rule violation")
-	ErrPublishFailed       = errors.New("publish failed")
-	ErrSubscribeFailed     = errors.New("subscribe failed")
-	ErrTransientHandler    = errors.New("transient handler error")
-	ErrFatalHandler        = errors.New("fatal handler error")
-	ErrAckSkip             = errors.New("ack skip")
+	ErrNotFound              = errors.New("not found")
+	ErrConflict              = errors.New("conflict")
+	ErrDomainRuleViolation   = errors.New("domain rule violation")
+	ErrDependencyUnavailable = errors.New("dependency unavailable")
+	ErrPublishFailed         = errors.New("publish failed")
+	ErrSubscribeFailed       = errors.New("subscribe failed")
+	ErrTransientHandler      = errors.New("transient handler error")
+	ErrFatalHandler          = errors.New("fatal handler error")
+	ErrAckSkip               = errors.New("ack skip")
 )
 
 type EventEnvelope = kitmsg.EventEnvelope
@@ -77,6 +78,10 @@ type ConsumedEventLog interface {
 	Claim(ctx context.Context, eventID string) (bool, error)
 }
 
+type EntitlementReader interface {
+	GetEntitlement(ctx context.Context, entitlementID domain.EntitlementRef) (EntitlementSnapshot, error)
+}
+
 type UnitOfWork func(context.Context, func(context.Context) error) error
 
 type IDGenerator func(prefix string) string
@@ -84,19 +89,20 @@ type IDGenerator func(prefix string) string
 type Clock func() time.Time
 
 type Service struct {
-	repo       FulfillmentRepository
-	segments   SegmentStatusRepository
-	ancillary  AncillaryHandoffRepository
-	rides      RideExecutionRepository
-	pub        EventPublisher
-	consumed   ConsumedEventLog
-	idGen      IDGenerator
-	clock      Clock
-	uow        UnitOfWork
-	mu         sync.Mutex
-	tickets    map[string]TicketProjection
-	ancInMem   map[string]*domain.AncillaryFulfillmentHandoff
-	ridesInMem map[string]*domain.RideExecutionView
+	repo         FulfillmentRepository
+	segments     SegmentStatusRepository
+	ancillary    AncillaryHandoffRepository
+	rides        RideExecutionRepository
+	pub          EventPublisher
+	consumed     ConsumedEventLog
+	entitlements EntitlementReader
+	idGen        IDGenerator
+	clock        Clock
+	uow          UnitOfWork
+	mu           sync.Mutex
+	tickets      map[string]TicketProjection
+	ancInMem     map[string]*domain.AncillaryFulfillmentHandoff
+	ridesInMem   map[string]*domain.RideExecutionView
 }
 
 type TicketProjection struct {
@@ -106,6 +112,15 @@ type TicketProjection struct {
 	TravelerID       domain.TravelerRef
 	SegmentRef       domain.SegmentRef
 	Voided           bool
+}
+
+type EntitlementSnapshot struct {
+	EntitlementID    domain.EntitlementRef
+	SegmentBookingID domain.SegmentBookingRef
+	JourneyOrderID   domain.OrderRef
+	TravelerID       domain.TravelerRef
+	SegmentRef       domain.SegmentRef
+	Status           string
 }
 
 func NewService(repo FulfillmentRepository, publisher EventPublisher, consumed ConsumedEventLog, idGen IDGenerator, clock Clock) *Service {
@@ -124,6 +139,13 @@ func NewService(repo FulfillmentRepository, publisher EventPublisher, consumed C
 func (s *Service) WithUnitOfWork(uow UnitOfWork) *Service {
 	if s != nil {
 		s.uow = uow
+	}
+	return s
+}
+
+func (s *Service) WithEntitlementReader(reader EntitlementReader) *Service {
+	if s != nil {
+		s.entitlements = reader
 	}
 	return s
 }
@@ -280,6 +302,9 @@ func (s *Service) VerifyBoarding(ctx context.Context, cmd VerifyBoardingCommand,
 	if err := validateVerifyBoarding(cmd); err != nil {
 		return BoardingResult{}, err
 	}
+	if err := s.recoverBoardingRecord(ctx, cmd); err != nil {
+		return BoardingResult{}, err
+	}
 	var result BoardingResult
 	if err := s.within(ctx, func(txCtx context.Context) error {
 		record, err := s.readyRecordForCommand(txCtx, cmd.EntitlementID, cmd.SegmentBookingID, cmd.JourneyOrderID, cmd.TravelerID, cmd.SegmentRef)
@@ -299,6 +324,52 @@ func (s *Service) VerifyBoarding(ctx context.Context, cmd VerifyBoardingCommand,
 		return BoardingResult{}, err
 	}
 	return result, nil
+}
+
+func (s *Service) recoverBoardingRecord(ctx context.Context, cmd VerifyBoardingCommand) error {
+	_, err := s.repo.FindByEntitlementSegment(ctx, cmd.EntitlementID, cmd.SegmentBookingID, cmd.SegmentRef)
+	if err == nil || s.entitlements == nil {
+		return err
+	}
+	if !errors.Is(err, ErrNotFound) {
+		return err
+	}
+
+	ticket, err := s.entitlements.GetEntitlement(ctx, cmd.EntitlementID)
+	if err != nil {
+		return err
+	}
+	if ticket.EntitlementID != cmd.EntitlementID || ticket.SegmentBookingID != cmd.SegmentBookingID ||
+		ticket.JourneyOrderID != cmd.JourneyOrderID || ticket.TravelerID != cmd.TravelerID || ticket.SegmentRef != cmd.SegmentRef {
+		return fmt.Errorf("%w: boarding references do not match the authoritative entitlement", ErrDomainRuleViolation)
+	}
+	switch strings.ToUpper(strings.TrimSpace(ticket.Status)) {
+	case "ISSUED":
+	default:
+		return fmt.Errorf("%w: entitlement status %s cannot board", ErrDomainRuleViolation, ticket.Status)
+	}
+
+	projection := TicketProjection{
+		EntitlementID:    ticket.EntitlementID,
+		SegmentBookingID: ticket.SegmentBookingID,
+		JourneyOrderID:   ticket.JourneyOrderID,
+		TravelerID:       ticket.TravelerID,
+		SegmentRef:       ticket.SegmentRef,
+	}
+	if err := projection.validate(); err != nil {
+		return fmt.Errorf("%w: authoritative entitlement is invalid: %v", ErrDependencyUnavailable, err)
+	}
+	s.mu.Lock()
+	s.tickets[ticketKey(projection.EntitlementID, projection.SegmentBookingID)] = projection
+	s.mu.Unlock()
+	if _, err := s.ensureRecordFromProjection(ctx, projection); err != nil {
+		if !errors.Is(err, ErrConflict) {
+			return err
+		}
+		_, findErr := s.repo.FindByEntitlementSegment(ctx, cmd.EntitlementID, cmd.SegmentBookingID, cmd.SegmentRef)
+		return findErr
+	}
+	return nil
 }
 
 func (s *Service) RecordNoShow(ctx context.Context, cmd RecordNoShowCommand, meta CommandMetadata) (NoShowResult, error) {
