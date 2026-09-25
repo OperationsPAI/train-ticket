@@ -254,11 +254,20 @@ type GenerateStatementRequest struct {
 }
 
 func (s *Service) GenerateStatement(ctx context.Context, r GenerateStatementRequest) (*domain.ChannelStatement, error) {
-	orders, _ := s.repo.ListOrdersForStatement(ctx, r.Channel, r.StatementDate, r.Currency)
-	refunds, _ := s.repo.ListRefundsForStatement(ctx, r.Channel, r.StatementDate, r.Currency)
+	orders, err := s.repo.ListOrdersForStatement(ctx, r.Channel, r.StatementDate, r.Currency)
+	if err != nil {
+		return nil, derr("UNAVAILABLE", "load channel orders for statement: "+err.Error())
+	}
+	refunds, err := s.repo.ListRefundsForStatement(ctx, r.Channel, r.StatementDate, r.Currency)
+	if err != nil {
+		return nil, derr("UNAVAILABLE", "load channel refunds for statement: "+err.Error())
+	}
 	lines := []domain.StatementLine{}
 	for _, o := range orders {
 		if o.Status == domain.StatusSucceeded {
+			if o.CompletedAt == nil {
+				return nil, derr("UNAVAILABLE", "successful channel order has no completion time: "+o.ChannelOrderID)
+			}
 			actual := o.Amount
 			fault := false
 			lineStatus := "PRESENT"
@@ -271,14 +280,17 @@ func (s *Service) GenerateStatement(ctx context.Context, r GenerateStatementRequ
 					seedRef = r.SeedVersion + ":" + sc
 				}
 			}
-			l := domain.StatementLine{StatementLineID: domain.NewID("csl"), LineType: "PAYMENT", LineStatus: lineStatus, ChannelOrderID: o.ChannelOrderID, PaymentIntentID: o.PaymentIntentID, ChannelTransactionID: o.ChannelTransactionID, ExpectedAmount: o.Amount, ActualAmount: actual, OccurredAt: o.UpdatedAt, FaultInjected: fault, FaultSeedRef: seedRef}
+			l := domain.StatementLine{StatementLineID: domain.NewID("csl"), LineType: "PAYMENT", LineStatus: lineStatus, ChannelOrderID: o.ChannelOrderID, PaymentIntentID: o.PaymentIntentID, ChannelTransactionID: o.ChannelTransactionID, ExpectedAmount: o.Amount, ActualAmount: actual, OccurredAt: o.CompletedAt.UTC(), FaultInjected: fault, FaultSeedRef: seedRef}
 			l.EvidenceHash = domain.Hash(l)
 			lines = append(lines, l)
 		}
 	}
 	for _, rf := range refunds {
 		if rf.Status == domain.StatusSucceeded {
-			l := domain.StatementLine{StatementLineID: domain.NewID("csl"), LineType: "REFUND", LineStatus: "PRESENT", ChannelOrderID: rf.ChannelOrderID, ChannelRefundID: rf.ChannelRefundID, PaymentIntentID: rf.PaymentIntentID, RefundID: rf.RefundID, ChannelRefundTransactionID: rf.ChannelRefundTransactionID, ExpectedAmount: rf.Amount, ActualAmount: rf.Amount, OccurredAt: rf.UpdatedAt}
+			if rf.CompletedAt == nil {
+				return nil, derr("UNAVAILABLE", "successful channel refund has no completion time: "+rf.ChannelRefundID)
+			}
+			l := domain.StatementLine{StatementLineID: domain.NewID("csl"), LineType: "REFUND", LineStatus: "PRESENT", ChannelOrderID: rf.ChannelOrderID, ChannelRefundID: rf.ChannelRefundID, PaymentIntentID: rf.PaymentIntentID, RefundID: rf.RefundID, ChannelRefundTransactionID: rf.ChannelRefundTransactionID, ExpectedAmount: rf.Amount, ActualAmount: rf.Amount, OccurredAt: rf.CompletedAt.UTC()}
 			l.EvidenceHash = domain.Hash(l)
 			lines = append(lines, l)
 		}
