@@ -407,3 +407,22 @@ test("deadline sweep leaves a suspended linked order available for authoritative
   await service.handleJourneyOrderConfirmed(entry.journeyOrderRef!);
   assert.equal((await repository.get(entry.entryId))?.status, "FULFILLED");
 });
+
+test("authorization cleanup waits for an in-flight reservation before cancelling the order", async () => {
+  const entry = matchingEntry(["tvl-1"]);
+  const traveler = entry.fulfillment.travelers[0]!;
+  entry.recordBookingSaga("saga-1");
+  entry.recordReservation(traveler.travelerRef, "REQUESTED");
+  const repository = new SnapshotRepository(entry);
+  const client = new DurableFulfillmentClient(["tvl-1"], false);
+  client.seedReservation(entry, traveler, "REQUESTED");
+  const service = new WaitlistApplicationService(repository, new InMemoryEventPublisher(), undefined, undefined, undefined,
+    () => new Date("2026-10-19T00:00:00.000Z"), undefined, undefined, client);
+
+  await service.advanceNextWork();
+
+  assert.equal(repository.current().status, "MATCHING");
+  assert.equal(client.orderCancelCalls.length, 0);
+  assert.equal(client.releaseCalls.length, 0);
+  assert.equal(repository.restoredSlots, 0);
+});
