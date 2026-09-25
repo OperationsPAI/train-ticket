@@ -139,6 +139,19 @@ pub struct SeatSupply {
     pub units: Vec<PhysicalUnit>,
     pub allocations: Vec<Allocation>,
     pub standing_policy: Option<StandingPolicy>,
+    #[serde(default)]
+    pub replacement_mappings: Vec<CapacityUnitReplacement>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapacityUnitReplacement {
+    pub source_seat_map_id: String,
+    pub source_seat_map_version: u64,
+    pub source_composition_version: String,
+    pub source_seat_unit_ref: String,
+    pub target_seat_unit_ref: String,
+    pub mapping_version: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -165,6 +178,8 @@ pub struct SeatComposition {
     pub captured_at: String,
     pub units: Vec<PhysicalUnit>,
     pub standing_policy: Option<StandingPolicy>,
+    #[serde(default)]
+    pub replacement_mappings: Vec<CapacityUnitReplacement>,
 }
 
 /// The active allocations of one class together with the composition identity they were
@@ -195,6 +210,7 @@ impl SeatComposition {
             units: self.units.clone(),
             allocations: occupancy.allocations.clone(),
             standing_policy: self.standing_policy.clone(),
+            replacement_mappings: self.replacement_mappings.clone(),
         }
     }
 }
@@ -230,6 +246,10 @@ pub struct SeatReference {
     #[serde(default)]
     pub seat_unit_ref: String,
     pub allocation_type: String,
+    #[serde(default)]
+    pub seat_map_id: String,
+    #[serde(default)]
+    pub seat_map_version: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -252,6 +272,8 @@ pub struct PendingOccupancy {
     pub journey_order_id: String,
     pub traveler_ref: String,
     pub capacity_unit_ref: String,
+    pub effective_capacity_unit_ref: String,
+    pub state: String,
     pub interval: Interval,
 }
 
@@ -273,6 +295,53 @@ impl SeatSupply {
             .iter()
             .map(|unit| unit.seat_unit_ref.clone())
             .collect()
+    }
+
+    pub fn resolve_capacity_unit(
+        &self,
+        original_ref: &str,
+        evidence: Option<&crate::domain::HoldSupplyEvidence>,
+    ) -> Result<String, AppError> {
+        if self.class_ref == "STANDING" {
+            require(
+                self.capacity_refs().iter().any(|reference| reference == original_ref),
+                "standing Hold quota slot is outside the current policy",
+            )?;
+            return Ok(original_ref.to_owned());
+        }
+        if self.units.iter().any(|unit| unit.seat_unit_ref == original_ref) {
+            return Ok(original_ref.to_owned());
+        }
+        let candidates: Vec<&CapacityUnitReplacement> = self.replacement_mappings.iter()
+            .filter(|mapping| mapping.source_seat_unit_ref == original_ref)
+            .filter(|mapping| evidence.is_none_or(|proof| {
+                proof.seat_map_id == mapping.source_seat_map_id
+                    && proof.seat_map_version == mapping.source_seat_map_version
+                    && proof.composition_version == mapping.source_composition_version
+            }))
+            .collect();
+        require(candidates.len() == 1, "historical Hold unit replacement is missing or ambiguous")?;
+        require(self.units.iter().any(|unit| unit.seat_unit_ref == candidates[0].target_seat_unit_ref),
+            "replacement target is absent from current composition")?;
+        Ok(candidates[0].target_seat_unit_ref.clone())
+    }
+
+    pub(crate) fn resolve_allocation_unit(&self, allocation: &Allocation) -> Result<String, AppError> {
+        if self.class_ref == "STANDING" {
+            return self.resolve_capacity_unit(&allocation.capacity_unit_ref, None);
+        }
+        if self.units.iter().any(|unit| unit.seat_unit_ref == allocation.seat_ref.seat_unit_ref) {
+            return Ok(allocation.seat_ref.seat_unit_ref.clone());
+        }
+        let candidates: Vec<&CapacityUnitReplacement> = self.replacement_mappings.iter()
+            .filter(|mapping| mapping.source_seat_unit_ref == allocation.seat_ref.seat_unit_ref)
+            .filter(|mapping| allocation.seat_ref.seat_map_id.is_empty()
+                || (mapping.source_seat_map_id == allocation.seat_ref.seat_map_id
+                    && (allocation.seat_ref.seat_map_version == 0
+                        || mapping.source_seat_map_version == allocation.seat_ref.seat_map_version)))
+            .collect();
+        require(candidates.len() == 1, "historical allocation replacement is missing or ambiguous")?;
+        Ok(candidates[0].target_seat_unit_ref.clone())
     }
 
     pub fn validate(&self, requested: &ReservationSupply) -> Result<(), AppError> {
@@ -370,7 +439,10 @@ impl SeatSupply {
         if self.class_ref == "STANDING" {
             let refs = self.capacity_refs();
             let mut occupancy: HashMap<&str, (&str, &str, &str, &str, &Interval)> = HashMap::new();
+            let terminal: HashSet<&str> = holds.iter().filter(|hold| hold.state == "Released" || hold.state == "Expired" || hold.state == "Failed")
+                .map(|hold| hold.hold_id.as_str()).collect();
             for a in &self.allocations {
+                if terminal.contains(a.capacity_hold_id.as_str()) { continue; }
                 require(
                     occupancy
                         .insert(
@@ -389,6 +461,7 @@ impl SeatSupply {
             }
             let mut pending = HashSet::new();
             for hold in holds {
+                if terminal.contains(hold.hold_id.as_str()) { continue; }
                 require(
                     pending.insert(&hold.hold_id),
                     "standing occupancy repeats a pending hold",
@@ -410,7 +483,7 @@ impl SeatSupply {
                             &hold.segment_booking_id,
                             &hold.journey_order_id,
                             &hold.traveler_ref,
-                            &hold.capacity_unit_ref,
+                            &hold.effective_capacity_unit_ref,
                             &hold.interval,
                         ),
                     );
@@ -426,13 +499,17 @@ impl SeatSupply {
             let available: Vec<String> = refs.into_iter().filter(|reference| !occupied_refs.contains(reference.as_str())).collect();
             return Ok(available);
         }
-        let mut occupied: HashMap<&str, Vec<&Interval>> = HashMap::new();
+        let mut occupied: HashMap<String, Vec<&Interval>> = HashMap::new();
         let mut allocated_holds = HashMap::new();
+        let terminal: HashSet<&str> = holds.iter().filter(|hold| hold.state == "Released" || hold.state == "Expired" || hold.state == "Failed")
+            .map(|hold| hold.hold_id.as_str()).collect();
         for a in &self.allocations {
+            if terminal.contains(a.capacity_hold_id.as_str()) { continue; }
             if !a.interval.overlaps(interval) {
                 continue;
             }
-            let intervals = occupied.entry(&a.seat_ref.seat_unit_ref).or_default();
+            let effective_unit = self.resolve_allocation_unit(a)?;
+            let intervals = occupied.entry(effective_unit).or_default();
             require(
                 intervals
                     .iter()
@@ -456,7 +533,7 @@ impl SeatSupply {
                 hold.interval.from_seq < hold.interval.to_seq,
                 "capacity Hold interval is invalid",
             )?;
-            if !hold.interval.overlaps(interval) {
+            if terminal.contains(hold.hold_id.as_str()) || !hold.interval.overlaps(interval) {
                 continue;
             }
             if let Some(a) = allocated_holds.get(&hold.hold_id) {
@@ -464,18 +541,17 @@ impl SeatSupply {
                     a.segment_booking_id == hold.segment_booking_id
                         && a.journey_order_id == hold.journey_order_id
                         && a.traveler_ref == hold.traveler_ref
-                        && a.capacity_unit_ref == hold.capacity_unit_ref
-                        && a.seat_ref.seat_unit_ref == hold.capacity_unit_ref
+                        && a.seat_ref.seat_unit_ref == hold.effective_capacity_unit_ref
                         && a.interval.from_seq == hold.interval.from_seq
                         && a.interval.to_seq == hold.interval.to_seq,
                     "seat allocation differs from its capacity hold",
                 )?;
             } else {
                 require(
-                    self.units.iter().any(|unit| unit.seat_unit_ref == hold.capacity_unit_ref),
+                    self.units.iter().any(|unit| unit.seat_unit_ref == hold.effective_capacity_unit_ref),
                     "active historical Hold has no resolvable physical unit",
                 )?;
-                occupied.entry(&hold.capacity_unit_ref).or_default().push(&hold.interval);
+                occupied.entry(hold.effective_capacity_unit_ref.clone()).or_default().push(&hold.interval);
                 require(
                     pending.insert(&hold.hold_id),
                     "pending occupancy repeats a hold",
@@ -1178,14 +1254,15 @@ mod occupancy_slot_tests {
             units: vec![
                 PhysicalUnit { seat_unit_ref: "seat-a".into(), assignable: true, allocation_type: "SEAT".into() },
                 PhysicalUnit { seat_unit_ref: "seat-b".into(), assignable: true, allocation_type: "SEAT".into() },
-            ], allocations: vec![], standing_policy: None,
+            ], allocations: vec![], standing_policy: None, replacement_mappings: vec![],
         }
     }
 
     fn pending(id: &str, unit: &str, from: u32, to: u32) -> PendingOccupancy {
         PendingOccupancy { hold_id: id.into(), segment_booking_id: format!("sb-{id}"),
             journey_order_id: format!("ord-{id}"), traveler_ref: format!("tvl-{id}"),
-            capacity_unit_ref: unit.into(), interval: Interval { from_seq: from, to_seq: to } }
+            capacity_unit_ref: unit.into(), effective_capacity_unit_ref: unit.into(), state: "Held".into(),
+            interval: Interval { from_seq: from, to_seq: to } }
     }
 
     #[test]
@@ -1202,7 +1279,7 @@ mod occupancy_slot_tests {
         supply.allocations.push(Allocation { seat_allocation_id: "alloc-1".into(), capacity_hold_id: "1".into(),
             scheduled_service_ref: "ss-1".into(), service_date: "2026-09-25".into(), segment_booking_id: "sb-1".into(),
             journey_order_id: "ord-1".into(), traveler_ref: "tvl-1".into(), capacity_unit_ref: "seat-a".into(),
-            interval: Interval { from_seq: 0, to_seq: 2 }, seat_ref: SeatReference { seat_unit_ref: "seat-a".into(), allocation_type: "SEAT".into() }, status: "ALLOCATED".into() });
+            interval: Interval { from_seq: 0, to_seq: 2 }, seat_ref: SeatReference { seat_unit_ref: "seat-a".into(), allocation_type: "SEAT".into(), seat_map_id: "map-1".into(), seat_map_version: 2 }, status: "ALLOCATED".into() });
         assert!(supply.available_refs(&Interval { from_seq: 0, to_seq: 2 }, &[pending("1", "seat-b", 0, 2)]).is_err());
     }
 
@@ -1211,7 +1288,7 @@ mod occupancy_slot_tests {
         let supply = SeatSupply { scheduled_service_ref: "ss-1".into(), service_date: "2026-09-25".into(),
             class_ref: "STANDING".into(), seat_map_id: "map-1".into(), seat_map_version: 2,
             composition_version: "v1".into(), captured_at: "2026-09-25T00:00:00Z".into(), units: vec![], allocations: vec![],
-            standing_policy: Some(StandingPolicy { version: "standing-second-class-10pct-v1".into(), basis_class: "SECOND_CLASS".into(), basis_units: 20, percent: 10, limit: 2 }) };
+            standing_policy: Some(StandingPolicy { version: "standing-second-class-10pct-v1".into(), basis_class: "SECOND_CLASS".into(), basis_units: 20, percent: 10, limit: 2 }), replacement_mappings: vec![] };
         let occupied = pending("1", "quota:standing-second-class-10pct-v1:0", 0, 2);
         assert_eq!(supply.available_refs(&Interval { from_seq: 1, to_seq: 3 }, &[occupied.clone()]).unwrap(), vec!["quota:standing-second-class-10pct-v1:1"]);
         assert_eq!(supply.available_refs(&Interval { from_seq: 2, to_seq: 4 }, &[occupied]).unwrap().len(), 2);
