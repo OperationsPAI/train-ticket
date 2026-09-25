@@ -16,7 +16,7 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
 from reporting.adapters.storage.postgres import PostgresReportingApplicationService, _event_from_row
-from reporting.domain import MetricAggregator
+from reporting.domain import MetricAggregator, Money
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -50,16 +50,16 @@ def test_recorded_linked_payments_are_gross_captured_once():
         assert recognized["event_type"] == "RevenueRecognized"
         assert capture["amount"] == recognized["amount"]
         assert capture["currency"] == recognized["currency"] == "CNY"
-    aggregator = MetricAggregator(currency="CNY")
+    aggregator = MetricAggregator()
     events = list(recorded_events(RECORDING["linked_rows"]))
     for event in reversed(events):
         aggregator.record(event)
         aggregator.record(event)
     at = max(event.occurred_at for event in events)
-    assert aggregator.snapshot(at).revenue_per_hour.amount == Decimal("1928.59")
+    assert aggregator.snapshot(at).revenue_per_hour == (Money("1928.59", "CNY"),)
     for dimension in ("route", "seat_class", "channel", "passenger_type", "time_period"):
         report = aggregator.revenue_report(dimension, at=at)
-        assert report.total_revenue.amount == Decimal("1928.59")
+        assert report.total_revenue == (Money("1928.59", "CNY"),)
         assert sum(item.count for item in report.items) == 20
     assert all(item.value != "unknown" for item in aggregator.revenue_report("channel").items)
 
@@ -184,7 +184,7 @@ def test_migration_rebuild_schema_grants_replay_and_grouping_plan(database):
         assert source_rows(conn) == before_rows
         service._refresh_revenue_views(conn)
     report = service.revenue_report("channel")
-    assert report.total_revenue.amount == Decimal("1928.59")
+    assert report.total_revenue == (Money("1928.59", "CNY"),)
     assert sum(item.count for item in report.items) == 20
 
 
@@ -204,15 +204,15 @@ def test_real_null_dimensions_hour_boundary_and_refunds(database):
             assert_reference(conn)
             buckets = conn.execute("SELECT dimension_value,payment_count FROM reporting_revenue_breakdowns WHERE dimension='time_period' ORDER BY 1").fetchall()
             assert buckets == [("2026-09-23T14:00:00Z", 5), ("2026-09-23T15:00:00Z", 2)]
-    aggregator = MetricAggregator(currency="CNY")
+    aggregator = MetricAggregator()
     for event in events:
         aggregator.record(event)
     first = min(captures, key=lambda event: event.occurred_at)
     last = max(captures, key=lambda event: event.occurred_at)
-    assert aggregator.snapshot(first.occurred_at - timedelta(microseconds=1)).revenue_per_hour.amount == 0
-    assert aggregator.snapshot(first.occurred_at).revenue_per_hour.amount == first.amount.amount
-    assert aggregator.snapshot(last.occurred_at + timedelta(hours=1)).revenue_per_hour.amount == last.amount.amount
-    assert aggregator.snapshot(last.occurred_at + timedelta(hours=1, microseconds=1)).revenue_per_hour.amount == 0
+    assert aggregator.snapshot(first.occurred_at - timedelta(microseconds=1)).revenue_per_hour == ()
+    assert aggregator.snapshot(first.occurred_at).revenue_per_hour == (first.amount,)
+    assert aggregator.snapshot(last.occurred_at + timedelta(hours=1)).revenue_per_hour == (last.amount,)
+    assert aggregator.snapshot(last.occurred_at + timedelta(hours=1, microseconds=1)).revenue_per_hour == ()
 
 
 def test_empty_install_and_active_refresh_guard(database):
