@@ -276,6 +276,9 @@ data:
       external_labels:
         cluster: {{ .Values.prometheus.clusterLabel | quote }}
 
+    rule_files:
+      - /etc/prometheus/rules.yaml
+
     scrape_configs:
       - job_name: prometheus
         static_configs:
@@ -424,6 +427,8 @@ data:
           - source_labels: [__meta_kubernetes_pod_phase]
             action: drop
             regex: Pending|Succeeded|Failed|Completed
+  rules.yaml: |
+    {{- include "train-ticket.prometheusApplicationRules" . | nindent 4 }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -446,6 +451,7 @@ spec:
     metadata:
       annotations:
         checksum/config: {{ printf "%s%s%s" (.Values.prometheus | toYaml) (.Values.kubeStateMetrics | toYaml) (.Values.nodeExporter | toYaml) | sha256sum }}
+        checksum/application-rules: {{ include "train-ticket.prometheusApplicationRules" . | sha256sum }}
       labels:
         app.kubernetes.io/name: prometheus
         app.kubernetes.io/part-of: train-ticket
