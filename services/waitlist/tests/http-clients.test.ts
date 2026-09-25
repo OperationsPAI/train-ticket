@@ -89,6 +89,7 @@ test("HTTP fulfillment client binds reservation, payment, ticket and cleanup cal
   const entry = fulfillmentEntry();
   const traveler = entry.fulfillment.travelers[0]!;
   const calls: Array<{ url: string; method: string; headers: Headers; body: unknown }> = [];
+  let paymentStatus = "CREATED";
   const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
     const call = { url: String(input), method: init?.method ?? "GET", headers: new Headers(init?.headers), body: init?.body ? JSON.parse(String(init.body)) : null };
     calls.push(call);
@@ -110,10 +111,13 @@ test("HTTP fulfillment client binds reservation, payment, ticket and cleanup cal
       paymentIntentId: "pi-new", businessRef: entry.journeyOrderRef, payerRef: entry.accountId, amount: entry.fulfillment.orderAmount, status: "CREATED",
     });
     if (path === "/api/v1/payment-intents/pi-new" && call.method === "GET") return Response.json({
-      paymentIntentId: "pi-new", businessRef: entry.journeyOrderRef, payerRef: entry.accountId, amount: entry.fulfillment.orderAmount, status: "CREATED",
+      paymentIntentId: "pi-new", businessRef: entry.journeyOrderRef, payerRef: entry.accountId, amount: entry.fulfillment.orderAmount, status: paymentStatus,
     });
     if (path === "/api/v1/payment-intents/pi-new/capture") return Response.json({ paymentIntentId: "pi-new", status: "CAPTURED", capturedAmount: entry.fulfillment.orderAmount });
-    if (path === "/api/v1/payment-intents/pi-new/cancel") return Response.json({ paymentIntentId: "pi-new", status: "CANCELLED" });
+    if (path === "/api/v1/payment-intents/pi-new/cancel") {
+      paymentStatus = "CAPTURED";
+      return Response.json({ code: "DOMAIN_RULE_VIOLATION" }, { status: 422 });
+    }
     if (path === "/api/v1/entitlements") return Response.json({ entitlementId: "ent-1", segmentBookingId: traveler.segmentBookingId, journeyOrderId: entry.journeyOrderRef, status: "ISSUED" }, { status: 201 });
     if (path === "/api/v1/capacity-holds/hold-1" && call.method === "GET") return Response.json({ holdId: "hold-1", status: "CONFIRMED" });
     if (path === "/api/v1/capacity-holds/hold-1/release") return Response.json({ holdId: "hold-1", status: "RELEASED" });
@@ -137,7 +141,7 @@ test("HTTP fulfillment client binds reservation, payment, ticket and cleanup cal
   await client.capturePayment(entry);
   await client.issueEntitlement(entry, traveler);
   await client.releaseCapacity(traveler, "hold-1");
-  await client.cancelPayment(entry, "WAITLIST_TEST");
+  assert.equal((await client.cancelPayment(entry, "WAITLIST_TEST"))?.status, "CAPTURED");
   await client.cancelOrder(entry, "WAITLIST_TEST");
 
   const postCalls = calls.filter((call) => call.method === "POST");
@@ -166,4 +170,14 @@ test("HTTP fulfillment client binds reservation, payment, ticket and cleanup cal
   assert.deepEqual(postCalls[1]?.body, { businessRef: entry.journeyOrderRef, purpose: "purchase", amount: entry.fulfillment.orderAmount, payerRef: entry.accountId, preferredChannel: "ALIPAY" });
   assert.deepEqual(postCalls[2]?.body, { channelRef: { channel: "ALIPAY" } });
   assert.deepEqual(postCalls[3]?.body, { segmentBookingId: traveler.segmentBookingId, journeyOrderId: entry.journeyOrderRef, travelerRef: traveler.travelerRef, segmentRef: entry.segmentRef, issuePurpose: "INITIAL" });
+});
+
+test("capacity cleanup retries when a recorded hold is temporarily unreadable", async () => {
+  const entry = fulfillmentEntry();
+  const traveler = entry.fulfillment.travelers[0]!;
+  const client = new HttpWaitlistFulfillmentClient({ "capacity-availability": "http://capacity-availability" }, (async () => (
+    Response.json({ code: "NOT_FOUND" }, { status: 404 })
+  )) as typeof fetch);
+
+  await assert.rejects(() => client.releaseCapacity(traveler, "hold-not-visible"), /status 404/u);
 });
