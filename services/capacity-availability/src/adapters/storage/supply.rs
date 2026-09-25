@@ -127,16 +127,21 @@ impl PostgresCapacityService {
                 allocation.capacity_hold_id == hold_id && allocation.interval.overlaps(interval)
             })
             .collect();
-        // Seat Assignment owns the physical units, so its allocation is the
-        // authoritative answer when one exists for the interval being admitted:
-        // a change allocates a replacement seat and the hold keeps the unit it
-        // was originally admitted against.
+        // The unit the hold recorded is what the pool aggregate enforces against
+        // when it refuses an overlapping admission, so the occupancy fold has to
+        // use the same one. Counting the allocation's unit instead -- which is
+        // what a replacement seat records -- left the recorded unit looking free
+        // and the aggregate refused the reservation with `OVERLAPPING_HOLD`:
+        // 2739 of them in four minutes, every one a purchase the user lost.
+        if let Ok(reference) = supply.resolve_capacity_unit(capacity_unit_ref, evidence) {
+            return Ok(Some(reference));
+        }
+        // A hold that has no unit of its own in this composition can still be
+        // placed by the allocation the owning service recorded for it, when
+        // there is exactly one for the interval being admitted.
         if let [allocation] = overlapping.as_slice()
             && let Ok(reference) = supply.resolve_allocation_unit(allocation)
         {
-            return Ok(Some(reference));
-        }
-        if let Ok(reference) = supply.resolve_capacity_unit(capacity_unit_ref, evidence) {
             return Ok(Some(reference));
         }
         // A hold whose unit is in neither the current composition nor a
