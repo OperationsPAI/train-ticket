@@ -254,6 +254,7 @@ type GenerateStatementRequest struct {
 }
 
 func (s *Service) GenerateStatement(ctx context.Context, r GenerateStatementRequest) (*domain.ChannelStatement, error) {
+	statementIdentity := domain.StatementIdentityKey(r.Channel, r.StatementDate, r.Currency, r.SeedVersion)
 	orders, err := s.repo.ListOrdersForStatement(ctx, r.Channel, r.StatementDate, r.Currency)
 	if err != nil {
 		return nil, derr("UNAVAILABLE", "load channel orders for statement: "+err.Error())
@@ -280,8 +281,8 @@ func (s *Service) GenerateStatement(ctx context.Context, r GenerateStatementRequ
 					seedRef = r.SeedVersion + ":" + sc
 				}
 			}
-			l := domain.StatementLine{StatementLineID: domain.NewID("csl"), LineType: "PAYMENT", LineStatus: lineStatus, ChannelOrderID: o.ChannelOrderID, PaymentIntentID: o.PaymentIntentID, ChannelTransactionID: o.ChannelTransactionID, ExpectedAmount: o.Amount, ActualAmount: actual, OccurredAt: o.CompletedAt.UTC(), FaultInjected: fault, FaultSeedRef: seedRef}
-			l.EvidenceHash = domain.Hash(l)
+			l := domain.StatementLine{LineType: "PAYMENT", LineStatus: lineStatus, ChannelOrderID: o.ChannelOrderID, PaymentIntentID: o.PaymentIntentID, ChannelTransactionID: o.ChannelTransactionID, ExpectedAmount: o.Amount, ActualAmount: actual, OccurredAt: o.CompletedAt.UTC(), FaultInjected: fault, FaultSeedRef: seedRef}
+			l = domain.FinalizeStatementLine(statementIdentity, 0, l)
 			lines = append(lines, l)
 		}
 	}
@@ -290,8 +291,8 @@ func (s *Service) GenerateStatement(ctx context.Context, r GenerateStatementRequ
 			if rf.CompletedAt == nil {
 				return nil, derr("UNAVAILABLE", "successful channel refund has no completion time: "+rf.ChannelRefundID)
 			}
-			l := domain.StatementLine{StatementLineID: domain.NewID("csl"), LineType: "REFUND", LineStatus: "PRESENT", ChannelOrderID: rf.ChannelOrderID, ChannelRefundID: rf.ChannelRefundID, PaymentIntentID: rf.PaymentIntentID, RefundID: rf.RefundID, ChannelRefundTransactionID: rf.ChannelRefundTransactionID, ExpectedAmount: rf.Amount, ActualAmount: rf.Amount, OccurredAt: rf.CompletedAt.UTC()}
-			l.EvidenceHash = domain.Hash(l)
+			l := domain.StatementLine{LineType: "REFUND", LineStatus: "PRESENT", ChannelOrderID: rf.ChannelOrderID, ChannelRefundID: rf.ChannelRefundID, PaymentIntentID: rf.PaymentIntentID, RefundID: rf.RefundID, ChannelRefundTransactionID: rf.ChannelRefundTransactionID, ExpectedAmount: rf.Amount, ActualAmount: rf.Amount, OccurredAt: rf.CompletedAt.UTC()}
+			l = domain.FinalizeStatementLine(statementIdentity, 0, l)
 			lines = append(lines, l)
 		}
 	}
