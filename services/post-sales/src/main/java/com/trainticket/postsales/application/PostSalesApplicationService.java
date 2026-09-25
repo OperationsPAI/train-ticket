@@ -425,7 +425,8 @@ public class PostSalesApplicationService {
             postSalesCase.journeyOrderId(),
             postSalesCase.scope().segmentRefs(),
             PostSalesMapper.stripCasePrefix(postSalesCase.caseId()),
-            postSalesCase.targetOfferId()
+            postSalesCase.targetOfferId(),
+            postSalesCase.scope().travelerRefs()
         ));
         RuleEvaluationSnapshot ruleSnapshot = new RuleEvaluationSnapshot(
             quote.map(AdjustmentQuotePort.AdjustmentQuoteResult::adjustmentQuoteId)
