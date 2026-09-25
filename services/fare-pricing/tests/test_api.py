@@ -30,7 +30,7 @@ from fare_pricing.application.service import FarePricingService, InMemoryStore
 from fare_pricing.ports import EventEnvelope
 from fare_pricing.ports.messaging import PublishFailed
 from fare_pricing.adapters.messaging.fake import FakeEventPublisher, FakeEventSubscriber
-from train_ticket_platform.messaging import FatalHandlerError
+from train_ticket_platform.messaging import FatalHandlerError, TransientHandlerError
 
 # The HTTP API resolves rule sets against the real wall clock
 # (FarePricingService.find_published_rule_set_id defaults `at` to datetime.now).
@@ -1000,6 +1000,65 @@ class FarePricingMessagingTest(unittest.TestCase):
 
         self.assertEqual(store.processed_events, {event.eventId})
         self.assertEqual(next(iter(store.capacity_snapshots.values())).remaining_capacity, 40)
+
+    def test_capacity_business_snapshot_replay_is_idempotent_but_same_version_conflict_is_rejected(self) -> None:
+        store = InMemoryStore()
+        service = FarePricingService(store)
+        payload = {
+            "segmentRef": "seg-capacity-business-key",
+            "departureDate": (NOW + timedelta(days=4)).date().isoformat(),
+            "totalCapacity": 100,
+            "remainingCapacity": 40,
+            "snapshotVersion": 7,
+        }
+
+        def envelope(event_id: str, body: dict[str, object]) -> EventEnvelope:
+            return EventEnvelope(
+                event_id=event_id,
+                event_type="CapacitySnapshotUpdated",
+                producer="capacity-availability",
+                correlation_id="corr-capacity-business-key",
+                occurred_at=NOW,
+                payload=body,
+            )
+
+        handle_capacity_snapshot_updated(service, envelope("evt-capacity-first", payload))
+        handle_capacity_snapshot_updated(service, envelope("evt-capacity-equivalent", payload))
+        handle_capacity_snapshot_updated(
+            service,
+            envelope("evt-capacity-stale", {**payload, "remainingCapacity": 80, "snapshotVersion": 6}),
+        )
+
+        self.assertEqual(next(iter(store.capacity_snapshots.values())).remaining_capacity, 40)
+        with self.assertRaises(FatalHandlerError):
+            handle_capacity_snapshot_updated(
+                service,
+                envelope("evt-capacity-conflict", {**payload, "remainingCapacity": 39}),
+            )
+        self.assertNotIn("evt-capacity-conflict", store.processed_events)
+        self.assertEqual(next(iter(store.capacity_snapshots.values())).remaining_capacity, 40)
+
+    def test_usage_before_certificate_rolls_back_dedup_for_retry(self) -> None:
+        store = InMemoryStore()
+        service = FarePricingService(store)
+        usage = EventEnvelope(
+            event_id="evt-usage-before-certificate",
+            event_type="EligibilityUsageReserved",
+            producer="identity-verification",
+            correlation_id="corr-usage-before-certificate",
+            occurred_at=NOW,
+            payload={
+                "eligibilityCertificateId": "elc-not-projected-yet",
+                "annualUsageReserved": 1,
+                "annualUsageConfirmed": 0,
+                "aggregateVersion": 3,
+            },
+        )
+
+        with self.assertRaises(TransientHandlerError):
+            handle_identity_verification_event(service, usage)
+
+        self.assertNotIn(usage.eventId, store.processed_events)
 
     def test_fake_subscriber_deduplicates_duplicate_event_ids(self) -> None:
         duplicate = EventEnvelope(

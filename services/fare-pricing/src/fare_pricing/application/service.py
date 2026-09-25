@@ -34,6 +34,14 @@ class ConsumedEventConflictError(PricingError):
     """Raised when an event id is reused for different business content."""
 
 
+class ProjectionConflictError(PricingError):
+    """Raised when one projection version describes conflicting business state."""
+
+
+class ProjectionNotReadyError(RuntimeError):
+    """Raised when an incremental event arrives before its base projection."""
+
+
 class AdjustmentQuoteNotFoundError(Exception):
     """Raised when an adjustment quote is not found."""
 
@@ -117,8 +125,16 @@ class InMemoryStore:
     def upsert_capacity_snapshot(self, snapshot: CapacitySnapshot) -> None:
         key = (snapshot.segment_ref, snapshot.departure_date.isoformat())
         current = self.capacity_snapshots.get(key)
-        if current is None or snapshot.snapshot_version >= current.snapshot_version:
+        if current is None or snapshot.snapshot_version > current.snapshot_version:
             self.capacity_snapshots[key] = snapshot
+            return
+        if snapshot.snapshot_version < current.snapshot_version:
+            return
+        if snapshot != current:
+            raise ProjectionConflictError(
+                f"capacity snapshot {snapshot.segment_ref}/{snapshot.departure_date.isoformat()} "
+                f"has conflicting content at version {snapshot.snapshot_version}"
+            )
 
     def capacity_snapshots_for(self, segment_refs: list[str], departure_date: str | None) -> tuple[CapacitySnapshot, ...]:
         if departure_date is None:
@@ -153,13 +169,31 @@ class InMemoryStore:
 
     def upsert_eligibility_certificate(self, certificate: EligibilityCertificateSummary) -> None:
         current = self.eligibility_certificates.get(certificate.eligibility_certificate_id)
-        if current is None or certificate.aggregate_version >= current.aggregate_version:
+        if current is None or certificate.aggregate_version > current.aggregate_version:
             self.eligibility_certificates[certificate.eligibility_certificate_id] = certificate
+            return
+        if certificate.aggregate_version < current.aggregate_version:
+            return
+        if certificate != current:
+            raise ProjectionConflictError(
+                f"eligibility certificate {certificate.eligibility_certificate_id} "
+                f"has conflicting content at version {certificate.aggregate_version}"
+            )
 
     def update_eligibility_usage_counts(self, certificate_id: str, reserved: int, confirmed: int, aggregate_version: int) -> None:
         current = self.eligibility_certificates.get(certificate_id)
-        if current is not None:
-            self.eligibility_certificates[certificate_id] = current.with_usage_counts(reserved, confirmed, aggregate_version)
+        if current is None:
+            raise ProjectionNotReadyError(f"eligibility certificate projection is not ready: {certificate_id}")
+        if aggregate_version < current.aggregate_version:
+            return
+        updated = current.with_usage_counts(reserved, confirmed, aggregate_version)
+        if aggregate_version == current.aggregate_version:
+            if updated != current:
+                raise ProjectionConflictError(
+                    f"eligibility certificate {certificate_id} has conflicting usage at version {aggregate_version}"
+                )
+            return
+        self.eligibility_certificates[certificate_id] = updated
 
     def active_eligibility_certificates_for(
         self, traveler_id: str, eligibility_type: str, journey_date: str, product_code: str
@@ -418,13 +452,7 @@ class FarePricingService:
     def mark_event_processed(self, event_id: str, stream: str, event_fingerprint: str | None = None) -> bool:
         mark = getattr(self._store, "try_mark_processed", None)
         if callable(mark):
-            try:
-                return bool(mark(event_id, stream, event_fingerprint))
-            except TypeError:
-                try:
-                    return bool(mark(event_id, stream))
-                except TypeError:
-                    return bool(mark(event_id))
+            return bool(mark(event_id, stream, event_fingerprint))
         processed = getattr(self._store, "processed_events", None)
         if processed is None:
             return True
