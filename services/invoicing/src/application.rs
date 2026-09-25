@@ -339,7 +339,7 @@ impl InMemoryInvoicingService {
             basis.finance_invoice_id = None;
             basis.tax_lines = vec![TaxLine { tax_code: "VAT_SIM".into(), tax_rate_basis_points: 0,
                 taxable_amount: basis.total_amount.clone(), tax_amount: Money { currency: basis.total_amount.currency.clone(), minor_units: 0 } }];
-            basis.amount_basis_hash = sha256_prefixed(&normalize_json(&json!({"revenueRecognitionIds":basis.revenue_recognition_ids,"totalAmount":basis.total_amount,"reversals":history.reversals})));
+            basis.amount_basis_hash = revenue_amount_basis_hash(&basis.revenue_recognition_ids, &basis.total_amount, &history);
             s.amounts.insert(order_id.clone(),basis);
             s.amount_history.insert(order_id,history);
             s.processed_events.insert(e.event_id);
@@ -375,11 +375,15 @@ impl InMemoryInvoicingService {
             return Err(InvoicingError::Unavailable("finance invoice awaits its revenue components".into()));
         }
         rr.sort();
-        let hash = sha256_prefixed(&normalize_json(&json!({"revenueRecognitionIds": rr, "totalAmount": money, "invoiceId": e.payload.get("invoiceId")})));
         let basis_type = if e.event_type == "InvoiceGenerated" {
             "FINANCE_INVOICE"
         } else {
             "REVENUE_RECOGNITION"
+        };
+        let hash = if e.event_type == "InvoiceGenerated" {
+            sha256_prefixed(&normalize_json(&json!({"revenueRecognitionIds": rr, "totalAmount": money, "invoiceId": e.payload.get("invoiceId")})))
+        } else {
+            revenue_amount_basis_hash(&rr, &money, &history)
         };
         let basis = AmountBasis {
             basis_type: basis_type.into(),
@@ -583,6 +587,14 @@ impl OrderProjection {
 pub(crate) struct AmountHistory {
     pub recognitions: std::collections::BTreeMap<String, Money>,
     pub reversals: std::collections::BTreeMap<String, Money>,
+}
+
+pub(crate) fn revenue_amount_basis_hash(ids: &[String], total: &Money, history: &AmountHistory) -> String {
+    sha256_prefixed(&normalize_json(&json!({
+        "revenueRecognitionIds": ids,
+        "totalAmount": total,
+        "reversals": &history.reversals,
+    })))
 }
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct RefundObservation {

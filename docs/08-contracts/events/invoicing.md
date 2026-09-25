@@ -106,7 +106,7 @@ hashes canonical JSON with SHA-256.
 | `financeInvoiceId` | string | no | Finance Settlement invoice/reference when applicable. |
 | `taxLines` | array[object] | yes | Tax line snapshots with `taxCode`, `taxRateBasisPoints`, `taxableAmount` Money, and `taxAmount` Money. |
 | `totalAmount` | Money | yes | Total positive invoice amount. |
-| `amountBasisHash` | string | yes | SHA-256 of the canonical Finance Settlement amount snapshot. |
+| `amountBasisHash` | string | yes | SHA-256 of the canonical Finance Settlement amount snapshot. For a revenue-recognition basis, the canonical material contains sorted recognition IDs, net total and complete reversal history. |
 
 ### SimGatewayResult
 
@@ -580,6 +580,8 @@ remains unchanged.
 | `events:post-sales` | `PostSalesApplied` | Existing true applied-refund fact used for Wave-A red-flush violation observation. |
 | `events:post-sales` | `PostSalesFailed` | Cancel unsubmitted local red-flush work when no real refund happened. |
 | `events:admin-audit` | `ManualActionApproved`, `ManualActionRejected`, `ManualActionExecuted` | Govern manual invoice/red-flush exception handling. |
+
+`RevenueRecognized` is idempotent by `revenueRecognitionId`, and `RevenueRecognitionReversed` is idempotent by `revenueRecognitionId + sourceEventId` (the Finance refund identity). Reusing either business identity with another amount is rejected. Reversals wait for their recognition and are retried rather than being recorded as processed. Once all original and fare-difference recognitions and reversals arrive, the net projection and hash are independent of their valid arrival order.
 
 ## Notification and audit touchpoints
 
