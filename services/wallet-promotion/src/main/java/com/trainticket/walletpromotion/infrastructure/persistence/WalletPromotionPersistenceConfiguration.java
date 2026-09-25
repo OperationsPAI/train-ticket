@@ -24,7 +24,10 @@ public class WalletPromotionPersistenceConfiguration {
     @Bean @Primary PlatformTransactionManager walletPromotionTransactionManager(DataSource ds) { return new DataSourceTransactionManager(ds); }
     @Bean MigrationRunner walletPromotionMigrationRunner(DataSource ds, PlatformTransactionManager tx) { MigrationRunner r = new MigrationRunner(ds, tx); r.run(Path.of("migrations")); return r; }
     @Bean @Primary IdempotencyStore walletPromotionDbIdempotencyStore(DataSource ds, ObjectMapper mapper) { return new DbIdempotencyStore(ds, mapper); }
-    @Bean PromotionRepository postgresPromotionRepository(DataSource ds, ObjectMapper mapper) { return new PostgresPromotionRepository(ds, mapper, new OutboxAppender(ds, mapper)); }
+    @Bean EventReplayArchive walletEventReplayArchive(DataSource ds) { return new EventReplayArchive(ds); }
+    @Bean EventReplayArchiveController walletEventReplayArchiveController(EventReplayArchive archive) { return new EventReplayArchiveController(archive,"wallet-promotion"); }
+    @Bean(destroyMethod = "close") EventReplayRetentionLifecycle walletEventReplayRetentionLifecycle(EventReplayArchive archive) { return new EventReplayRetentionLifecycle(archive); }
+    @Bean PromotionRepository postgresPromotionRepository(DataSource ds, ObjectMapper mapper) { return new PostgresPromotionRepository(ds, mapper, new OutboxAppender(ds, mapper, EventReplayRetentionPolicy.fromEnvironment(), java.util.Set.of("BenefitIssued", "BenefitRevoked", "BenefitExpired", "BenefitRedemptionReversed"))); }
     @Bean(destroyMethod = "close") RelayLifecycle walletPromotionOutboxRelayLifecycle(DataSource ds, @Value("${REDIS_URL:redis://localhost:6379}") String redisUrl) { return new RelayLifecycle(ds, redisUrl); }
     static final class RelayLifecycle implements AutoCloseable { private final LazyRedisOutboxRelayLifecycle relay; RelayLifecycle(DataSource ds, String redisUrl) { relay = new LazyRedisOutboxRelayLifecycle(ds, redisUrl); } @PostConstruct void start(){ relay.start(); } public void close(){ relay.close(); } }
 }
