@@ -405,3 +405,47 @@ def test_consumer_name_is_unique_per_process_not_per_pod() -> None:
     assert name.startswith("reporting-")
     assert name.endswith(f"-{_os.getpid()}")
     assert messaging.default_consumer_name("reporting") == name
+
+
+def test_stream_aware_handler_is_invoked_with_the_delivered_stream(monkeypatch) -> None:
+    # processed_events.stream is the only record of which stream an event was
+    # consumed from, and the subscriber is the only component that knows it.
+    # Disruption recovery shipped with that column empty for every row because
+    # the handler contract carried the envelope alone.
+    monkeypatch.setenv("OTEL_TRACES_ENABLED", "false")
+    received: list[tuple[str, str | None]] = []
+
+    def handler(envelope: EventEnvelope, stream: str | None = None) -> HandlerResult:
+        received.append((envelope.eventId, stream))
+        return HandlerResult.success()
+
+    envelope = EventEnvelope(eventType="SegmentDelayed", producer="fulfillment")
+    messaging._call_handler_with_span(handler, envelope, "events:fulfillment", "disruption-recovery")
+
+    assert received == [(envelope.eventId, "events:fulfillment")]
+
+
+def test_single_argument_handler_keeps_the_original_contract(monkeypatch) -> None:
+    monkeypatch.setenv("OTEL_TRACES_ENABLED", "false")
+    received: list[str] = []
+
+    def handler(envelope: EventEnvelope) -> HandlerResult:
+        received.append(envelope.eventId)
+        return HandlerResult.success()
+
+    envelope = EventEnvelope(eventType="SegmentDelayed", producer="fulfillment")
+    messaging._call_handler_with_span(handler, envelope, "events:fulfillment", "disruption-recovery")
+
+    assert received == [envelope.eventId]
+
+
+def test_handler_arity_is_memoised_per_handler() -> None:
+    def two(envelope, stream=None):  # noqa: ANN001, ANN202
+        return None
+
+    def one(envelope):  # noqa: ANN001, ANN202
+        return None
+
+    assert messaging.handler_accepts_stream(two) is True
+    assert messaging.handler_accepts_stream(one) is False
+    assert messaging.handler_accepts_stream(two) is True
