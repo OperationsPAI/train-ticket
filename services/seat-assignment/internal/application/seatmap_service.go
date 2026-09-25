@@ -304,25 +304,19 @@ func (s *Service) AllocateSeat(ctx context.Context, req AllocateSeatRequest) (*A
 	now := time.Now().UTC()
 	var resp *AllocateSeatResponse
 	err := s.tx(ctx, func(tx context.Context) error {
+		if err := s.repo.LockCapacityHold(tx, req.CapacityHoldID); err != nil {
+			return derr("UNAVAILABLE", err.Error())
+		}
+		if fence, err := s.repo.CapacityHoldFence(tx, req.CapacityHoldID); err != nil {
+			return derr("UNAVAILABLE", err.Error())
+		} else if fence != nil {
+			return derr("PRECONDITION_FAILED", "capacity Hold is "+strings.ToLower(fence.TerminalState))
+		}
 		active, err := s.repo.FindActiveSeatAllocations(tx, req.ScheduledServiceRef, req.ServiceDate)
 		if err != nil {
 			return derr("UNAVAILABLE", err.Error())
 		}
-		maps, total, err := s.repo.FindSeatMaps(tx, req.ScheduledServiceRef, req.ServiceDate, domain.SeatMapStatusPublished, 100, 0)
-		if err != nil {
-			return derr("UNAVAILABLE", err.Error())
-		}
-		if total > 100 {
-			return derr("CONFLICT", "published seat map selection is incomplete")
-		}
-		var seatMap *domain.ContractSeatMap
-		for i := range maps {
-			if len(maps[i].AssignableUnits(req.ClassRef)) > 0 {
-				seatMap = &maps[i]
-				break
-			}
-		}
-		standingOnly := strings.EqualFold(req.ClassRef, "STANDING")
+		standingBound := strings.HasPrefix(req.CapacityUnitRef, "quota:")
 		for _, existing := range active {
 			if existing.SegmentBookingID != req.SegmentBookingID {
 				continue
@@ -330,16 +324,16 @@ func (s *Service) AllocateSeat(ctx context.Context, req AllocateSeatRequest) (*A
 			if existing.JourneyOrderID != req.JourneyOrderID || existing.TravelerRef != req.TravelerRef || existing.SegmentRef != req.SegmentRef || existing.CapacityHoldID != req.CapacityHoldID || existing.CapacityUnitRef != req.CapacityUnitRef || existing.Interval != req.Interval {
 				return derr("CONFLICT", "reservation already has an allocation with different references")
 			}
-			classMatches := standingOnly && existing.SeatRef.AllocationType == domain.AllocationTypeStanding
+			classMatches := standingBound == (existing.SeatRef.AllocationType == domain.AllocationTypeStanding)
 			if existing.RequestedClassRef != "" {
 				if existing.RequestedClassRef != req.ClassRef || existing.IssuePurpose != req.IssuePurpose || !reflect.DeepEqual(normalizedPref(existing.Preferences), normalizedPref(req.SeatPreferences)) {
 					return derr("CONFLICT", "reservation allocation has different requested class, purpose or preferences")
 				}
-				if existing.SeatRef.AllocationType == domain.AllocationTypeStanding && !standingOnly {
+				if existing.SeatRef.AllocationType == domain.AllocationTypeStanding && !strings.EqualFold(req.ClassRef, "STANDING") {
 					classMatches = req.SeatPreferences != nil && req.SeatPreferences.AcceptStanding && existing.Preferences != nil && existing.Preferences.AcceptStanding
 				}
 			}
-			if !standingOnly && existing.SeatRef.AllocationType != domain.AllocationTypeStanding {
+			if !standingBound && existing.SeatRef.AllocationType != domain.AllocationTypeStanding {
 				original, _, err := s.repo.GetSeatMap(tx, existing.SeatRef.SeatMapID)
 				if err != nil || original == nil {
 					return derr("UNAVAILABLE", "recorded allocation composition is unavailable")
@@ -364,14 +358,9 @@ func (s *Service) AllocateSeat(ctx context.Context, req AllocateSeatRequest) (*A
 			resp = &AllocateSeatResponse{SeatAllocationID: existing.SeatAllocationID, Status: existing.Status, SeatRef: existing.SeatRef, ExpiresAt: existing.ExpiresAt}
 			return nil
 		}
-		if seatMap == nil && !standingOnly {
-			return derr("PRECONDITION_FAILED", "no published SeatMap matches scheduled service, date and class")
-		}
 		var unit *domain.SeatUnit
+		var seatMap *domain.ContractSeatMap
 		degraded, reason := false, domain.DegradationNone
-		if !standingOnly {
-			unit, degraded, reason = chooseSeatUnit(*seatMap, req.ClassRef, req.Interval, req.SeatPreferences, active)
-		}
 		allocID := domain.NewID("salloc")
 		status := domain.AllocationStatusAllocated
 		seatRef := domain.SeatRef{SeatAllocationID: allocID, Degraded: degraded}
@@ -379,17 +368,19 @@ func (s *Service) AllocateSeat(ctx context.Context, req AllocateSeatRequest) (*A
 		if reason != domain.DegradationNone {
 			seatRef.DegradationReason = reason
 		}
-		if unit == nil {
-			if !standingOnly && (req.SeatPreferences == nil || !req.SeatPreferences.AcceptStanding) {
-				return derr("DOMAIN_RULE_VIOLATION", "no compatible seat exists and standing is not accepted")
-			}
-			policyMap := domain.StandingPolicyMap(maps)
-			if policyMap == nil {
-				return derr("PRECONDITION_FAILED", "standing requires a published second class composition")
+		if standingBound {
+			policyMap, err := s.publishedClassMap(tx, req.ScheduledServiceRef, req.ServiceDate, "STANDING")
+			if err != nil {
+				return err
 			}
 			policy := policyMap.StandingPolicy()
-			if domain.StandingOccupancy(active, req.Interval) >= policy.Limit {
-				return derr("DOMAIN_RULE_VIOLATION", "standing quota is exhausted")
+			if !validStandingCapacityRef(req.CapacityUnitRef, policy) {
+				return derr("PRECONDITION_FAILED", "standing capacity slot differs from the published policy")
+			}
+			for _, existing := range active {
+				if existing.Interval.Overlaps(req.Interval) && existing.CapacityUnitRef == req.CapacityUnitRef {
+					return derr("CONFLICT", "standing capacity slot is already occupied")
+				}
 			}
 			standingPolicy = &policy
 			seatRef.SeatMapID, seatRef.SeatMapVersion = policyMap.SeatMapID, policyMap.SeatMapVersion
@@ -399,6 +390,16 @@ func (s *Service) AllocateSeat(ctx context.Context, req AllocateSeatRequest) (*A
 			seatRef.Degraded = true
 			seatRef.DegradationReason = domain.DegradationStandingAssigned
 		} else {
+			var err error
+			seatMap, unit, err = s.resolveBoundPhysicalUnit(tx, req)
+			if err != nil {
+				return err
+			}
+			for _, existing := range active {
+				if existing.Interval.Overlaps(req.Interval) && existing.SeatRef.SeatUnitRef == unit.SeatUnitRef {
+					return derr("CONFLICT", "bound physical unit is already occupied")
+				}
+			}
 			seatRef.AllocationType = unit.AllocationType
 			seatRef.SeatMapID = seatMap.SeatMapID
 			seatRef.SeatMapVersion = seatMap.SeatMapVersion
@@ -411,6 +412,10 @@ func (s *Service) AllocateSeat(ctx context.Context, req AllocateSeatRequest) (*A
 		alloc := &domain.ContractSeatAllocation{SeatAllocationID: allocID, SegmentBookingID: req.SegmentBookingID, JourneyOrderID: req.JourneyOrderID, TravelerRef: req.TravelerRef, SegmentRef: req.SegmentRef, ScheduledServiceRef: req.ScheduledServiceRef, ServiceDate: req.ServiceDate, CapacityHoldID: req.CapacityHoldID, CapacityUnitRef: req.CapacityUnitRef, Interval: req.Interval, SeatRef: seatRef, Status: status, Preferences: req.SeatPreferences, CreatedAt: now, ExpiresAt: req.ExpiresAt}
 		alloc.StandingPolicy = standingPolicy
 		alloc.RequestedClassRef, alloc.IssuePurpose = req.ClassRef, req.IssuePurpose
+		alloc.OccupancyClassRef = req.ClassRef
+		if standingBound {
+			alloc.OccupancyClassRef = "STANDING"
+		}
 		if err := s.repo.SaveSeatAllocation(tx, alloc); err != nil {
 			return derr("CONFLICT", err.Error())
 		}
@@ -429,6 +434,105 @@ func (s *Service) AllocateSeat(ctx context.Context, req AllocateSeatRequest) (*A
 		return s.publish(tx, events)
 	})
 	return resp, err
+}
+
+func validStandingCapacityRef(ref string, policy domain.StandingPolicy) bool {
+	prefix := "quota:" + policy.Version + ":"
+	if !strings.HasPrefix(ref, prefix) {
+		return false
+	}
+	var index int
+	if _, err := fmt.Sscanf(strings.TrimPrefix(ref, prefix), "%d", &index); err != nil {
+		return false
+	}
+	return index >= 0 && index < policy.Limit
+}
+
+func (s *Service) resolveBoundPhysicalUnit(ctx context.Context, req AllocateSeatRequest) (*domain.ContractSeatMap, *domain.SeatUnit, error) {
+	current, err := s.publishedClassMap(ctx, req.ScheduledServiceRef, req.ServiceDate, req.ClassRef)
+	if err != nil {
+		return nil, nil, err
+	}
+	if unit, ok := current.FindUnit(req.CapacityUnitRef); ok && unit.Assignable {
+		if !strings.EqualFold(classForUnit(current, unit.SeatUnitRef), req.ClassRef) {
+			return nil, nil, derr("PRECONDITION_FAILED", "capacity unit belongs to another accepted class")
+		}
+		return current, unit, nil
+	}
+	maps, total, err := s.repo.FindSeatMaps(ctx, req.ScheduledServiceRef, req.ServiceDate, "", 100, 0)
+	if err != nil {
+		return nil, nil, derr("UNAVAILABLE", err.Error())
+	}
+	if total > 100 {
+		return nil, nil, derr("CONFLICT", "seat map replacement history exceeds selection limit")
+	}
+	byID := map[string]domain.ContractSeatMap{}
+	for _, candidate := range maps {
+		byID[candidate.SeatMapID] = candidate
+	}
+	lineage := map[string]bool{}
+	for id := current.ReplacesSeatMapID; id != ""; {
+		if lineage[id] {
+			return nil, nil, derr("CONFLICT", "seat map replacement lineage contains a cycle")
+		}
+		lineage[id] = true
+		source, ok := byID[id]
+		if !ok {
+			return nil, nil, derr("PRECONDITION_FAILED", "capacity Hold composition is unavailable")
+		}
+		id = source.ReplacesSeatMapID
+	}
+	var sourceMap *domain.ContractSeatMap
+	var sourceUnit domain.SeatUnit
+	for index := range maps {
+		if !lineage[maps[index].SeatMapID] {
+			continue
+		}
+		if candidate, ok := maps[index].UnitByRef(req.CapacityUnitRef); ok {
+			if sourceMap != nil {
+				return nil, nil, derr("CONFLICT", "capacity unit belongs to multiple historical compositions")
+			}
+			sourceMap, sourceUnit = &maps[index], candidate
+		}
+	}
+	if sourceMap == nil {
+		return nil, nil, derr("PRECONDITION_FAILED", "capacity unit is absent from current and replacement compositions")
+	}
+	sourceClass := ""
+	for _, coach := range sourceMap.Coaches {
+		for _, candidate := range coach.SeatUnits {
+			if candidate.SeatUnitRef == sourceUnit.SeatUnitRef {
+				sourceClass = coach.ClassRef
+			}
+		}
+	}
+	if !strings.EqualFold(sourceClass, req.ClassRef) {
+		return nil, nil, derr("PRECONDITION_FAILED", "capacity unit belongs to another accepted class")
+	}
+	locator := unitLocator(sourceClass, sourceUnit)
+	matches := []domain.SeatUnit{}
+	for _, coach := range current.Coaches {
+		for _, candidate := range coach.SeatUnits {
+			if candidate.Assignable && unitLocator(coach.ClassRef, candidate) == locator {
+				matches = append(matches, candidate)
+			}
+		}
+	}
+	if len(matches) != 1 {
+		return nil, nil, derr("PRECONDITION_FAILED", "capacity unit replacement is missing or ambiguous")
+	}
+	return current, &matches[0], nil
+}
+
+func classForUnit(seatMap *domain.ContractSeatMap, ref string) string {
+	for _, coach := range seatMap.Coaches {
+		for _, unit := range coach.SeatUnits {
+			if unit.SeatUnitRef == ref {
+				return coach.ClassRef
+			}
+		}
+	}
+	return ""
 }
 
 func (s *Service) GetSeatAllocation(ctx context.Context, id string) (*domain.ContractSeatAllocation, error) {
@@ -731,6 +835,28 @@ func (s *Service) transitionAllocationsByCapacityRecovery(ctx context.Context, m
 		transitionedAt := time.Now().UTC()
 		if v, ok := extra[timeKey].(time.Time); ok {
 			transitionedAt = v
+		}
+		if err := s.repo.LockCapacityHold(tx, match.HoldID); err != nil {
+			return err
+		}
+		terminalState := "RELEASED"
+		if eventType == "SeatAllocationExpired" {
+			terminalState = "EXPIRED"
+		}
+		fence, err := s.repo.RecordCapacityHoldFence(tx, domain.CapacityHoldFence{CapacityHoldID: match.HoldID,
+			TerminalState: terminalState, SourceEventID: e.EventID, TerminalAt: transitionedAt,
+			CapacityUnitRef: match.CapacityUnitRef, Interval: match.Interval})
+		if err != nil {
+			return err
+		}
+		if fence.CapacityUnitRef != match.CapacityUnitRef || fence.Interval != match.Interval {
+			return derr("CONFLICT", "capacity Hold terminal event disagrees with its recorded binding")
+		}
+		if fence.TerminalState != terminalState {
+			terminalState, transitionedAt = fence.TerminalState, fence.TerminalAt
+			if terminalState == "EXPIRED" {
+				eventType, timeKey = "SeatAllocationExpired", "expiredAt"
+			}
 		}
 		allocs, err := s.repo.FindSeatAllocationsByCapacityRecovery(tx, match.HoldID, match.CapacityUnitRef, match.Interval)
 		if err != nil {
