@@ -681,8 +681,10 @@ defaults:
     startupFailureThreshold: 12  # 12 x 5s = 60s of startup tolerance
 
 # -- Microservices -----------------------------------------------------------
-# Each service follows the same pattern. Override replicas, env, resources,
-# pgInstance and probes here.
+# Each service follows the same pattern. Override replicas, autoscaling, env,
+# resources, pgInstance and probes here. Autoscaling is opt-in per service;
+# there is deliberately no global switch that can scale databases, loadgen or
+# every API at once.
 
 services:
   dispatch:
@@ -755,6 +757,44 @@ services:
     resources:
       requests: { cpu: 250m, memory: 1Gi }
       limits: { cpu: '8', memory: 6Gi }
+    # Recommended HPA candidate, intentionally disabled by default. This is a
+    # hot request path whose durable state, idempotency records and projection
+    # caches live in PostgreSQL; its Redis subscribers share a consumer group,
+    # and it already drains through RollingUpdate plus preStop. Its explicit
+    # requests also make utilization targets meaningful.
+    #
+    # Do not enable this without checking the read-shard connection budget:
+    # each Pod starts four uvicorn workers and PG_MAX_POOL_SIZE=16 means up to
+    # 64 connections per Pod. maxReplicas=2 is conservative for that reason.
+    autoscaling:
+      enabled: false
+      minReplicas: 1
+      maxReplicas: 2
+      targetCPUUtilizationPercentage: 70
+      # Memory scaling is optional. Enable only after verifying that resident
+      # growth follows request load rather than retained Python heap/cache.
+      # targetMemoryUtilizationPercentage: 80
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 60
+          selectPolicy: Min
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 60
+            - type: Percent
+              value: 100
+              periodSeconds: 60
+        scaleDown:
+          stabilizationWindowSeconds: 600
+          selectPolicy: Min
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 120
+            - type: Percent
+              value: 25
+              periodSeconds: 120
   trip-planning:
     db: trip_planning
     strategy:
@@ -1385,6 +1425,17 @@ services:
 #   services:
 #     journey-order:
 #       replicas: 2
+#       autoscaling:
+#         enabled: true
+#         minReplicas: 2       # also becomes Deployment.spec.replicas
+#         maxReplicas: 4
+#         targetCPUUtilizationPercentage: 70
+#         targetMemoryUtilizationPercentage: 80  # optional
+#         behavior:             # autoscaling/v2 HPA behavior
+#           scaleUp:
+#             stabilizationWindowSeconds: 60
+#           scaleDown:
+#             stabilizationWindowSeconds: 600
 #       pgInstance: hot          # key of postgres.instances
 #       resources:
 #         requests: { cpu: 200m, memory: 256Mi }
