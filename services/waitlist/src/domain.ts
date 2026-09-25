@@ -247,7 +247,7 @@ export class WaitlistEntry {
 
   ensureOfferAcceptable(now: Date): void {
     this.assertStatus("MATCHING", "Only matching waitlist entries can be fulfilled");
-    if (this._offerExpiresAt && now > this._offerExpiresAt) {
+    if (this._offerExpiresAt && now >= this._offerExpiresAt) {
       throw new DomainError("PRECONDITION_FAILED", "Waitlist match has expired");
     }
   }
