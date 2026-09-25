@@ -5,14 +5,185 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/trainticket/greenfield/platform/go-kit/ids"
+	kitmsg "github.com/trainticket/greenfield/platform/go-kit/messaging"
 	kitstorage "github.com/trainticket/greenfield/platform/go-kit/storage"
 	"github.com/trainticket/greenfield/services/seat-assignment/internal/application"
 	"github.com/trainticket/greenfield/services/seat-assignment/internal/domain"
 )
+
+func TestConcurrentSeatAllocationEventReplaysConvergeWithoutConflicts(t *testing.T) {
+	databaseURL := os.Getenv("TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("TEST_DATABASE_URL is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := newSeatAssignmentTestPool(t, ctx, databaseURL, "seat_event_replay")
+	defer pool.Close()
+
+	tx := NewTransactor(pool)
+	repo := NewRepository(tx)
+	svc := application.New(repo, NewOutboxPublisher(tx), tx.Within)
+	now := time.Now().UTC().Truncate(time.Second)
+	confirmed := newEventTestAllocation("salloc-confirm-replay", "hold-confirm-replay", now)
+	if err := repo.SaveSeatAllocation(ctx, confirmed); err != nil {
+		t.Fatal(err)
+	}
+
+	runConcurrentEvents(t, 32, func(index int) error {
+		payload, err := json.Marshal(map[string]any{
+			"seatAllocationId": confirmed.SeatAllocationID,
+			"entitlementId":    fmt.Sprintf("ent-%d", index),
+		})
+		if err != nil {
+			return err
+		}
+		return svc.HandleSubscribedEvent(ctx, kitmsg.EventEnvelope{
+			EventID: ids.NewEventID(), EventType: "EntitlementIssued",
+			CorrelationID: ids.NewCorrelationID(), Payload: payload,
+		})
+	})
+	assertAllocationState(t, ctx, pool, repo, confirmed.SeatAllocationID, domain.AllocationStatusConfirmed, 2)
+	assertOutboxEventCount(t, ctx, pool, confirmed.SeatAllocationID, "SeatAllocationConfirmed", 1)
+
+	released := newEventTestAllocation("salloc-release-replay", "hold-release-replay", now)
+	if err := repo.SaveSeatAllocation(ctx, released); err != nil {
+		t.Fatal(err)
+	}
+	runConcurrentEvents(t, 32, func(index int) error {
+		payload, err := json.Marshal(map[string]any{
+			"holdId":          released.CapacityHoldID,
+			"capacityUnitRef": released.CapacityUnitRef,
+			"interval":        released.Interval,
+			"releasedAt":      now.Add(time.Duration(index) * time.Millisecond).Format(time.RFC3339Nano),
+		})
+		if err != nil {
+			return err
+		}
+		return svc.HandleSubscribedEvent(ctx, kitmsg.EventEnvelope{
+			EventID: ids.NewEventID(), EventType: "CapacityReleased",
+			CorrelationID: ids.NewCorrelationID(), Payload: payload,
+		})
+	})
+	assertAllocationState(t, ctx, pool, repo, released.SeatAllocationID, domain.AllocationStatusReleased, 2)
+	assertOutboxEventCount(t, ctx, pool, released.SeatAllocationID, "SeatAllocationReleased", 1)
+
+	var allocations int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM seat_allocations").Scan(&allocations); err != nil {
+		t.Fatal(err)
+	}
+	if allocations != 2 {
+		t.Fatalf("event replay created duplicate allocations: got %d want 2", allocations)
+	}
+}
+
+func newEventTestAllocation(id, holdID string, now time.Time) *domain.ContractSeatAllocation {
+	return &domain.ContractSeatAllocation{
+		SeatAllocationID: id, SegmentBookingID: "sb-" + id, JourneyOrderID: "ord-" + id,
+		TravelerRef: "tvl-" + id, SegmentRef: "seg-1", ScheduledServiceRef: "ss-1",
+		ServiceDate: "2026-09-25", CapacityHoldID: holdID, CapacityUnitRef: "cap-standard",
+		Interval: domain.StationInterval{FromSeq: 1, ToSeq: 3},
+		SeatRef: domain.SeatRef{SeatAllocationID: id, SeatMapID: "smap-1", SeatMapVersion: 2,
+			SeatUnitRef: "seat-" + id, AllocationType: domain.AllocationTypeSeat, DisplayLabel: "01车 01A"},
+		Status: domain.AllocationStatusAllocated, CreatedAt: now, ExpiresAt: now.Add(time.Hour),
+	}
+}
+
+func runConcurrentEvents(t *testing.T, count int, handle func(int) error) {
+	t.Helper()
+	start := make(chan struct{})
+	errs := make(chan error, count)
+	var workers sync.WaitGroup
+	for index := 0; index < count; index++ {
+		workers.Add(1)
+		go func(index int) {
+			defer workers.Done()
+			<-start
+			errs <- handle(index)
+		}(index)
+	}
+	close(start)
+	workers.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func assertAllocationState(t *testing.T, ctx context.Context, pool *pgxpool.Pool, repo *Repository, id, status string, version int64) {
+	t.Helper()
+	allocation, _, err := repo.GetSeatAllocation(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allocation.Status != status {
+		t.Fatalf("allocation %s status=%s want %s", id, allocation.Status, status)
+	}
+	var storedVersion int64
+	if err := pool.QueryRow(ctx, "SELECT version FROM seat_allocations WHERE id=$1", id).Scan(&storedVersion); err != nil {
+		t.Fatal(err)
+	}
+	if storedVersion != version {
+		t.Fatalf("allocation %s version=%d want %d; replay wrote the aggregate more than once", id, storedVersion, version)
+	}
+}
+
+func assertOutboxEventCount(t *testing.T, ctx context.Context, pool *pgxpool.Pool, allocationID, eventType string, want int) {
+	t.Helper()
+	var count int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM outbox WHERE envelope->>'eventType'=$1 AND envelope->'payload'->>'seatAllocationId'=$2", eventType, allocationID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != want {
+		t.Fatalf("%s events for %s=%d want %d", eventType, allocationID, count, want)
+	}
+}
+
+func newSeatAssignmentTestPool(t *testing.T, ctx context.Context, databaseURL, prefix string) *pgxpool.Pool {
+	t.Helper()
+	admin, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(admin.Close)
+	schema := fmt.Sprintf("%s_%d", prefix, time.Now().UnixNano())
+	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := admin.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE"); err != nil {
+			t.Error(err)
+		}
+	})
+	config, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.ConnConfig.RuntimeParams["search_path"] = schema
+	config.MaxConns = 40
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	migrations, err := kitstorage.LoadMigrations(os.DirFS("../../../migrations"), ".")
+	if err != nil {
+		pool.Close()
+		t.Fatal(err)
+	}
+	if err := kitstorage.NewMigrationRunner(pool).Run(ctx, migrations); err != nil {
+		pool.Close()
+		t.Fatal(err)
+	}
+	return pool
+}
 
 func TestRecordedSeatAllocationSerializesConcurrentReservationsAndReplays(t *testing.T) {
 	if os.Getenv("TEST_SEAT_ALLOCATION") == "" {
