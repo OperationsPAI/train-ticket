@@ -639,49 +639,64 @@ export class OutboxRelay {
   }
 
   async runOnce(): Promise<number> {
-    const result = await this.pool.query(
-      `SELECT seq, stream, envelope
-       FROM outbox
-       WHERE published_at IS NULL
-       ORDER BY seq
-       LIMIT $1`,
-      [this.options.batchSize ?? 100],
-    ) as QueryResult<{ seq: string | number | bigint; stream: string; envelope: EventEnvelope }>;
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query(
+        `SELECT seq, stream, envelope
+         FROM outbox
+         WHERE published_at IS NULL
+         ORDER BY seq
+         LIMIT $1
+         FOR UPDATE SKIP LOCKED`,
+        [this.options.batchSize ?? 100],
+      ) as QueryResult<{ seq: string | number | bigint; stream: string; envelope: EventEnvelope }>;
 
-    if (result.rows.length === 0) {
-      return 0;
-    }
+      if (result.rows.length === 0) {
+        await client.query("COMMIT");
+        return 0;
+      }
 
-    const pipeline = this.redis.pipeline();
-    for (const row of result.rows) {
-      pipeline.xadd(
-        row.stream,
-        "MAXLEN",
-        "~",
-        String(this.options.streamMaxLen ?? configuredStreamMaxLen()),
-        "*",
-        "envelope",
-        JSON.stringify(row.envelope),
+      const pipeline = this.redis.pipeline();
+      for (const row of result.rows) {
+        pipeline.xadd(
+          row.stream,
+          "MAXLEN",
+          "~",
+          String(this.options.streamMaxLen ?? configuredStreamMaxLen()),
+          "*",
+          "envelope",
+          JSON.stringify(row.envelope),
+        );
+      }
+      const publishResults = await pipeline.exec();
+      if (!publishResults) {
+        throw new Error("Redis pipeline did not return publish results");
+      }
+      const publishError = publishResults.find(([error]) => error)?.[0];
+      if (publishError) {
+        throw publishError;
+      }
+
+      const seqs = result.rows.map((row) => row.seq.toString());
+      const placeholders = seqs.map((_, index) => `$${index + 1}`).join(", ");
+      await client.query(
+        `UPDATE outbox SET published_at = now()
+         WHERE seq IN (${placeholders}) AND published_at IS NULL`,
+        seqs,
       );
+      await client.query("COMMIT");
+      return result.rows.length;
+    } catch (error) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        // Preserve the publish/database failure; pool health is observed separately.
+      }
+      throw error;
+    } finally {
+      client.release();
     }
-    const publishResults = await pipeline.exec();
-    if (!publishResults) {
-      throw new Error("Redis pipeline did not return publish results");
-    }
-    const publishError = publishResults.find(([error]) => error)?.[0];
-    if (publishError) {
-      throw publishError;
-    }
-
-    const seqs = result.rows.map((row) => row.seq.toString());
-    const placeholders = seqs.map((_, index) => `$${index + 1}`).join(", ");
-    await this.pool.query(`UPDATE outbox SET published_at = now()
-      WHERE seq IN (
-        SELECT seq FROM outbox
-        WHERE seq IN (${placeholders}) AND published_at IS NULL
-        ORDER BY seq FOR UPDATE SKIP LOCKED
-      ) AND published_at IS NULL`, seqs);
-    return result.rows.length;
   }
 
   private async run(): Promise<void> {
