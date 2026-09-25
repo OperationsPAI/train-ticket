@@ -41,6 +41,11 @@ public class WalletPromotionController {
         return service.getBenefit(benefitId);
     }
 
+    @GetMapping("/internal/benefits/by-case/{caseId}")
+    public PromotionInstrument compensationByCase(@PathVariable String caseId) {
+        return service.getCompensationByCaseId(caseId);
+    }
+
     @GetMapping("/benefits")
     public WalletPromotionService.PagedBenefits list(
         @RequestParam String byAccountId,

@@ -98,6 +98,11 @@ public class WalletPromotionService {
         return repository.findBenefit(id).orElseThrow(() -> notFound("benefit not found"));
     }
 
+    public PromotionInstrument getCompensationByCaseId(String caseId) {
+        if (caseId == null || caseId.isBlank()) throw new ApiException(ApiErrorCode.VALIDATION_FAILED, "caseId is required");
+        return repository.findCompensationByCaseId(caseId).orElseThrow(() -> notFound("compensation benefit not found"));
+    }
+
     public WalletAccount getWallet(String accountId) {
         return repository.findWalletByAccountId(accountId).orElseThrow(() -> notFound("wallet account not found"));
     }
