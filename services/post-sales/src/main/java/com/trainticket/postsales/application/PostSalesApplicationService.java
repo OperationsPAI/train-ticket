@@ -42,8 +42,21 @@ public class PostSalesApplicationService {
     private final Clock clock;
     private final RefundPolicyEngine refundPolicyEngine = new RefundPolicyEngine();
     private final ChangePolicyEngine changePolicyEngine = new ChangePolicyEngine();
+    private com.trainticket.postsales.observability.PostSalesMetricRecorder metrics =
+        com.trainticket.postsales.observability.NoopPostSalesMetrics.INSTANCE;
     private org.springframework.transaction.support.TransactionTemplate evaluationWrite;
     private org.springframework.transaction.support.TransactionTemplate evaluationRead;
+
+    /**
+     * Bound by Spring once the observability configuration exists. Tests that
+     * build the service directly keep the no-op recorder.
+     */
+    @Autowired(required = false)
+    void setPostSalesMetrics(com.trainticket.postsales.observability.PostSalesMetricRecorder recorder) {
+        if (recorder != null) {
+            this.metrics = recorder;
+        }
+    }
 
     @Autowired(required=false)
     void configureEvaluationTransactions(org.springframework.transaction.PlatformTransactionManager manager) {
@@ -137,7 +150,23 @@ public class PostSalesApplicationService {
 
     public PostSalesCase recordCompensationOperation(String id,String name,Map<String,Object> result){
         var initial=get(id);repository.lockOrder(initial.journeyOrderId());var current=get(id);
-        current.recordCompensationOperation(name,result);repository.save(current);return current;
+        current.recordCompensationOperation(name,result);repository.save(current);
+        recordCompensationOutcome(current,name,result);return current;
+    }
+
+    /**
+     * Records only the bounded compensation outcome. The wallet credit amount is
+     * owned by wallet-promotion; publishing it here would create a second money
+     * source for the same movement.
+     */
+    private void recordCompensationOutcome(PostSalesCase current,String name,Map<String,Object> result){
+        String currency=com.trainticket.postsales.observability.PostSalesMetricLabels.currencyOf(result);
+        if(com.trainticket.postsales.observability.PostSalesMetricLabels.OTHER.equals(currency)
+            && current.decision()!=null && current.decision().amountSnapshot()!=null){
+            var approved=current.decision().amountSnapshot().refundAmount();
+            if(approved!=null)currency=com.trainticket.postsales.observability.PostSalesMetricLabels.currency(approved.currency().getCurrencyCode());
+        }
+        metrics.compensation(com.trainticket.postsales.observability.PostSalesMetricLabels.compensationOutcome(name),currency);
     }
 
     public PostSalesCase completeCompensation(String id,String correlation){

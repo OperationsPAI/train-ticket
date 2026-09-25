@@ -22,6 +22,9 @@ import com.trainticket.payment.domain.ports.PaymentIntentRepository;
 import com.trainticket.payment.domain.ports.LatePaymentCaseRepository;
 import com.trainticket.payment.domain.ports.RefundRepository;
 import com.trainticket.payment.domain.ports.ReservationPaymentRequestRepository;
+import com.trainticket.payment.observability.NoopPaymentMetrics;
+import com.trainticket.payment.observability.PaymentMetricLabels;
+import com.trainticket.payment.observability.PaymentMetricRecorder;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Supplier;
@@ -43,6 +46,18 @@ public class PaymentCommandService {
     private final PaymentChannelClient paymentChannelClient;
     private final ChannelRouter channelRouter;
     private final TransactionTemplate transactionTemplate;
+    private PaymentMetricRecorder metrics = NoopPaymentMetrics.INSTANCE;
+
+    /**
+     * Bound by Spring once the observability configuration exists. Tests that
+     * construct the service directly keep the no-op recorder.
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setPaymentMetricRecorder(PaymentMetricRecorder recorder) {
+        if (recorder != null) {
+            this.metrics = recorder;
+        }
+    }
 
     @org.springframework.beans.factory.annotation.Autowired
     public PaymentCommandService(
@@ -237,9 +252,11 @@ public class PaymentCommandService {
         intent.recordChannelHandoff(handoff.channelRef());
         if ("SUCCEEDED".equals(handoff.status()) && handoff.channelTransactionId() != null) {
             int before = intent.domainEvents().size();
-            intent.capture(intent.amount().subtract(intent.capturedAmount()), prepared.requestedRef().channel(), handoff.channelTransactionId(), Instant.now(clock), commandId(idempotencyKey), commandId(idempotencyKey), correlationId);
+            Money captureAmount = intent.amount().subtract(intent.capturedAmount());
+            intent.capture(captureAmount, prepared.requestedRef().channel(), handoff.channelTransactionId(), Instant.now(clock), commandId(idempotencyKey), commandId(idempotencyKey), correlationId);
             paymentIntentRepository.save(intent);
             publishNewEvents(intent.domainEvents(), before);
+            recordMoney(PaymentMetricLabels.Operation.CAPTURE, PaymentMetricLabels.Outcome.SUCCEEDED, captureAmount, prepared.requestedRef().channel());
         } else {
             paymentIntentRepository.save(intent);
         }
@@ -373,6 +390,8 @@ public class PaymentCommandService {
             refund.fail("ORIGINAL_CHANNEL_UNAVAILABLE", false, now, commandId(idempotencyKey), commandId(idempotencyKey), correlationId);
             refundRepository.save(refund);
             publishNewEvents(refund.domainEvents(), before);
+            recordMoney(PaymentMetricLabels.Operation.REFUND, PaymentMetricLabels.Outcome.REJECTED,
+                refund.amount(), originalRoute.channel());
             return new RefundHandoff(intent, refund, originalRoute, null, null);
         }
         String refundKey = keyOrFold(refund.channelRefundIdempotencyKey(), refund.refundId() + ":" + originalRoute.channelOrderId() + ":" + originalRoute.channelTransactionId(), idempotencyKey);
@@ -443,6 +462,7 @@ public class PaymentCommandService {
         intent.capture(amount, channel, channelTransactionId, Instant.now(clock), commandId(channelOrderId), causationId, correlationId);
         paymentIntentRepository.save(intent);
         publishNewEvents(intent.domainEvents(), before);
+        recordMoney(PaymentMetricLabels.Operation.CAPTURE, PaymentMetricLabels.Outcome.SUCCEEDED, amount, channel);
         return intent;
     }
 
@@ -539,6 +559,9 @@ public class PaymentCommandService {
         }
         latePaymentCaseRepository.save(lateCase);
         publish(lateCase.domainEvents());
+        // Money did move even though the intent was already terminal; the
+        // reversal that returns it is recorded when the late refund settles.
+        recordMoney(PaymentMetricLabels.Operation.CAPTURE, PaymentMetricLabels.Outcome.SUCCEEDED, amount, channel);
     }
 
     @Transactional
@@ -548,6 +571,8 @@ public class PaymentCommandService {
         intent.fail(reasonCode, false, Instant.now(clock), commandId(causationId), causationId, correlationId);
         paymentIntentRepository.save(intent);
         publishNewEvents(intent.domainEvents(), before);
+        recordMoney(PaymentMetricLabels.Operation.CAPTURE, PaymentMetricLabels.Outcome.FAILED,
+            intent.amount(), channelOf(intent.channelRef()));
         return intent;
     }
 
@@ -597,6 +622,13 @@ public class PaymentCommandService {
                 com.trainticket.platformkit.messaging.PrefixedIds.newCommandId(), "payment", 1,
                 Map.of("latePaymentCaseId", lateCase.latePaymentCaseId(), "paymentIntentId", paymentIntentId, "refundId", refund.refundId(), "resolution", "REFUNDED")));
         }
+        // Returning a late collection is a reversal of money the intent never
+        // validly held; an ordinary settled refund stays a refund.
+        recordMoney(
+            intent.isLateCaptureCandidate() ? PaymentMetricLabels.Operation.REVERSAL : PaymentMetricLabels.Operation.REFUND,
+            PaymentMetricLabels.Outcome.SUCCEEDED,
+            amount,
+            channel);
         return refund;
     }
 
@@ -607,6 +639,10 @@ public class PaymentCommandService {
         refund.fail(reasonCode, false, Instant.now(clock), commandId(causationId), causationId, correlationId);
         refundRepository.save(refund);
         publishNewEvents(refund.domainEvents(), before);
+        // A non-retryable refund failure lands in MANUAL_REVIEW_REQUIRED, which
+        // is a rejection rather than a plain failure.
+        recordMoney(PaymentMetricLabels.Operation.REFUND, PaymentMetricLabels.refundOutcome(refund.status()),
+            refund.amount(), channelOf(refund.channelRef()));
         return refund;
     }
 
@@ -674,6 +710,24 @@ public class PaymentCommandService {
         for (PaymentEvent event : events) {
             eventPublisher.publish(EventEnvelopeMapper.fromDomainEvent(event));
         }
+    }
+
+    private void recordMoney(
+        PaymentMetricLabels.Operation operation,
+        PaymentMetricLabels.Outcome outcome,
+        Money amount,
+        String channel
+    ) {
+        if (amount == null || amount.isZero()) {
+            return;
+        }
+        String currency = amount.currency().getCurrencyCode();
+        metrics.operation(operation, outcome, currency, channel);
+        metrics.amount(operation, outcome, currency, channel, amount.toMinorUnits());
+    }
+
+    private static String channelOf(ChannelRef ref) {
+        return ref == null ? null : ref.channel();
     }
 
     private static String keyOrFold(String existing, String material, String fallbackKey) {
