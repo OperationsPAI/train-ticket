@@ -208,9 +208,10 @@ export class WaitlistApplicationService {
 
   async accept(entryId: string, _request: AcceptPromotionRequest = {}, _correlationId?: string): Promise<AcceptPromotionResponse> {
     const entry = await this.requireEntry(entryId);
-    entry.ensureOfferAcceptable(this.now());
+    const requestedAt = this.now();
+    entry.ensureOfferAcceptable(requestedAt);
     const order = await this.journeyOrder.createOrder(entry);
-    entry.linkJourneyOrder(this.now(), order.orderId);
+    entry.linkJourneyOrder(requestedAt, order.orderId);
     await this.repository.save(entry);
     return { orderId: order.orderId, seatAssignment: order.seatAssignment ?? null };
   }
