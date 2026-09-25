@@ -595,7 +595,6 @@ def _copy_insurance_facts(source_url: str, target: psycopg.Connection[Any]) -> d
     )
     target.commit()
     with psycopg.connect(source_url, autocommit=True) as source:
-        _prepare_required_orders(target, source)
         source.execute(
             "CREATE TEMP TABLE reporting_required_policies(business_ref text PRIMARY KEY) ON COMMIT PRESERVE ROWS"
         )
@@ -617,9 +616,6 @@ def _copy_insurance_facts(source_url: str, target: psycopg.Connection[Any]) -> d
             """
             COPY (
               WITH candidates AS (
-                SELECT snapshot.* FROM policy_snapshots snapshot JOIN reporting_required_orders required
-                  ON COALESCE(NULLIF(snapshot.data->>'journeyOrderId',''),NULLIF(snapshot.data->>'orderId',''))=required.order_id
-                UNION ALL
                 SELECT snapshot.* FROM policy_snapshots snapshot JOIN reporting_required_policies required
                   ON snapshot.id=required.business_ref
                 UNION ALL
@@ -637,6 +633,46 @@ def _copy_insurance_facts(source_url: str, target: psycopg.Connection[Any]) -> d
               FROM candidates
               WHERE COALESCE(NULLIF(data->>'journeyOrderId',''),NULLIF(data->>'orderId','')) IS NOT NULL
               ORDER BY id,updated_at DESC
+            ) TO STDOUT
+            """,
+            target,
+            "COPY reporting_insurance_stage(policy_id,ancillary_id,order_id,segment_refs,traveler_ref,source_occurred_at) FROM STDIN",
+        )
+        _merge_stage(
+            target,
+            """
+            WITH source_rows AS (
+              SELECT policy_id AS business_ref,order_id,segment_refs,CASE WHEN traveler_ref IS NULL THEN '{}' ELSE ARRAY[traveler_ref] END traveler_refs,source_occurred_at
+              FROM reporting_insurance_stage WHERE policy_id IS NOT NULL
+              UNION ALL
+              SELECT ancillary_id,order_id,segment_refs,CASE WHEN traveler_ref IS NULL THEN '{}' ELSE ARRAY[traveler_ref] END,source_occurred_at
+              FROM reporting_insurance_stage WHERE ancillary_id IS NOT NULL
+            ), merged AS (
+              INSERT INTO reporting_business_scopes(business_ref,order_id,segment_refs,traveler_refs,source_occurred_at)
+              SELECT DISTINCT ON (business_ref) business_ref,order_id,segment_refs,traveler_refs,source_occurred_at
+              FROM source_rows ORDER BY business_ref,source_occurred_at DESC
+              ON CONFLICT(business_ref) DO UPDATE SET order_id=EXCLUDED.order_id,
+                segment_refs=CASE WHEN cardinality(EXCLUDED.segment_refs)>0 THEN EXCLUDED.segment_refs ELSE reporting_business_scopes.segment_refs END,
+                traveler_refs=CASE WHEN cardinality(EXCLUDED.traveler_refs)>0 THEN EXCLUDED.traveler_refs ELSE reporting_business_scopes.traveler_refs END,
+                source_occurred_at=EXCLUDED.source_occurred_at
+              WHERE reporting_business_scopes.source_occurred_at<=EXCLUDED.source_occurred_at RETURNING 1
+            ) SELECT count(*) FROM merged
+            """,
+        )
+        target.execute("TRUNCATE reporting_insurance_stage")
+        target.commit()
+        _prepare_required_orders(target, source)
+        _pipe_copy(
+            source,
+            """
+            COPY (
+              SELECT COALESCE(NULLIF(snapshot.data->>'policyId',''),snapshot.id),
+                     snapshot.data->>'ancillaryOrderItemId',
+                     COALESCE(NULLIF(snapshot.data->>'journeyOrderId',''),NULLIF(snapshot.data->>'orderId','')),
+                     ARRAY(SELECT DISTINCT value FROM jsonb_array_elements_text(COALESCE(snapshot.data->'segmentRefs','[]'::jsonb)) value ORDER BY value),
+                     snapshot.data->>'travelerRef',snapshot.updated_at
+              FROM policy_snapshots snapshot JOIN reporting_required_orders required
+                ON COALESCE(NULLIF(snapshot.data->>'journeyOrderId',''),NULLIF(snapshot.data->>'orderId',''))=required.order_id
             ) TO STDOUT
             """,
             target,
