@@ -11,7 +11,7 @@ class StubFarePricing implements FarePricingClient {
 }
 
 class StubOfferManagement implements OfferManagementClient {
-  async createOffer(entry: WaitlistEntry) { return { offerId: `off-${entry.entryId}`, offerVersion: 1, expiresAt: "2026-01-01T00:10:00.000Z" }; }
+  async createOffer(entry: WaitlistEntry) { return { offerId: `off-${entry.entryId}`, offerVersion: 1, expiresAt: "2026-01-01T00:10:00.000Z", total: { currency: "CNY", minorUnits: 10_750 } }; }
 }
 
 class StubCapacity implements CapacityAvailabilityClient {

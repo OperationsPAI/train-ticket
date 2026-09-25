@@ -3,6 +3,7 @@ import { InMemoryEventPublisher, InMemoryIdempotencyStore, errorMessage, handleI
 import { DomainError } from "./domain.js";
 import { InMemoryWaitlistRepository, WaitlistApplicationService, type JoinWaitlistRequest } from "./application.js";
 import type { WaitlistIntentResolver } from "./intent.js";
+import type { WaitlistFulfillmentClient } from "./fulfillment.js";
 import type { CapacityAvailabilityClient, FarePricingClient, JourneyOrderClient, OfferManagementClient, WaitlistRepository } from "./promotion.js";
 import { serviceProfile } from "./profile.js";
 import type { EventConsumptionState } from "./subscriber-retry.js";
@@ -23,6 +24,7 @@ export type AppDependencies = Readonly<{
   journeyOrder?: JourneyOrderClient;
   offerManagement?: OfferManagementClient;
   intentResolver?: WaitlistIntentResolver;
+  fulfillmentClient?: WaitlistFulfillmentClient;
   now?: () => Date;
   storage?: AppStorage;
   applicationService?: WaitlistApplicationService;
@@ -55,6 +57,7 @@ export function createApp(dependencies: AppDependencies = {}): FastifyInstance {
       dependencies.now,
       dependencies.offerManagement,
       dependencies.intentResolver,
+      dependencies.fulfillmentClient,
     )
     : () => sharedApplicationService;
   const idempotencyStore = dependencies.idempotencyStore ?? defaultIdempotency;
