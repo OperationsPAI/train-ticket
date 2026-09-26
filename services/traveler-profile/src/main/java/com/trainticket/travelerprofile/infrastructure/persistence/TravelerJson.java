@@ -38,7 +38,7 @@ public final class TravelerJson {
         root.put("accountId", state.accountId());
         root.put("aggregateAccountId", profile.accountId());
         root.put("displayName", profile.displayName());
-        root.put("birthDate", profile.birthDate());
+        putNullable(root, "birthDate", profile.birthDate());
         root.put("status", profile.status().name());
         putNullable(root, "statusReason", profile.statusReason());
         root.put("snapshotVersion", state.snapshotVersion());
@@ -131,7 +131,7 @@ public final class TravelerJson {
         Map<String, String> values = map(pref.path("values"), objectMapper);
         Map<String, String> assistance = map(pref.path("assistanceNeeds"), objectMapper);
         TravelerProfile profile = TravelerProfile.rehydrate(
-            text(root, "profileId"), text(root, "travelerRef"), text(root, "aggregateAccountId"), text(root, "displayName"), text(root, "birthDate"),
+            text(root, "profileId"), text(root, "travelerRef"), text(root, "aggregateAccountId"), text(root, "displayName"), nullableText(root, "birthDate"),
             TravelerProfileStatus.valueOf(text(root, "status")), root.path("statusReason").asText(null), documents, primaryDocumentId, eligibilities,
             verificationFacts, new PreferenceSnapshot(values, assistance, pref.path("version").asInt(1)), List.of());
         return new TravelerState(profile, text(root, "travelerId"), text(root, "snapshotVersion"), text(root, "accountId"), TravelerType.valueOf(text(root, "travelerType")), text(root, "givenName"), text(root, "familyName"), root.path("contactEmail").asText(null), root.path("contactPhone").asText(null), Instant.parse(text(root, "createdAt")), Instant.parse(text(root, "updatedAt")));
