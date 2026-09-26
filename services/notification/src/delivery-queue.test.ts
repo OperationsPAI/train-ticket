@@ -94,7 +94,11 @@ describe("notification delivery queue throughput", () => {
     assert.equal(pool.calls.some(call => call.sql.includes("INSERT INTO notification_delivery_attempts")), false);
   });
 
-  it("fills all send slots from a batch and never exceeds configured concurrency", async () => {
+  // One row per claim transaction, not a batch: the state-counter trigger
+  // updates one (state, channel, bucket) row per queue row in the same
+  // transaction, and two batches that share two buckets in a different order
+  // deadlock. The worker still fills every send slot, one claim at a time.
+  it("fills all send slots one claim at a time and never exceeds configured concurrency", async () => {
     const queued: DeliveryClaim[] = Array.from({ length: 9 }, (_, index) => ({ taskId: `task-${index}`, token: `token-${index}` }));
     const claimSizes: number[] = [];
     const active = new Map<string, () => void>();
@@ -122,13 +126,13 @@ describe("notification delivery queue throughput", () => {
     try {
       await until(() => started === 4);
       assert.equal(activeCount, 4);
-      assert.deepEqual(claimSizes, [4]);
+      assert.deepEqual(claimSizes, [1, 1, 1, 1]);
 
       active.values().next().value!();
       await until(() => started === 5);
       assert.equal(activeCount, 4);
       assert.equal(maxActive, 4);
-      assert.deepEqual(claimSizes, [4, 1]);
+      assert.deepEqual(claimSizes, [1, 1, 1, 1, 1]);
 
       while (started < 9) {
         const before = started;
