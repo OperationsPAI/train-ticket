@@ -49,15 +49,20 @@ type Service struct {
 	publisher      EventPublisher
 	repository     Repository
 	uow            UnitOfWork
+	filingField    string
+	filingClaims   FilingClaims
+	filingLifetime time.Duration
 }
 
 func NewService(publisher EventPublisher) *Service {
 	return &Service{
-		suppliers:     make(map[domain.SupplierID]domain.Supplier),
-		carriers:      make(map[domain.CarrierID]domain.Carrier),
-		contracts:     make(map[domain.ContractID]domain.Contract),
-		pendingEvents: []EventEnvelope{},
-		publisher:     publisher,
+		suppliers:      make(map[domain.SupplierID]domain.Supplier),
+		carriers:       make(map[domain.CarrierID]domain.Carrier),
+		contracts:      make(map[domain.ContractID]domain.Contract),
+		pendingEvents:  []EventEnvelope{},
+		publisher:      publisher,
+		filingField:    FilingFieldSupplierCode,
+		filingLifetime: DefaultFilingClaimLifetime,
 	}
 }
 
@@ -70,6 +75,23 @@ func (s *Service) WithRepository(repository Repository) *Service {
 func (s *Service) WithUnitOfWork(uow UnitOfWork) *Service {
 	if s != nil {
 		s.uow = uow
+	}
+	return s
+}
+
+// WithFilingField states the registration field the catalogue files a partner under.
+func (s *Service) WithFilingField(field string) *Service {
+	if s != nil {
+		s.filingField = PartnerFilingField(field)
+	}
+	return s
+}
+
+// WithFilingClaims remembers the identities the catalogue has filed, so the operator
+// import's repeat arrivals are answered from the shared cache.
+func (s *Service) WithFilingClaims(claims FilingClaims) *Service {
+	if s != nil {
+		s.filingClaims = claims
 	}
 	return s
 }
@@ -170,6 +192,20 @@ func (s *Service) RegisterSupplier(ctx context.Context, cmd RegisterSupplierComm
 		s.mu.Unlock()
 	}
 
+	// The identity a filing claims is the field the release names, and the catalogue
+	// remembers the identities it has filed, so an import that brings one bureau in
+	// under several codes is answered the same way whichever code it arrives with.
+	identity := filingIdentity(s.filingField, cmd)
+	if s.filingClaims != nil {
+		held, err := s.filingClaims.Held(ctx, identity)
+		if err != nil {
+			return SupplierView{}, err
+		}
+		if held {
+			return SupplierView{}, fmt.Errorf("%w: a partner is already filed under this identity", ErrConflict)
+		}
+	}
+
 	envelopes := wrapDomainEvents(ctx, events, cmd.CorrelationID, cmd.CausationID)
 	if err := s.persistAndPublish(ctx, func(txCtx context.Context) error {
 		if s.repository != nil {
@@ -182,6 +218,11 @@ func (s *Service) RegisterSupplier(ctx context.Context, cmd RegisterSupplierComm
 	s.mu.Lock()
 	s.suppliers[supplier.SupplierID] = supplier
 	s.mu.Unlock()
+	// The identity is remembered once the partner is filed: a cache that cannot take it
+	// is a cache that refuses nothing, which is what the store already decides.
+	if s.filingClaims != nil {
+		_ = s.filingClaims.Hold(ctx, identity, s.filingLifetime)
+	}
 	return supplierView(supplier), nil
 }
 
