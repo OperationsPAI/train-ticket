@@ -640,3 +640,20 @@ last poll, re-read the payment intent, and if the capture that this journey
 observed has since failed, report the purchase as an unfulfilled payment rather
 than asking for a document it cannot have. Teaching the client to skip a basis
 whose order was fault-seeded would hide the race instead of handling it.
+
+### The saturated journey-order dead letter is travel-insurance's (2026-09-26)
+
+`events:journey-order:dlq` holds 30001 entries -- its cap, so the oldest have been
+trimmed and the count is a floor -- and the newest are `travel-insurance` failing
+`JourneyOrderPostSalesAdjusted` with `domain rule violation: applied change scope
+is required`, five attempts each (`consumerGroup=travel-insurance`,
+`consumerName=travel-insurance-1`). Every post-sales adjustment on an insured
+order therefore dead letters, and the insurance projection is missing exactly the
+orders that were changed.
+
+Two things follow. It is a defect of its own, and it is not the invoicing gap: the
+group that dead letters is travel-insurance, while invoicing reads finance
+settlement's recognition, so the captured-payment-without-recognition question
+above is still open. It is also the largest single population of lost events in
+the release, and the reason to fix it is the same as for the capacity releases:
+an event that dead letters is an effect that silently never happens.
