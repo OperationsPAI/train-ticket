@@ -657,3 +657,21 @@ settlement's recognition, so the captured-payment-without-recognition question
 above is still open. It is also the largest single population of lost events in
 the release, and the reason to fix it is the same as for the capacity releases:
 an event that dead letters is an effect that silently never happens.
+
+Read, and it is deterministic rather than load-related. `JourneyOrderPostSalesAdjusted`
+carries a `postSalesCaseId`, and travel-insurance handles it by reading that case
+and requiring `caseType == "CHANGE"` with a non-empty scope
+(`application/purchase_verification.go:166`). A **refund or cancellation** is
+neither, so every adjustment of those kinds fails with "applied change scope is
+required" by construction -- and the payloads in the dead letter agree, their
+`monetarySummary.cancelledTotal` equalling the whole subtotal. This is the
+insurance domain accepting only one of the three case types journey-order
+announces.
+
+What it needs is a decision before a fix, and it should be taken the way the
+standing-capacity policy was: a refund or cancellation ends the coverage the order
+carried, so the handler should void it for the case's scope and record why, rather
+than treating "not a change" as a rule violation. Until that decision is made the
+insurance projection keeps missing exactly the orders that were refunded or
+cancelled, and the dead letter stays at its cap with the oldest entries already
+trimmed.
