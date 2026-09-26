@@ -5,7 +5,7 @@ Last verified: 2026-09-26, Asia/Beijing.
 ## Runtime
 
 The resident Helm release is `train-ticket` in namespace `train-ticket`,
-revision **430**.
+revision **431**.
 Its values come from one file, `deploy/helm/train-ticket/values.yaml`: the
 registry, the `local-path` storage class, the central telemetry store, the
 resident exporters, the load generator settings and the `loadgen-resident-state`
@@ -221,6 +221,7 @@ revision's evidence is the cycle recorded above.
 
 | Check | Result | Evidence |
 |---|---|---|
+| Ten minute window at revision 431, with the cycle's burst | 607568 requests, 64894 journeys, P99 128 milliseconds, 1 unexpected error group (`invoice-amount-basis` 404 x3), 989 failed journeys -- every one a post-sales or recovery poll tail, none a timeout | `.scratch/runtime-fixes/goal-rev431d-ten-minute.json` |
 | Ten minute window at revision 430, the cycle's burst | 164039 requests, 18571 journeys, P99 106 milliseconds, 0 unexpected error groups, 24 failed journeys (all the disruption recovery tail) | `.scratch/runtime-fixes/goal-rev430-ten-minute.json` |
 | Ten minute window at revision 430 | 66662 journeys, P99 137 milliseconds across every service, 0 unexpected error groups, 253 failed journeys (refund, change and disruption poll tails; no timeout, no 503) | `.scratch/runtime-fixes/goal-rev430b-ten-minute.json` |
 | Ten minute window at revision 427, first cycle after the shard split | 424214 requests, 47671 journeys, P99 118 milliseconds, 0 unexpected error groups, 0 failed journeys | `.scratch/runtime-fixes/goal-rev427b-ten-minute.json` |
@@ -386,6 +387,19 @@ fare-pricing's ninety-ninth percentile is 107 milliseconds where it had been the
 client's 10 second deadline, post-sales is 119 milliseconds where it had been the
 same deadline, and the window's 24 failed journeys are all the disruption
 recovery poll tail.
+
+The next window showed that the pools were only half of it. At that burst
+fare-pricing held 11.04 cores against the eight its pod may use, with 17 quotes
+waiting for a connection, and its callers failed on it: journey-order answered
+503 while building an order and post-sales answered 500 "I/O error on GET
+http://fare-pricing:8080/api/v1/fare-quotes/...: Read timed out". Revision 431
+gives fare-pricing a second replica (the same burst on sixteen cores) and moves
+read's ceiling to 900 for its ninety six extra connections. The window after it
+carries 607568 requests and 64894 journeys at P99 128 milliseconds with no
+timeout at all: fare-pricing's ninety-ninth percentile is 156 milliseconds,
+post-sales 142 and journey-order 157. What fails there -- 989 journeys -- is
+every one a post-sales or recovery poll tail, the shape recorded in
+[TODO](TODO.md).
 
 ## Notification's delivery queue
 
