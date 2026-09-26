@@ -156,6 +156,46 @@ class TravelerControllerTest {
     }
 
     @Test
+    void createTravelerRequiresTheFieldsTheProfileIsBuiltFrom() throws Exception {
+        mockMvc.perform(post("/api/v1/travelers")
+                .contentType(MediaType.APPLICATION_JSON)
+                .header("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b0c010")
+                .content("{\"travelerType\":\"ADULT\",\"familyName\":\"Li\",\"dateOfBirth\":\"1990-01-15\"}"))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+            .andExpect(jsonPath("$.details.accountId").exists())
+            .andExpect(jsonPath("$.details.givenName").exists());
+    }
+
+    @Test
+    void createTravelerRefusesATravelerTypeItDoesNotKnow() throws Exception {
+        mockMvc.perform(post("/api/v1/travelers")
+                .contentType(MediaType.APPLICATION_JSON)
+                .header("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b0c011")
+                .content("{\"accountId\":\"acc-5\",\"travelerType\":\"VIP\",\"givenName\":\"Mei\",\"familyName\":\"Li\"}"))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+            .andExpect(jsonPath("$.details.travelerType").exists());
+    }
+
+    @Test
+    void createTravelerKeepsTheBirthDateItWasGiven() throws Exception {
+        MvcResult result = mockMvc.perform(post("/api/v1/travelers")
+                .contentType(MediaType.APPLICATION_JSON)
+                .header("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b0c012")
+                .content("{\"accountId\":\"acc-6\",\"travelerType\":\"ADULT\",\"givenName\":\"Mei\",\"familyName\":\"Li\",\"dateOfBirth\":\"1990-01-15\"}"))
+            .andExpect(status().isCreated())
+            .andReturn();
+        String travelerId = Json.read(result, "$.travelerId");
+
+        mockMvc.perform(get("/api/v1/travelers/{travelerId}", travelerId))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.travelerId").value(travelerId))
+            .andExpect(jsonPath("$.travelerType").value("ADULT"))
+            .andExpect(jsonPath("$.snapshotVersion").value("sv-1"));
+    }
+
+    @Test
     void getUnknownTravelerReturns404() throws Exception {
         mockMvc.perform(get("/api/v1/travelers/tvl-missing"))
             .andExpect(status().isNotFound())
