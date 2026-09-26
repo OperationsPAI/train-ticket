@@ -41,6 +41,11 @@ describe("notification queue depth", () => {
     // unordered min() over the whole queue is a sequential scan.
     const oldestSql = queries.find(query => query.sql.includes("EXTRACT(EPOCH"))!.sql;
     assert.match(oldestSql, /ORDER BY queue\.available_at, queue\.task_id\s+LIMIT 1/u);
+    // The depth has to sum the buckets. Reading one row per state and channel
+    // was what made every enqueue lock the row a claim needed.
+    const depthSql = queries.find(query => query.sql.includes("notification_delivery_queue_state"))!.sql;
+    assert.match(depthSql, /sum\(tasks\)/u);
+    assert.match(depthSql, /GROUP BY state, channel/u);
   });
 
   it("reports zero age when nothing is due instead of a missing series", async () => {
