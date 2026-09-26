@@ -30,6 +30,8 @@ public class PostSalesController {
     private final PostSalesApplicationService service;
     @org.springframework.beans.factory.annotation.Autowired(required=false)
     private com.trainticket.postsales.application.RefundFundingService refundFunding;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.trainticket.postsales.application.PostSalesExecutionReconciliationService reconciliation;
 
     public PostSalesController(PostSalesApplicationService service) {
         this.service = service;
@@ -82,8 +84,19 @@ public class PostSalesController {
         @RequestHeader("Idempotency-Key") String idempotencyKey,
         HttpServletRequest httpRequest
     ) {
-        if(refundFunding!=null)refundFunding.prepare(caseId,requestCorrelationId(httpRequest));
-        return PostSalesMapper.approveResponse(service.approve(caseId, commandId(), requestCorrelationId(httpRequest)));
+        String correlation=requestCorrelationId(httpRequest);
+        if(refundFunding!=null)refundFunding.prepare(caseId,correlation);
+        com.trainticket.postsales.domain.PostSalesCase approved=service.approve(caseId, commandId(), correlation);
+        // The steps a case waits for are events, and an event can be published before the
+        // case that needs it exists: measured, a refund whose capacity hold was released at
+        // 01:24:11 while its case opened at 01:24:21, which then waited for ever because the
+        // release had already been consumed and nothing would mention it again. Reading the
+        // owning services' state once, here, applies whatever is already true; a case whose
+        // work is done completes at once, and one whose work is not waits as before.
+        if(reconciliation!=null && approved.status()==com.trainticket.postsales.domain.PostSalesCaseStatus.EXECUTING) {
+            approved=reconciliation.reconcile(caseId, commandId(), correlation);
+        }
+        return PostSalesMapper.approveResponse(approved);
     }
 
     @GetMapping("/{caseId}")
