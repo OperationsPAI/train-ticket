@@ -5,7 +5,7 @@ Last verified: 2026-09-26, Asia/Beijing.
 ## Runtime
 
 The resident Helm release is `train-ticket` in namespace `train-ticket`,
-revision **418**.
+revision **426**.
 Its values come from one file, `deploy/helm/train-ticket/values.yaml`: the
 registry, the `local-path` storage class, the central telemetry store, the
 resident exporters, the load generator settings and the `loadgen-resident-state`
@@ -221,6 +221,8 @@ revision's evidence is the cycle recorded above.
 
 | Check | Result | Evidence |
 |---|---|---|
+| Ten minute window at revision 425 | 429649 requests, 84282 journeys, P99 128 milliseconds, 1 unexpected error group (`invoice-amount-basis` 404 x22), 159 failed journeys | `.scratch/runtime-fixes/goal-rev425-hardcode-ten-minute.json` |
+| Ten minute window at revision 426 | 466963 requests, 51607 journeys, P99 2996 milliseconds, 7 unexpected error groups, 1407 failed journeys -- one burst minute carried 12694 journeys and 1033 of the failures | `.scratch/runtime-fixes/goal-rev426-ten-minute.json` |
 | Eighteen minute window at revision 321 | 557863 requests, 64845 journeys, P99 257 milliseconds, 0 failed journeys and 0 unexpected HTTP errors | `.scratch/runtime-fixes/goal-rev321-eighteen-minute.json` |
 | Eighteen minute window at revision 330 | 107442 requests in the first ten minutes, 12910 journeys, boarding record races on the fulfillment path | `.scratch/runtime-fixes/goal-rev330-ten-minute.json` |
 | Ten minute resident cycle at revision 306 | 451150 requests, 49821 journeys, P99 2888 milliseconds, 7143 failed journeys | `.scratch/runtime-fixes/goal-rev306-ten-minute.json` |
@@ -289,3 +291,35 @@ awarded, and `services/loyalty-membership/src/bootstrap.ts` already documents
 that. Tests, the load generator and the stress harness keep their own literals;
 `deploy/stress`'s pinned departure date is in [TODO](TODO.md) because it is
 already in the past.
+
+The three fixes were deployed at revision 425 and checked on the HTTP surface
+before the window: a create with `dateOfBirth` reads the value back, one without
+it reads `null` rather than `1970-01-01`, a document without
+`documentIssuingCountry` is a 400 naming the field, and the load generator's
+traveler creations carry the date. None of the three changed what the load
+generator sees, and the revision 425 window carries 0.19 percent failed journeys
+against 0.20 percent at revision 421.
+
+## The compensation dead letter
+
+`events:post-sales` gained a dead letter after the revision 425 rollout that the
+revision 424 fixes did not cover: a `PostSalesApplied` for a `COMPENSATION` case,
+five attempts, `domain rule violation: payment purchase reference returned 404`.
+The handler treated every applied case as a refund -- a case id was itself the
+evidence -- so a compensation, which issues a wallet credit and keeps the ticket,
+reached the cancellation path and read a payment purchase reference that does not
+exist because nothing was refunded. Revision 426 branches on the case type: only
+`REFUND` and `CANCELLATION` end coverage. Measured: no dead letter has arrived on
+`events:post-sales` or `events:journey-order` since the 12:01:12Z deployment;
+their newest entries are unchanged at 12:01:04Z and 11:26:22Z.
+
+## The burst is what still fails
+
+The revision 426 window is not clean, and its shape is one minute: 12:09:35Z to
+12:10:35Z carried 12694 journeys, against 7579 in the window's next busiest
+minute, and 1033 of the window's 1407 failed journeys. In that minute risk-status,
+case-status and refund-status fail, post-sales answers in 9.3 seconds at the
+ninety-ninth percentile with the client's 10 second timeout expiring 73 times,
+and fare-pricing's median is 1.7 seconds. That is the consumer-lag shape the
+offer and post-sales fixes removed at the mean, returning under a three to eight
+times burst. It is recorded in [TODO](TODO.md); no service in the chart has an HPA.
