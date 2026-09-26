@@ -41,9 +41,19 @@ public class TravelerProfileService {
     private final EventPublisher eventPublisher;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private final TravelerClaimBand claimBand;
 
     public TravelerProfileService(EventPublisher eventPublisher, ObjectMapper objectMapper) {
-        this(new InMemoryTravelerProfileStore(), new com.trainticket.platformkit.idempotency.InMemoryIdempotencyStore(), eventPublisher, objectMapper, Clock.systemUTC());
+        this(new InMemoryTravelerProfileStore(), new com.trainticket.platformkit.idempotency.InMemoryIdempotencyStore(), eventPublisher, objectMapper, Clock.systemUTC(), TravelerClaimBand.unpriced());
+    }
+
+    public TravelerProfileService(
+        TravelerProfileStore store,
+        IdempotencyStore idempotencyStore,
+        EventPublisher eventPublisher,
+        ObjectMapper objectMapper
+    ) {
+        this(store, idempotencyStore, eventPublisher, objectMapper, Clock.systemUTC(), TravelerClaimBand.unpriced());
     }
 
     @Autowired
@@ -51,9 +61,10 @@ public class TravelerProfileService {
         TravelerProfileStore store,
         IdempotencyStore idempotencyStore,
         EventPublisher eventPublisher,
-        ObjectMapper objectMapper
+        ObjectMapper objectMapper,
+        TravelerClaimBand claimBand
     ) {
-        this(store, idempotencyStore, eventPublisher, objectMapper, Clock.systemUTC());
+        this(store, idempotencyStore, eventPublisher, objectMapper, Clock.systemUTC(), claimBand);
     }
 
     TravelerProfileService(
@@ -63,11 +74,23 @@ public class TravelerProfileService {
         ObjectMapper objectMapper,
         Clock clock
     ) {
+        this(store, idempotencyStore, eventPublisher, objectMapper, clock, TravelerClaimBand.unpriced());
+    }
+
+    TravelerProfileService(
+        TravelerProfileStore store,
+        IdempotencyStore idempotencyStore,
+        EventPublisher eventPublisher,
+        ObjectMapper objectMapper,
+        Clock clock,
+        TravelerClaimBand claimBand
+    ) {
         this.store = store;
         this.idempotencyStore = idempotencyStore;
         this.eventPublisher = eventPublisher;
         this.objectMapper = objectMapper;
         this.clock = clock;
+        this.claimBand = claimBand;
     }
 
     @Transactional
@@ -236,7 +259,14 @@ public class TravelerProfileService {
         requireText(command.familyName(), "familyName", errors);
         if (!isBlank(command.dateOfBirth())) {
             try {
-                java.time.LocalDate.parse(command.dateOfBirth().trim());
+                java.time.LocalDate claimed = java.time.LocalDate.parse(command.dateOfBirth().trim());
+                // The register carries the band the fare catalogue prices, so a claimed date
+                // it has no band for is answered here rather than stored and met at the first
+                // quote, one service downstream. The ends are the catalogue's and travel with
+                // the release, which is why this comparison names none of them.
+                if (!claimBand.holds(claimed, java.time.LocalDate.now(clock))) {
+                    errors.put("dateOfBirth", "dateOfBirth is outside the band of ages the catalogue prices");
+                }
             } catch (java.time.format.DateTimeParseException ex) {
                 errors.put("dateOfBirth", "dateOfBirth must be an ISO-8601 date (YYYY-MM-DD)");
             }

@@ -21,6 +21,8 @@ HTTP virtual threads 配置及已发布 outbox 清理索引已部署到 revision
 | `POST /api/v1/travelers/{travelerId}/eligibility` | 根据当前旅客类型生成资格结果。 |
 
 写接口要求 `Idempotency-Key`。
+创建时若请求声明了 `dateOfBirth`，登记把它与 fare catalogue 所售的年龄区间对齐：区间之外的申报以 `VALIDATION_FAILED` 结束，profile、outbox 与幂等响应都不写入。
+区间两端不属于本服务，它们随 catalogue 一起由 release 发布，因此移动区间不需要重新构建镜像。
 `TravelerProfile` 聚合包含 `Document`、`EligibilitySummary`、`PreferenceSnapshot` 和 `ExternalVerificationFact`。
 完整证件号在输入后转换为脱敏引用和 SHA256，快照不保存完整号码。
 资料视图仍包含姓名和联系方式，不能据此宣称所有个人资料都经过字段级加密。
