@@ -16,6 +16,9 @@ const SERVICE_SEGMENTS_CACHE_TTL: Duration = Duration::from_secs(30);
 /// allocated. Thirty seconds keeps that window while avoiding a three hundred kilobyte fetch per
 /// reservation.
 const SEAT_SUPPLY_CACHE_TTL: Duration = Duration::from_secs(30);
+/// How long a published class list is reused. The supplies it names are cached
+/// under the same bound, so a class cannot be missed for longer than either.
+const PUBLISHED_CLASSES_CACHE_TTL: Duration = Duration::from_secs(30);
 /// The published composition only changes when a new seat map version is published, so it is
 /// cached until the occupancy reports another version.
 const SEAT_COMPOSITION_CACHE_TTL: Duration = Duration::from_secs(300);
@@ -864,6 +867,7 @@ pub struct SupplyClient {
     services: Arc<Mutex<HashMap<String, CacheEntry<Vec<String>>>>>,
     seats: Arc<Mutex<HashMap<String, CacheEntry<SeatSupply>>>>,
     compositions: Arc<Mutex<HashMap<String, CacheEntry<SeatComposition>>>>,
+    classes: Arc<Mutex<HashMap<String, CacheEntry<Vec<String>>>>>,
 }
 
 impl SupplyClient {
@@ -963,6 +967,7 @@ impl SupplyClient {
             services: Arc::new(Mutex::new(HashMap::new())),
             seats: Arc::new(Mutex::new(HashMap::new())),
             compositions: Arc::new(Mutex::new(HashMap::new())),
+            classes: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -1454,6 +1459,32 @@ impl SupplyClient {
     }
 
     pub async fn published_classes(
+        &self,
+        service: &str,
+        date: &str,
+        correlation: &str,
+    ) -> Result<Vec<String>, AppError> {
+        // The combined snapshot asks for this on every admission, and it is a
+        // seat map listing: measured at 204 milliseconds of the snapshot's 1569.
+        // It changes only when a map is published, and the supplies it describes
+        // are cached under the same bound, so it is cached under that bound too.
+        let key = format!("{service}|{date}");
+        if let Some(cached) = cache_lookup(&self.classes, &key) {
+            return Ok(cached);
+        }
+        let classes = self
+            .fetch_published_classes(service, date, correlation)
+            .await?;
+        cache_store(
+            &self.classes,
+            key,
+            classes.clone(),
+            PUBLISHED_CLASSES_CACHE_TTL,
+        );
+        Ok(classes)
+    }
+
+    async fn fetch_published_classes(
         &self,
         service: &str,
         date: &str,
