@@ -107,7 +107,14 @@ postgres:
         - service_plan
         - place_network
       storageSize: 230Gi
-      maxConnections: 450
+      # 700 rather than 450: this shard now hosts every read-shaped service, and
+      # their pools add up to about 540 connections -- fare-pricing's four
+      # worker pools at 16, offer-management's four pods at 24,
+      # capacity-availability's six at 24, seat-assignment's five at 24 and
+      # trip-planning's three at 32. The previous 450 fit only the two that had
+      # already moved. 700 leaves room for one service replacing at a time
+      # during a rollout, which holds the old and the new pod at once.
+      maxConnections: 700
       sharedBuffers: 10GB
       workMem: 8MB
       maxWalSize: 24GB
@@ -164,52 +171,33 @@ postgres:
         requests: { cpu: '3', memory: 8Gi }
         limits: { cpu: '32', memory: 48Gi }
     core:
-      # The existing cluster is migrated online from this source. Logical
-      # replication keeps each target shard current while its initial table
-      # copy runs; services switch only after row counts, lag and sequences
-      # have been checked. These settings remain useful for shard evacuation
-      # and disaster recovery after the one-time split.
+      # The fallback for a service the chart does not shard. Every service that
+      # has a target shard names it with `pgInstance`, so this instance now
+      # carries only the sixteen services below -- thirty one databases and
+      # their autovacuum work used to share this one instance with them, which
+      # coupled services that share nothing else and is what the split is for.
+      # The logical-replication settings remain for shard evacuation and
+      # disaster recovery.
       walLevel: logical
       maxReplicationSlots: 40
       maxWalSenders: 40
       walSenderTimeout: 10min
       maxSlotWalKeepSize: 64GB
       databases:
-        - account
         - admin_audit
         - ancillary_service
-        - booking_orchestration
-        - capacity_availability
         - corporate_travel
         - customer_service
         - dispatch
         - disruption_recovery
-        - entitlement_ticketing
-        - fare_pricing
-        - finance_settlement
         - fulfillment
         - group_booking
-        - identity_verification
-        - invoicing
-        - journey_order
         - loyalty_membership
         - marketing_campaign
-        - notification
-        - offer_management
-        - payment
-        - payment_channel
-        - place_network
-        - post_sales
         - provider_integration
-        - reporting
-        - risk_compliance
-        - seat_assignment
-        - service_plan
         - supplier_catalog
         - transfer_management
         - travel_insurance
-        - traveler_profile
-        - trip_planning
         - waitlist
         - wallet_promotion
       # Sized with real headroom rather than "just enough not to OOM". The node
@@ -738,6 +726,7 @@ services:
     db: dispatch
   place-network:
     db: place_network
+    pgInstance: read
     strategy:
       type: RollingUpdate
       rollingUpdate:
@@ -750,6 +739,7 @@ services:
           command: ["sleep", "10"]
   service-plan:
     db: service_plan
+    pgInstance: read
     strategy:
       type: RollingUpdate
       rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
@@ -760,6 +750,7 @@ services:
           command: ["sleep", "10"]
   capacity-availability:
     db: capacity_availability
+    pgInstance: read
     image: mirrors.tencent.com/microservice/capacity-availability:final-e98069db@sha256:e880d85d81be4688528f256df1b03ef13eed8dc93aeb5e46fff13d0cac79f039
     # Six replicas: every reservation takes a Hold here, and the pool locks are
     # database advisory locks, so replicas coordinate through PostgreSQL. The
@@ -816,6 +807,7 @@ services:
           command: ["sleep", "10"]
   fare-pricing:
     db: fare_pricing
+    pgInstance: read
     image: mirrors.tencent.com/microservice/fare-pricing:final-e98069db@sha256:589cc0ad43fc832f0861f9a0e35c3aabc6500e0dd2c977dd0c478c2f8bdf81db
     strategy:
       type: RollingUpdate
@@ -941,6 +933,7 @@ services:
       PG_MAX_POOL_SIZE: "24"
   offer-management:
     db: offer_management
+    pgInstance: read
     image: mirrors.tencent.com/microservice/offer-management:outbox-d9048788@sha256:5e6b8a10aac16866d27653148dfb6fa036bdd88be13ba590c423f077b905df84
     strategy:
       type: RollingUpdate
@@ -1111,6 +1104,7 @@ services:
       limits: { cpu: '12', memory: 6Gi }
   payment:
     db: payment
+    pgInstance: txn
     image: mirrors.tencent.com/microservice/payment:autoclaim-6b90ce5d@sha256:faea7424dd667b181efc086792f01ff095cb99db3724f7778c154199dcad9b3a
     strategy:
       type: RollingUpdate
@@ -1165,6 +1159,7 @@ services:
       CONSUMER_THREADS: "16"
   entitlement-ticketing:
     db: entitlement_ticketing
+    pgInstance: txn
     # Two replicas: ticket issuance follows the reservation, and its consumer
     # group is read from a Redis stream.
     replicas: 2
@@ -1214,6 +1209,7 @@ services:
           command: ["sleep", "10"]
   post-sales:
     db: post_sales
+    pgInstance: txn
     image: mirrors.tencent.com/microservice/post-sales:autoclaim-6b90ce5d@sha256:f28373bc0ef32facaa170ec0e74245bd824eba6132e70ac7f978b49162fa8c72
     # Two replicas: the change and refund cases that the load generator polls
     # are executed here, and a burst left its journey order consumer ten thousand
@@ -1253,6 +1249,7 @@ services:
       limits: { cpu: '6', memory: 4Gi }
   notification:
     db: notification
+    pgInstance: event
     image: mirrors.tencent.com/microservice/notification:policy-79b36a5a@sha256:e000db889c8c05a4f7b0cdec8cdc538d1fdf4f7267b2a6e36a9e33b191748e62
     replicas: 2
     autoscaling:
@@ -1330,6 +1327,7 @@ services:
       limits: { cpu: '6', memory: 3Gi }
   risk-compliance:
     db: risk_compliance
+    pgInstance: event
     image: mirrors.tencent.com/microservice/risk-compliance:readiness-d1472815@sha256:195b0a3d2f685f6b3dbc464cdb846922e62b907e67e1c1d521d90dfbfb60ef0b
     strategy:
       type: RollingUpdate
@@ -1409,6 +1407,7 @@ services:
       limits: { cpu: '4', memory: 3Gi }
   finance-settlement:
     db: finance_settlement
+    pgInstance: txn
     image: mirrors.tencent.com/microservice/finance-settlement:autoclaim-6b90ce5d@sha256:4120578bb9596d0462f123122de1d6b8be2e13c429f449612d1714edab32620f
     strategy:
       type: RollingUpdate
@@ -1535,6 +1534,7 @@ services:
           command: ["sleep", "10"]
   payment-channel:
     db: payment_channel
+    pgInstance: txn
     image: mirrors.tencent.com/microservice/payment-channel:final-e98069db@sha256:9b7911f38d5df4b7a2d3a947fe16d418fb82fe698126f5f4e9376b78a26680ce
     strategy:
       type: RollingUpdate
@@ -1553,6 +1553,7 @@ services:
       limits: { cpu: '2', memory: 3Gi }
   invoicing:
     db: invoicing
+    pgInstance: event
     image: mirrors.tencent.com/microservice/invoicing:final-e98069db@sha256:d47868e90e5fd81b5e32610ec1ff38268672962d64ff83dd67a274104382701a
     strategy:
       type: RollingUpdate
