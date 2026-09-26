@@ -1,0 +1,13 @@
+{
+  "note": "The intake desks this release staffs, in the queue names the console publishes for them. The desks work this console's queues, so a consumer that has to know which desks a release runs reads this statement rather than asking this service.",
+  "desks": [
+    "mobile-desk",
+    "web-desk",
+    "phone-desk",
+    "chat-desk",
+    "mail-desk",
+    "message-desk",
+    "bot-desk",
+    "console-desk"
+  ]
+}
