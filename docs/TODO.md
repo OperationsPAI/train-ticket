@@ -1,6 +1,6 @@
 # TODO
 
-Updated: 2026-09-26, Asia/Beijing.
+Updated: 2026-09-27, Asia/Beijing.
 
 This is the single active backlog for the resident release. It records what is
 still open, not what has been done: implemented and deployed behaviour lives in
@@ -27,13 +27,40 @@ Status: open until a full cycle on the current revision is recorded.
    timing rather than to a service name.
 
 The standing policy and the reservation supply facts are deployed. The most
-recent clean window was an eighteen minute run at revision 321 with zero failed
-journeys and zero unexpected HTTP errors.
+recent near-clean window is revision 447 at the raised burst: 439115 requests
+and 48526 journeys in 600 seconds, **zero request error groups and 20 failed
+journeys**, every one a refund or disruption case that finished about a second
+after the client's tenth poll. The last window with zero of both was an
+eighteen minute run at revision 321.
 
-The reservation path holds below the burst: a window inside an earlier run
-carried zero failed journeys out of 10670, and the one after it 36 of 8924,
-where the revision before that failed 12211 of 50345. What still fails is
-recorded in [current status](00-current-status.md#the-resident-cycle-is-not-yet-clean):
+The open item that window leaves is one hop:
+
+1. [ ] The refund's first hop must confirm inside the poll. A case created at
+   `21:44:14.13` and approved at `21:44:14.21` had its entitlements voided at
+   `21:44:22.10` and reached `APPLIED` at `21:44:24.46`, after the client's last
+   poll at `21:44:23.26`. Twelve loops across three replicas is deployed as the
+   fix; it needs a window that proves it. Across the window the creation to
+   `APPLIED` time is 0.5 seconds at the median off the peak, 3.8 at the peak's
+   median and 8.4 at its ninety-fifth percentile, against a ten second budget.
+
+Which burst a window catches decides whether it passes. The window at `22:13` on
+2026-09-27 caught the eight-times burst -- 12091 journeys in the peak minute
+against the four-times burst's 7591 -- and fails with 2061 reservation polls and
+about 3000 post-sales and refund polls across two minutes. The fixes it asks for
+are the same hops at a larger rate: a third `booking-orchestration` replica (its
+group on `events:capacity-availability` was 10.8 seconds behind while capacity's
+own admission stayed at 0.2 to 0.3 seconds) and a second `payment` replica (its
+group on `events:booking-orchestration` grew from 4.5 to 107 seconds behind with
+the pod at a fifth of a core). Both are deployed and need a window that proves
+them at the eight-times amplitude.
+
+The list below is the earlier pass's, kept because each item is still the
+reason its area fails when it does; some of it was overtaken by the reset and
+the shard cutovers. Before it, the reservation path already held below the
+burst: a window inside an earlier run carried zero failed journeys out of 10670,
+and the one after it 36 of 8924, where the revision before that failed 12211 of
+50345. What still fails at the raised burst is recorded in
+[current status](00-current-status.md#the-resident-cycle-is-not-yet-clean):
 
 1. [ ] Trip Planning's search must hold at the peak. Its query reads the plan
    corpus, and the load generator's own bootstrap adds to that corpus on every
