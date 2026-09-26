@@ -811,6 +811,23 @@ snapshot" (606) and post-sales timeouts (523).
    when it starts executing -- the same read-the-owner's-state pattern the change
    path already uses -- which is worth about the 1.7 seconds between the
    cancellation and the apply.
+
+   The saga is now traced end to end, and it is four event hops deep:
+   the client's approval makes post-sales publish `PostSalesApproved`;
+   entitlement-ticketing consumes it and voids the entitlement
+   (`apply_subscribed_event` handles `PostSalesApproved`); booking-orchestration
+   consumes `EntitlementVoided` and cancels the segment booking with
+   `cancellationReason: REFUND`; capacity consumes `SegmentBookingCancelled` and
+   releases the hold; post-sales consumes `CapacityReleased` and applies the
+   case. At the burst each hop costs one to two seconds, which is the 9.4 to 12.1
+   seconds measured, and the client polls for ten.
+
+   The change path already avoids part of this: `ChangeExecutionService` calls
+   entitlement-ticketing's void endpoint and booking-orchestration's cancel
+   endpoint synchronously rather than waiting for the events to come back.
+   Next: decide whether the refund path should do the same, or whether
+   post-sales should apply on the booking's cancelled state plus a read of the
+   capacity hold instead of on the release event.
 3. [ ] Reporting still deadlocks on the event instance: `reporting_business_scopes`
    and `reporting_order_attachments` upserts take the same rows in different
    orders under burst, four times in four minutes after the notification fix.
