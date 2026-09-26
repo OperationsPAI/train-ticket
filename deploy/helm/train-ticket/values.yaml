@@ -1373,6 +1373,18 @@ services:
     db: risk_compliance
     pgInstance: event
     image: mirrors.tencent.com/microservice/risk-compliance:readiness-d1472815@sha256:195b0a3d2f685f6b3dbc464cdb846922e62b907e67e1c1d521d90dfbfb60ef0b
+    # Two instances, and twelve stream workers each. Measured at the cycle's
+    # larger bursts (2256 and 2822 orders a minute, against the 1000 to 1200 that
+    # the split was measured on): the order-created-to-risk-cleared latency went
+    # from 0.1 seconds to 3.6 seconds at the mean and 13.5 at the ninety-fifth
+    # percentile, which is past the ten second poll a purchase waits on, while
+    # this service used 2.9 of its eight cores, held no pool connections waiting
+    # and its consumer lag stayed at zero. The work per event is a handful of
+    # round trips, so the handler queue -- four workers per stream, one instance
+    # -- is what the burst queues in.
+    replicas: 2
+    env:
+      RISK_STREAM_WORKERS: "12"
     strategy:
       type: RollingUpdate
       rollingUpdate:
