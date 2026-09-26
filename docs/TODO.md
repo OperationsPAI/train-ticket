@@ -696,11 +696,10 @@ create without one returns `null`, a document without an issuing country is a
 400, and the revision 425 window is 0.19 percent failed journeys against 0.20
 percent at revision 421. Two items from the same audit are still open.
 
-1. [ ] `deploy/stress` still pins `departure_date: "2026-09-01"` in every
-   scenario and as the driver's default. The stress harness is not production
-   code, so it is out of scope for the rule that produced this audit, but the
-   date is already in the past and the scenarios will search a departed service
-   day. Make the default relative to the run clock and drop the pinned date.
+1. [x] `deploy/stress` pinned `departure_date: "2026-09-01"` in every scenario
+   and as the driver's default, which was already a departed service day. The
+   scenarios no longer set it and the driver defaults to a week past the run
+   clock.
 2. [ ] The load generator's invoice branch sends `titleName: "个人"` as a fixed
    personal-invoice title. It is test tooling, and the value is the business's
    own label rather than a location or a date, so it stays; this is recorded so a
@@ -708,23 +707,33 @@ percent at revision 421. Two items from the same audit are still open.
 
 ## The burst is the acceptance's remaining shape, measured 2026-09-26
 
-The revision 426 window carries 1407 failed journeys, and 1033 of them are one
-minute: 12:09:35Z to 12:10:35Z, which carried 12694 journeys against 7579 in the
-next busiest minute. In that minute risk-status, case-status and refund-status
-fail, post-sales answers in 9.3 seconds at the ninety-ninth percentile with the
-client's ten second timeout expiring 73 times, and fare-pricing's median is 1.7
-seconds. Every one of those is the consumer-lag and pool-saturation shape the
-earlier revisions removed at the mean; none of them is a new defect, and all of
-them return together when the load generator's burst arrives.
+The split removed the instance-wide half of this: risk assessment went from a
+15 second ninety-fifth percentile at every burst to 0.27 seconds, no consumer
+group stays above 50 entries of lag, and the first window after the reset is
+clean (0 failed journeys of 47671). What the burst still does is exceed the
+request-serving replicas: the next window carried 18828 journeys in one minute
+and failed 4194, dominated by fare-pricing quotes at the client's 10 second
+timeout (1458), journey-order 503 "Unable to resolve authoritative order
+snapshot" (606) and post-sales timeouts (523).
 
-1. [ ] Decide and implement the burst response. No service in the chart has an
-   HPA, and the values file carries fixed replicas. The candidates are an HPA on
-   the request-serving pools (post-sales, fare-pricing, journey-order) and on the
-   consumers that fall behind under burst (risk-compliance, offer-management,
-   post-sales), or a burst profile the fixed set can hold -- measure which
-   against the same window before choosing.
+1. [ ] Size the request-serving replicas for the burst. No service in the chart
+   has an HPA and the values file carries fixed replicas; fare-pricing runs one,
+   post-sales two, journey-order two. Revision 430 raised the three pools the
+   burst exhausted, and the burst window now carries no timeout and no 503 (see
+   [current status](00-current-status.md#every-service-is-on-its-shard)), so what
+   is left here is deciding whether the fixed replica counts also need to move:
+   fare-pricing held six of its eight cores during the burst and post-sales
+   holds two pods, so an HPA on the request-serving pools is the candidate, or a
+   fixed count the burst cannot exhaust. Measure it against a window chosen for
+   the burst minute -- the cycle's peak is not in every ten minute window.
 2. [ ] The refund tail is separate from the burst and is already tracked above:
    363 `refund-status` and 197 `case-status` failures in the revision 426 window
    are spread across it, with the same shape in the revision 425 window (53 and
    17). Measuring the refund path's latency before attributing them is the item
    at the top of this file's post-sales section.
+3. [ ] Reporting still deadlocks on the event instance: `reporting_business_scopes`
+   and `reporting_order_attachments` upserts take the same rows in different
+   orders under burst, four times in four minutes after the notification fix.
+   Reporting is not in the load generator's request path, so this is lag and
+   retries rather than a user-visible failure, but it is the same class of defect
+   the notification trigger had.

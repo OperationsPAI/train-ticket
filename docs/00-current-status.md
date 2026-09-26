@@ -5,7 +5,7 @@ Last verified: 2026-09-26, Asia/Beijing.
 ## Runtime
 
 The resident Helm release is `train-ticket` in namespace `train-ticket`,
-revision **426**.
+revision **430**.
 Its values come from one file, `deploy/helm/train-ticket/values.yaml`: the
 registry, the `local-path` storage class, the central telemetry store, the
 resident exporters, the load generator settings and the `loadgen-resident-state`
@@ -221,6 +221,10 @@ revision's evidence is the cycle recorded above.
 
 | Check | Result | Evidence |
 |---|---|---|
+| Ten minute window at revision 430, the cycle's burst | 164039 requests, 18571 journeys, P99 106 milliseconds, 0 unexpected error groups, 24 failed journeys (all the disruption recovery tail) | `.scratch/runtime-fixes/goal-rev430-ten-minute.json` |
+| Ten minute window at revision 430 | 66662 journeys, P99 137 milliseconds across every service, 0 unexpected error groups, 253 failed journeys (refund, change and disruption poll tails; no timeout, no 503) | `.scratch/runtime-fixes/goal-rev430b-ten-minute.json` |
+| Ten minute window at revision 427, first cycle after the shard split | 424214 requests, 47671 journeys, P99 118 milliseconds, 0 unexpected error groups, 0 failed journeys | `.scratch/runtime-fixes/goal-rev427b-ten-minute.json` |
+| Ten minute window at revision 427, the cycle's burst | 70691 journeys, P99 10000 milliseconds, 4194 failed: fare-pricing quotes at the client's 10 second timeout, journey-order 503s, post-sales timeouts | `.scratch/runtime-fixes/goal-rev427c-ten-minute.json` |
 | Ten minute window at revision 425 | 429649 requests, 84282 journeys, P99 128 milliseconds, 1 unexpected error group (`invoice-amount-basis` 404 x22), 159 failed journeys | `.scratch/runtime-fixes/goal-rev425-hardcode-ten-minute.json` |
 | Ten minute window at revision 426 | 466963 requests, 51607 journeys, P99 2996 milliseconds, 7 unexpected error groups, 1407 failed journeys -- one burst minute carried 12694 journeys and 1033 of the failures | `.scratch/runtime-fixes/goal-rev426-ten-minute.json` |
 | Eighteen minute window at revision 321 | 557863 requests, 64845 journeys, P99 257 milliseconds, 0 failed journeys and 0 unexpected HTTP errors | `.scratch/runtime-fixes/goal-rev321-eighteen-minute.json` |
@@ -323,3 +327,81 @@ ninety-ninth percentile with the client's 10 second timeout expiring 73 times,
 and fare-pricing's median is 1.7 seconds. That is the consumer-lag shape the
 offer and post-sales fixes removed at the mean, returning under a three to eight
 times burst. It is recorded in [TODO](TODO.md); no service in the chart has an HPA.
+
+## Every service is on its shard
+
+The chart had split PostgreSQL by workload shape and left thirteen services
+naming a database on a target shard while still connecting to `postgres`, the
+fallback alias for core. Revision 427 gives each of them its shard --
+payment, entitlement-ticketing, post-sales, payment-channel and
+finance-settlement to txn; fare-pricing, offer-management,
+capacity-availability, service-plan and place-network to read; invoicing,
+notification and risk-compliance to event -- and trims core's database list to
+the sixteen services that have no other home. The target databases existed and
+were empty, so each service's own migrations created its schema on first start.
+
+Measured before and after, on the same load:
+
+| Check | Before (core) | After (six instances) |
+|---|---|---|
+| Sessions on the fallback instance | 687 to 750 | 101 on core; 57 to 166 on the others |
+| Sessions waiting on a lock | 84 to 98 | 0 |
+| Autovacuum holding the instance | 7 minutes on notification's 8.3 GB task table | no long autovacuum observed |
+| Risk assessment, order created to cleared | p95 3 to 15 seconds, max 19.8, at every burst | p95 0.07 to 0.27 seconds, max 1.2 |
+| Consumer groups with lag above 50 | up to 20 000 entries on six groups | 0 |
+| Dead letters | 30 001 on `events:journey-order`, 30 000 on `events:post-sales` | 0 on all five streams |
+
+The split moved data as well as connections: a service on its new shard starts
+from an empty database while the services that did not move kept rows that
+referenced what it used to hold. Measured in the first window after the move,
+4859 offers failed on "Fare Pricing quote has not been consumed" and 3267
+post-sales reads answered `CaseNotFoundException`, because the quotes and cases
+had been left behind on core. The resident state was therefore reset -- every
+database truncated, Redis flushed, and the load generator's own checkpoint
+removed, because it had persisted the old accounts, travelers and routes --
+and the load generator bootstrapped again.
+
+The first ten minute window after that reset is the first clean one recorded:
+424214 requests, 47671 journeys, P99 117 milliseconds, **0 unexpected HTTP
+errors and 0 failed journeys**
+(`.scratch/runtime-fixes/goal-rev427b-ten-minute.json`). The window after it
+carried the cycle's sharp burst -- 18828 journeys in one minute against 5000 to
+7500 in the others -- and failed 4194 of 70691: fare-pricing quotes hit the
+client's 10 second timeout 1458 times, journey-order answered 503 "Unable to
+resolve authoritative order snapshot" 606 times, and post-sales timed out 523
+times. That is a capacity limit on the request-serving replicas under the burst,
+not the instance-wide contention the split removed; it is recorded in
+[TODO](TODO.md).
+
+That capacity limit turned out to be the pools rather than the replicas: at the
+burst, post-sales had 281 requests waiting for a Hikari connection while each pod
+used one core, fare-pricing had 25 waiting while the process held six of its
+eight cores and answered quotes in 6.4 seconds at the median, and
+identity-verification, whose eligibility lookup fare-pricing calls, had 12
+waiting. Revision 430 raises post-sales' Hikari pool to 64, fare-pricing's
+per-worker pool to 24 and identity-verification's to 12, which the three
+instances hold (txn names 178 of 400 connections, read about 604 of 700, user
+about 154 of 300). The burst window after it carries no timeout and no 503:
+fare-pricing's ninety-ninth percentile is 107 milliseconds where it had been the
+client's 10 second deadline, post-sales is 119 milliseconds where it had been the
+same deadline, and the window's 24 failed journeys are all the disruption
+recovery poll tail.
+
+## Notification's delivery queue
+
+Two defects in notification's durable delivery path surfaced once it ran on its
+own shard, both fixed and deployed at revision 429.
+
+The claim worker requested a batch of rows, and the queue trigger updates one
+`(state, channel, bucket)` counter row per queue row inside that transaction;
+two batches that shared two buckets in a different order deadlocked. The worker
+now claims one row per transaction and keeps its concurrency by claiming again
+as soon as a slot frees.
+
+That was necessary but not sufficient: a claim (`Ready` to `Claimed`) and the
+lease recovery (`Claimed` to `Ready`) touch the same two counter rows, and the
+trigger took them in the order of the transition, so the two paths deadlocked
+each other. Migration 013 takes them in the order of `(state, channel)`, which
+removes the cycle and leaves the counts unchanged. Measured on event's log: 66
+deadlocks and 380 `WORKER_CYCLE_FAILED` in two minutes before; zero notification
+errors in the four minutes after the migration was applied.
