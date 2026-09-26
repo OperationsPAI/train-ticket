@@ -8,6 +8,10 @@ Policy issuance verifies purchase references in the configured persistent runtim
 Claims can be filed, approved or rejected; `TrainDelayed` processing creates automatic delay claims when the delay exceeds 60 minutes and the segment and coverage match.
 Approval records a durable `REQUESTED` payout advice and executes it through Wallet / Promotion's owning benefit API. The claim and policy move to `PAID_OUT`, and `InsurancePayoutCompleted` is emitted, only after the issued Wallet benefit has been read back and verified against the approved account, currency, amount and claim reference.
 Policy cancellation checks the recorded premium refund before publishing cancellation.
+`PostSalesApplied` announces all five case types through one event; only `REFUND`
+and `CANCELLATION` end the coverage, so only those reach the cancellation path. A
+`COMPENSATION` issues a wallet credit and keeps the ticket, and a `CHANGE` or
+`REBOOK` moves the journey and is announced through `JourneyOrderPostSalesAdjusted`.
 
 ## Interfaces and sources
 
