@@ -132,14 +132,24 @@ recorded in [current status](00-current-status.md#the-resident-cycle-is-not-yet-
            if (!"CANCELLED".equals(booking.status())) return change;
            if (!"RELEASED".equals(hold.status()))     return change;   // here
 
-   Its original booking `sb-01a0dbe8-1a3f-7220-863e-8ef1b2c4cf60` is CANCELLED,
-   and its hold `hold-01a0dbe8-1a9a-7831-97db-eb234bb583ef` is still Confirmed.
-   Capacity releases by segment booking reference when it consumes
-   `SegmentBookingCancelled`, and that stream's dead letter holds those events:
-   sampled 3000 entries, 99 of them were `SegmentBookingCancelled`, and the
-   newest dead letter of all is a release that exhausted its five attempts
-   during the period the OTLP gateway was refusing data. A release that reaches
-   the dead letter is a permanently held seat.
+   Its original booking `sb-01a0dbe8-1a3f-7220-863e-8ef1b2c4cf60` is CANCELLED
+   with `cancellationReason: CHANGE`, and its hold
+   `hold-01a0dbe8-1a9a-7831-97db-eb234bb583ef` is still Confirmed. That reason is
+   the one `ChangeExecutionService` sends when it voids the old entitlement, so
+   the path is `handleEntitlementVoided` in booking-orchestration -- which cancels
+   the booking and publishes `SegmentBookingCancelled` -- and capacity releases by
+   segment booking reference when it consumes that event.
+
+   Capacity has no record of it: there is no `pending_booking_releases` row for
+   the booking (and none of the 292 pending rows belongs to a booking whose hold
+   exists, so that mechanism is working), the dead letter holds no entry for it
+   either, and the hold is neither Released nor Expired. So the release was
+   published and is not in the two places capacity parks one -- which is the
+   question to answer next, and it is answerable from capacity's own handler: it
+   is the only path from a consumed `SegmentBookingCancelled` to a Released hold.
+   Note also that the dead letter does contain 99 `SegmentBookingCancelled`
+   entries from the same period, so more than one way to lose a release is in
+   play.
 
    The wait has no deadline. The same class carries `RESERVATION_WAIT_LIMIT` and
    fails a case whose replacement reservation does not confirm in fifteen
