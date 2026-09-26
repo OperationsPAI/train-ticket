@@ -14,6 +14,12 @@ var (
 	ErrConflict          = errors.New("conflict")
 	ErrValidation        = errors.New("validation failed")
 	ErrDomainRule        = errors.New("domain rule violation")
+	// ErrNotChangeAdjustment says a journey adjustment belongs to a case type this
+	// service does not adjust: a refund or a cancellation ends the coverage the order
+	// carried, and that is told to this service by PostSalesApplied, RefundApproved and
+	// AncillaryOrderItemRefunded. It is not a failure, which is the whole point of
+	// naming it -- see ResolveJourneyCoverage.
+	ErrNotChangeAdjustment = errors.New("not a change adjustment")
 	ErrPublish           = errors.New("publish failed")
 	ErrPayoutUnavailable = errors.New("payout unavailable")
 )
