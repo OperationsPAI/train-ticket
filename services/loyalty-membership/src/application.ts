@@ -11,6 +11,7 @@ import {
   type SeatClass,
 } from "./domain.js";
 import { toEventEnvelope, type EventPublisher } from "./ports.js";
+import { membershipProgramme } from "./programme.js";
 import type { CapturedPaymentFacts } from "./payment-facts.js";
 
 export { InMemoryEventPublisher };
@@ -138,6 +139,7 @@ export class LoyaltyMembershipApplicationService {
   }
 
   async enrollMember(accountId: string): Promise<{ member: MemberDetailsDto; created: boolean }> {
+    assertAccountReferenceAccepted(accountId);
     const existing = await this.repository.findByAccountId(accountId);
     if (existing) {
       return { member: memberDetails(existing.toSnapshot()), created: false };
@@ -338,6 +340,25 @@ export class ApplicationError extends Error {
     super(message);
     this.name = "ApplicationError";
   }
+}
+
+/**
+ * An enrolment keys a membership by the account reference the caller sends, and
+ * the ledger keeps that reference as it arrives. Which namespaces a reference
+ * may arrive in is the programme's statement, not this service's, so a
+ * reference from a namespace the programme does not state is refused where it is
+ * read, rather than being stored under a key the identity service would not
+ * resolve an account from.
+ */
+function assertAccountReferenceAccepted(accountId: string): void {
+  const accepted = membershipProgramme().acceptedNamespaces;
+  if (accepted.length === 0) {
+    return;
+  }
+  if (accepted.some((namespace) => accountId.startsWith(`${namespace}-`) || accountId.startsWith(`${namespace}_`))) {
+    return;
+  }
+  throw new ApplicationError("VALIDATION_FAILED", "The account reference is not one the membership programme keys by", 400);
 }
 
 export function mapError(error: unknown): ApplicationError {

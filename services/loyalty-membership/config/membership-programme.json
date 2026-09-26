@@ -1,0 +1,18 @@
+{
+  "programme": "train-ticket-loyalty",
+  "revision": "2026.09",
+  "source": "member-relations programme export",
+  "openingPole": "SILVER",
+  "exportedNames": {
+    "BASIC": "SILVER"
+  },
+  "accountReference": {
+    "acceptedNamespaces": []
+  },
+  "poles": [
+    { "name": "SILVER", "qualifyingPoints": 0, "trips": 0, "benefits": ["base earning"] },
+    { "name": "GOLD", "qualifyingPoints": 3000, "trips": 12, "benefits": ["1.2x points"] },
+    { "name": "PLATINUM", "qualifyingPoints": 10000, "trips": 30, "benefits": ["1.5x points"] },
+    { "name": "DIAMOND", "qualifyingPoints": 25000, "trips": 60, "benefits": ["2x points", "36 month points expiry"] }
+  ]
+}
