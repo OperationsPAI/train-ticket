@@ -94,6 +94,24 @@ func (r *Repository) ListSuppliers(ctx context.Context, status string, limit, of
 func (r *Repository) FindSupplierByProfile(ctx context.Context, profile string) (domain.Supplier, error) {
 	return findByData(ctx, r.db.DBFor(ctx), "supplier_snapshots", "profile", profile, domain.Supplier{})
 }
+
+// ClaimPartnerIdentity holds the identity a filing carries for the partner that
+// files it, and reports false when a partner already holds it. The identity is
+// compared the way the master data compares it, without case, so the same
+// partner named in two cases is one identity rather than two.
+func (r *Repository) ClaimPartnerIdentity(ctx context.Context, identity, supplierID string) (bool, error) {
+	normalized := strings.ToLower(strings.TrimSpace(identity))
+	if normalized == "" {
+		return true, nil
+	}
+	tag, err := r.db.DBFor(ctx).Exec(ctx,
+		"INSERT INTO partner_identity_claims (identity, supplier_id) VALUES ($1, $2) ON CONFLICT (identity) DO NOTHING",
+		normalized, strings.TrimSpace(supplierID))
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
 func (r *Repository) FindCarrierByCode(ctx context.Context, code string) (domain.Carrier, error) {
 	return findByData(ctx, r.db.DBFor(ctx), "carrier_snapshots", "code", code, domain.Carrier{})
 }

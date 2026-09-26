@@ -34,6 +34,9 @@ type Repository interface {
 	FindSupplierByProfile(context.Context, string) (domain.Supplier, error)
 	FindCarrierByCode(context.Context, string) (domain.Carrier, error)
 	FindContractByRef(context.Context, string) (domain.Contract, error)
+	// ClaimPartnerIdentity holds the identity a filing carries for the partner
+	// that files it, and reports false when the catalogue already holds it.
+	ClaimPartnerIdentity(context.Context, string, string) (bool, error)
 }
 
 type UnitOfWork func(context.Context, func(context.Context) error) error
@@ -173,6 +176,16 @@ func (s *Service) RegisterSupplier(ctx context.Context, cmd RegisterSupplierComm
 	envelopes := wrapDomainEvents(ctx, events, cmd.CorrelationID, cmd.CausationID)
 	if err := s.persistAndPublish(ctx, func(txCtx context.Context) error {
 		if s.repository != nil {
+			// The identity a filing carries is held for the partner it files, so
+			// a filing that carries one the catalogue already holds is refused
+			// rather than filed beside the partner that holds it.
+			claimed, err := s.repository.ClaimPartnerIdentity(txCtx, supplier.Profile, string(supplier.SupplierID))
+			if err != nil {
+				return err
+			}
+			if !claimed {
+				return fmt.Errorf("%w: a partner already holds this identity", ErrConflict)
+			}
 			return s.repository.SaveSupplier(txCtx, supplier)
 		}
 		return nil

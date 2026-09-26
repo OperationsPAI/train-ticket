@@ -49,6 +49,10 @@ func (r failingRepository) FindContractByRef(context.Context, string) (domain.Co
 	return domain.Contract{}, r.err
 }
 
+func (r failingRepository) ClaimPartnerIdentity(context.Context, string, string) (bool, error) {
+	return false, r.err
+}
+
 func TestWrapDomainEventProducesContractEnvelope(t *testing.T) {
 	envelope, err := WrapDomainEvent(context.Background(), domain.SupplierRegisteredEvent{SupplierID: "sup-1", LegalName: "Legal", BrandName: "Brand", Status: domain.SupplierStatusDraft}, "0194f2e0-7b3e-7610-0284-5c26e8b0c444", "0194f2e0-7b3e-7610-0284-5c26e8b0c555")
 	if err != nil {
