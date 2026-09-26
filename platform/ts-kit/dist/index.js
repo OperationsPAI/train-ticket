@@ -8,3 +8,4 @@ export * from "./observability.js";
 export * from "./outbound.js";
 export * from "./replay.js";
 export * from "./trace-logging.js";
+export * from "./references.js";

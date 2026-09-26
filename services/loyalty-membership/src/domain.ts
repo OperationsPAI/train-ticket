@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 
+import { exportedPoleName, membershipProgramme, openingPole, programmeRedemptionRule } from "./programme.js";
+
 export type MemberId = string;
 export type AccountId = string;
 export type PointsLedgerEntryId = string;
@@ -206,13 +208,18 @@ export type PointsCalculationInput = Readonly<{ fare: Money; seatClass: SeatClas
 export type TierPolicy = Readonly<{ tierName: TierName; minQualifyingPoints: number; minTrips: number; benefits: readonly string[] }>;
 export type RedemptionPolicySnapshot = Readonly<{ pointsToCurrencyRate: number; minRedemption: number; maxFarePercentage: number }>;
 
-const TIER_ORDER: readonly TierName[] = ["SILVER", "GOLD", "PLATINUM", "DIAMOND"];
-const TIER_POLICIES: readonly TierPolicy[] = [
-  { tierName: "SILVER", minQualifyingPoints: 0, minTrips: 0, benefits: ["base earning"] },
-  { tierName: "GOLD", minQualifyingPoints: 3_000, minTrips: 12, benefits: ["1.2x points"] },
-  { tierName: "PLATINUM", minQualifyingPoints: 10_000, minTrips: 30, benefits: ["1.5x points"] },
-  { tierName: "DIAMOND", minQualifyingPoints: 25_000, minTrips: 60, benefits: ["2x points", "36 month points expiry"] },
-];
+/**
+ * The ladder the programme states, in the order it states it. A pole's position
+ * is its rank, and the first pole is the one an evaluation that qualifies for
+ * nothing falls back to.
+ */
+const TIER_ORDER: readonly TierName[] = membershipProgramme().poles.map((pole) => pole.name as TierName);
+const TIER_POLICIES: readonly TierPolicy[] = membershipProgramme().poles.map((pole) => freeze({
+  tierName: pole.name as TierName,
+  minQualifyingPoints: pole.qualifyingPoints,
+  minTrips: pole.trips,
+  benefits: [...pole.benefits],
+}));
 
 export class Tier {
   private constructor(public readonly name: TierName) {}
@@ -232,7 +239,7 @@ export class TierEvaluator {
     for (const policy of [...TIER_POLICIES].reverse()) {
       if (yearlyQualifyingPoints >= policy.minQualifyingPoints || yearlyTrips >= policy.minTrips) return policy.tierName;
     }
-    return "SILVER";
+    return TIER_ORDER[0];
   }
   static policies(): readonly TierPolicy[] { return TIER_POLICIES.map((policy) => freeze({ ...policy, benefits: [...policy.benefits] })); }
 }
@@ -245,7 +252,7 @@ export class PointsCalculator {
 }
 
 export class RedemptionPolicy {
-  static readonly standard = new RedemptionPolicy({ pointsToCurrencyRate: 100, minRedemption: 500, maxFarePercentage: 0.5 });
+  static readonly standard = new RedemptionPolicy(programmeRedemptionRule());
   constructor(private readonly snapshot: RedemptionPolicySnapshot) {}
   maxRedeemablePoints(fareAmountMinor: number, availableBalance = Number.MAX_SAFE_INTEGER): number {
     assertWholeNonNegative(fareAmountMinor, "fareAmountMinor");
@@ -329,7 +336,7 @@ export class Member {
   private constructor(private readonly snapshot: MemberSnapshot) {}
   static enroll(input: { accountId: AccountId; memberId?: MemberId; now?: Date }): Member {
     const now = input.now ?? new Date();
-    return new Member(freeze({ memberId: input.memberId ?? newMemberId(), accountId: required(input.accountId, "accountId"), status: "ACTIVE", tier: "SILVER", redeemablePoints: 0, lifetimePoints: 0, tierPoints: 0, createdAt: now, updatedAt: now, ledger: [], lots: [], membershipYears: [newMembershipYear(now.getUTCFullYear(), "SILVER")] }));
+    return new Member(freeze({ memberId: input.memberId ?? newMemberId(), accountId: required(input.accountId, "accountId"), status: "ACTIVE", tier: openingPole() as TierName, redeemablePoints: 0, lifetimePoints: 0, tierPoints: 0, createdAt: now, updatedAt: now, ledger: [], lots: [], membershipYears: [newMembershipYear(now.getUTCFullYear(), openingPole() as TierName)] }));
   }
   static fromSnapshot(snapshot: MemberSnapshot): Member {
     const tier = normalizeTier(snapshot.tier as string);
@@ -516,7 +523,7 @@ function consumeLots(lots: readonly PointsLotSnapshot[], points: number): Points
 function upsertMembershipYear(years: readonly MembershipYearSnapshot[], year: number, update: (year: MembershipYearSnapshot) => MembershipYearSnapshot): readonly MembershipYearSnapshot[] { const existing = years.find((membershipYear) => membershipYear.year === year); const next = update(existing ?? newMembershipYear(year, "SILVER")); return freeze([...years.filter((membershipYear) => membershipYear.year !== year), next].sort((left, right) => left.year - right.year)); }
 function normalizeMembershipYears(years: readonly MembershipYearSnapshot[] | undefined, tier: TierName, createdAt: Date): readonly MembershipYearSnapshot[] { if (years && years.length > 0) return freeze(years.map((year) => freeze({ ...year, currentTier: normalizeTier(year.currentTier as string), evaluationDate: year.evaluationDate ? new Date(year.evaluationDate) : undefined }))); return freeze([newMembershipYear(createdAt.getUTCFullYear(), tier)]); }
 function newMembershipYear(year: number, tier: TierName): MembershipYearSnapshot { return freeze({ year, qualifyingPoints: 0, tripCount: 0, currentTier: tier }); }
-function normalizeTier(tier: string): TierName { if (tier === "BASIC") return "SILVER"; return Tier.of(tier as TierName).name; }
+function normalizeTier(tier: string): TierName { const exported = exportedPoleName(tier); return Tier.of((exported ?? tier) as TierName).name; }
 function assertPositiveInteger(value: number, field: string): void { if (!Number.isInteger(value) || value <= 0) throw new DomainError("INVALID_POINTS", `${field} must be a positive integer`); }
 function assertWholeNonNegative(value: number, field: string): void { if (!Number.isInteger(value) || value < 0) throw new DomainError("INVALID_AMOUNT", `${field} must be a non-negative integer`); }
 function required(value: string, field: string): string { if (value.trim().length === 0) throw new DomainError("MISSING_REQUIRED_FIELD", `${field} is required`); return value; }

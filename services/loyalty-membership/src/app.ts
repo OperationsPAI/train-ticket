@@ -9,12 +9,14 @@ import {
   type MemberRepository,
 } from "./application.js";
 import { type EventPublisher } from "./ports.js";
+import { acceptedAccountNamespaces } from "./programme.js";
 import {
   InMemoryIdempotencyStore,
   errorMessage,
   handleIdempotency,
   headerValue,
   livenessProbe,
+  referenceArrivesIn,
   requestContext as kitRequestContext,
   requestFingerprint,
   sendError,
@@ -170,6 +172,7 @@ export function createApp(options: AppOptions | InstrumentationHooks = {}): Fast
     try {
       const body = objectBody(request.body);
       const accountId = requiredString(body.accountId, "accountId");
+      assertEnrolmentReference(accountId);
       const result = await runWithService((application) => application.enrollMember(accountId));
       reply.status(result.created ? 201 : 200);
       return result.member;
@@ -425,6 +428,21 @@ function memberIdParam(request: FastifyRequest): string {
     throw new ApplicationError("VALIDATION_FAILED", "Member id is required", 400, { field: "id" });
   }
   return params.id;
+}
+
+/**
+ * An enrolment keys a membership by the account reference the caller sends, and
+ * the ledger keeps that reference as it arrives. Which namespaces a reference may
+ * arrive in is the programme's statement, not this service's, so a reference from
+ * a namespace the programme does not state is refused where it is read, rather
+ * than being stored under a key the identity service would not resolve an account
+ * from.
+ */
+function assertEnrolmentReference(accountId: string): void {
+  const accepted = acceptedAccountNamespaces();
+  if (accepted.length > 0 && !referenceArrivesIn(accountId, accepted)) {
+    throw new ApplicationError("VALIDATION_FAILED", "The account reference is not one the membership programme keys by", 400);
+  }
 }
 
 function objectBody(body: unknown): Record<string, unknown> {

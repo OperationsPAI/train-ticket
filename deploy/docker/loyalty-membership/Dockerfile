@@ -17,6 +17,7 @@ COPY --from=builder --chown=app:app /src/services/loyalty-membership/package.jso
 COPY --from=builder --chown=app:app /src/services/loyalty-membership/node_modules ./node_modules
 COPY --from=builder --chown=app:app /src/services/loyalty-membership/dist ./dist
 COPY --from=builder --chown=app:app /src/services/loyalty-membership/migrations ./migrations
+COPY --chown=app:app services/loyalty-membership/config ./config
 USER app
 ENV PORT=8080 REDIS_URL=redis://localhost:6379
 EXPOSE 8080
