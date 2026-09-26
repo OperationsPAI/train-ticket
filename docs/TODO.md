@@ -762,6 +762,31 @@ snapshot" (606) and post-sales timeouts (523).
    `RefundSettled` write to find the 7.9 second tail, then decide whether the
    case may apply before its refund step. Both need a window that contains
    refund cases to measure against.
+
+   Measured again at revision 433, with payment's handler phases timed
+   (`PaymentInboundEventHandler.submitRefunds` now reports prepare, channel and
+   apply milliseconds when the handler exceeds a second):
+
+   - the client's own timeline for a failing refund is: case created, evaluated
+     and approved inside 110 milliseconds, ten case polls over four seconds until
+     the case is APPLIED, then ten refund polls of one second each; the refund
+     settled 70 milliseconds after the tenth poll;
+   - payment records `RefundRequested` 5.35 seconds after the client's approval
+     and `RefundSettled` 7.78 seconds after that, but **no payment handler run
+     exceeded 423 milliseconds** in the whole window, and neither the handler's
+     slow-path warning nor any "message stays pending for retry" line was
+     logged;
+   - so the gap is not one slow handler. Either the first delivery of the
+     approval does not settle the refund and a later delivery does, or the
+     request is published on one event and settled on another; payment also logs
+     "received PostSalesApproved without a payable refund" for many approvals,
+     which acknowledges the event without a refund when its allocation is not in
+     the payload yet.
+
+   Next: log the refund id with the delivered event id and the handoff status on
+   both the request and the settle (not just the total), so the two deliveries
+   can be told apart, and check whether post-sales publishes the approval before
+   `refund-funding` fills `approvedActions.refunds`.
 3. [ ] Reporting still deadlocks on the event instance: `reporting_business_scopes`
    and `reporting_order_attachments` upserts take the same rows in different
    orders under burst, four times in four minutes after the notification fix.
