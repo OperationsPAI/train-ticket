@@ -281,12 +281,20 @@ recorded in [current status](00-current-status.md#the-resident-cycle-is-not-yet-
    release-by-hold-id path used in the repair emits `CapacityReleased` at all,
    or releases silently. If it releases silently, that is the last piece and the
    fix is the one already planned -- capacity must not lose or silence a release.
-   The first look points at silence: `release_hold_with_reason` in the storage
-   adapter mutates the pool and returns, and a scan of that method for the outbox
-   append, `domain_events_to_wire` or a `CapacityReleased` envelope finds none.
-   Confirm by reading the whole method and its caller before changing it: if the
-   API release path never publishes, then every repair made this way released the
-   seat without telling anyone, which is exactly why the refund case sat untouched.
+   Corrected, and this note is worth keeping because the first reading was wrong:
+   the path does publish. `release_hold` calls `release_hold_with_reason`, which
+   calls `mutate_hold_pool`; that method runs the mutation, turns its events into
+   envelopes with `domain_events_to_wire`, appends each one with
+   `OutboxAppender::append`, and commits. A scan of only
+   `release_hold_with_reason` suggested silence because the publishing is one
+   level down.
+
+   So the release at 09:32 did emit `CapacityReleased`, at a time the streams were
+   healthy, and the case was still untouched. The remaining candidates are now on
+   the post-sales side of the handler: whether its subscription received the event
+   at all, and what `recordCapacityReleased` requires of a case before it accepts
+   one -- a case whose refund step may have to be complete first. Read that
+   function next; the query has already been shown to match this case.
 
    **Then this one, so that it is not mistaken for the same thing.** With the change leak repaired, the window's largest group is
    `refund-status`: 1025 refunds and 132 disruption refunds that did not reach
