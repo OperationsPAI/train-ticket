@@ -1058,12 +1058,20 @@ services:
     # workload. Keep them on the dedicated hot shard so application replicas
     # and future HPA changes do not concentrate every connection on core.
     pgInstance: hot
-    # Two replicas: the saga confirms a reservation through several hops, and a
+    # Three replicas: the saga confirms a reservation through several hops, and a
     # burst of three to eight times the mean rate queued events behind the single
     # consumer group long enough for the load generator's ten second poll to
     # expire. The stream is a Redis consumer group and the saga writes are
-    # versioned, so a second replica shares the work without new coordination.
-    replicas: 2
+    # versioned, so another replica shares the work without new coordination.
+    #
+    # Measured on 2026-09-27 at the eight-times burst (twelve thousand journeys in
+    # the peak minute against the four-times burst's seven and a half thousand):
+    # capacity's own admission is not the wait -- a booking reached its hold 0.2
+    # to 0.3 seconds after it was requested -- but the hold's *confirmation* was
+    # 12.0 seconds at the median and 16.9 at the ninety-fifth percentile, and this
+    # group's oldest undelivered entry on `events:capacity-availability` was 10.8
+    # seconds old at the same moment. That is the hop the confirmation waits on.
+    replicas: 3
     strategy:
       type: RollingUpdate
       rollingUpdate:
@@ -1137,6 +1145,12 @@ services:
     db: payment
     pgInstance: txn
     image: mirrors.tencent.com/microservice/payment:autoclaim-6b90ce5d@sha256:faea7424dd667b181efc086792f01ff095cb99db3724f7778c154199dcad9b3a
+    # Two replicas: at the eight-times burst this consumer's group on
+    # `events:booking-orchestration` grew from 4.5 to 107 seconds of oldest
+    # undelivered entry across four peak minutes while the pod used a fifth of a
+    # core, and the window's refund group answered "refund did not reach SETTLED"
+    # 406 times. Doubling the handler pool is what the arithmetic asks for.
+    replicas: 2
     strategy:
       type: RollingUpdate
       rollingUpdate:
