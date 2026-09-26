@@ -349,11 +349,25 @@ impl PostgresCapacityService {
             ));
         }
         let supply = self.supply_client.seats(facts, correlation).await?;
+        // The fold walks the holds of the whole service and date and then skips
+        // every one that belongs to another class. With the combined snapshot
+        // folding all five published classes on every admission, that was the
+        // same three hundred holds read, parsed and discarded five times over --
+        // 1363 of the snapshot's 1569 milliseconds. The predicate below is the
+        // skip, applied where the rows are: a hold contributes when it is
+        // terminal (the released, expired and failed ones are what tell a
+        // standing fold which allocations no longer count), or when it is live
+        // and its occupancy class is the requested one.
         let rows: Vec<(Value, Option<Value>)> = sqlx::query_as(
             "SELECT hold.data, facts.data FROM capacity_hold_snapshots hold
              LEFT JOIN reservation_supply_facts facts ON facts.segment_booking_id=hold.data#>>'{references,segmentBookingRef}'
-             WHERE facts.scheduled_service_ref=$1 AND facts.service_date=$2::date")
+             WHERE facts.scheduled_service_ref=$1 AND facts.service_date=$2::date
+               AND (hold.data->>'state' IN ('Released','Expired','Failed')
+                    OR (hold.data->>'state'='Held' AND COALESCE((hold.data->>'expiresAt')::bigint,0) <= $4)
+                    OR (hold.data->>'state' IN ('Held','Confirmed')
+                        AND COALESCE(hold.data#>>'{supplyEvidence,occupancyClassRef}', facts.class_ref) = $3))")
             .bind(&facts.scheduled_service_ref).bind(&facts.service_date)
+            .bind(&facts.class_ref).bind(now as i64)
             .fetch_all(&mut **tx).await.map_err(to_app_storage)?;
         let mut occupancy = Vec::new();
         for (hold, recorded) in rows {
