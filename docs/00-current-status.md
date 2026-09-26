@@ -59,6 +59,7 @@ to one and back.
 | Resident window on revision 417 | 679108 requests and 66765 journeys, **P99 219 milliseconds**, **4208 failed journeys** (6.3%), two request error groups | `.scratch/runtime-fixes/goal-rev417-ten-minute.json` |
 | Resident window on revision 418 | 434385 requests and 49408 journeys, **P99 129 milliseconds**, **1640 failed journeys** (3.3%), no request error groups, no `offer` failure | `.scratch/runtime-fixes/goal-rev418-ten-minute.json` |
 | Resident window on revision 419 | 328794 requests and 75834 journeys, **P99 125 milliseconds**, **223 failed journeys** (0.29%), one request error group | `.scratch/runtime-fixes/goal-rev419-ten-minute.json` |
+| Resident window on revision 421 | 424100 requests and 86796 journeys, **P99 154 milliseconds**, **177 failed journeys** (0.20%), one request error group | `.scratch/runtime-fixes/goal-rev421-ten-minute.json` |
 | Business metric contract | 22 chart tests pass, including the label allowlist and the recording rule targets | `deploy/tests/test_observability_metrics_config.py` |
 | Transport collector | Unit and `miniredis` tests pass; label sets, entry-id ages, dead-letter attribution and the no-poll-before-first-read case | `tools/redis-state-collector` |
 | Notification module suite | 108 passed, 6 skipped, 0 failures | `services/notification` `npm test` |
