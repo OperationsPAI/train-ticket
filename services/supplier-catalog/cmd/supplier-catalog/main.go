@@ -58,11 +58,11 @@ func main() {
 	}
 	defer func() { _ = redisClient.Close() }()
 	go storage.NewOutboxRelay(pool, redisClient).Run(ctx)
-	transactor := adapterpg.NewTransactor(pool)
 	// Which registration field carries the identity a partner is filed under is the
-	// release's decision rather than the call's, so it is read once at start-up beside
-	// the pool like the store it qualifies.
+	// release's decision rather than the call's, so it is read once at start-up with the
+	// store and the cache a filing is remembered in.
 	filingField := application.PartnerFilingFieldFromEnv()
+	transactor := adapterpg.NewTransactor(pool)
 	service := application.NewService(adapterpg.NewOutboxPublisherWithProvider(transactor)).WithRepository(adapterpg.NewRepositoryWithProvider(transactor)).WithUnitOfWork(transactor.Within).WithFilingField(filingField).WithFilingClaims(messaging.NewFilingClaims(redisClient))
 	eventBus, err := messaging.NewRedisRuntimeFromEnv(ctx)
 	if err != nil {
