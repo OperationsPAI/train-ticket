@@ -1452,9 +1452,11 @@ impl PostgresCapacityService {
             )
             .await
             .map_err(inbound_transient)?;
+        let hold_saved = started.elapsed();
         self.retire_terminal_holds(&mut tx, &mut pool, now)
             .await
             .map_err(inbound_from_app_error)?;
+        let retired = started.elapsed();
         self.inventory_repo
             .save(
                 &mut tx,
@@ -1464,11 +1466,14 @@ impl PostgresCapacityService {
             )
             .await
             .map_err(inbound_transient)?;
+        let pool_saved = started.elapsed();
+        let event_count = outbound.len();
         for envelope in outbound {
             OutboxAppender::append(&mut tx, &stream_for_producer(PRODUCER), &envelope)
                 .await
                 .map_err(inbound_transient)?;
         }
+        let events_appended = started.elapsed();
         self.append_combined_snapshot(&mut tx, facts, &segments, &envelope.correlation_id, now)
             .await
             .map_err(inbound_from_app_error)?;
@@ -1504,6 +1509,15 @@ impl PostgresCapacityService {
                 (committed - answered).as_millis(),
                 pool_id,
                 pool.holds().len()
+            );
+            log::warn!(
+                "capacity admission write phase: hold={}ms retire={}ms pool={}ms events={}ms({} events) snapshot={}ms",
+                (hold_saved - applied).as_millis(),
+                (retired - hold_saved).as_millis(),
+                (pool_saved - retired).as_millis(),
+                (events_appended - pool_saved).as_millis(),
+                event_count,
+                (written - events_appended).as_millis()
             );
         }
         Ok(())
