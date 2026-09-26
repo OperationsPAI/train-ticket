@@ -53,6 +53,7 @@ Place & Network 负责出行平台中“地点”和“地点之间可达关系�
 | Terminal | Station、Airport 或 Port 内的候乘或办理区域。 | 航站楼、站房、码头楼均可建模为 Terminal。 |
 | Platform | 乘车或登船的站台、月台、泊位。 | Platform 变化通常来自运营或履约事件。 |
 | Gate | 登机口、检票口、登船口或站内闸口。 | 可作为 Fulfillment 核验和提醒的展示输入。 |
+| Reader Register | 运营主体仍在运营的 Reader 登记册，随 Place & Network 的主数据发布。 | 位于 `services/place-network/config/reader-register.txt`；Fulfillment 在构建时取用，退役的 Reader 离开登记册后不再被本部署接受。 |
 | TransferNode | 用于换乘计算的抽象节点。 | 可是出口、通道、电梯、接驳点、出租车上车区。 |
 | NetworkEdge | 两个节点之间的可达边。 | 带距离、时间、方式、限制和有效版本。 |
 | GeoFence | 地理围栏。 | 用于定位、提醒、履约辅助，不替代核验事实。 |

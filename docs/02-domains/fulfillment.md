@@ -68,6 +68,7 @@ Fulfillment 负责记录出行服务被实际使用、核验、开始、进行�
 | Replay/Backfill | 供应商或设备晚到事件对历史状态的回补。 | 必须保留原 occurredAt 和 receivedAt。 |
 | Fulfillment Source | 产生履约事实的来源。 | Gate、Provider、DriverApp、ConductorApp、Admin、System。 |
 | Boarding Roster | 本次部署接受其证据的 Reader 清单，是履约所属运营主体自己的声明而不是代码里的常量。 | 票务权威把清单发布在 `services/entitlement-ticketing/config/boarding-readers.txt`，fulfillment 镜像在构建时取用同一份文件；boarding 事实的 `source` 不在清单内就不会进入履约记录，镜像自带的词汇表只在部署未提供清单时使用。 |
+| Reader Register | Place & Network 发布的在册 Reader 登记册，是运营主体“仍在运营哪些 Reader”的声明。 | 登记册在 `services/place-network/config/reader-register.txt`，fulfillment 镜像与清单一起在构建时取用；只有两份声明都列出的 Reader 才被本部署运营，因此运营主体退役的 Reader 即使仍在清单里也不会被接受。 |
 
 ## 4. 上下游契约
 

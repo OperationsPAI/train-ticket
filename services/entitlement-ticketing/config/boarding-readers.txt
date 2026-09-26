@@ -4,7 +4,10 @@
 # estate rather than a constant inside the service that measures the fact. The
 # ticketing authority owns the vocabulary and publishes the roster here, and
 # the fulfillment image vendors it at build (deploy/docker/fulfillment), so
-# both sides measure a boarding fact against the same statement.
+# both sides measure a boarding fact against the same statement. A reader the
+# estate has retired leaves the estate's register
+# (services/place-network/config/reader-register.txt) and is then not operated
+# here either, while it stays named here.
 GATE
 STATION
 PROVIDER

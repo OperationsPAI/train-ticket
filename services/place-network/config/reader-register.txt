@@ -1,0 +1,14 @@
+# The estate's reader register.
+#
+# Place & Network owns the estate's master data, and this register is its
+# statement of the readers the estate has in service: a gate, a station desk or
+# a provider feed is carried here while the estate still operates it, and a
+# reader the estate retires leaves this register. The fulfillment image vendors
+# it at build (deploy/docker/fulfillment) beside the roster the ticketing
+# authority publishes, and a boarding fact is measured against the readers both
+# statements carry.
+GATE
+STATION
+PROVIDER
+CONDUCTOR
+ADMIN

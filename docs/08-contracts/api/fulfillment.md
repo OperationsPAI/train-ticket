@@ -47,7 +47,11 @@ Which readers a deployment validates boarding facts under is the estate's
 boarding roster: the ticketing authority publishes it in
 `services/entitlement-ticketing/config/boarding-readers.txt` and the fulfillment
 image vendors that file at build, so a boarding whose `source` is outside the
-roster never reaches the record. A deployment whose image carries no roster
+roster never reaches the record. The estate's reader register, published by
+Place & Network in `services/place-network/config/reader-register.txt` and
+vendored into the same image, is the second statement: only a reader both
+statements carry is operated, so a reader the estate has retired is refused even
+while the roster still names it. A deployment whose image carries no roster
 keeps the vocabulary listed above.
 
 ### Record No-Show

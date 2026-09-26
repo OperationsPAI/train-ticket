@@ -11,14 +11,16 @@ import (
 
 // The readers a boarding fact may arrive under on this deployment. Which
 // readers those are is the estate's own statement rather than a list compiled
-// into the branch that measures the fact: the ticketing authority owns the
-// vocabulary and publishes the estate's boarding roster, and this image vendors
-// it at build time (deploy/docker/fulfillment), so both sides measure a
-// boarding against the same statement without a call per boarding.
+// into the branch that measures the fact: the ticketing authority publishes the
+// estate's boarding roster and Place & Network publishes the estate's reader
+// register, and this image vendors both at build time
+// (deploy/docker/fulfillment), so a boarding is measured against the statements
+// the estate makes without a call per boarding.
 const (
 	readersDirectoryEnv = "FULFILLMENT_READERS_DIR"
 	readersDirectory    = "/app/config"
 	rosterStatement     = "boarding-readers.txt"
+	registerStatement   = "reader-register.txt"
 )
 
 // builtinReaders is the vocabulary this image was built with. A deployment
@@ -59,24 +61,50 @@ func readersStatedDirectory() string {
 	return readersDirectory
 }
 
-// readersStatedIn is the set the statements in that directory name. A directory
-// with no roster, and a roster whose entries name nothing, keep the vocabulary
-// the image was built with.
+// readersStatedIn is the set the statements in that directory name, composed
+// from the two statements the estate makes: the roster the ticketing authority
+// publishes names the readers this deployment measures a boarding fact against,
+// and the register Place & Network publishes names the readers the estate still
+// carries, so a reader the estate has retired is not operated here even while
+// the roster still names it. A directory with no roster, and a roster whose
+// entries name nothing, keep the vocabulary the image was built with; a
+// register that is missing or names nothing narrows nothing.
 func readersStatedIn(directory string) readerSet {
 	stated, err := os.ReadFile(filepath.Join(directory, rosterStatement))
 	if err != nil {
 		return setOf(builtinReaders)
 	}
-	readers := readerSet{}
+	roster := readerSet{}
 	for _, line := range strings.Split(string(stated), "\n") {
 		name := strings.TrimSpace(line)
 		if name == "" || strings.HasPrefix(name, "#") {
 			continue
 		}
-		readers[readerNamed(name)] = struct{}{}
+		roster[readerNamed(name)] = struct{}{}
 	}
-	if len(readers) == 0 {
+	if len(roster) == 0 {
 		return setOf(builtinReaders)
+	}
+	carried, err := os.ReadFile(filepath.Join(directory, registerStatement))
+	if err != nil {
+		return roster
+	}
+	register := readerSet{}
+	for _, line := range strings.Split(string(carried), "\n") {
+		name := strings.TrimSpace(line)
+		if name == "" || strings.HasPrefix(name, "#") {
+			continue
+		}
+		register[readerNamed(name)] = struct{}{}
+	}
+	if len(register) == 0 {
+		return roster
+	}
+	readers := readerSet{}
+	for reader := range roster {
+		if _, inService := register[reader]; inService {
+			readers[reader] = struct{}{}
+		}
 	}
 	return readers
 }
