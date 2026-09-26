@@ -53,6 +53,7 @@ to one and back.
 | Resident window on revision 391 | 173869 requests and 61293 journeys, **1046 failed journeys** (1.7%), no failed reservations at all in the shop | `.scratch/runtime-fixes/goal-rev391-ten-minute.json` |
 | Resident window on revision 393 | 413245 requests and 64300 journeys, P99 789 milliseconds, **5673 failed journeys** (8.8%), all of them reservations that did not confirm | `.scratch/runtime-fixes/goal-rev393-ten-minute.json` |
 | Resident window on revision 394 | 441056 requests and 87788 journeys, P99 761 milliseconds, **11814 failed journeys**, the same shape | `.scratch/runtime-fixes/goal-rev394-ten-minute.json` |
+| Resident window on a reset environment | 402375 requests and 42270 journeys, **P99 167 milliseconds**, ten request errors in the whole window, **4151 failed journeys** | `.scratch/runtime-fixes/goal-fresh-ten-minute.json` |
 | Business metric contract | 22 chart tests pass, including the label allowlist and the recording rule targets | `deploy/tests/test_observability_metrics_config.py` |
 | Transport collector | Unit and `miniredis` tests pass; label sets, entry-id ages, dead-letter attribution and the no-poll-before-first-read case | `tools/redis-state-collector` |
 | Notification module suite | 108 passed, 6 skipped, 0 failures | `services/notification` `npm test` |
@@ -101,7 +102,17 @@ windows inside this run, taken before the instance reached that state, carried
 **zero failed journeys out of 10670** and 36 out of 8924, so the reservation
 path itself holds when the instance has room.
 
-Trip Planning and Seat Assignment have since been cut over to the read shard --
+The environment was then reset rather than migrated, which is what the owner
+asked for: every database was dropped and recreated empty, the load generator's
+persistent registry and recordings were deleted, the release was redeployed so
+each service ran its migrations against the fresh schema, and the reference data
+was re-seeded. That removed the legacy rows the migration existed to carry, and
+it took the request tail with it: P99 fell from 761 to **167 milliseconds** and
+the whole ten minute window carried ten request errors. The journey failures
+that remain are one flow problem rather than a load problem -- 4151 of 42270 --
+and they are traced in the backlog.
+
+Trip Planning and Seat Assignment had already been cut over to the read shard --
 the first by a verified copy, the second by logical replication so core kept
 serving -- which takes both of those readers off the instance that carries
 everything else. What the reservation wait is waiting for now is the next
