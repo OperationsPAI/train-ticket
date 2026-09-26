@@ -158,7 +158,7 @@ func validateCapacityQuery(service, date, class string) error {
 
 // publishedClassMap selects the published map that carries the requested class.
 func (s *Service) publishedClassMap(ctx context.Context, service, date, class string) (*domain.ContractSeatMap, error) {
-	maps, total, err := s.repo.FindSeatMaps(ctx, service, date, domain.SeatMapStatusPublished, 100, 0)
+	maps, total, err := s.seatMaps(ctx, service, date, domain.SeatMapStatusPublished)
 	if err != nil {
 		return nil, err
 	}
@@ -182,7 +182,7 @@ func (s *Service) publishedClassMap(ctx context.Context, service, date, class st
 }
 
 func (s *Service) capacityUnitReplacements(ctx context.Context, target *domain.ContractSeatMap) ([]CapacityUnitReplacement, error) {
-	maps, total, err := s.repo.FindSeatMaps(ctx, target.ScheduledServiceRef, target.ServiceDate, "", 100, 0)
+	maps, total, err := s.seatMaps(ctx, target.ScheduledServiceRef, target.ServiceDate, "")
 	if err != nil {
 		return nil, err
 	}

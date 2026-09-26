@@ -12,6 +12,7 @@ import (
 	kitmsg "github.com/trainticket/greenfield/platform/go-kit/messaging"
 	kitstorage "github.com/trainticket/greenfield/platform/go-kit/storage"
 	"github.com/trainticket/greenfield/services/seat-assignment/internal/adapters/observability"
+	"github.com/trainticket/greenfield/services/seat-assignment/internal/application"
 	"github.com/trainticket/greenfield/services/seat-assignment/internal/domain"
 )
 
@@ -182,6 +183,28 @@ func (r *Repository) FindSeatMaps(ctx context.Context, scheduledServiceRef, serv
 		parts = append(parts, fmt.Sprintf("data->>'status'=$%d", len(args)))
 	}
 	where := strings.Join(parts, " AND ")
+	return r.findSeatMapsWhere(ctx, where, args, limit, offset)
+}
+
+// SeatMapRevision reports the shape of one service and date's seat maps without
+// loading them, so a caller can tell whether the maps it holds are still the
+// ones in the database. Both parts only grow -- see SeatMapRevision -- so an
+// unchanged pair is an unchanged set. It deliberately ignores status: a
+// replacement swaps one map for another, which a status-filtered count and sum
+// cannot see.
+func (r *Repository) SeatMapRevision(ctx context.Context, scheduledServiceRef, serviceDate string) (application.SeatMapRevision, error) {
+	var revision application.SeatMapRevision
+	err := r.tx.DBFor(ctx).QueryRow(ctx,
+		"SELECT count(*), coalesce(sum(version),0) FROM seat_maps WHERE data->>'scheduledServiceRef'=$1 AND data->>'serviceDate'=$2",
+		scheduledServiceRef, serviceDate,
+	).Scan(&revision.Count, &revision.VersionSum)
+	if err != nil {
+		return application.SeatMapRevision{}, err
+	}
+	return revision, nil
+}
+
+func (r *Repository) findSeatMapsWhere(ctx context.Context, where string, args []any, limit, offset int) ([]domain.ContractSeatMap, int, error) {
 	var total int
 	if err := r.tx.DBFor(ctx).QueryRow(ctx, "SELECT count(*) FROM seat_maps WHERE "+where, args...).Scan(&total); err != nil {
 		return nil, 0, err

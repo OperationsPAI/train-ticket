@@ -16,10 +16,15 @@ type memRepo struct {
 	maps   map[string]*domain.ContractSeatMap
 	allocs map[string]*domain.ContractSeatAllocation
 	fences map[string]domain.CapacityHoldFence
+	// versions counts the writes to each map, the way the stored `version`
+	// column does, so SeatMapRevision moves on an in-place update as well as on
+	// an insert.
+	versions map[string]int64
 }
 
 func newMemRepo() *memRepo {
-	return &memRepo{maps: map[string]*domain.ContractSeatMap{}, allocs: map[string]*domain.ContractSeatAllocation{}, fences: map[string]domain.CapacityHoldFence{}}
+	return &memRepo{maps: map[string]*domain.ContractSeatMap{}, allocs: map[string]*domain.ContractSeatAllocation{},
+		fences: map[string]domain.CapacityHoldFence{}, versions: map[string]int64{}}
 }
 func (r *memRepo) GetInventory(context.Context, string, string) (*domain.SeatInventory, int64, error) {
 	return nil, 0, nil
@@ -37,11 +42,13 @@ func (r *memRepo) UpdateAssignment(context.Context, *domain.SeatAssignment, int6
 func (r *memRepo) SaveSeatMap(_ context.Context, m *domain.ContractSeatMap) error {
 	cp := *m
 	r.maps[m.SeatMapID] = &cp
+	r.versions[m.SeatMapID]++
 	return nil
 }
 func (r *memRepo) UpdateSeatMap(_ context.Context, m *domain.ContractSeatMap, _ int64) error {
 	cp := *m
 	r.maps[m.SeatMapID] = &cp
+	r.versions[m.SeatMapID]++
 	return nil
 }
 func (r *memRepo) GetSeatMap(_ context.Context, id string) (*domain.ContractSeatMap, int64, error) {
@@ -60,6 +67,19 @@ func (r *memRepo) FindSeatMaps(_ context.Context, ss, date, status string, limit
 		}
 	}
 	return out, len(out), nil
+}
+
+// SeatMapRevision mirrors the database's cheap shape query: the count and the
+// sum of versions, both of which only grow.
+func (r *memRepo) SeatMapRevision(_ context.Context, ss, date string) (SeatMapRevision, error) {
+	var revision SeatMapRevision
+	for _, m := range r.maps {
+		if m.ScheduledServiceRef == ss && m.ServiceDate == date {
+			revision.Count++
+			revision.VersionSum += r.versions[m.SeatMapID]
+		}
+	}
+	return revision, nil
 }
 func (r *memRepo) LockSeatMapPublication(context.Context, string, string) error { return nil }
 func (r *memRepo) LockCapacityHold(context.Context, string) error               { return nil }
