@@ -282,6 +282,13 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
      * deduplication record, so the retry submits to the channel again on the same keys.
      */
     private void submitRefunds(EventEnvelope envelope, List<RefundSubmission> requests) {
+        // The three phases are timed together and reported when the whole handler
+        // takes longer than a second: a refund that reaches the owning case late
+        // is either waiting for a connection, waiting for the channel, or waiting
+        // for the apply transaction, and the three have different fixes. Measured
+        // before this: refund handlers took four to sixteen seconds during a burst
+        // while the database and the channel were both idle.
+        long startedAt = System.nanoTime();
         List<PaymentCommandService.RefundHandoff> prepared = inTransaction(() -> {
             List<PaymentCommandService.RefundHandoff> handoffs = new ArrayList<>();
             for (RefundSubmission request : requests) {
@@ -295,17 +302,30 @@ public class PaymentInboundEventHandler implements EventSubscriber.EventHandler 
             }
             return handoffs;
         });
+        long preparedAt = System.nanoTime();
         List<AppliedRefundHandoff> applied = new ArrayList<>();
         for (PaymentCommandService.RefundHandoff handoff : prepared) {
             if (!handoff.needsChannel()) continue;
             applied.add(new AppliedRefundHandoff(handoff, paymentCommands.handoffRefund(handoff, envelope.correlationId())));
         }
+        long handedOffAt = System.nanoTime();
         runInTransaction(() -> {
             for (AppliedRefundHandoff application : applied) {
                 paymentCommands.applyRefundHandoff(application.handoff(), application.channelHandoff());
             }
             deduplicator.recordIfNew(envelope.eventId());
         });
+        long appliedAt = System.nanoTime();
+        long totalMillis = (appliedAt - startedAt) / 1_000_000;
+        if (totalMillis > 1_000) {
+            LOGGER.warn("payment refund handling is slow: case={} refunds={} prepare={}ms channel={}ms apply={}ms total={}ms",
+                envelope.payload() instanceof Map<?, ?> data ? data.get("caseId") : null,
+                requests.size(),
+                (preparedAt - startedAt) / 1_000_000,
+                (handedOffAt - preparedAt) / 1_000_000,
+                (appliedAt - handedOffAt) / 1_000_000,
+                totalMillis);
+        }
     }
 
     private record RefundSubmission(String paymentIntentId, Money amount, String reason, String businessCaseRef, String idempotencyKey) {
