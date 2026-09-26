@@ -1163,13 +1163,11 @@ func validateReferences(entitlementID domain.EntitlementRef, segmentBookingID do
 	return segmentRef.Validate()
 }
 
+// validSource reports whether a boarding fact may arrive under this source. The
+// readers this branch was written to accept are named once, beside the check
+// that consults them.
 func validSource(source domain.FulfillmentSource) bool {
-	switch source {
-	case domain.FulfillmentSourceGate, domain.FulfillmentSourceStation, domain.FulfillmentSourceProvider, domain.FulfillmentSourceConductor, domain.FulfillmentSourceAdmin:
-		return true
-	default:
-		return false
-	}
+	return acceptsBoardingSource(source)
 }
 
 func validNoShowReason(reason domain.NoShowReason) bool {
