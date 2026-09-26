@@ -70,3 +70,23 @@ type FilingClaims interface {
 	Held(ctx context.Context, identity string) (bool, error)
 	Hold(ctx context.Context, identity string, lifetime time.Duration) error
 }
+
+// filingIdentityHeld reports whether the catalogue has already filed a partner under
+// this identity. The cache answers for the identities the release files under, which is
+// what the operator import repeats; the store still answers for the profile.
+func (s *Service) filingIdentityHeld(ctx context.Context, identity string) (bool, error) {
+	if s.filingClaims == nil {
+		return false, nil
+	}
+	return s.filingClaims.Held(ctx, identity)
+}
+
+// rememberFilingIdentity records the identity a filed partner was filed under. A cache
+// that cannot take it is a cache that refuses nothing, which is what the store already
+// decides, so a filing that reached the store has succeeded either way.
+func (s *Service) rememberFilingIdentity(ctx context.Context, identity string) {
+	if s.filingClaims == nil {
+		return
+	}
+	_ = s.filingClaims.Hold(ctx, identity, s.filingLifetime)
+}

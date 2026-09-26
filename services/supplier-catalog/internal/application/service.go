@@ -196,14 +196,12 @@ func (s *Service) RegisterSupplier(ctx context.Context, cmd RegisterSupplierComm
 	// remembers the identities it has filed, so an import that brings one bureau in
 	// under several codes is answered the same way whichever code it arrives with.
 	identity := filingIdentity(s.filingField, cmd)
-	if s.filingClaims != nil {
-		held, err := s.filingClaims.Held(ctx, identity)
-		if err != nil {
-			return SupplierView{}, err
-		}
-		if held {
-			return SupplierView{}, fmt.Errorf("%w: a partner is already filed under this identity", ErrConflict)
-		}
+	held, err := s.filingIdentityHeld(ctx, identity)
+	if err != nil {
+		return SupplierView{}, err
+	}
+	if held {
+		return SupplierView{}, fmt.Errorf("%w: a partner is already filed under this identity", ErrConflict)
 	}
 
 	envelopes := wrapDomainEvents(ctx, events, cmd.CorrelationID, cmd.CausationID)
@@ -218,11 +216,7 @@ func (s *Service) RegisterSupplier(ctx context.Context, cmd RegisterSupplierComm
 	s.mu.Lock()
 	s.suppliers[supplier.SupplierID] = supplier
 	s.mu.Unlock()
-	// The identity is remembered once the partner is filed: a cache that cannot take it
-	// is a cache that refuses nothing, which is what the store already decides.
-	if s.filingClaims != nil {
-		_ = s.filingClaims.Hold(ctx, identity, s.filingLifetime)
-	}
+	s.rememberFilingIdentity(ctx, identity)
 	return supplierView(supplier), nil
 }
 
