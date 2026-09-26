@@ -180,17 +180,24 @@ def require_text(value: Any, field_name: str) -> str:
 
 
 
-LARGE_HUB_STATIONS = frozenset({"北京南", "上海虹桥", "广州南"})
-MEDIUM_HUB_STATIONS = frozenset({"南京南", "武汉", "成都东"})
+# The builtin MCT baseline is keyed on the station class a caller declares
+# (`stationSize`), not on the station's name. A station reference is an
+# identifier -- place-network's `transportNodeId`, e.g. `tn-...`, or the
+# `STATION` place it hangs off -- so comparing display names such as "北京南"
+# against it never matched a real caller and every station silently took the
+# smallest baseline. The class is an input fact in the same way an explicit
+# `mctOverride` or a place-network access time is.
+STATION_CLASS_MCT_MINUTES = {
+    "LARGE_STATION": 25,
+    "MEDIUM_STATION": 20,
+    "SMALL_STATION": 15,
+}
+DEFAULT_STATION_MCT_MINUTES = 15
 
 
-def station_default_mct_minutes(station_ref: str) -> int:
-    station = str(station_ref or "").strip()
-    if station in LARGE_HUB_STATIONS:
-        return 25
-    if station in MEDIUM_HUB_STATIONS:
-        return 20
-    return 15
+def station_default_mct_minutes(station_size: str | None) -> int:
+    key = str(station_size or "").strip().upper()
+    return STATION_CLASS_MCT_MINUTES.get(key, DEFAULT_STATION_MCT_MINUTES)
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,7 +213,7 @@ class MinimumConnectionTime:
             raise DomainError("minimum connection time must be non-negative")
 
     @classmethod
-    def default_for(cls, station_ref: str, from_mode: TransferMode = TransferMode.TRAIN, to_mode: TransferMode = TransferMode.TRAIN, same_platform: bool = False, override_minutes: int | None = None) -> "MinimumConnectionTime":
+    def default_for(cls, station_ref: str, from_mode: TransferMode = TransferMode.TRAIN, to_mode: TransferMode = TransferMode.TRAIN, same_platform: bool = False, override_minutes: int | None = None, station_size: str | None = None) -> "MinimumConnectionTime":
         if override_minutes is not None:
             minutes = int(override_minutes)
         elif from_mode is TransferMode.TRAIN and to_mode is TransferMode.METRO:
@@ -214,7 +221,7 @@ class MinimumConnectionTime:
         elif same_platform and from_mode is to_mode:
             minutes = 10
         else:
-            minutes = station_default_mct_minutes(station_ref)
+            minutes = station_default_mct_minutes(station_size)
         return cls(station_ref, from_mode, to_mode, minutes)
 
     def to_json(self) -> dict[str, Any]:
