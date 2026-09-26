@@ -115,8 +115,17 @@ recorded in [current status](00-current-status.md#the-resident-cycle-is-not-yet-
    failure. Selecting an option for an order that already has a refund or change
    in progress answers 503 `UNAVAILABLE`; a conflict has its own status, and the
    flow has to decide what the honest terminal outcome for that case is.
-8. [ ] Re-measure the refund and change `case-status` groups once the above are
-   fixed; they wait on the reservations and cases in front of them.
+8. [ ] Post-sales case flows do not reach a terminal state inside the client's
+   poll. The window at revision 417 carries 983 refunds that failed at
+   `refund-status`, 982 refunds and 824 changes that failed at `case-status`,
+   and these are now the largest group: the reservation in front of them
+   confirms, so what waits is the case itself. Measure where the case spends
+   the poll budget before changing anything.
+9. [ ] Offers answer with an unexpected status. The same window carries 592
+   purchase and 330 transfer jobs that failed at `offer` with `http_status`
+   and no timeout, so the offer call returned a status the client does not
+   expect; take one example's response and decide whether it is a refusal the
+   client should treat as an outcome or a defect.
 
 ## Open verification
 
