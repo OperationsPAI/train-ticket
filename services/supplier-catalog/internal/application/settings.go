@@ -35,12 +35,15 @@ type PartnerBound struct {
 }
 
 // DefaultPartnerBound is the bound a release that names nothing files under: the
-// legal name the registration carries, and one partner per value of it.
+// legal name the registration carries, and one partner per value of it, because an
+// onboarding mints a code of its own and two filings of one legal name are one
+// partner the caller sent twice.
 func DefaultPartnerBound() PartnerBound {
 	return PartnerBound{Key: PartnerKeyLegalName, Limit: PartnersPerIdentity}
 }
 
-// partnerIdentity reads the value the master data treats as one partner's identity.
+// partnerIdentity reads the value of the named field that the master data treats as
+// one partner's identity.
 func partnerIdentity(supplier domain.Supplier, key string) string {
 	if key == PartnerKeyBrandName {
 		return strings.TrimSpace(supplier.BrandName)
