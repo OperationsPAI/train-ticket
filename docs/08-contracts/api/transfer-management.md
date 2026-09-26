@@ -1,6 +1,6 @@
 # Transfer Management — HTTP API
 
-Last updated: 2026-07-09
+Last updated: 2026-09-26
 
 ## Overview
 
@@ -412,6 +412,7 @@ are available.
 | `fromNodeType` | enum | yes | Arrival node type. |
 | `toNodeType` | enum | yes | Departure node type. |
 | `transferCategory` | enum | yes | Transfer category. |
+| `stationSize` | enum | no | Declared station class used by the builtin MCT baseline: `LARGE_STATION` (25 min), `MEDIUM_STATION` (20 min), `SMALL_STATION` (15 min). Any other value or omission uses the 15 minute fallback. The class is an input fact, not derived from `fromNodeRef`/`toNodeRef`, which are identifiers. |
 | `contractId` | string | no | Associated connection contract; omission creates a proposed contract atomically with the connection. |
 | `window` | ConnectionWindow | yes | Planned transfer window. |
 
@@ -419,6 +420,13 @@ are available.
 
 **Domain effects:** emits `ConnectionRegistered` and initial
 `TransferRiskEvaluated`.
+
+**MCT resolution order:** a published MCT rule for the node types and category;
+otherwise a place-network access/walking time; otherwise the builtin baseline
+selected by `stationSize`. An explicit `mctOverride` wins over all of them. The
+builtin baseline requires one of `stationSize`, an explicit `mctOverride`, a
+cross-mode transfer, or a same-platform transfer; with none of those and no
+access time the registration is rejected with `NO_PUBLISHED_MCT_RULE`.
 
 **Error codes:** `VALIDATION_FAILED`, `NOT_FOUND`, `CONFLICT`,
 `DOMAIN_RULE_VIOLATION`, `IDEMPOTENCY_KEY_REUSED`, `UNAVAILABLE`
