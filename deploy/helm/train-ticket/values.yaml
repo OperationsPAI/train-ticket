@@ -962,10 +962,17 @@ services:
     # of 60 used with 160 requests queued and a POST p99 of exactly 10008ms,
     # which is the client's own timeout rather than a latency.
     #
-    # Four instances share a 96 connection budget, and the fourth is for the
-    # itinerary stream rather than for the HTTP pool: see the consumer
-    # concurrency below.
-    replicas: 4
+    # Six instances. Measured at the cycle's burst: this group's lag on
+    # `events:trip-planning` went from 2217 to 8219 entries inside thirty seconds
+    # and drained over the next eighty, while the pods used 0.3 to 1.4 of their
+    # six cores with no pool waiting -- so the consumer's own pace, not its
+    # dependencies, is what an offer waits on. One itinerary was stored
+    # thirty-five seconds after Trip Planning wrote it, and the client's twelve
+    # offer attempts (about thirty-two seconds) expired 223 milliseconds before
+    # it arrived. Six instances of twenty-four handlers, rather than four of
+    # twelve, put 144 handlers on the stream; read has room for the 144
+    # connections they name.
+    replicas: 6
     env:
       # Reserve database capacity for all service pools and rolling updates.
       PG_MAX_POOL_SIZE: "24"
@@ -979,7 +986,7 @@ services:
       # one commit were active on `offer_management` while this was measured, and
       # the writes it completes are 65 a second. The CPU is not either: 0.4 of a
       # 6 core limit.
-      CONSUMER_BATCH_CONCURRENCY: "12"  # 5 streams
+      CONSUMER_BATCH_CONCURRENCY: "24"  # 5 streams
     # 4 consumer threads do not fit in the default 500m CPU limit. Raising
     # CONSUMER_THREADS without raising this caused a CrashLoopBackOff: the
     # threads saturated half a core working through the backlog, the HTTP thread
