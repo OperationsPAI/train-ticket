@@ -220,6 +220,16 @@ recorded in [current status](00-current-status.md#the-resident-cycle-is-not-yet-
    this case at all, which is a different failure from a read that came back
    empty.
 
+   Answered in part: nothing else in post-sales calls it. Its only caller is its
+   own controller, the load generator does not call it -- `journey_refund.go`
+   posts evaluate, target-offer and approve -- and no event handler hooks it. So
+   whatever advances a refund to APPLIED is on the approve side, in
+   `PostSalesApplicationService` (`isRefundType` around line 401, the refund case
+   creation around line 604), and that is where to read next: either approve
+   drives the refund inline for the twenty-seven thousand that worked and returned
+   early for this one, or the reconcile endpoint has a caller outside this
+   repository that ran for them and not for it.
+
    **Then this one, so that it is not mistaken for the same thing.** With the change leak repaired, the window's largest group is
    `refund-status`: 1025 refunds and 132 disruption refunds that did not reach
    SETTLED inside the client's poll. The example checked
