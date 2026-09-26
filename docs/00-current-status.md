@@ -5,7 +5,7 @@ Last verified: 2026-09-26, Asia/Beijing.
 ## Runtime
 
 The resident Helm release is `train-ticket` in namespace `train-ticket`,
-revision **417**.
+revision **418**.
 Its values come from one file, `deploy/helm/train-ticket/values.yaml`: the
 registry, the `local-path` storage class, the central telemetry store, the
 resident exporters, the load generator settings and the `loadgen-resident-state`
@@ -57,6 +57,7 @@ to one and back.
 | Resident window on revision 399 | 524002 requests and 53803 journeys, P99 843 milliseconds, **4142 failed journeys** (7.7%), two request error groups of 21 and 11 | `.scratch/runtime-fixes/goal-rev399-ten-minute.json` |
 | Resident window on revision 401 | 514784 requests and 56315 journeys, P99 1093 milliseconds, **8859 failed journeys** (15.7%), no request error groups | `.scratch/runtime-fixes/goal-rev401-ten-minute.json` |
 | Resident window on revision 417 | 679108 requests and 66765 journeys, **P99 219 milliseconds**, **4208 failed journeys** (6.3%), two request error groups | `.scratch/runtime-fixes/goal-rev417-ten-minute.json` |
+| Resident window on revision 418 | 434385 requests and 49408 journeys, **P99 129 milliseconds**, **1640 failed journeys** (3.3%), no request error groups, no `offer` failure | `.scratch/runtime-fixes/goal-rev418-ten-minute.json` |
 | Business metric contract | 22 chart tests pass, including the label allowlist and the recording rule targets | `deploy/tests/test_observability_metrics_config.py` |
 | Transport collector | Unit and `miniredis` tests pass; label sets, entry-id ages, dead-letter attribution and the no-poll-before-first-read case | `tools/redis-state-collector` |
 | Notification module suite | 108 passed, 6 skipped, 0 failures | `services/notification` `npm test` |
@@ -252,6 +253,15 @@ twenty four to two, and failed journeys from 8859 of 56315 to 4208 of 66765.
 | Capacity rewrote a sixteen kilobyte supply observation per admission | 95 writes a second, 6.6GiB of TOAST, autovacuum holding 26.6 percent of the admission time | zero writes while the map version holds |
 | The OTLP gateway had one core and one gibibyte | OOM-killed seven times, refusing data, every traced service timing out at ten seconds | 0.8 cores of four, no refusals |
 
-The window's remaining failures are 2789 post-sales cases that did not reach a
-terminal state inside the client's poll and 922 offer calls answered with an
-unexpected status; both are listed in [TODO](TODO.md).
+Two more followed: offer-management consumed the itinerary stream at 78 to 115
+entries a second against 150 produced, so an offer was built from state that
+arrived after the client had retried for a minute -- twelve handlers and a fourth
+replica left it at zero lag and the window's offer failures went from 1180 to
+none. P99 fell from 219 to 129 milliseconds and failed journeys from 4208 to
+1640.
+
+What is left is one shape: a post-sales case whose cancelled booking never
+released its capacity hold. The hold stayed Confirmed because the release reached
+capacity's dead letter during the gateway outage, the case waits for that release
+with no deadline, and every later journey that reuses the order fails. The case,
+the booking and the hold are named in [TODO](TODO.md).
