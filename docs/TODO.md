@@ -115,17 +115,54 @@ recorded in [current status](00-current-status.md#the-resident-cycle-is-not-yet-
    failure. Selecting an option for an order that already has a refund or change
    in progress answers 503 `UNAVAILABLE`; a conflict has its own status, and the
    flow has to decide what the honest terminal outcome for that case is.
-8. [ ] Post-sales case flows do not reach a terminal state inside the client's
-   poll. The window at revision 417 carries 983 refunds that failed at
-   `refund-status`, 982 refunds and 824 changes that failed at `case-status`,
-   and these are now the largest group: the reservation in front of them
-   confirms, so what waits is the case itself. Measure where the case spends
-   the poll budget before changing anything.
-9. [ ] Offers answer with an unexpected status. The same window carries 592
-   purchase and 330 transfer jobs that failed at `offer` with `http_status`
-   and no timeout, so the offer call returned a status the client does not
-   expect; take one example's response and decide whether it is a refusal the
-   client should treat as an outcome or a defect.
+8. [ ] A post-sales case waits forever for a capacity hold its cancelled booking
+   never released, and every later journey that reuses that order fails on it.
+   Found rather than fixed; the evidence is complete.
+
+   At revision 418 the window carries 911 refunds and 602 changes that failed at
+   `case-status`, and 191 distinct case ids account for 1639 of those failures --
+   8.6 journeys per case in ten minutes, so the client is re-driving the same
+   orders. Every one of those cases is `EXECUTING`, most since 01:24 to 04:12,
+   and one of them is worth following: `01a0dbe9-cb3b-7fa7-a645-3bb80a294b17`
+   has done the whole change -- target, replacement reservation confirmed,
+   difference payment captured, old entitlement voided, new ticket issued -- and
+   stops on the last check in `ChangeExecutionService.advanceLocked`:
+
+       for (String bookingId : change.scope().orderItemRefs()) {
+           if (!"CANCELLED".equals(booking.status())) return change;
+           if (!"RELEASED".equals(hold.status()))     return change;   // here
+
+   Its original booking `sb-01a0dbe8-1a3f-7220-863e-8ef1b2c4cf60` is CANCELLED,
+   and its hold `hold-01a0dbe8-1a9a-7831-97db-eb234bb583ef` is still Confirmed.
+   Capacity releases by segment booking reference when it consumes
+   `SegmentBookingCancelled`, and that stream's dead letter holds those events:
+   sampled 3000 entries, 99 of them were `SegmentBookingCancelled`, and the
+   newest dead letter of all is a release that exhausted its five attempts
+   during the period the OTLP gateway was refusing data. A release that reaches
+   the dead letter is a permanently held seat.
+
+   The wait has no deadline. The same class carries `RESERVATION_WAIT_LIMIT` and
+   fails a case whose replacement reservation does not confirm in fifteen
+   minutes, but nothing bounds the release wait, so a case whose hold is lost
+   stays EXECUTING for hours and every journey that touches its order fails with
+   `unfulfilled` rather than ending. Two things follow, and both are wanted:
+   bound this wait the way the reservation wait is bounded, so the case reaches a
+   terminal state the client can report honestly; and decide what to do about a
+   release that dead letters, because silently holding the seat is the worse of
+   the two failures.
+9. [x] Offers answered with an unexpected status. The window at revision 417
+   carried 592 purchase, 258 change and 330 transfer jobs that failed at `offer`
+   with a 422: `Fare Pricing quote has not been consumed` or `No consumed Trip
+   Planning itinerary found`, both from `offer-management`'s build of its command
+   from consumed upstream state. The client does retry -- one transfer journey
+   retried ten times over thirty-three seconds -- so the upstream state was
+   arriving late rather than never: `events:trip-planning` produced 150 entries a
+   second while this group consumed 78 to 115, and its lag grew from 258 to 1461
+   entries in twenty seconds, which put one itinerary 73 seconds behind the
+   offer that needed it. The database and the CPU were idle; the concurrency was
+   the constraint. Twelve handlers per consumer and a fourth replica at revision
+   418 leave the group at a lag of 0 to 4, and the next window carries no `offer`
+   failure at all.
 
 ## Open verification
 
