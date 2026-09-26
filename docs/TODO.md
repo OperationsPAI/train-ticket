@@ -197,8 +197,18 @@ recorded in [current status](00-current-status.md#the-resident-cycle-is-not-yet-
       should be parked rather than dropped, and a sweep should apply what is
       parked.
 
-   **The next group after that one, so that it is not mistaken for the same
-   thing.** With the change leak repaired, the window's largest group is
+   **The change half is done; the refund half is the same shape and is not yet
+   fixed.** The window at revision 419 carries 223 failed journeys of 75834 --
+   0.29 percent, against 4208 of 66765 two revisions earlier -- and the largest
+   group in it is 127 refunds that failed at `case-status`, every one of them the
+   same case: `psc-01a0db50-09b7-7f80-ac0e-15feca7d2f24`, EXECUTING since 01:24.
+   Its execution plan is untouched -- DECISION_CONFIRMED through APPLY_RESULT all
+   still PLANNED, `refundPayments` empty -- and its order item's hold was released
+   in the repair above, so the refund flow is held before its first step by
+   something else. Read the refund executor's precondition next; the change
+   executor's `target` gate is the worked example of what to look for.
+
+   **Then this one, so that it is not mistaken for the same thing.** With the change leak repaired, the window's largest group is
    `refund-status`: 1025 refunds and 132 disruption refunds that did not reach
    SETTLED inside the client's poll. The example checked
    (`psc-01a0dd10-b5a9-7fbb-8c57-ccc248b60ab5`) is APPLIED, so those are late
