@@ -170,9 +170,8 @@ export type AccruePointsCommand = Readonly<{
   confirmedAt: Date;
   seatClass?: SeatClass;
   travelDate?: Date;
-  routeCode?: string;
-  routeName?: string;
   isHoliday?: boolean;
+  isBonusRoute?: boolean;
   memberBirthDate?: Date;
   tripCount?: number;
   sourceStream: string;
@@ -192,15 +191,18 @@ export type PointsEarningRule = Readonly<{ seatClassMultiplier: number; bonusCon
  *
  * The weekend, holiday and birthday-month bonuses in `bonusMultipliers` are
  * defined by the loyalty contract against the date the member TRAVELS (see
- * docs/10-domain-enrichment/loyalty-membership-enrichment.md R1, "Weekend
- * travel", "Holiday travel"). Substituting any other timestamp -- the purchase
+ * docs/10-domain-enrichment/loyalty-membership-enrichment.md, "Earning-rule
+ * inputs"). Substituting any other timestamp -- the purchase
  * time, the capture time, or the current clock -- silently prices a journey off
  * the wrong calendar day and awards bonuses nobody earned. When the date is
  * unknown we therefore award the base rate and skip the date-derived bonuses
  * rather than guess. An explicit upstream `isHoliday` assertion is still
- * honoured, because that is a stated fact rather than something derived here.
+ * honoured, because that is a stated fact rather than something derived here,
+ * and `isBonusRoute` works the same way: the holiday calendar and the corridor
+ * list are the upstream's data, so this domain no longer keeps a partial
+ * calendar of five fixed dates or matches corridor names in a route string.
  */
-export type PointsCalculationInput = Readonly<{ fare: Money; seatClass: SeatClass; travelDate?: Date; memberTier: TierName; routeCode?: string; routeName?: string; isHoliday?: boolean; memberBirthDate?: Date }>;
+export type PointsCalculationInput = Readonly<{ fare: Money; seatClass: SeatClass; travelDate?: Date; memberTier: TierName; isHoliday?: boolean; isBonusRoute?: boolean; memberBirthDate?: Date }>;
 export type TierPolicy = Readonly<{ tierName: TierName; minQualifyingPoints: number; minTrips: number; benefits: readonly string[] }>;
 export type RedemptionPolicySnapshot = Readonly<{ pointsToCurrencyRate: number; minRedemption: number; maxFarePercentage: number }>;
 
@@ -346,7 +348,7 @@ export class Member {
     // day: the live ledger shows the same e2e fare earning 161 points for a
     // Sunday purchase and 107 for a Monday purchase of the same future trip.
     // When the upstream event carries no travel date we award the base rate.
-    const points = PointsCalculator.calculate({ fare: command.ticketPrice, seatClass: command.seatClass ?? "SECOND_CLASS", travelDate: command.travelDate, memberTier: this.snapshot.tier, routeCode: command.routeCode, routeName: command.routeName, isHoliday: command.isHoliday, memberBirthDate: command.memberBirthDate });
+    const points = PointsCalculator.calculate({ fare: command.ticketPrice, seatClass: command.seatClass ?? "SECOND_CLASS", travelDate: command.travelDate, memberTier: this.snapshot.tier, isHoliday: command.isHoliday, isBonusRoute: command.isBonusRoute, memberBirthDate: command.memberBirthDate });
     if (points === 0) throw new DomainError("NO_POINTS_TO_ACCRUE", "Ticket price is too small to accrue points");
     const ledger = PointsLedger.fromSnapshots(this.snapshot.ledger, this.snapshot.lots);
     const sourceFactRef = freeze({ stream: required(command.sourceStream, "sourceStream"), eventType: required(command.sourceEventType, "sourceEventType"), eventId: required(command.sourceEventId, "sourceEventId"), aggregateId: required(command.orderId, "orderId"), occurredAt: command.confirmedAt });
@@ -501,13 +503,15 @@ function bonusMultipliers(input: Omit<PointsCalculationInput, "fare">): readonly
     const weekday = travelDate.getUTCDay();
     if (weekday === 0 || weekday === 6) conditions.push(freeze({ name: "WEEKEND_TRAVEL", multiplier: 1.5 }));
   }
-  if (input.isHoliday === true || (travelDate !== undefined && isPublicHoliday(travelDate))) conditions.push(freeze({ name: "HOLIDAY_TRAVEL", multiplier: 2 }));
-  if (isBonusRoute(input.routeCode, input.routeName)) conditions.push(freeze({ name: "BONUS_ROUTE", multiplier: 1.2 }));
+  // The holiday and bonus-route multipliers are statements the upstream makes,
+  // not something this domain infers: a builtin list of five fixed month-days
+  // misses the lunar holidays and a corridor match on a route string reads a
+  // name where the contract carries an identifier.
+  if (input.isHoliday === true) conditions.push(freeze({ name: "HOLIDAY_TRAVEL", multiplier: 2 }));
+  if (input.isBonusRoute === true) conditions.push(freeze({ name: "BONUS_ROUTE", multiplier: 1.2 }));
   if (input.memberBirthDate && travelDate !== undefined && input.memberBirthDate.getUTCMonth() === travelDate.getUTCMonth()) conditions.push(freeze({ name: "BIRTHDAY_MONTH", multiplier: 2 }));
   return conditions;
 }
-function isPublicHoliday(date: Date): boolean { return ["01-01", "05-01", "10-01", "10-02", "10-03"].includes(`${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`); }
-function isBonusRoute(routeCode?: string, routeName?: string): boolean { const value = `${routeCode ?? ""} ${routeName ?? ""}`.toUpperCase(); return value.includes("JINGHU") || value.includes("JINGGUANG") || value.includes("京沪") || value.includes("京广"); }
 function consumeLots(lots: readonly PointsLotSnapshot[], points: number): PointsLotSnapshot[] { let remainingToConsume = points; return [...lots].sort((left, right) => left.expiresAt.getTime() - right.expiresAt.getTime()).map((lot) => { if (remainingToConsume === 0 || lot.remainingPoints === 0) return cloneLot(lot); const consumed = Math.min(lot.remainingPoints, remainingToConsume); remainingToConsume -= consumed; return freeze({ ...lot, remainingPoints: lot.remainingPoints - consumed }); }); }
 function upsertMembershipYear(years: readonly MembershipYearSnapshot[], year: number, update: (year: MembershipYearSnapshot) => MembershipYearSnapshot): readonly MembershipYearSnapshot[] { const existing = years.find((membershipYear) => membershipYear.year === year); const next = update(existing ?? newMembershipYear(year, "SILVER")); return freeze([...years.filter((membershipYear) => membershipYear.year !== year), next].sort((left, right) => left.year - right.year)); }
 function normalizeMembershipYears(years: readonly MembershipYearSnapshot[] | undefined, tier: TierName, createdAt: Date): readonly MembershipYearSnapshot[] { if (years && years.length > 0) return freeze(years.map((year) => freeze({ ...year, currentTier: normalizeTier(year.currentTier as string), evaluationDate: year.evaluationDate ? new Date(year.evaluationDate) : undefined }))); return freeze([newMembershipYear(createdAt.getUTCFullYear(), tier)]); }
