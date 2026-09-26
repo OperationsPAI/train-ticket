@@ -658,6 +658,16 @@ above is still open. It is also the largest single population of lost events in
 the release, and the reason to fix it is the same as for the capacity releases:
 an event that dead letters is an effect that silently never happens.
 
+Fixed and verified at revision 423. The case type is a named outcome now
+(`ErrNotChangeAdjustment`) that the handler acknowledges, and the check is
+measured by the dead letter's own clock: its newest entry is `11:11:43Z`, the
+deployment completed at `11:07Z`, and at `11:19:30Z` -- eight and a half minutes
+later, with the load generator running -- nothing newer had arrived. The 11:11
+entry is the tail of a retry chain that began before the rollout: five attempts
+with backoff outlive a deploy, and the call site is the one that was edited (the
+message appears twice, both inside `ResolveJourneyCoverage`), so nothing else
+produces it.
+
 Read, and it is deterministic rather than load-related. `JourneyOrderPostSalesAdjusted`
 carries a `postSalesCaseId`, and travel-insurance handles it by reading that case
 and requiring `caseType == "CHANGE"` with a non-empty scope
