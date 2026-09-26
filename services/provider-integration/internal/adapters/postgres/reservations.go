@@ -36,6 +36,33 @@ func (s *ReservationService) within(ctx context.Context, fn func(context.Context
 	return s.uow.Within(ctx, fn)
 }
 
+// republishConfirmation answers a reservation that already exists.
+//
+// The event carries the recorded reference rather than a new one, so a booking
+// that already confirmed ignores it and a booking that never learned the
+// outcome converges on the same reservation. Nothing is written: the snapshot
+// is what it was.
+func (s *ReservationService) republishConfirmation(
+	ctx context.Context,
+	existing application.ProviderReservationResult,
+	cmd application.RequestProviderReservationCommand,
+) error {
+	if s.publisher == nil {
+		return nil
+	}
+	return s.within(ctx, func(txCtx context.Context) error {
+		envelope, err := application.NewEventEnvelope(txCtx, "ProviderReservationConfirmed", cmd.CorrelationID, cmd.CausationID, map[string]any{
+			"segmentBookingId":   existing.SegmentBookingID,
+			"providerReference":  existing.ProviderReference,
+			"normalizedEvidence": existing.NormalizedEvidence,
+		})
+		if err != nil {
+			return err
+		}
+		return s.publisher.Publish(txCtx, envelope)
+	})
+}
+
 func (s *ReservationService) RequestReservation(ctx context.Context, cmd application.RequestProviderReservationCommand) (application.ProviderReservationResult, error) {
 	if _, transactional := txFromContext(ctx); transactional {
 		if _, err := s.db.DBFor(ctx).Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "provider-reservation:"+cmd.SegmentBookingID); err != nil {
@@ -43,6 +70,17 @@ func (s *ReservationService) RequestReservation(ctx context.Context, cmd applica
 		}
 	}
 	if existing, err := s.findReservation(ctx, cmd.SegmentBookingID); err == nil {
+		// The reservation already exists, which means the caller is asking
+		// again because it has not learned the outcome -- a re-delivered
+		// request, or the booking polling its reservation back. Returning
+		// silently told it nothing, and the booking waited for a confirmation
+		// that had already been decided: measured, this service published 437
+		// `ProviderReservationConfirmed` for the 1601 reservations it was asked
+		// to make in one minute, and the rest left segment bookings in HOLDING
+		// with their capacity hold held.
+		if err := s.republishConfirmation(ctx, existing, cmd); err != nil {
+			return application.ProviderReservationResult{}, err
+		}
 		return existing, nil
 	} else if !errors.Is(err, application.ErrNotFound) {
 		return application.ProviderReservationResult{}, err
