@@ -816,7 +816,12 @@ services:
     # with 500 and "Read timed out" when a quote does not come back in five
     # seconds. Two pods put the same load on sixteen cores. The read instance's
     # ceiling moves to 900 for the second pod's ninety six connections.
-    replicas: 2
+    #
+    # Three, at the largest burst on 2026-09-27: this group reads the identity
+    # stream and the capacity stream, and its oldest undelivered entry on them
+    # reached 107.5 and 45.6 seconds while the pod sat at 3.2 cores. A fare quote
+    # that is late is an offer that answers "quote has not been consumed".
+    replicas: 3
     strategy:
       type: RollingUpdate
       rollingUpdate:
@@ -962,7 +967,7 @@ services:
     # of 60 used with 160 requests queued and a POST p99 of exactly 10008ms,
     # which is the client's own timeout rather than a latency.
     #
-    # Six instances. Measured at the cycle's burst: this group's lag on
+    # Nine instances. Measured at the cycle's burst: this group's lag on
     # `events:trip-planning` went from 2217 to 8219 entries inside thirty seconds
     # and drained over the next eighty, while the pods used 0.3 to 1.4 of their
     # six cores with no pool waiting -- so the consumer's own pace, not its
@@ -972,7 +977,14 @@ services:
     # it arrived. Six instances of twenty-four handlers, rather than four of
     # twelve, put 144 handlers on the stream; read has room for the 144
     # connections they name.
-    replicas: 6
+    #
+    # Nine, and 216 handlers: at the largest burst on 2026-09-27 -- 16074
+    # journeys in the peak minute, twice the window that was clean -- this group's
+    # oldest undelivered entry reached 69.1 seconds on `events:fare-pricing` and
+    # 66.2 on `events:trip-planning` while the pods used 2.1 of their six cores,
+    # and the window answered "Fare Pricing quote has not been consumed" 4737
+    # times on purchases alone. Its pool still showed no waiting.
+    replicas: 9
     env:
       # Reserve database capacity for all service pools and rolling updates.
       PG_MAX_POOL_SIZE: "24"
@@ -1014,10 +1026,13 @@ services:
     # path with Booking Orchestration. Keeping both on the hot shard removes
     # their high-volume snapshots and connection pools from postgres-core.
     pgInstance: hot
-    # Two replicas for the same reason as Booking Orchestration: eleven streams
+    # Three replicas for the same reason as Booking Orchestration: eleven streams
     # share one handler pool, and the identity verification consumer alone
-    # reached 29532 undelivered entries at the largest burst.
-    replicas: 2
+    # reached 29532 undelivered entries at the largest burst. At the larger burst
+    # on 2026-09-27 that same group's oldest undelivered entry reached 168.9
+    # seconds while the pod used 1.4 of its six cores and its pool held no
+    # waiting, and a purchase's order waits on that projection.
+    replicas: 3
     strategy:
       type: RollingUpdate
       rollingUpdate:
@@ -1103,6 +1118,12 @@ services:
   identity-verification:
     db: identity_verification
     pgInstance: user
+    # Two replicas: this service produces the one stream that more groups read
+    # than any other, and at the largest burst on 2026-09-27 it was itself behind
+    # -- its group on `events:journey-order` reached 75.2 seconds -- while the
+    # readers of its own stream (journey-order, traveler-profile, fare-pricing)
+    # sat 100 to 169 seconds behind. Two replicas of the same eight workers.
+    replicas: 2
     strategy:
       type: RollingUpdate
       rollingUpdate:
@@ -1400,6 +1421,12 @@ services:
     db: traveler_profile
     image: mirrors.tencent.com/microservice/traveler-profile:autoclaim-6b90ce5d@sha256:62a69989555b6d0e405e2085cdd336236fddd54cc3a808fb13c98ea056e8b7de
     pgInstance: user
+    # Two replicas: this is one of the groups that reads the identity stream, and
+    # at the largest burst on 2026-09-27 its oldest undelivered entry there
+    # reached 115.9 seconds -- with a connection wait of 2.7 seconds and the pod
+    # at a fraction of a core. Two replicas of sixteen handlers replace one of
+    # eight.
+    replicas: 2
     strategy:
       type: RollingUpdate
       rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
@@ -1412,7 +1439,7 @@ services:
       # One subscriber thread could not follow the identity verification stream
       # during a peak, which delayed the traveler snapshot that Offer Management
       # requires before it can create an offer.
-      CONSUMER_THREADS: "8"
+      CONSUMER_THREADS: "16"
       # Ten pooled connections with hundreds of waiting callers produced
       # `Connection is not available, request timed out after 15000ms` and three
       # thousand timed out traveler creations in four minutes.
@@ -1524,6 +1551,11 @@ services:
     # is driven by the booking saga's invoice step, which finance-settlement reads
     # off `events:booking-orchestration` along with six other streams.
     #
+    # Three, at the largest burst on 2026-09-27: its group on
+    # `events:post-sales` reached 150.6 seconds of oldest undelivered entry, and
+    # the refund and change cases that wait on its recognition missed the poll
+    # window.
+    #
     # Measured on 2026-09-27 at the raised burst: this group is the one that falls
     # behind on that stream at the peak -- lag grew from 1814 to 26460 and the
     # oldest undelivered entry from 10 to 150 seconds across four peak minutes --
@@ -1531,7 +1563,7 @@ services:
     # queue. The cost is the invoice the load generator collects at the end of a
     # purchase: one order's ten polls all answered 404 and its revenue was
     # recognised 36 seconds after the last of them.
-    replicas: 2
+    replicas: 3
     strategy:
       type: RollingUpdate
       rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
