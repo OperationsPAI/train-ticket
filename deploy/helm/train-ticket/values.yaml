@@ -1601,6 +1601,16 @@ services:
       # Eight rather than four: the projection consumer fell 3.6 thousand events
       # behind on the journey order stream during a peak.
       CONSUMER_THREADS: "8"
+      # One thousand milliseconds rather than the kit's hundred.
+      #
+      # Redis is single-threaded and was pinned at one core with 2015 connected
+      # clients, of which this pod alone held 890. `instantaneous_ops_per_sec`
+      # reads 21376 and `xreadgroup` accounts for 275445579 of the calls --
+      # almost all of them a hundred millisecond block expiring rather than a
+      # delivery, because every blocked reader wakes ten times a second to find
+      # nothing. A blocking read is woken by the write itself, so a longer block
+      # changes no delivery latency; it only stops the wakeups.
+      CONSUMER_BLOCK_MS: "1000"
     # Event ingestion and background projection refresh share this CPU budget.
     resources:
       requests: { cpu: 100m, memory: 256Mi }
