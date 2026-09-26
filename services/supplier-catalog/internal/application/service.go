@@ -176,17 +176,7 @@ func (s *Service) RegisterSupplier(ctx context.Context, cmd RegisterSupplierComm
 	envelopes := wrapDomainEvents(ctx, events, cmd.CorrelationID, cmd.CausationID)
 	if err := s.persistAndPublish(ctx, func(txCtx context.Context) error {
 		if s.repository != nil {
-			// The identity a filing carries is held for the partner it files, so
-			// a filing that carries one the catalogue already holds is refused
-			// rather than filed beside the partner that holds it.
-			claimed, err := s.repository.ClaimPartnerIdentity(txCtx, supplier.Profile, string(supplier.SupplierID))
-			if err != nil {
-				return err
-			}
-			if !claimed {
-				return fmt.Errorf("%w: a partner already holds this identity", ErrConflict)
-			}
-			return s.repository.SaveSupplier(txCtx, supplier)
+			return s.claimPartnerIdentity(txCtx, supplier)
 		}
 		return nil
 	}, envelopes); err != nil {
@@ -196,6 +186,19 @@ func (s *Service) RegisterSupplier(ctx context.Context, cmd RegisterSupplierComm
 	s.suppliers[supplier.SupplierID] = supplier
 	s.mu.Unlock()
 	return supplierView(supplier), nil
+}
+
+// claimPartnerIdentity holds the identity a filing carries for the partner it
+// files, in the caller's transaction.
+func (s *Service) claimPartnerIdentity(ctx context.Context, supplier domain.Supplier) error {
+	claimed, err := s.repository.ClaimPartnerIdentity(ctx, supplier.Profile, string(supplier.SupplierID))
+	if err != nil {
+		return err
+	}
+	if !claimed {
+		return fmt.Errorf("%w: a partner already holds this identity", ErrConflict)
+	}
+	return s.repository.SaveSupplier(ctx, supplier)
 }
 
 func (s *Service) GetSupplier(ctx context.Context, supplierID string) (domain.Supplier, error) {
