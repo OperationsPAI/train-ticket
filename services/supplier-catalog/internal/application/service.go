@@ -183,31 +183,8 @@ func (s *Service) RegisterSupplier(ctx context.Context, cmd RegisterSupplierComm
 		s.mu.Unlock()
 	}
 
-	// The master data holds one partner per identity, so the partners already filed
-	// under the identity this registration carries are counted before it is added: a
-	// filing that would put a second partner under an identity the catalogue already
-	// holds is refused rather than filed, and the code the call minted stays what it
-	// is, a code and not a partner.
-	if bound := s.partnerBound; bound.Limit > 0 {
-		identity := partnerIdentity(supplier, bound.Key)
-		held := 0
-		if s.repository != nil {
-			held, err = s.repository.CountSuppliersByKey(ctx, bound.Key, identity)
-			if err != nil {
-				return SupplierView{}, err
-			}
-		} else {
-			s.mu.RLock()
-			for _, filed := range s.suppliers {
-				if strings.EqualFold(partnerIdentity(filed, bound.Key), identity) {
-					held++
-				}
-			}
-			s.mu.RUnlock()
-		}
-		if identity != "" && held >= bound.Limit {
-			return SupplierView{}, fmt.Errorf("%w: a partner is already filed under this identity", ErrConflict)
-		}
+	if err := s.checkPartnerBound(ctx, supplier); err != nil {
+		return SupplierView{}, err
 	}
 
 	envelopes := wrapDomainEvents(ctx, events, cmd.CorrelationID, cmd.CausationID)
@@ -223,6 +200,48 @@ func (s *Service) RegisterSupplier(ctx context.Context, cmd RegisterSupplierComm
 	s.suppliers[supplier.SupplierID] = supplier
 	s.mu.Unlock()
 	return supplierView(supplier), nil
+}
+
+// checkPartnerBound refuses a registration that would put another partner under an
+// identity the master data already holds. Which field of a registration carries the
+// identity, and how many partners one value of it may hold, is the bound the release
+// names; the partners filed under the identity this registration carries are counted
+// before it is added, so the code the call minted stays what it is, a code and not a
+// partner.
+func (s *Service) checkPartnerBound(ctx context.Context, supplier domain.Supplier) error {
+	bound := s.partnerBound
+	if bound.Limit <= 0 {
+		return nil
+	}
+	identity := partnerIdentity(supplier, bound.Key)
+	if identity == "" {
+		return nil
+	}
+	held, err := s.partnersUnderIdentity(ctx, bound.Key, identity)
+	if err != nil {
+		return err
+	}
+	if held >= bound.Limit {
+		return fmt.Errorf("%w: a partner is already filed under this identity", ErrConflict)
+	}
+	return nil
+}
+
+// partnersUnderIdentity counts the partners the catalogue holds under one value of
+// the identity a registration carries.
+func (s *Service) partnersUnderIdentity(ctx context.Context, key, identity string) (int, error) {
+	if s.repository != nil {
+		return s.repository.CountSuppliersByKey(ctx, key, identity)
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	held := 0
+	for _, filed := range s.suppliers {
+		if strings.EqualFold(partnerIdentity(filed, key), identity) {
+			held++
+		}
+	}
+	return held, nil
 }
 
 func (s *Service) GetSupplier(ctx context.Context, supplierID string) (domain.Supplier, error) {
