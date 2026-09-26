@@ -30,7 +30,14 @@ DEAD_CONSUMER_IDLE_MS = 5 * 60 * 1000
 # negligible.
 PRUNE_INTERVAL_MS = 60 * 1000
 RECOVERY_INTERVAL_MS = 1000
-POLL_BLOCK_MS = int(os.environ.get("CONSUMER_BLOCK_MS", "100"))
+# One second rather than a hundred milliseconds.
+#
+# A blocking read is woken by the write itself, so the block only bounds how
+# long an idle reader sleeps before asking again -- it is not a delivery delay.
+# Redis is single-threaded and was pinned at one core with 2015 connected
+# clients; `xreadgroup` accounted for 275445579 of its calls and almost all of
+# them were a hundred millisecond block expiring rather than a delivery.
+POLL_BLOCK_MS = int(os.environ.get("CONSUMER_BLOCK_MS", "1000"))
 POLL_COUNT = int(os.environ.get("CONSUMER_BATCH_COUNT", "100"))
 LOGGER = logging.getLogger(__name__)
 
