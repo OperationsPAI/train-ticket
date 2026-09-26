@@ -3,6 +3,7 @@ package messaging
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -70,6 +71,13 @@ func (h *InboundHandler) handleJourneyAdjusted(ctx context.Context, envelope kit
 		CorrelationID:  envelope.CorrelationID,
 		CausationID:    envelope.EventID,
 	})
+	if errors.Is(err, application.ErrNotChangeAdjustment) {
+		// The order was refunded or cancelled. Its coverage ends through the refund
+		// events this service already handles, so this announcement has nothing for
+		// it to do; acknowledging keeps it out of the dead letter without pretending
+		// anything was adjusted.
+		return nil
+	}
 	return err
 }
 
