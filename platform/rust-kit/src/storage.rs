@@ -10,7 +10,9 @@ use async_trait::async_trait;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use sqlx::{Connection, Executor, PgPool, Postgres, Transaction};
+use sqlx::{Executor, PgPool, Postgres, Transaction};
+#[cfg(feature = "redis-impl")]
+use sqlx::Connection;
 
 use crate::idempotency::{IdempotencyRecord, IdempotencyStore};
 use crate::messaging::EventEnvelope;
