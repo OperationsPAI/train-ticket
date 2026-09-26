@@ -32,17 +32,24 @@ describe("points calculation", () => {
     const fare = { currency: "CNY", minorUnits: 50_000 } as const;
     const base = { fare, seatClass: "SECOND_CLASS", memberTier: "SILVER" } as const;
 
-    // 2026-07-10 Fri, 2026-07-11 Sat, 2026-10-01 Thu (National Day).
+    // 2026-07-10 Fri, 2026-07-11 Sat, and 2026-10-01 (National Day) with the
+    // upstream's holiday statement. The calendar is the upstream's data: the
+    // same date without the statement earns the weekday rate.
     const weekday = PointsCalculator.calculate({ ...base, travelDate: new Date("2026-07-10T00:00:00.000Z") });
     const weekend = PointsCalculator.calculate({ ...base, travelDate: new Date("2026-07-11T00:00:00.000Z") });
-    const holiday = PointsCalculator.calculate({ ...base, travelDate: new Date("2026-10-01T00:00:00.000Z") });
+    const statedHoliday = PointsCalculator.calculate({ ...base, travelDate: new Date("2026-10-01T00:00:00.000Z"), isHoliday: true });
 
     assert.equal(weekday, 500);
     assert.equal(weekend, 750);
-    assert.equal(holiday, 1_000);
+    assert.equal(statedHoliday, 1_000);
     // The three must differ, otherwise the travel date is not reaching the
     // multipliers at all -- which is exactly the bug this guards.
-    assert.equal(new Set([weekday, weekend, holiday]).size, 3);
+    assert.equal(new Set([weekday, weekend, statedHoliday]).size, 3);
+    assert.equal(
+      PointsCalculator.calculate({ ...base, travelDate: new Date("2026-10-01T00:00:00.000Z") }),
+      500,
+      "a holiday nobody stated is a weekday here; this domain keeps no calendar"
+    );
   });
 
   it("awards the base rate when no travel date is known instead of guessing one", () => {
@@ -58,6 +65,14 @@ describe("points calculation", () => {
     const fare = { currency: "CNY", minorUnits: 50_000 } as const;
 
     assert.equal(PointsCalculator.calculate({ fare, seatClass: "SECOND_CLASS", memberTier: "SILVER", isHoliday: true }), 1_000);
+  });
+
+  it("awards the bonus-route multiplier for a stated fact rather than a route name", () => {
+    const fare = { currency: "CNY", minorUnits: 50_000 } as const;
+    const base = { fare, seatClass: "SECOND_CLASS", memberTier: "SILVER" } as const;
+
+    assert.equal(PointsCalculator.calculate({ ...base, isBonusRoute: true }), 600);
+    assert.equal(PointsCalculator.calculate(base), 500);
   });
 
   it("prices the birthday-month bonus off the travel month, not a fixed month", () => {
