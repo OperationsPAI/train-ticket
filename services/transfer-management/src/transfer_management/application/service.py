@@ -245,18 +245,22 @@ def _same_platform(data: Mapping[str, Any], category: TransferCategory) -> bool:
     return category is TransferCategory.IN_STATION
 
 
+def _station_size(data: Mapping[str, Any]) -> str | None:
+    key = str(data.get("stationSize") or "").strip().upper()
+    return key or None
+
+
 def _cross_mode_from_data(data: Mapping[str, Any], from_mode: TransferMode, to_mode: TransferMode, from_node_ref: str, to_node_ref: str) -> CrossModeTransfer:
     walking = int(data.get("walkingMinutes") if data.get("walkingMinutes") is not None else (0 if from_node_ref == to_node_ref else 10))
     override = data.get("mctOverride")
     return CrossModeTransfer(from_mode, to_mode, from_node_ref, to_node_ref, walking, int(override) if override is not None else None)
 
 
-def _can_use_builtin_mct(data: Mapping[str, Any], from_mode: TransferMode, to_mode: TransferMode, station_ref: str, same_platform: bool) -> bool:
+def _can_use_builtin_mct(data: Mapping[str, Any], from_mode: TransferMode, to_mode: TransferMode, same_platform: bool, station_size: str | None) -> bool:
     return (
         from_mode is not to_mode
         or same_platform
-        or data.get("stationSize") == "SMALL_STATION"
-        or station_ref in {"北京南", "上海虹桥", "广州南", "南京南", "武汉", "成都东"}
+        or station_size is not None
         or data.get("mctOverride") is not None
     )
 
@@ -425,11 +429,12 @@ class TransferManagementService:
         cross_mode = _cross_mode_from_data(data, from_mode, to_mode, from_node_ref, to_node_ref)
         override = data.get("mctOverride")
         same_platform = _same_platform(data, category)
+        station_size = _station_size(data)
         topology_minutes = _topology_weighted_mct_minutes(topology)
-        mct = MinimumConnectionTime.default_for(to_node_ref, from_mode, to_mode, same_platform, int(override) if override is not None else topology_minutes)
+        mct = MinimumConnectionTime.default_for(to_node_ref, from_mode, to_mode, same_platform, int(override) if override is not None else topology_minutes, station_size)
         rule = self._find_published_rule(from_node_type, to_node_type, category, at)
         if rule is None:
-            if topology_minutes is None and not _can_use_builtin_mct(data, from_mode, to_mode, to_node_ref, same_platform):
+            if topology_minutes is None and not _can_use_builtin_mct(data, from_mode, to_mode, same_platform, station_size):
                 raise DomainError("NO_PUBLISHED_MCT_RULE")
             rule = self._default_mct_rule(from_node_type, to_node_type, category, mct, at, "PLACE_NETWORK_ACCESS_TIME" if topology_minutes is not None else "BUILTIN_STATION_POLICY")
         window_data = dict(data.get("window") or {})
@@ -731,7 +736,7 @@ class TransferManagementService:
                 override = _optional_int(transfer_hint.get("mctOverride") if transfer_hint.get("mctOverride") is not None else transfer_hint.get("mctMinutes"))
                 station_ref = to_station_ref or from_station_ref
                 category = TransferCategory(str(transfer_hint.get("transferCategory") or ("SAME_STATION" if from_station_ref == to_station_ref else "CROSS_STATION")))
-                mct = MinimumConnectionTime.default_for(station_ref, from_mode, to_mode, same_platform, override)
+                mct = MinimumConnectionTime.default_for(station_ref, from_mode, to_mode, same_platform, override, transfer_hint.get("stationSize"))
                 validation = ConnectionValidator().validate(arrival_at, departure_at, mct)
                 transfer_id = f"{itinerary_ref}:transfer:{index}"
                 proposal = TransferProposal(transfer_id, (validation,))
