@@ -195,9 +195,8 @@ export class LoyaltyMembershipApplicationService {
     causationId?: string;
     seatClass?: SeatClass;
     travelDate?: Date;
-    routeCode?: string;
-    routeName?: string;
     isHoliday?: boolean;
+    isBonusRoute?: boolean;
     memberBirthDate?: Date;
     sourceStream?: string;
     sourceEventType?: string;
@@ -225,9 +224,8 @@ export class LoyaltyMembershipApplicationService {
     causationId?: string;
     seatClass?: SeatClass;
     travelDate?: Date;
-    routeCode?: string;
-    routeName?: string;
     isHoliday?: boolean;
+    isBonusRoute?: boolean;
     memberBirthDate?: Date;
     tripCount?: number;
     sourceStream?: string;
