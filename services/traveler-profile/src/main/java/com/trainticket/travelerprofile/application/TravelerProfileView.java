@@ -10,6 +10,7 @@ public record TravelerProfileView(
     TravelerType travelerType,
     String givenName,
     String familyName,
+    String birthDate,
     ApiDocumentType documentType,
     String maskedDocumentRef,
     String contactEmail,

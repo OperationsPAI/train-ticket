@@ -8,6 +8,7 @@ public record UpdateTravelerCommand(
     String familyName,
     ApiDocumentType documentType,
     String documentNumber,
+    String documentIssuingCountry,
     String contactEmail,
     String contactPhone,
     String idempotencyKey,
