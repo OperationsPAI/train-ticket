@@ -48,6 +48,7 @@ to one and back.
 | Check | Result | Evidence |
 |---|---|---|
 | Ten minute window at revision 440 | 399599 requests, 45861 journeys, P99 112 milliseconds, **0 unexpected error groups and 0 failed journeys** | `.scratch/runtime-fixes/goal-rev440-ten-minute.json` |
+| Ten minute window at revision 440 | 160703 requests, 18366 journeys, P99 112 milliseconds, **0 unexpected error groups and 0 failed journeys**; over the two cycles together, 18:17 to 18:39 carries the peaks of both (7599 and 8758 journeys a minute) with no failure at all | `.scratch/runtime-fixes/goal-rev440b-ten-minute.json` |
 | Ten minute window at revision 438 | 459163 requests, 48468 journeys, P99 155 milliseconds, 7 error groups, 658 failed journeys -- 209 offer refusals (quote not consumed), 101 booking saga lookups timing out, the rest the invoice basis race and a few staff steps | `.scratch/runtime-fixes/goal-rev438b-ten-minute.json` |
 | Resident cycle on revision 377 | 450756 requests and 50345 journeys in 600 seconds, P99 1218 milliseconds, **12211 failed journeys** | `.scratch/runtime-fixes/goal-rev377-ten-minute.json` |
 | Resident cycle on revision 386 | 455602 requests and 96165 journeys in 600 seconds, **19569 failed journeys**, dominated by Trip Planning search | `.scratch/runtime-fixes/goal-rev386-ten-minute.json` |
