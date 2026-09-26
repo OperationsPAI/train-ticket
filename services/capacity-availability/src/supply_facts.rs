@@ -867,6 +867,31 @@ pub struct SupplyClient {
 }
 
 impl SupplyClient {
+    /// Fetches the seat views an admission is about to read, so that the read
+    /// inside its transaction resolves from this client's cache.
+    ///
+    /// The seat facts live in seat-assignment and are read over HTTP, twice per
+    /// admission: once for the accepted class and, when that class has nothing
+    /// left and the reservation accepts standing, once for STANDING. Both reads
+    /// happen inside the transaction, and that transaction holds the pool's
+    /// admission lock -- one lock for the whole service and date -- so a fetch
+    /// that waits on seat-assignment, or on this client's five second timeout, is
+    /// a lock hold that every other reservation for that train queues behind.
+    ///
+    /// Failure is deliberately ignored: the admission fetches again on its own
+    /// path and reports the error there, where it has the reservation to name.
+    pub async fn warm_supply_views(&self, facts: &ReservationSupply, correlation: &str) {
+        if self.seats(facts, correlation).await.is_err() {
+            return;
+        }
+        if facts.class_ref == "STANDING" || !facts.standing_accepted {
+            return;
+        }
+        let mut standing = facts.clone();
+        standing.class_ref = "STANDING".into();
+        let _ = self.seats(&standing, correlation).await;
+    }
+
     pub async fn route(&self, segment: &str, correlation: &str) -> Result<SegmentRoute, AppError> {
         if let Some(cached) = cache_lookup(&self.routes, segment) {
             return Ok(cached);
