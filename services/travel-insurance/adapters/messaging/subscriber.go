@@ -90,6 +90,7 @@ type refundApplied struct {
 	RefundID        string         `json:"refundId"`
 	Amount          domain.Money   `json:"amount"`
 	ApprovedAt      time.Time      `json:"approvedAt"`
+	CaseType        string         `json:"caseType"`
 	ResultSummary   map[string]any `json:"resultSummary"`
 	RefundDecision  map[string]any `json:"refundDecision"`
 }
@@ -103,7 +104,7 @@ func (h *InboundHandler) handleRefundApplied(ctx context.Context, envelope kitms
 	if strings.TrimSpace(payload.PolicyID) == "" && journeyOrderID == "" {
 		return nil
 	}
-	if !refundWasApplied(payload) {
+	if !endsCoverage(payload) {
 		return nil
 	}
 	_, err := h.service.CancelPolicyForRefund(ctx, application.RefundAppliedCommand{PolicyID: payload.PolicyID, JourneyOrderID: journeyOrderID, RefundID: firstNonBlank(payload.RefundID, payload.CaseID, payload.PostSalesCaseID, envelope.EventID), CorrelationID: envelope.CorrelationID, CausationID: envelope.EventID})
@@ -119,6 +120,28 @@ func (h *InboundHandler) handleRefundApplied(ctx context.Context, envelope kitms
 	return err
 }
 
+// endsCoverage reports whether the applied case ends the coverage the order
+// carried.
+//
+// `PostSalesApplied` announces all five case types through one event, and only a
+// refund or a cancellation returns the ticket, so only those two end the policy.
+// A compensation issues a wallet credit and keeps the ticket -- the standing
+// compensation policy -- so it must not reach the cancellation path: doing so
+// read the order's payment purchase reference, found none (nothing was refunded),
+// classified the 404 a rule violation and dead-lettered the case five times over.
+// A change or a rebook moves the journey instead, and this service is told that
+// by JourneyOrderPostSalesAdjusted.
+func endsCoverage(payload refundApplied) bool {
+	switch strings.ToUpper(strings.TrimSpace(payload.CaseType)) {
+	case "REFUND", "CANCELLATION":
+		return true
+	case "COMPENSATION", "CHANGE", "REBOOK":
+		return false
+	}
+	// No case type: fall back to the refund evidence the envelope itself carries.
+	return refundWasApplied(payload)
+}
+
 func refundWasApplied(payload refundApplied) bool {
 	if boolField(payload.RefundDecision, "refunded") || boolField(payload.RefundDecision, "eligible") || textContains(payload.RefundDecision, "kind", "REFUND") {
 		return true
@@ -129,7 +152,8 @@ func refundWasApplied(payload refundApplied) bool {
 	if textContains(payload.ResultSummary, "description", "refund") {
 		return true
 	}
-	return payload.RefundID != "" || payload.Amount.MinorUnits > 0 || payload.CaseID != "" || payload.PostSalesCaseID != ""
+	// A case id is not a refund signal: every PostSalesApplied carries one.
+	return payload.RefundID != "" || payload.Amount.MinorUnits > 0
 }
 
 func boolField(values map[string]any, key string) bool {
