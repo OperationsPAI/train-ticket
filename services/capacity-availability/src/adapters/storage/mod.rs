@@ -1140,6 +1140,9 @@ impl PostgresCapacityService {
         validate_hold_request(&request).map_err(inbound_from_app_error)?;
         let fingerprint = request.fingerprint();
         let stream = stream_for_producer(&envelope.producer);
+        self.supply_client
+            .warm_supply_views(&facts, &envelope.correlation_id)
+            .await;
         for attempt in 0..MAX_RETRIES {
             let result = self
                 .try_handle_segment_reservation_requested(
