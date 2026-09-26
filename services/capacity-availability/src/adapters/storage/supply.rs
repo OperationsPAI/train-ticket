@@ -348,7 +348,9 @@ impl PostgresCapacityService {
                 "reservation date differs from its validated route".into(),
             ));
         }
+        let started = std::time::Instant::now();
         let supply = self.supply_client.seats(facts, correlation).await?;
+        let seats = started.elapsed();
         // The fold walks the holds of the whole service and date and then skips
         // every one that belongs to another class. With the combined snapshot
         // folding all five published classes on every admission, that was the
@@ -369,6 +371,8 @@ impl PostgresCapacityService {
             .bind(&facts.scheduled_service_ref).bind(&facts.service_date)
             .bind(&facts.class_ref).bind(now as i64)
             .fetch_all(&mut **tx).await.map_err(to_app_storage)?;
+        let queried = started.elapsed();
+        let row_count = rows.len();
         let mut occupancy = Vec::new();
         for (hold, recorded) in rows {
             let hold: CapacityHoldSnapshot =
@@ -470,6 +474,7 @@ impl PostgresCapacityService {
             });
         }
         let available = supply.available_refs(&route.interval, &occupancy)?;
+        let folded = started.elapsed();
         // The observation is an upsert per pool and the row is a sixteen
         // kilobyte document, so rewriting it on every admission was about twenty
         // seven gigabytes a day of new TOAST. The pool's TOAST reached 6.6
@@ -490,6 +495,21 @@ impl PostgresCapacityService {
             .bind(pool_id_for(&facts.segment_ref,&facts.class_ref)).bind(&supply.seat_map_id).bind(supply.seat_map_version as i64)
             .bind(supply.capacity() as i32).bind(serde_json::to_value(&supply).map_err(|e| AppError::Internal(e.to_string()))?)
             .execute(&mut **tx).await.map_err(to_app_storage)?;
+        let written = started.elapsed();
+        if written >= std::time::Duration::from_millis(100) {
+            log::warn!(
+                "capacity fold for {}/{} class={} rows={} seats={}ms query={}ms fold={}ms observe={}ms total={}ms",
+                facts.scheduled_service_ref,
+                facts.service_date,
+                facts.class_ref,
+                row_count,
+                seats.as_millis(),
+                (queried - seats).as_millis(),
+                (folded - queried).as_millis(),
+                (written - folded).as_millis(),
+                written.as_millis()
+            );
+        }
         Ok((supply, available, occupancy))
     }
 
