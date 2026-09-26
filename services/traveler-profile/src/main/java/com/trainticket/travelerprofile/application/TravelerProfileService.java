@@ -259,17 +259,21 @@ public class TravelerProfileService {
         requireText(command.givenName(), "givenName", errors);
         requireText(command.familyName(), "familyName", errors);
         if (!isBlank(command.dateOfBirth())) {
+            LocalDate claimed = null;
             try {
-                LocalDate claimed = LocalDate.parse(command.dateOfBirth().trim());
+                claimed = LocalDate.parse(command.dateOfBirth().trim());
+            } catch (java.time.format.DateTimeParseException ex) {
+                errors.put("dateOfBirth", "dateOfBirth must be an ISO-8601 date (YYYY-MM-DD)");
+            }
+            if (claimed != null) {
                 // The register carries the band the fare catalogue prices: a claim
                 // outside it is refused where it is made rather than stored and met
                 // at the first quote. The ends are release data, so this comparison
                 // is untouched when a release moves them.
-                if (!claimWindow.holds(claimed, LocalDate.now(clock))) {
+                LocalDate today = LocalDate.now(clock);
+                if (!claimWindow.holds(claimed, today)) {
                     errors.put("dateOfBirth", "dateOfBirth is outside the window of ages the register carries");
                 }
-            } catch (java.time.format.DateTimeParseException ex) {
-                errors.put("dateOfBirth", "dateOfBirth must be an ISO-8601 date (YYYY-MM-DD)");
             }
         }
         if ((command.documentType() == null) != isBlank(command.documentNumber())) {
