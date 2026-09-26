@@ -609,3 +609,19 @@ misplaced question. The thing to check next is the fault the generator injects o
 that path -- `faultSeed = "MISSED_ORDER:loadgen"` at line 204 -- because a capture
 that succeeds while the order signal is deliberately missed is exactly an order
 whose revenue finance-settlement may never recognise.
+
+Answered: `MISSED_ORDER` is a deliberate fault. `services/payment-channel/internal/domain/order.go:78`
+puts the channel order in `StatusMissed` and emits `ChannelOrderMissed` instead of
+accepting it, so the capture the generator asked for is one the channel
+deliberately did not place. The invoice branch then asks for a document that this
+order cannot have.
+
+What that leaves is not a service defect but a question the acceptance has to
+answer, and it should be answered deliberately rather than by editing the client
+to stop asking: either a missed channel order should not report the payment as
+captured at all -- in which case `awaitPaymentCaptured` answering paid is the real
+inconsistency, and the invoice branch is its first visible symptom -- or a missed
+order is a captured-but-unreconciled state by design, in which case a fault-seeded
+purchase should not be asked for a basis and the generator's branch is what is
+wrong. The 42 failures are the seeded fault's outcome either way, so they should
+not be counted as an unexplained user-visible failure while that question is open.
