@@ -456,7 +456,23 @@ impl PostgresCapacityService {
             });
         }
         let available = supply.available_refs(&route.interval, &occupancy)?;
-        sqlx::query("INSERT INTO capacity_supply_observations(inventory_pool_id,seat_map_id,seat_map_version,sellable_capacity,data) VALUES($1,$2,$3,$4,$5) ON CONFLICT(inventory_pool_id) DO UPDATE SET seat_map_id=EXCLUDED.seat_map_id,seat_map_version=EXCLUDED.seat_map_version,sellable_capacity=EXCLUDED.sellable_capacity,data=EXCLUDED.data,observed_at=now()")
+        // The observation is an upsert per pool and the row is a sixteen
+        // kilobyte document, so rewriting it on every admission was about twenty
+        // seven gigabytes a day of new TOAST. The pool's TOAST reached 6.6
+        // gigabytes with 30110 dead tuples and autovacuum spent tens of seconds
+        // at a time on it: sampled over forty five seconds, that vacuum's own
+        // session held 26.6 percent of the admission sessions' wall time, and
+        // the minute it worked on was the minute a Hold's ninety-fifth
+        // percentile jumped from under a second to 47.
+        //
+        // What this table records is the map version and the supply used for
+        // admission, so the conflict path writes when that version changes
+        // rather than on every admission. The document itself cannot be the
+        // comparison: seat assignment stamps `capturedAt` with the time of each
+        // answer, so no two answers for one version are ever byte-identical, and
+        // comparing on the identity columns is also what keeps this a cheap read
+        // of three scalars instead of a detoast of the stored document.
+        sqlx::query("INSERT INTO capacity_supply_observations(inventory_pool_id,seat_map_id,seat_map_version,sellable_capacity,data) VALUES($1,$2,$3,$4,$5) ON CONFLICT(inventory_pool_id) DO UPDATE SET seat_map_id=EXCLUDED.seat_map_id,seat_map_version=EXCLUDED.seat_map_version,sellable_capacity=EXCLUDED.sellable_capacity,data=EXCLUDED.data,observed_at=now() WHERE capacity_supply_observations.seat_map_id IS DISTINCT FROM EXCLUDED.seat_map_id OR capacity_supply_observations.seat_map_version IS DISTINCT FROM EXCLUDED.seat_map_version OR capacity_supply_observations.sellable_capacity IS DISTINCT FROM EXCLUDED.sellable_capacity")
             .bind(pool_id_for(&facts.segment_ref,&facts.class_ref)).bind(&supply.seat_map_id).bind(supply.seat_map_version as i64)
             .bind(supply.capacity() as i32).bind(serde_json::to_value(&supply).map_err(|e| AppError::Internal(e.to_string()))?)
             .execute(&mut **tx).await.map_err(to_app_storage)?;
