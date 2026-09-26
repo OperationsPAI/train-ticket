@@ -36,6 +36,13 @@ import org.springframework.transaction.annotation.Transactional;
 public class TravelerProfileService {
     private static final String PRODUCER = "traveler-profile";
 
+    // The windows the API holds when it records a fact it was handed: a document
+    // is treated as issued a day ago and valid for ten years, and an eligibility
+    // grant is valid for a year.
+    private static final long DOCUMENT_ISSUED_DAYS_AGO = 1;
+    private static final long DOCUMENT_VALIDITY_DAYS = 3650;
+    private static final long ELIGIBILITY_VALIDITY_DAYS = 365;
+
     private final TravelerProfileStore store;
     private final IdempotencyStore idempotencyStore;
     private final EventPublisher eventPublisher;
@@ -115,8 +122,8 @@ public class TravelerProfileService {
                 toDomainDocumentType(command.documentType()),
                 command.documentNumber(),
                 command.documentIssuingCountry().trim(),
-                now.minus(1, ChronoUnit.DAYS),
-                now.plus(3650, ChronoUnit.DAYS),
+                now.minus(DOCUMENT_ISSUED_DAYS_AGO, ChronoUnit.DAYS),
+                now.plus(DOCUMENT_VALIDITY_DAYS, ChronoUnit.DAYS),
                 displayName(command.givenName(), command.familyName()),
                 true,
                 now,
@@ -167,8 +174,8 @@ public class TravelerProfileService {
                 toDomainDocumentType(command.documentType()),
                 command.documentNumber(),
                 command.documentIssuingCountry().trim(),
-                now.minus(1, ChronoUnit.DAYS),
-                now.plus(3650, ChronoUnit.DAYS),
+                now.minus(DOCUMENT_ISSUED_DAYS_AGO, ChronoUnit.DAYS),
+                now.plus(DOCUMENT_VALIDITY_DAYS, ChronoUnit.DAYS),
                 displayName(
                     command.givenName() != null ? command.givenName() : current.givenName(),
                     command.familyName() != null ? command.familyName() : current.familyName()
@@ -212,7 +219,7 @@ public class TravelerProfileService {
                 "TRAVELER_PROFILE_API",
                 fingerprint("eligibility", travelerId, objectMapper.createObjectNode().put("travelerType", traveler.travelerType().name())),
                 now,
-                now.plus(365, ChronoUnit.DAYS),
+                now.plus(ELIGIBILITY_VALIDITY_DAYS, ChronoUnit.DAYS),
                 now,
                 commandId,
                 commandId,
@@ -220,7 +227,7 @@ public class TravelerProfileService {
             );
         }
         String eligibilityRef = summary == null ? "elig-" + UUID.randomUUID() : canonicalEligibilityRef(summary.eligibilityId());
-        EligibilityResult result = new EligibilityResult(travelerId, eligibilityRef, eligible, now, now.plus(365, ChronoUnit.DAYS));
+        EligibilityResult result = new EligibilityResult(travelerId, eligibilityRef, eligible, now, now.plus(ELIGIBILITY_VALIDITY_DAYS, ChronoUnit.DAYS));
         store.save(traveler);
         publishNewEvents(aggregate.domainEvents(), eventOffset, traveler);
         saveIdempotentResponse(key, requestFingerprint, result);
