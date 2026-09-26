@@ -1214,9 +1214,16 @@ services:
   entitlement-ticketing:
     db: entitlement_ticketing
     pgInstance: txn
-    # Two replicas: ticket issuance follows the reservation, and its consumer
+    # Three replicas: ticket issuance follows the reservation, and its consumer
     # group is read from a Redis stream.
-    replicas: 2
+    #
+    # Measured on 2026-09-27 at the raised burst: this is the hop that delays a
+    # refund's terminal event. A refund case created at 21:44:14.13 was approved
+    # and answered 200 at 21:44:14.21, and this service handled that approval --
+    # voiding the entitlements -- at 21:44:22.10, 7.9 seconds later, while the
+    # pod sat at a third of a core. The case reached APPLIED at 21:44:24.46,
+    # after the load generator's last of ten one-second polls at 21:44:23.26.
+    replicas: 3
     strategy:
       type: RollingUpdate
       rollingUpdate:
@@ -1231,8 +1238,10 @@ services:
       SEAT_ASSIGNMENT_BASE_URL: http://seat-assignment:8080
       # The Booking stream peaks near 150 events per second and ticket issuance
       # waits for entitlement processing; four threads fell 6.5 thousand events
-      # behind during a peak.
-      CONSUMER_THREADS: "8"
+      # behind during a peak. The same shape returned at the higher burst on the
+      # post-sales stream, where an approval waited 7.9 seconds for a handler, so
+      # twelve loops across three replicas replace eight across two.
+      CONSUMER_THREADS: "12"
   fulfillment:
     db: fulfillment
     env:
