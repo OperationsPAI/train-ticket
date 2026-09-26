@@ -81,7 +81,7 @@ public class TravelerProfileService {
         TravelerProfile aggregate = TravelerProfile.create(
             command.accountId().trim(),
             displayName(command.givenName(), command.familyName()),
-            "1970-01-01",
+            textOrNull(command.dateOfBirth()),
             command.idempotencyKey(),
             now,
             commandId,
@@ -91,7 +91,7 @@ public class TravelerProfileService {
             aggregate.addDocument(
                 toDomainDocumentType(command.documentType()),
                 command.documentNumber(),
-                "CN",
+                command.documentIssuingCountry().trim(),
                 now.minus(1, ChronoUnit.DAYS),
                 now.plus(3650, ChronoUnit.DAYS),
                 displayName(command.givenName(), command.familyName()),
@@ -143,7 +143,7 @@ public class TravelerProfileService {
             aggregate.addDocument(
                 toDomainDocumentType(command.documentType()),
                 command.documentNumber(),
-                "CN",
+                command.documentIssuingCountry().trim(),
                 now.minus(1, ChronoUnit.DAYS),
                 now.plus(3650, ChronoUnit.DAYS),
                 displayName(
@@ -234,8 +234,21 @@ public class TravelerProfileService {
         if (command.travelerType() == null) errors.put("travelerType", "travelerType is required");
         requireText(command.givenName(), "givenName", errors);
         requireText(command.familyName(), "familyName", errors);
+        if (!isBlank(command.dateOfBirth())) {
+            try {
+                java.time.LocalDate.parse(command.dateOfBirth().trim());
+            } catch (java.time.format.DateTimeParseException ex) {
+                errors.put("dateOfBirth", "dateOfBirth must be an ISO-8601 date (YYYY-MM-DD)");
+            }
+        }
         if ((command.documentType() == null) != isBlank(command.documentNumber())) {
             errors.put("document", "documentType and documentNumber must be supplied together");
+        }
+        // The issuing country is a fact about the document, so it is required
+        // with one. It used to be filled in as "CN" for every traveler, which
+        // states a nationality the caller never claimed.
+        if (command.documentType() != null && !isBlank(command.documentNumber()) && isBlank(command.documentIssuingCountry())) {
+            errors.put("documentIssuingCountry", "documentIssuingCountry is required with documentType and documentNumber");
         }
         if (!errors.isEmpty()) {
             throw new ValidationException("Request validation failed", errors);
@@ -250,6 +263,9 @@ public class TravelerProfileService {
         if ((command.documentType() == null) != (command.documentNumber() == null || isBlank(command.documentNumber()))) {
             errors.put("document", "documentType and documentNumber must be supplied together");
         }
+        if (command.documentType() != null && !isBlank(command.documentNumber()) && isBlank(command.documentIssuingCountry())) {
+            errors.put("documentIssuingCountry", "documentIssuingCountry is required with documentType and documentNumber");
+        }
         if (!errors.isEmpty()) {
             throw new ValidationException("Request validation failed", errors);
         }
@@ -263,6 +279,10 @@ public class TravelerProfileService {
 
     private static boolean isBlank(String value) {
         return value == null || value.isBlank();
+    }
+
+    private static String textOrNull(String value) {
+        return isBlank(value) ? null : value.trim();
     }
 
     private void updateAggregatePreferences(
@@ -468,7 +488,7 @@ public class TravelerProfileService {
     private TravelerProfileView toView(TravelerState state) {
         return new TravelerProfileView(
             state.travelerId(), state.snapshotVersion(), state.accountId(), state.travelerType(), state.givenName(), state.familyName(),
-            documentType(state), maskedDocumentRef(state), state.contactEmail(), state.contactPhone(), state.createdAt(), state.updatedAt(),
+            state.aggregate().birthDate(), documentType(state), maskedDocumentRef(state), state.contactEmail(), state.contactPhone(), state.createdAt(), state.updatedAt(),
             state.aggregate().verificationFacts().stream()
                 .map(fact -> new VerificationFactView(
                     fact.credentialRecordId(), fact.verificationCaseId(), fact.status().name(), fact.documentType(), fact.maskedDocumentNo(),
