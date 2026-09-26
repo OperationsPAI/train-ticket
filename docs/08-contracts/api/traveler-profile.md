@@ -46,6 +46,12 @@ discounts).
 
 **Error codes:** `VALIDATION_FAILED`, `CONFLICT`
 
+A `dateOfBirth` outside the window of ages the register carries is a
+`VALIDATION_FAILED` naming `dateOfBirth` in `details`; the profile is not created and
+no event is published. The window's ends are the youngest and the oldest fare band the
+catalogue prices. They are release data, stated with the release's own values, so a
+release moves them without a new image.
+
 ### Get Traveler Profile
 
 **GET** `/api/v1/travelers/{travelerId}`
