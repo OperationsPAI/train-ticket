@@ -1163,13 +1163,11 @@ func validateReferences(entitlementID domain.EntitlementRef, segmentBookingID do
 	return segmentRef.Validate()
 }
 
+// validSource asks the estate this deployment boards through rather than a list
+// the branch carries: which readers a boarding fact may arrive under is a
+// statement about the estate, and the image vendors that statement at build.
 func validSource(source domain.FulfillmentSource) bool {
-	switch source {
-	case domain.FulfillmentSourceGate, domain.FulfillmentSourceStation, domain.FulfillmentSourceProvider, domain.FulfillmentSourceConductor, domain.FulfillmentSourceAdmin:
-		return true
-	default:
-		return false
-	}
+	return deploymentReaders().operates(source)
 }
 
 func validNoShowReason(reason domain.NoShowReason) bool {

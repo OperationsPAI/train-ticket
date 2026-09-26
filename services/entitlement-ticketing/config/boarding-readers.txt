@@ -1,0 +1,10 @@
+# The estate's boarding roster.
+#
+# Which readers a boarding fact may arrive under is a statement about the
+# estate rather than a constant inside the service that measures the fact. The
+# ticketing authority owns the vocabulary and publishes the roster here, and
+# the fulfillment image vendors it at build (deploy/docker/fulfillment), so
+# both sides measure a boarding fact against the same statement.
+GATE
+STATION
+PROVIDER
