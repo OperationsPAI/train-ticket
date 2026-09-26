@@ -32,6 +32,13 @@ timestamps, and Money.
 | `sourceEventId` | string | yes | Source event identifier for idempotency. |
 | `occurredAt` | timestamp | yes | When boarding physically occurred. |
 
+The vocabulary above is the contract's. Which of those readers a deployment
+operates is the release's boarding estate, stated as
+`FULFILLMENT_BOARDING_SOURCES` in the release settings, comma separated and
+read once when the process starts. A boarding whose `source` is not on the
+estate this deployment states never reaches the record, and a deployment that
+states no estate keeps the vocabulary the image was built with.
+
 **Response (201):**
 
 | Field | Type | Description |
