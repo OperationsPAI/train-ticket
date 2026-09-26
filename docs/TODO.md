@@ -281,6 +281,12 @@ recorded in [current status](00-current-status.md#the-resident-cycle-is-not-yet-
    release-by-hold-id path used in the repair emits `CapacityReleased` at all,
    or releases silently. If it releases silently, that is the last piece and the
    fix is the one already planned -- capacity must not lose or silence a release.
+   The first look points at silence: `release_hold_with_reason` in the storage
+   adapter mutates the pool and returns, and a scan of that method for the outbox
+   append, `domain_events_to_wire` or a `CapacityReleased` envelope finds none.
+   Confirm by reading the whole method and its caller before changing it: if the
+   API release path never publishes, then every repair made this way released the
+   seat without telling anyone, which is exactly why the refund case sat untouched.
 
    **Then this one, so that it is not mistaken for the same thing.** With the change leak repaired, the window's largest group is
    `refund-status`: 1025 refunds and 132 disruption refunds that did not reach
