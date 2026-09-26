@@ -313,11 +313,32 @@ recorded in [current status](00-current-status.md#the-resident-cycle-is-not-yet-
    admission, and it is a finding in its own right -- but it is not this case,
    whose release was published hours before that lag existed.
 
-   So the delivery explanation is weaker than it looked, and the next question is
-   the event itself rather than the group: what
-   `CapacityReleased.references.segmentBookingRef` held for the release made at
-   09:32, since the handler throws when it is null and that throw would leave the
-   case untouched exactly as observed.
+   **Why the case sat untouched, and it is a race rather than a loss.** Its own
+   hold is a different one from the change case's above:
+   `hold-01a0db4d-c0ae-7c90-ac58-39b9e9b06c75`, for booking
+   `sb-01a0db4d-c07f-7287-a72f-fbd3f9496c2d`, both from the case's scope. It is
+   Released -- and was released at **01:24:11**, while the case opened at
+   **01:24:21**, ten seconds later.
+
+   So the `CapacityReleased` this case is waiting for was already published and
+   consumed before the case existed. `applyForSegmentBooking` looks for cases that
+   are already waiting on that booking; on that day there was none, the handler
+   acked, and when the case opened ten seconds later nothing would ever mention
+   the release again. The repair in the same minute changed nothing because the
+   hold was already Released, so capacity's release path had nothing to emit. The
+   twenty-seven thousand refunds that reached APPLIED are the ones whose release
+   arrived *after* their case opened.
+
+   **The fix is the reconciliation this service already has and never calls.**
+   `PostSalesExecutionReconciliationService.reconcile` reads the owning services'
+   current state and applies what it proves -- which is exactly what a case needs
+   at the moment it starts executing, because the state it depends on may already
+   be there. Call it from `startApprovedExecution` (and from the redrive path)
+   once, after the case is EXECUTING: a refund whose capacity is already released
+   then completes at once instead of waiting for an event that has been and gone.
+   Note that this is not a workaround for a lost event -- it is the read side of
+   the same state the events describe, and it is what makes the flow tolerate
+   events that precede it.
 
    **Then this one, so that it is not mistaken for the same thing.** With the change leak repaired, the window's largest group is
    `refund-status`: 1025 refunds and 132 disruption refunds that did not reach
