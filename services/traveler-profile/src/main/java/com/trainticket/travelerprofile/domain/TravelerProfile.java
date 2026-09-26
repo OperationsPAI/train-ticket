@@ -36,7 +36,7 @@ public final class TravelerProfile {
         this.travelerRef = requireText(travelerRef, "travelerRef");
         this.accountId = requireText(accountId, "accountId");
         this.displayName = requireText(displayName, "displayName");
-        this.birthDate = requireText(birthDate, "birthDate");
+        this.birthDate = optionalText(birthDate, "birthDate");
         this.status = TravelerProfileStatus.DRAFT;
         this.documents = new HashMap<>();
         this.eligibilitySummaries = new HashMap<>();
@@ -439,6 +439,19 @@ public final class TravelerProfile {
 
     private static String requireText(String value, String name) {
         if (Objects.requireNonNull(value, name + " is required").isBlank()) {
+            throw new DomainRuleViolation(name + " must not be blank");
+        }
+        return value;
+    }
+
+    /// A field the caller may leave out. The profile carries no value rather
+    /// than a placeholder one: a birth date the client never supplied is not
+    /// the first of January 1970.
+    private static String optionalText(String value, String name) {
+        if (value == null) {
+            return null;
+        }
+        if (value.isBlank()) {
             throw new DomainRuleViolation(name + " must not be blank");
         }
         return value;

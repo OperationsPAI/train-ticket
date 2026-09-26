@@ -32,7 +32,7 @@ class IdentityVerificationEventHandlerTest {
             Clock.fixed(Instant.parse("2026-07-05T10:30:00Z"), ZoneOffset.UTC)
         );
         String travelerId = service.create(new CreateTravelerCommand(
-            "acct-1", TravelerType.ADULT, "Ada", "Lovelace", ApiDocumentType.ID_CARD, "E12345678",
+            "acct-1", TravelerType.ADULT, "Ada", "Lovelace", "1990-01-15", ApiDocumentType.ID_CARD, "E12345678", "GB",
             null, null, "idem-1", "corr-018f0000-0000-7000-8000-000000000001"
         ), "fingerprint-1").travelerId();
         ConsumedEventLog consumedEventLog = new ConsumedEventLog();
@@ -77,7 +77,7 @@ class IdentityVerificationEventHandlerTest {
             Clock.fixed(Instant.parse("2026-07-05T10:30:00Z"), ZoneOffset.UTC)
         );
         String travelerId = service.create(new CreateTravelerCommand(
-            "acct-1", TravelerType.ADULT, "Ada", "Lovelace", ApiDocumentType.ID_CARD, "E12345678",
+            "acct-1", TravelerType.ADULT, "Ada", "Lovelace", "1990-01-15", ApiDocumentType.ID_CARD, "E12345678", "GB",
             null, null, "idem-2", "corr-018f0000-0000-7000-8000-000000000201"
         ), "fingerprint-2").travelerId();
         IdentityVerificationEventHandler handler = new IdentityVerificationEventHandler(service, objectMapper);
