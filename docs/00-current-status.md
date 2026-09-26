@@ -1,11 +1,11 @@
 # Current project status
 
-Last verified: 2026-09-26, Asia/Beijing.
+Last verified: 2026-09-27, Asia/Beijing.
 
 ## Runtime
 
 The resident Helm release is `train-ticket` in namespace `train-ticket`,
-revision **442**.
+revision **447**.
 Its values come from one file, `deploy/helm/train-ticket/values.yaml`: the
 registry, the `local-path` storage class, the central telemetry store, the
 resident exporters, the load generator settings and the `loadgen-resident-state`
@@ -47,6 +47,9 @@ to one and back.
 
 | Check | Result | Evidence |
 |---|---|---|
+| Ten minute window at revision 447, the same burst, one fix later | 439115 requests, 48526 journeys, P99 106 milliseconds, 0 error groups, 20 failed journeys at the refund case poll (see the reservation and refund sections below) | `.scratch/runtime-fixes/goal-rev446-ten-minute.json` |
+| Ten minute window at revision 445, larger bursts | 384403 requests, 43046 journeys, P99 107 milliseconds, 1 error group, 61 failed journeys: 40 invoice basis, 21 transfer delay reports | `.scratch/runtime-fixes/goal-rev445-ten-minute.json` |
+| Ten minute window at revision 444, larger bursts | 641380 requests, 61102 journeys, P99 254 milliseconds, 2 error groups, 5345 failed journeys: 2305 staff reservation polls, ~1200 post-sales case polls, ~1100 offer refusals | `.scratch/runtime-fixes/goal-rev444-ten-minute.json` |
 | Ten minute window at revision 442, larger bursts | 366745 requests, 38432 journeys, P99 119 milliseconds, 4 error groups, 1945 failed journeys: 893 staff reservation polls ("reservation and capacity did not confirm"), 196 purchase and 179 transfer offer refusals, 114 invoice basis, 17 booking saga | `.scratch/runtime-fixes/goal-rev442-ten-minute.json` |
 | Ten minute window at revision 441, larger bursts | 303892 requests, 32699 journeys, P99 182 milliseconds, 2 error groups, 729 failed journeys: 607 post-sales case-status, 177 invoice basis, 16 transfer offer | `.scratch/runtime-fixes/goal-rev441-ten-minute.json` |
 | Ten minute window at revision 440 | 399599 requests, 45861 journeys, P99 112 milliseconds, **0 unexpected error groups and 0 failed journeys** | `.scratch/runtime-fixes/goal-rev440-ten-minute.json` |
@@ -105,6 +108,94 @@ reservation that had reached its Hold inside 0.2 seconds at the ninety-fifth
 percentile took ninety. And the reservation request needed its *own* connection
 held rather than a pooled one, because a pooled connection that goes back to the
 pool keeps its session and its lock.
+
+### The reservation poll stopped failing, and what was left behind it
+
+At revision 444 -- the raised burst, where the cycle peak carries about fourteen
+thousand journeys a minute against the nine thousand the earlier window held --
+the reservation poll was again the largest group: 2305 purchases and transfers
+whose segment booking did not confirm inside the client's ten polls at one
+second, plus about 1100 offer refusals and 1200 post-sales case polls in the
+same peak minutes.
+
+The reservation confirm is a chain, and the number that matters is the time
+from the client's request to `CONFIRMED`. Off the peak it is **0.3 seconds**; at
+the peak it was **6 to 12 seconds**. One purchase that failed at
+`staff-poll-reservation` asked for its booking at `20:52:02.824` and the booking
+and its capacity hold both reached `CONFIRMED` at `20:52:14.5`, about 1.2
+seconds after the client's last poll. The slow link was `provider-integration`:
+it was the only group on `events:booking-orchestration` behind at the peak, with
+the oldest undelivered entry 5 to 7 seconds old while `capacity-availability`
+and `entitlement-ticketing` on the same stream sat at zero.
+
+That one fix -- twenty four loops across three replicas instead of sixteen
+across two -- takes the same window from 5345 failed journeys to **61**. Broken
+down, the 61 were 40 invoice amount bases and 21 transfer delay reports, so the
+two remaining groups were the ones to read next.
+
+### The invoice basis and the delay report were both a late reader
+
+The invoice 404 is not a missing projection: the order had its `amounts`,
+`amount_history` and `orders` rows, and `finance-settlement` had recognised its
+revenue at the payment's own timestamp. It is a *late* one. `finance-settlement`
+holds one handler pool across the seven streams it reads, and at the peak the
+booking stream floods it: this group's lag on
+`events:booking-orchestration` grew from 1814 to 26460 and its oldest undelivered
+entry from 10 to 150 seconds across four peak minutes, while the payment stream's
+group stayed at zero, the pod sat at a quarter of a core and the connection pool
+had no queue. A second replica takes that window to zero invoice failures.
+
+The transfer delay report has the same shape one layer down:
+`transfer-management` read its three streams through one background reader, so
+the trip planning flood starved the fulfillment report the connection status
+waits on -- 127 seconds behind on `events:trip-planning` against 12 on
+`events:fulfillment`. One reader per stream per worker, the same change
+`disruption-recovery` already carries, takes that group to zero as well.
+
+### The remaining failure is the refund's first hop
+
+The window at revision 447 carries **0 request error groups and 20 failed
+journeys out of 48526**. Every one of the twenty is a refund or disruption case
+that did not reach `APPLIED` inside the client's poll, all inside the peak
+minute and each about 0.2 to 1.2 seconds past it.
+
+The hop is `entitlement-ticketing`. A case created at `21:44:14.13` was approved
+and answered 200 at `21:44:14.21`, and the entitlements were voided at
+`21:44:22.10` -- 7.9 seconds later, with the pod at a third of a core. The case
+reached `APPLIED` at `21:44:24.46`, after the client's last poll at
+`21:44:23.26`. Twelve loops across three replicas replace eight across two.
+
+Measured across the window, a refund's time from case creation to `APPLIED` is
+0.5 seconds at the median off the peak, 3.8 at the median of the peak minute and
+8.4 at its ninety-fifth percentile, against a ten second poll budget.
+
+#### The eight-times burst is a second, larger envelope
+
+The cycle's bursts are not one size. The windows above caught a four-times
+burst; the one at `22:13` on 2026-09-27 caught an eight-times burst --
+**12091 journeys in the peak minute against 7591** -- and it fails again, with
+2061 reservation polls and about 3000 post-sales and refund polls across the two
+peak minutes. What it proves is that the fixes above are correct and not yet
+sufficient: the same hops are the late ones, at a larger rate.
+
+The two measurements that decide where the next capacity goes:
+
+1. Capacity's **admission** is not the wait at any amplitude: a booking reached
+   its hold 0.2 to 0.3 seconds after it was requested in the peak minute. The
+   hold's **confirmation** was 12.0 seconds at the median and 16.9 at the
+   ninety-fifth percentile, and `booking-orchestration`'s oldest undelivered
+   entry on `events:capacity-availability` was 10.8 seconds old at the same
+   moment. A third booking replica is deployed for that leg.
+2. `payment`'s group on `events:booking-orchestration` grew from 4.5 to 107
+   seconds of oldest undelivered entry in the same four minutes while the pod
+   used a fifth of a core, and the window answered `refund did not reach
+   SETTLED` 406 times. A second payment replica is deployed for it.
+
+What the eight-times burst says about the refund itself is that no single hop is
+left to name: a case that fails now spends 9 to 12 seconds spread across four
+or five hops that are each one to four seconds late, against a ten second poll.
+Cutting it inside the budget is a throughput question across the whole chain,
+not one more consumer count.
 
 ### The resident cycle is not yet clean
 
