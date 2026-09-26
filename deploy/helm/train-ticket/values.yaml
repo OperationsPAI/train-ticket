@@ -821,8 +821,13 @@ services:
           command: ["sleep", "10"]
     env:
       IDENTITY_VERIFICATION_URL: http://identity-verification:8080
-      # Four worker pools share a 64 connection budget.
-      PG_MAX_POOL_SIZE: "16"
+      # Four worker pools; 24 each rather than 16. At the cycle's burst this pool
+      # had 25 requests waiting while the process held six of its eight cores,
+      # and the quotes that waited answered in 6.4 seconds at the median -- so
+      # the pool, not the CPU, was what the caller hit its ten second timeout on.
+      # Read names about 604 of its 700 connections with this, which still leaves
+      # a replacement pod of room.
+      PG_MAX_POOL_SIZE: "24"
     # Same shape as identity-verification: p50 0.457 of a core, p95 1.915 and
     # peak 2.0 against the shared 2-core default, so the bursts are clipped.
     #
@@ -1059,7 +1064,11 @@ services:
       # provider's own record, which is the edge of the reservation poll window.
       CONSUMER_THREADS: "32"
       # Leave database connections for HTTP requests and the outbox relay.
-      HIKARI_MAX_POOL_SIZE: "32"
+      # 64 rather than 32: at the cycle's burst, 281 requests were waiting for a
+      # connection from this pool while the pod used about one of its cores. The
+      # txn instance has room -- its five services name about 178 connections of
+      # its 400 with this change.
+      HIKARI_MAX_POOL_SIZE: "64"
     # CPU headroom covers concurrent HTTP requests and event processing.
     resources:
       requests: { cpu: 500m, memory: 256Mi }
@@ -1082,7 +1091,10 @@ services:
       # subscriber concurrency doubles without adding connections. Two
       # subscribers on one process could not follow the identity verification
       # stream during a peak and its callers timed out.
-      PG_MAX_POOL_SIZE: "8"
+      # 12 rather than 8: twelve requests were waiting for a connection during
+      # the burst, and fare-pricing's eligibility lookup is the caller that waits
+      # on it. User names about 154 of its 300 connections with this.
+      PG_MAX_POOL_SIZE: "12"
       WEB_CONCURRENCY: "8"
       # 30000 entries is forty three seconds of this stream at a burst of seven
       # hundred events per second, and the largest burst left 29532 undelivered;
