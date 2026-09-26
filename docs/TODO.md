@@ -685,3 +685,30 @@ than treating "not a change" as a rule violation. Until that decision is made th
 insurance projection keeps missing exactly the orders that were refunded or
 cancelled, and the dead letter stays at its cap with the oldest entries already
 trimmed.
+
+## Hardcoded time and location values, audited 2026-09-26
+
+Three services carried a value where a fact belonged. Each is fixed in its own
+commit (see [current status](00-current-status.md#hardcoded-values-audit)) and
+none of them changes what the load generator sees on the HTTP surface, but the
+resident revision has to be redeployed and re-measured before this section
+closes.
+
+1. [ ] Redeploy and re-measure. transfer-management's builtin MCT now reads a
+   declared `stationSize` instead of matching station display names against a
+   node reference; traveler-profile accepts `dateOfBirth` and
+   `documentIssuingCountry` instead of inventing `1970-01-01` and `CN`; loyalty
+   takes `isHoliday` and `isBonusRoute` as stated facts instead of keeping a
+   five-entry holiday calendar and matching corridor names in a route string.
+2. [ ] The load generator now sends `dateOfBirth`; confirm the create path holds
+   at the resident rate and that `GET /api/v1/travelers/{id}` returns the value
+   rather than `null`.
+3. [ ] `deploy/stress` still pins `departure_date: "2026-09-01"` in every
+   scenario and as the driver's default. The stress harness is not production
+   code, so it is out of scope for the rule that produced this audit, but the
+   date is already in the past and the scenarios will search a departed service
+   day. Make the default relative to the run clock and drop the pinned date.
+4. [ ] The load generator's invoice branch sends `titleName: "个人"` as a fixed
+   personal-invoice title. It is test tooling, and the value is the business's
+   own label rather than a location or a date, so it stays; this is recorded so a
+   later reader does not re-open it as a finding.
