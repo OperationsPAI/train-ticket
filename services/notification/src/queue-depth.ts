@@ -9,10 +9,14 @@ import type { NotificationQueueObservation } from "./metrics.js";
  * table maintains, rather than counting the queue itself: the queue holds every
  * task the service ever accepted, so a count is a scan of tens of millions of
  * rows (measured at 3.7 seconds on the resident database).
+ *
+ * The state's count is split over buckets derived from the task id, so a
+ * transaction that moves one task does not lock the row a transaction moving
+ * another task needs, and the read sums them.
  */
 export async function readDeliveryQueueDepth(pool: Pool): Promise<NotificationQueueObservation[]> {
   const buckets = await pool.query<{ state: string; channel: string; tasks: string }>(
-    "SELECT state, channel, tasks FROM notification_delivery_queue_state ORDER BY state, channel",
+    "SELECT state, channel, sum(tasks)::bigint AS tasks FROM notification_delivery_queue_state GROUP BY state, channel ORDER BY state, channel",
   );
   const oldest = await readOldestDue(pool);
   const samples: NotificationQueueObservation[] = [];
