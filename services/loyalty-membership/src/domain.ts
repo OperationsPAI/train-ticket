@@ -2,6 +2,11 @@ import { randomUUID } from "node:crypto";
 
 export type MemberId = string;
 export type AccountId = string;
+/**
+ * The statement the membership programme holds an enrolment's account reference to.
+ * An empty statement accepts a reference as the caller sends it.
+ */
+export type AccountReferenceStatement = Readonly<{ acceptedNamespaces: readonly string[] }>;
 export type PointsLedgerEntryId = string;
 export type PointsLotId = string;
 export type RedemptionId = string;
@@ -327,9 +332,11 @@ export class PointsLedger {
 
 export class Member {
   private constructor(private readonly snapshot: MemberSnapshot) {}
-  static enroll(input: { accountId: AccountId; memberId?: MemberId; now?: Date }): Member {
+  static enroll(input: { accountId: AccountId; statement?: AccountReferenceStatement; memberId?: MemberId; now?: Date }): Member {
     const now = input.now ?? new Date();
-    return new Member(freeze({ memberId: input.memberId ?? newMemberId(), accountId: required(input.accountId, "accountId"), status: "ACTIVE", tier: "SILVER", redeemablePoints: 0, lifetimePoints: 0, tierPoints: 0, createdAt: now, updatedAt: now, ledger: [], lots: [], membershipYears: [newMembershipYear(now.getUTCFullYear(), "SILVER")] }));
+    const accountId = required(input.accountId, "accountId");
+    assertAccountReferenceStated(accountId, input.statement);
+    return new Member(freeze({ memberId: input.memberId ?? newMemberId(), accountId, status: "ACTIVE", tier: "SILVER", redeemablePoints: 0, lifetimePoints: 0, tierPoints: 0, createdAt: now, updatedAt: now, ledger: [], lots: [], membershipYears: [newMembershipYear(now.getUTCFullYear(), "SILVER")] }));
   }
   static fromSnapshot(snapshot: MemberSnapshot): Member {
     const tier = normalizeTier(snapshot.tier as string);
@@ -530,3 +537,13 @@ function newMemberId(): MemberId { return `mem_${randomUUID()}`; }
 function newLedgerEntryId(): PointsLedgerEntryId { return `ple_${randomUUID()}`; }
 function newPointsLotId(): PointsLotId { return `lot_${randomUUID()}`; }
 function newRedemptionId(): RedemptionId { return `red_${randomUUID()}`; }
+// An enrolment keys a membership by the account reference its caller sends, and the ledger keeps
+// that reference as it arrives. The programme states the namespaces those references arrive in, so
+// a reference from a namespace the programme does not state is refused where it is read: storing it
+// anyway would key the membership by something the identity service does not resolve an account
+// from. An empty statement accepts the reference as the caller sends it.
+function assertAccountReferenceStated(accountId: AccountId, statement?: AccountReferenceStatement): void {
+  const accepted = statement?.acceptedNamespaces ?? [];
+  if (accepted.length === 0 || accepted.some((namespace) => accountId.startsWith(`${namespace}-`) || accountId.startsWith(`${namespace}_`))) return;
+  throw new DomainError("ACCOUNT_REFERENCE_NOT_ACCEPTED", "The account reference is not one the membership programme keys by");
+}
