@@ -382,7 +382,17 @@ otelCollector:
   # memory_limiter.limit_mib on the OTLP gateway. Must stay ABOVE sendingQueue
   # (a limiter smaller than the queue makes the collector refuse spans it could
   # buffer) and BELOW resources.limits.memory.
-  memoryLimitMiB: 768
+  #
+  # Raised from 768 with the limit below. Measured at revision 416: the gateway
+  # had been OOM-killed seven times, sat at 1001m of its 1 core limit, and spent
+  # minutes at a time above its soft limit refusing data -- which is what every
+  # service that emits a span waits on. The evidence is one line of its own log
+  # and one window: it refused metrics and logs, `capacity-availability` logged
+  # "error sending request for url (http://service-plan:8080/...)" for calls to
+  # services that were idle at a tenth of a core, and the ten minute window
+  # carried 7919 failed journeys with place-network, dispatch, fulfillment and
+  # payment-channel answering at a ninety-ninth percentile of ten seconds.
+  memoryLimitMiB: 3072
   # Bounded in-memory queue on the ClickHouse exporter, paired with
   # retry_on_failure. ClickHouse holds an exclusive lock on its volume, so
   # replacing its pod takes it offline for a few seconds; without this, signals
@@ -410,8 +420,8 @@ otelCollector:
     port: 9464
     metricExpiration: 2m
   resources:
-    requests: { cpu: 50m, memory: 256Mi }
-    limits: { cpu: '1', memory: 1Gi }
+    requests: { cpu: '1', memory: 1Gi }
+    limits: { cpu: '4', memory: 4Gi }
 
   # Per-node collector: pod logs, kubelet stats, host metrics.
   # See templates/otel-agent.yaml.
