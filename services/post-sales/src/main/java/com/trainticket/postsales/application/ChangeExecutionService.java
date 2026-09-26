@@ -17,6 +17,11 @@ public class ChangeExecutionService {
     /// The replacement reservation saga records a fifteen minute deadline for its own step, so a
     /// case that has waited longer than that can only be terminal.
     private static final Duration RESERVATION_WAIT_LIMIT = Duration.ofMinutes(15);
+    /// How long a cancelled booking's capacity hold is waited for before the case releases it
+    /// itself. The release is an event on the booking stream and normally lands in well under a
+    /// second; two minutes is far outside any delivery this stream is allowed to be late by, and
+    /// a case left waiting on one that will never come is the failure this bounds.
+    private static final Duration RELEASE_WAIT_LIMIT = Duration.ofMinutes(2);
 
     private final PostSalesApplicationService cases;
     private final RestClient client;
@@ -137,8 +142,27 @@ public class ChangeExecutionService {
         for(String bookingId:change.scope().orderItemRefs()) {
             JsonNode booking=get("booking-orchestration","/api/v1/internal/segment-bookings/"+bookingId,correlation);
             if(!"CANCELLED".equals(text(booking,"status")))return change;
-            JsonNode hold=get("capacity-availability","/api/v1/capacity-holds/"+text(booking,"capacityHoldId"),correlation);
-            if(!"RELEASED".equals(text(hold,"status")))return change;
+            String holdId=text(booking,"capacityHoldId");
+            if(holdId==null || holdId.isBlank())throw new DomainRuleViolation("cancelled booking has no capacity hold: "+bookingId);
+            JsonNode hold=get("capacity-availability","/api/v1/capacity-holds/"+holdId,correlation);
+            if(!"RELEASED".equals(text(hold,"status"))) {
+                String waitKey="waiting-release:"+bookingId;
+                Map<String,Object> waiting=ops.get(waitKey);
+                if(waiting==null)return cases.recordChangeOperation(caseId,waitKey,Map.of("since",clock.instant().toString()));
+                if(!releaseWaitExpired(waiting))return change;
+                // Capacity releases this hold when it consumes SegmentBookingCancelled, and that
+                // event can be lost: the stream is trimmed by count, so a group that falls further
+                // behind than the retention never sees the entry, and one whose handling fails
+                // five times is moved to the dead letter, which nothing replays. Either way the
+                // hold stays Confirmed for a booking that is CANCELLED, the seat is held out of
+                // the pool, and this case waits for ever: measured, 34 such holds and one case
+                // EXECUTING for five and a half hours, while every later journey that reused the
+                // order failed. Releasing it here is idempotent and puts the seat back where the
+                // cancellation said it belonged.
+                releaseHold(change,bookingId,holdId,correlation);
+                JsonNode released=get("capacity-availability","/api/v1/capacity-holds/"+holdId,correlation);
+                if(!"RELEASED".equals(text(released,"status")))throw new DomainRuleViolation("cancelled booking's hold is still "+text(released,"status")+": "+holdId);
+            }
             if(!change.releasedOrderItems().contains(bookingId))return cases.recordChangeCapacityReleased(caseId,bookingId);
         }
         Money refund=change.decision().amountSnapshot().refundAmount();
@@ -398,6 +422,20 @@ public class ChangeExecutionService {
         Object requestedAt=operation==null?null:operation.get("requestedAt");
         if(requestedAt==null && waiting!=null)requestedAt=waiting.get("since");
         return reservationWaitExpired(requestedAt==null?null:String.valueOf(requestedAt), clock.instant());
+    }
+
+    private boolean releaseWaitExpired(Map<String,Object> waiting) {
+        Object since=waiting==null?null:waiting.get("since");
+        if(since==null)return false;
+        return Instant.parse(String.valueOf(since)).plus(RELEASE_WAIT_LIMIT).isBefore(clock.instant());
+    }
+
+    /// Releases a hold whose booking is already cancelled, for the case where the release event
+    /// capacity would have acted on was lost.
+    private void releaseHold(PostSalesCase change,String bookingId,String holdId,String correlation) {
+        client.post().uri(baseTemplate.formatted("capacity-availability")+"/api/v1/capacity-holds/"+holdId+"/release")
+            .header("Idempotency-Key",key(change.caseId()+":release-cancelled-hold:"+bookingId))
+            .header("X-Correlation-Id",correlation).retrieve().toBodilessEntity();
     }
 
     static boolean reservationWaitExpired(String requestedAt, Instant now) {
