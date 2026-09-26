@@ -94,6 +94,31 @@ func (r *Repository) ListSuppliers(ctx context.Context, status string, limit, of
 func (r *Repository) FindSupplierByProfile(ctx context.Context, profile string) (domain.Supplier, error) {
 	return findByData(ctx, r.db.DBFor(ctx), "supplier_snapshots", "profile", profile, domain.Supplier{})
 }
+func (r *Repository) CountSuppliersByKey(ctx context.Context, key, value string) (int, error) {
+	column, err := supplierKeyColumn(key)
+	if err != nil {
+		return 0, err
+	}
+	var filed int
+	if err := r.db.DBFor(ctx).QueryRow(ctx, "SELECT count(*)::int FROM supplier_snapshots WHERE lower(data->>'"+column+"') = lower($1)", strings.TrimSpace(value)).Scan(&filed); err != nil {
+		return 0, err
+	}
+	return filed, nil
+}
+
+// supplierKeyColumn names the stored field a partner's identity is read from. A key
+// the catalogue does not file partners under is refused rather than interpolated
+// into the query.
+func supplierKeyColumn(key string) (string, error) {
+	switch strings.TrimSpace(key) {
+	case "legalName":
+		return "legalName", nil
+	case "brandName":
+		return "brandName", nil
+	default:
+		return "", fmt.Errorf("%w: %q is not an identity the catalogue files a partner under", application.ErrValidation, key)
+	}
+}
 func (r *Repository) FindCarrierByCode(ctx context.Context, code string) (domain.Carrier, error) {
 	return findByData(ctx, r.db.DBFor(ctx), "carrier_snapshots", "code", code, domain.Carrier{})
 }

@@ -32,6 +32,7 @@ type Repository interface {
 	FindCarrier(context.Context, string) (domain.Carrier, error)
 	ListSuppliers(context.Context, string, int, int) (SupplierList, error)
 	FindSupplierByProfile(context.Context, string) (domain.Supplier, error)
+	CountSuppliersByKey(context.Context, string, string) (int, error)
 	FindCarrierByCode(context.Context, string) (domain.Carrier, error)
 	FindContractByRef(context.Context, string) (domain.Contract, error)
 }
@@ -49,6 +50,7 @@ type Service struct {
 	publisher      EventPublisher
 	repository     Repository
 	uow            UnitOfWork
+	partnerBound   PartnerBound
 }
 
 func NewService(publisher EventPublisher) *Service {
@@ -58,6 +60,7 @@ func NewService(publisher EventPublisher) *Service {
 		contracts:     make(map[domain.ContractID]domain.Contract),
 		pendingEvents: []EventEnvelope{},
 		publisher:     publisher,
+		partnerBound:  DefaultPartnerBound(),
 	}
 }
 
@@ -70,6 +73,12 @@ func (s *Service) WithRepository(repository Repository) *Service {
 func (s *Service) WithUnitOfWork(uow UnitOfWork) *Service {
 	if s != nil {
 		s.uow = uow
+	}
+	return s
+}
+func (s *Service) WithPartnerBound(bound PartnerBound) *Service {
+	if s != nil {
+		s.partnerBound = bound
 	}
 	return s
 }
@@ -172,6 +181,33 @@ func (s *Service) RegisterSupplier(ctx context.Context, cmd RegisterSupplierComm
 			}
 		}
 		s.mu.Unlock()
+	}
+
+	// The master data holds one partner per identity, so the partners already filed
+	// under the identity this registration carries are counted before it is added: a
+	// filing that would put a second partner under an identity the catalogue already
+	// holds is refused rather than filed, and the code the call minted stays what it
+	// is, a code and not a partner.
+	if bound := s.partnerBound; bound.Limit > 0 {
+		identity := partnerIdentity(supplier, bound.Key)
+		held := 0
+		if s.repository != nil {
+			held, err = s.repository.CountSuppliersByKey(ctx, bound.Key, identity)
+			if err != nil {
+				return SupplierView{}, err
+			}
+		} else {
+			s.mu.RLock()
+			for _, filed := range s.suppliers {
+				if strings.EqualFold(partnerIdentity(filed, bound.Key), identity) {
+					held++
+				}
+			}
+			s.mu.RUnlock()
+		}
+		if identity != "" && held >= bound.Limit {
+			return SupplierView{}, fmt.Errorf("%w: a partner is already filed under this identity", ErrConflict)
+		}
 	}
 
 	envelopes := wrapDomainEvents(ctx, events, cmd.CorrelationID, cmd.CausationID)

@@ -42,6 +42,9 @@ func (r failingRepository) ListSuppliers(context.Context, string, int, int) (Sup
 func (r failingRepository) FindSupplierByProfile(context.Context, string) (domain.Supplier, error) {
 	return domain.Supplier{}, r.err
 }
+func (r failingRepository) CountSuppliersByKey(context.Context, string, string) (int, error) {
+	return 0, r.err
+}
 func (r failingRepository) FindCarrierByCode(context.Context, string) (domain.Carrier, error) {
 	return domain.Carrier{}, r.err
 }
