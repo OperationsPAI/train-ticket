@@ -225,10 +225,21 @@ recorded in [current status](00-current-status.md#the-resident-cycle-is-not-yet-
    posts evaluate, target-offer and approve -- and no event handler hooks it. So
    whatever advances a refund to APPLIED is on the approve side, in
    `PostSalesApplicationService` (`isRefundType` around line 401, the refund case
-   creation around line 604), and that is where to read next: either approve
-   drives the refund inline for the twenty-seven thousand that worked and returned
-   early for this one, or the reconcile endpoint has a caller outside this
-   repository that ran for them and not for it.
+   creation around line 604).
+
+   Followed one step further: nothing calls the reconcile endpoint at all. A
+   search for `reconcile-execution` across every service and the load generator --
+   Go, Java, TypeScript and Python, tests excluded -- finds one hit, the mapping
+   on the controller that declares it. `reconcileExecution` has one caller
+   (`PostSalesExecutionReconciliationService.reconcile`), which has one caller
+   (that controller), and `PostSalesEventHandler` neither records steps nor
+   applies results. So a refund that reaches APPLIED does it through
+   `approve` -> `startApprovedExecution` -> `redriveApprovedExecution`, and the
+   redrive path is what to read next: `prepareExecutionRedrive` and
+   `executionRedriveEvents` in `PostSalesCase` decide whether the redrive does
+   anything, and `redriveApprovedExecution` returns without publishing when
+   `prepareExecutionRedrive` says there is nothing to redo. That is the shape to
+   check against this case, whose every step is still PLANNED.
 
    **Then this one, so that it is not mistaken for the same thing.** With the change leak repaired, the window's largest group is
    `refund-status`: 1025 refunds and 132 disruption refunds that did not reach
