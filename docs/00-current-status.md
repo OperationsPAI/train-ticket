@@ -267,3 +267,25 @@ released its capacity hold. The hold stayed Confirmed because the release reache
 capacity's dead letter during the gateway outage, the case waits for that release
 with no deadline, and every later journey that reuses the order fails. The case,
 the booking and the hold are named in [TODO](TODO.md).
+
+## Hardcoded values audit
+
+Audited 2026-09-26. Every literal the resident fixes add is a domain status, an
+API path, a SQL statement, a cache key or a named bound; the only dates in them
+are in comments recording a measurement, and the only repository values are test
+fixtures. A sweep of first-party production code then found three places where a
+value stood in for a fact.
+
+| Where | What was hardcoded | What it is now |
+|---|---|---|
+| `services/traveler-profile` | every profile born `1970-01-01`, every document issued by `CN` | `dateOfBirth` and `documentIssuingCountry` come from the create request; an absent date means the profile carries none, and a document without an issuing country is a validation error |
+| `services/transfer-management` | the builtin MCT matched station display names (`北京南`, `上海虹桥`, ...) against a node reference | the caller declares `stationSize` (`LARGE_STATION` 25, `MEDIUM_STATION` 20, `SMALL_STATION` 15); the reference keeps its own job |
+| `services/loyalty-membership` | a five-entry public-holiday calendar and four corridor names matched inside a route string | the event states `isHoliday` and `isBonusRoute`, like `travelDate`; the calendar and the corridor list belong to the upstream that owns them |
+
+The first two replaced a value the service invented for a fact the caller holds.
+The third removed two rules that could not fire: no producer sends `travelDate`,
+`routeCode` or `isHoliday` on a capture event today, so the bonuses were never
+awarded, and `services/loyalty-membership/src/bootstrap.ts` already documents
+that. Tests, the load generator and the stress harness keep their own literals;
+`deploy/stress`'s pinned departure date is in [TODO](TODO.md) because it is
+already in the past.
