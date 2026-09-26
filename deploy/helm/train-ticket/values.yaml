@@ -107,14 +107,14 @@ postgres:
         - service_plan
         - place_network
       storageSize: 230Gi
-      # 700 rather than 450: this shard now hosts every read-shaped service, and
-      # their pools add up to about 540 connections -- fare-pricing's four
-      # worker pools at 16, offer-management's four pods at 24,
+      # 900 rather than 450: this shard hosts every read-shaped service, and their
+      # pools add up to about 640 connections -- fare-pricing's two pods with four
+      # worker pools of 24, offer-management's four pods at 24,
       # capacity-availability's six at 24, seat-assignment's five at 24 and
       # trip-planning's three at 32. The previous 450 fit only the two that had
-      # already moved. 700 leaves room for one service replacing at a time
-      # during a rollout, which holds the old and the new pod at once.
-      maxConnections: 700
+      # already moved. 900 leaves room for one service replacing at a time during
+      # a rollout, which holds the old and the new pod at once.
+      maxConnections: 900
       sharedBuffers: 10GB
       workMem: 8MB
       maxWalSize: 24GB
@@ -809,6 +809,14 @@ services:
     db: fare_pricing
     pgInstance: read
     image: mirrors.tencent.com/microservice/fare-pricing:final-e98069db@sha256:589cc0ad43fc832f0861f9a0e35c3aabc6500e0dd2c977dd0c478c2f8bdf81db
+    # Two replicas, because one is CPU-bound at the cycle's burst: measured
+    # 11.04 cores against the eight the pod is allowed, with 17 requests waiting
+    # for a database connection, and its callers -- journey-order while it builds
+    # an order, post-sales while it evaluates a case -- answer their own clients
+    # with 500 and "Read timed out" when a quote does not come back in five
+    # seconds. Two pods put the same load on sixteen cores. The read instance's
+    # ceiling moves to 900 for the second pod's ninety six connections.
+    replicas: 2
     strategy:
       type: RollingUpdate
       rollingUpdate:
@@ -825,8 +833,8 @@ services:
       # had 25 requests waiting while the process held six of its eight cores,
       # and the quotes that waited answered in 6.4 seconds at the median -- so
       # the pool, not the CPU, was what the caller hit its ten second timeout on.
-      # Read names about 604 of its 700 connections with this, which still leaves
-      # a replacement pod of room.
+      # With the second replica the two pods name 192 of read's 900 connections,
+      # which the other five services on that instance have room under.
       PG_MAX_POOL_SIZE: "24"
     # Same shape as identity-verification: p50 0.457 of a core, p95 1.915 and
     # peak 2.0 against the shared 2-core default, so the bursts are clipped.
