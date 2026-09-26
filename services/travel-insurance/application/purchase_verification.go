@@ -162,7 +162,20 @@ func (v PurchaseVerifier) ResolveJourneyCoverage(ctx context.Context, journeyOrd
 	if err := v.read(ctx, "post-sales", "/api/v1/post-sales-cases/"+url.PathEscape(caseID), "", &change); err != nil {
 		return JourneyCoverage{}, err
 	}
-	if change.CaseID != caseID || change.JourneyOrderID != journeyOrderID || change.CaseType != "CHANGE" || (change.Status != "EXECUTING" && change.Status != "APPLIED") || len(change.Scope.SegmentRefs) == 0 || len(change.Scope.TravelerRefs) == 0 {
+	if change.CaseID != caseID || change.JourneyOrderID != journeyOrderID {
+		return JourneyCoverage{}, fmt.Errorf("%w: applied change scope is required", ErrDomainRule)
+	}
+	if change.CaseType != "CHANGE" {
+		// journey-order announces every post-sales adjustment with this event, and only
+		// one of the three case types is a change. A refund or cancellation ends the
+		// coverage the order carried rather than moving it, and this service is told
+		// that by PostSalesApplied, RefundApproved and AncillaryOrderItemRefunded --
+		// so there is nothing to adjust here. Treating it as a rule violation
+		// dead-lettered 30001 of them, which is the cap, and left the insurance
+		// projection missing exactly the orders that were refunded or cancelled.
+		return JourneyCoverage{}, ErrNotChangeAdjustment
+	}
+	if (change.Status != "EXECUTING" && change.Status != "APPLIED") || len(change.Scope.SegmentRefs) == 0 || len(change.Scope.TravelerRefs) == 0 {
 		return JourneyCoverage{}, fmt.Errorf("%w: applied change scope is required", ErrDomainRule)
 	}
 	target, ok := change.ChangeOperations["target"]
