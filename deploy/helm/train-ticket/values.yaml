@@ -765,11 +765,12 @@ services:
       # threads across six replicas: 237 entries a second consumed against 295
       # produced, so the consumer is permanently a little behind at the peak and
       # the hold confirmation lands a median of 44 seconds after the hold.
-      # Forty eight is the next measurement: the pods sit under a tenth of a
-      # core, so if the limit is per-thread work this doubles the rate, and if
-      # it does not the limit is the shared Redis connection rather than the
-      # threads.
-      CONSUMER_THREADS: "48"
+      # Thirty two is the service's own ceiling -- it asserts at startup that
+      # the thread count is between 1 and 32, and 48 crash-looped the pod -- and
+      # it is the next measurement: the pods sit under a tenth of a core, so if
+      # the limit is per-thread work this raises the rate, and if it does not
+      # the limit is the shared Redis connection rather than the threads.
+      CONSUMER_THREADS: "32"
       # Twenty four consumer threads share this pool, and each reservation needs
       # a connection for several statements while it holds the supply lock. At
       # the platform default of ten the pool timed out waiting for a connection
