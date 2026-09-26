@@ -324,9 +324,18 @@ func (s *Service) ListSeatMaps(ctx context.Context, ss, date, status string, lim
 	if limit > 100 {
 		limit = 100
 	}
-	items, total, err := s.repo.FindSeatMaps(ctx, ss, date, status, limit, offset)
+	items, total, err := s.seatMaps(ctx, ss, date, status)
 	if err != nil {
 		return nil, derr("UNAVAILABLE", err.Error())
+	}
+	paged, ok := seatMapPage(items, total, limit, offset)
+	if !ok {
+		items, total, err = s.repo.FindSeatMaps(ctx, ss, date, status, limit, offset)
+		if err != nil {
+			return nil, derr("UNAVAILABLE", err.Error())
+		}
+	} else {
+		items = paged
 	}
 	return &Page[domain.ContractSeatMap]{Items: items, Total: total, Limit: limit, Offset: offset}, nil
 }
