@@ -49,6 +49,7 @@ type Service struct {
 	publisher      EventPublisher
 	repository     Repository
 	uow            UnitOfWork
+	filingField    string
 }
 
 func NewService(publisher EventPublisher) *Service {
@@ -58,6 +59,7 @@ func NewService(publisher EventPublisher) *Service {
 		contracts:     make(map[domain.ContractID]domain.Contract),
 		pendingEvents: []EventEnvelope{},
 		publisher:     publisher,
+		filingField:   defaultFilingField(),
 	}
 }
 
@@ -70,6 +72,16 @@ func (s *Service) WithRepository(repository Repository) *Service {
 func (s *Service) WithUnitOfWork(uow UnitOfWork) *Service {
 	if s != nil {
 		s.uow = uow
+	}
+	return s
+}
+
+// WithFilingField names the registration field a partner is filed under. A
+// service that is given none keeps filing under the code the registration
+// handed over, which is what every release before the master data import did.
+func (s *Service) WithFilingField(field string) *Service {
+	if s != nil && strings.TrimSpace(field) != "" {
+		s.filingField = field
 	}
 	return s
 }
@@ -140,7 +152,8 @@ func (s *Service) RegisterSupplier(ctx context.Context, cmd RegisterSupplierComm
 		return SupplierView{}, fmt.Errorf("%w: legalName, brandName, and supplierCode are required", ErrValidation)
 	}
 	supplierID := domain.SupplierID("sup-" + newUUIDString())
-	supplier, err := domain.NewSupplier(supplierID, cmd.LegalName, cmd.BrandName, cmd.SupplierCode)
+	profile := filingProfile(s.filingField, cmd)
+	supplier, err := domain.NewSupplier(supplierID, cmd.LegalName, cmd.BrandName, profile)
 	if err != nil {
 		return SupplierView{}, fmt.Errorf("%w: %v", ErrDomainViolation, err)
 	}
