@@ -1,0 +1,11 @@
+# The readers this estate validates a boarding fact under, in the vocabulary the
+# boarding contract names. One reader per line, and a reader the estate no
+# longer operates is left out rather than commented out.
+#
+# This file is the estate's own statement of its roster: the ticketing
+# authority owns the vocabulary and publishes the roster here, and the
+# fulfillment image vendors it at build (deploy/docker/fulfillment), so both
+# sides measure a boarding fact against the same statement.
+GATE
+STATION
+PROVIDER

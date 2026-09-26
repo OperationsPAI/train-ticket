@@ -43,6 +43,13 @@ timestamps, and Money.
 
 **Error codes:** `VALIDATION_FAILED`, `NOT_FOUND`, `CONFLICT`, `DOMAIN_RULE_VIOLATION`
 
+Which readers a deployment validates boarding facts under is the estate's
+boarding roster: the ticketing authority publishes it in
+`services/entitlement-ticketing/config/boarding-readers.txt` and the fulfillment
+image vendors that file at build, so a boarding whose `source` is outside the
+roster never reaches the record. A deployment whose image carries no roster
+keeps the vocabulary listed above.
+
 ### Record No-Show
 
 **POST** `/api/v1/fulfillment-records/no-show`

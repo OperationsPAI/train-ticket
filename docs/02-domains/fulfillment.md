@@ -67,6 +67,7 @@ Fulfillment 负责记录出行服务被实际使用、核验、开始、进行�
 | Offline Verification | 设备离线时依据本地核验包做出的临时核验事实。 | 回传后需要冲突合并。 |
 | Replay/Backfill | 供应商或设备晚到事件对历史状态的回补。 | 必须保留原 occurredAt 和 receivedAt。 |
 | Fulfillment Source | 产生履约事实的来源。 | Gate、Provider、DriverApp、ConductorApp、Admin、System。 |
+| Boarding Roster | 本次部署接受其证据的 Reader 清单，是履约所属运营主体自己的声明而不是代码里的常量。 | 票务权威把清单发布在 `services/entitlement-ticketing/config/boarding-readers.txt`，fulfillment 镜像在构建时取用同一份文件；boarding 事实的 `source` 不在清单内就不会进入履约记录，镜像自带的词汇表只在部署未提供清单时使用。 |
 
 ## 4. 上下游契约
 
