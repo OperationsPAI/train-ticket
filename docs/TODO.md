@@ -828,6 +828,24 @@ snapshot" (606) and post-sales timeouts (523).
    Next: decide whether the refund path should do the same, or whether
    post-sales should apply on the booking's cancelled state plus a read of the
    capacity hold instead of on the release event.
+
+   Measured again after entitlement-ticketing gained a logger (it had none, so
+   every `log::` call in it -- warnings included -- was discarded) and its
+   approval handler was timed where it actually runs
+   (`adapters/storage::apply_post_sales_approved`): the handler itself takes at
+   most 11 milliseconds, and the gap between the load generator's approve
+   request and the handler's log line, matched by trace id, is about **76
+   milliseconds**. So the event reaches this service promptly and the 7.2
+   seconds measured earlier was specific to that burst minute, not the norm.
+
+5. [ ] The revision 438 window puts the remaining failures elsewhere: 459163
+   requests and 48468 journeys at P99 155 milliseconds with 7 error groups and
+   658 failed journeys, of which 209 are `offer-management` offers refused with
+   "Fare Pricing quote has not been consumed" and 101 are
+   `booking-orchestration` `staff-saga-lookup` timeouts. Both are the
+   consume-then-build shape this file's offer item describes, so the next
+   measurement is that group's lag and the two services' handler queues under the
+   same burst, the way payment's and disruption-recovery's were measured.
 3. [ ] Reporting still deadlocks on the event instance: `reporting_business_scopes`
    and `reporting_order_attachments` upserts take the same rows in different
    orders under burst, four times in four minutes after the notification fix.
