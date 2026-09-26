@@ -2,6 +2,7 @@ use std::net::SocketAddr;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    entitlement_ticketing::init_logging();
     let otel =
         rust_kit::metrics::init_telemetry_from_env(entitlement_ticketing::profile().service_id)?;
     let _otel_guard = otel;

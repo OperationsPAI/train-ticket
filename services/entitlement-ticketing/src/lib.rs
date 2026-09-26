@@ -58,6 +58,30 @@ pub fn health() -> &'static str {
     "ok"
 }
 
+/// Install the logger. Without it every `log::` call in this service -- including
+/// the warnings in the seat-assignment adapter -- was discarded, which is why its
+/// pod printed nothing at all. The format matches capacity-availability's: the
+/// trace id and span id are injected here rather than at each call site.
+pub fn init_logging() {
+    let mut builder =
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
+    builder
+        .target(env_logger::Target::Stdout)
+        .format(|buf, record| {
+            use std::io::Write;
+            writeln!(
+                buf,
+                "{} {} {} {}- {}",
+                rust_kit::messaging::now_rfc3339_utc(),
+                record.level(),
+                record.target(),
+                rust_kit::trace_logging::log_fields(),
+                record.args()
+            )
+        });
+    let _ = builder.try_init();
+}
+
 pub fn metadata() -> ServiceProfile {
     profile()
 }
