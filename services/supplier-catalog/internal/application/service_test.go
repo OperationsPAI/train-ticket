@@ -3,7 +3,9 @@ package application
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"go.opentelemetry.io/otel/trace"
@@ -51,6 +53,78 @@ func (r failingRepository) FindContractByRef(context.Context, string) (domain.Co
 
 func (r failingRepository) ClaimPartnerIdentity(context.Context, string, string) (bool, error) {
 	return false, r.err
+}
+
+// identityRepository answers the snapshots as an empty catalogue and holds the
+// identities the filings it accepts claimed, so a test can read which value one
+// partner was filed under.
+type identityRepository struct {
+	mu       sync.Mutex
+	profiles map[string]string
+	claims   map[string]string
+}
+
+func newIdentityRepository() *identityRepository {
+	return &identityRepository{profiles: map[string]string{}, claims: map[string]string{}}
+}
+
+func (r *identityRepository) SaveSupplier(_ context.Context, supplier domain.Supplier) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	profile := strings.ToLower(supplier.Profile)
+	if _, filed := r.profiles[profile]; filed {
+		return fmt.Errorf("%w: supplierCode already exists", ErrConflict)
+	}
+	r.profiles[profile] = string(supplier.SupplierID)
+	return nil
+}
+func (r *identityRepository) SaveCarrier(context.Context, domain.Carrier) error   { return nil }
+func (r *identityRepository) SaveContract(context.Context, domain.Contract) error { return nil }
+func (r *identityRepository) FindSupplier(context.Context, string) (domain.Supplier, error) {
+	return domain.Supplier{}, ErrNotFound
+}
+func (r *identityRepository) FindCarrier(context.Context, string) (domain.Carrier, error) {
+	return domain.Carrier{}, ErrNotFound
+}
+func (r *identityRepository) ListSuppliers(context.Context, string, int, int) (SupplierList, error) {
+	return SupplierList{}, nil
+}
+func (r *identityRepository) FindSupplierByProfile(context.Context, string) (domain.Supplier, error) {
+	return domain.Supplier{}, ErrNotFound
+}
+func (r *identityRepository) FindCarrierByCode(context.Context, string) (domain.Carrier, error) {
+	return domain.Carrier{}, ErrNotFound
+}
+func (r *identityRepository) FindContractByRef(context.Context, string) (domain.Contract, error) {
+	return domain.Contract{}, ErrNotFound
+}
+func (r *identityRepository) ClaimPartnerIdentity(_ context.Context, identity, supplierID string) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	held := strings.ToLower(strings.TrimSpace(identity))
+	if _, claimed := r.claims[held]; claimed {
+		return false, nil
+	}
+	r.claims[held] = supplierID
+	return true, nil
+}
+
+func TestRegisterSupplierFilesASecondOnboardingUnderItsOwnCode(t *testing.T) {
+	repository := newIdentityRepository()
+	service := NewService(nil).WithRepository(repository)
+	for _, code := range []string{"T1111111111", "T2222222222"} {
+		if _, err := service.RegisterSupplier(context.Background(), RegisterSupplierCommand{
+			LegalName: "Transfer carrier " + code, BrandName: "Transfer rail", SupplierCode: code,
+		}); err != nil {
+			t.Fatalf("registration under %s: %v", code, err)
+		}
+	}
+	if len(repository.claims) != 2 {
+		t.Fatalf("expected one identity per code, got %v", repository.claims)
+	}
+	if _, held := repository.claims["t1111111111"]; !held {
+		t.Fatalf("expected the code to be the identity claimed, got %v", repository.claims)
+	}
 }
 
 func TestWrapDomainEventProducesContractEnvelope(t *testing.T) {
