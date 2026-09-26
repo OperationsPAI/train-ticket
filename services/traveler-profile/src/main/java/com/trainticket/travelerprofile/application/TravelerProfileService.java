@@ -23,6 +23,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -41,12 +42,12 @@ public class TravelerProfileService {
     private final EventPublisher eventPublisher;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private final TravelerClaimWindow claimWindow;
 
     public TravelerProfileService(EventPublisher eventPublisher, ObjectMapper objectMapper) {
-        this(new InMemoryTravelerProfileStore(), new com.trainticket.platformkit.idempotency.InMemoryIdempotencyStore(), eventPublisher, objectMapper, Clock.systemUTC());
+        this(new InMemoryTravelerProfileStore(), new com.trainticket.platformkit.idempotency.InMemoryIdempotencyStore(), eventPublisher, objectMapper, Clock.systemUTC(), TravelerClaimWindow.unstated());
     }
 
-    @Autowired
     public TravelerProfileService(
         TravelerProfileStore store,
         IdempotencyStore idempotencyStore,
@@ -56,6 +57,17 @@ public class TravelerProfileService {
         this(store, idempotencyStore, eventPublisher, objectMapper, Clock.systemUTC());
     }
 
+    @Autowired
+    public TravelerProfileService(
+        TravelerProfileStore store,
+        IdempotencyStore idempotencyStore,
+        EventPublisher eventPublisher,
+        ObjectMapper objectMapper,
+        TravelerClaimWindow claimWindow
+    ) {
+        this(store, idempotencyStore, eventPublisher, objectMapper, Clock.systemUTC(), claimWindow);
+    }
+
     TravelerProfileService(
         TravelerProfileStore store,
         IdempotencyStore idempotencyStore,
@@ -63,11 +75,23 @@ public class TravelerProfileService {
         ObjectMapper objectMapper,
         Clock clock
     ) {
+        this(store, idempotencyStore, eventPublisher, objectMapper, clock, TravelerClaimWindow.unstated());
+    }
+
+    TravelerProfileService(
+        TravelerProfileStore store,
+        IdempotencyStore idempotencyStore,
+        EventPublisher eventPublisher,
+        ObjectMapper objectMapper,
+        Clock clock,
+        TravelerClaimWindow claimWindow
+    ) {
         this.store = store;
         this.idempotencyStore = idempotencyStore;
         this.eventPublisher = eventPublisher;
         this.objectMapper = objectMapper;
         this.clock = clock;
+        this.claimWindow = claimWindow;
     }
 
     @Transactional
@@ -236,7 +260,14 @@ public class TravelerProfileService {
         requireText(command.familyName(), "familyName", errors);
         if (!isBlank(command.dateOfBirth())) {
             try {
-                java.time.LocalDate.parse(command.dateOfBirth().trim());
+                LocalDate claimed = LocalDate.parse(command.dateOfBirth().trim());
+                // A claim the register carries no fare band for is refused where
+                // it is made rather than stored and met at the first quote. The
+                // window is release data, so this comparison is unchanged when a
+                // release moves its ends.
+                if (!claimWindow.holds(claimed, LocalDate.now(clock))) {
+                    errors.put("dateOfBirth", "dateOfBirth is outside the window of ages the register carries");
+                }
             } catch (java.time.format.DateTimeParseException ex) {
                 errors.put("dateOfBirth", "dateOfBirth must be an ISO-8601 date (YYYY-MM-DD)");
             }
