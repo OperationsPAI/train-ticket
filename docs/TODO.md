@@ -689,26 +689,42 @@ trimmed.
 ## Hardcoded time and location values, audited 2026-09-26
 
 Three services carried a value where a fact belonged. Each is fixed in its own
-commit (see [current status](00-current-status.md#hardcoded-values-audit)) and
-none of them changes what the load generator sees on the HTTP surface, but the
-resident revision has to be redeployed and re-measured before this section
-closes.
+commit, deployed at revision 425, and measured (see
+[current status](00-current-status.md#hardcoded-values-audit)): the load
+generator's traveler creations carry `dateOfBirth` and the read returns it, a
+create without one returns `null`, a document without an issuing country is a
+400, and the revision 425 window is 0.19 percent failed journeys against 0.20
+percent at revision 421. Two items from the same audit are still open.
 
-1. [ ] Redeploy and re-measure. transfer-management's builtin MCT now reads a
-   declared `stationSize` instead of matching station display names against a
-   node reference; traveler-profile accepts `dateOfBirth` and
-   `documentIssuingCountry` instead of inventing `1970-01-01` and `CN`; loyalty
-   takes `isHoliday` and `isBonusRoute` as stated facts instead of keeping a
-   five-entry holiday calendar and matching corridor names in a route string.
-2. [ ] The load generator now sends `dateOfBirth`; confirm the create path holds
-   at the resident rate and that `GET /api/v1/travelers/{id}` returns the value
-   rather than `null`.
-3. [ ] `deploy/stress` still pins `departure_date: "2026-09-01"` in every
+1. [ ] `deploy/stress` still pins `departure_date: "2026-09-01"` in every
    scenario and as the driver's default. The stress harness is not production
    code, so it is out of scope for the rule that produced this audit, but the
    date is already in the past and the scenarios will search a departed service
    day. Make the default relative to the run clock and drop the pinned date.
-4. [ ] The load generator's invoice branch sends `titleName: "个人"` as a fixed
+2. [ ] The load generator's invoice branch sends `titleName: "个人"` as a fixed
    personal-invoice title. It is test tooling, and the value is the business's
    own label rather than a location or a date, so it stays; this is recorded so a
    later reader does not re-open it as a finding.
+
+## The burst is the acceptance's remaining shape, measured 2026-09-26
+
+The revision 426 window carries 1407 failed journeys, and 1033 of them are one
+minute: 12:09:35Z to 12:10:35Z, which carried 12694 journeys against 7579 in the
+next busiest minute. In that minute risk-status, case-status and refund-status
+fail, post-sales answers in 9.3 seconds at the ninety-ninth percentile with the
+client's ten second timeout expiring 73 times, and fare-pricing's median is 1.7
+seconds. Every one of those is the consumer-lag and pool-saturation shape the
+earlier revisions removed at the mean; none of them is a new defect, and all of
+them return together when the load generator's burst arrives.
+
+1. [ ] Decide and implement the burst response. No service in the chart has an
+   HPA, and the values file carries fixed replicas. The candidates are an HPA on
+   the request-serving pools (post-sales, fare-pricing, journey-order) and on the
+   consumers that fall behind under burst (risk-compliance, offer-management,
+   post-sales), or a burst profile the fixed set can hold -- measure which
+   against the same window before choosing.
+2. [ ] The refund tail is separate from the burst and is already tracked above:
+   363 `refund-status` and 197 `case-status` failures in the revision 426 window
+   are spread across it, with the same shape in the revision 425 window (53 and
+   17). Measuring the refund path's latency before attributing them is the item
+   at the top of this file's post-sales section.
