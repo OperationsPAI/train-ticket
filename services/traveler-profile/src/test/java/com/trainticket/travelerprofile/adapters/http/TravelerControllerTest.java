@@ -156,6 +156,45 @@ class TravelerControllerTest {
     }
 
     @Test
+    void createTravelerKeepsTheClaimItWasCreatedWith() throws Exception {
+        MvcResult created = mockMvc.perform(post("/api/v1/travelers")
+                .contentType(MediaType.APPLICATION_JSON)
+                .header("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b0c010")
+                .content("{\"accountId\":\"acc-7\",\"travelerType\":\"STUDENT\",\"givenName\":\"Jun\",\"familyName\":\"Chen\",\"dateOfBirth\":\"2006-02-14\"}"))
+            .andExpect(status().isCreated())
+            .andReturn();
+
+        mockMvc.perform(get("/api/v1/travelers/{travelerId}", Json.read(created, "$.travelerId")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.travelerType").value("STUDENT"))
+            .andExpect(jsonPath("$.birthDate").value("2006-02-14"));
+    }
+
+    @Test
+    void createTravelerRefusesATravelerTypeTheApiDoesNotKnow() throws Exception {
+        mockMvc.perform(post("/api/v1/travelers")
+                .contentType(MediaType.APPLICATION_JSON)
+                .header("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b0c011")
+                .content("{\"accountId\":\"acc-8\",\"travelerType\":\"VIP\",\"givenName\":\"Jun\",\"familyName\":\"Chen\"}"))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+            .andExpect(jsonPath("$.details.travelerType").exists());
+    }
+
+    @Test
+    void updateTravelerRefusesADocumentWithoutItsIssuingCountry() throws Exception {
+        String travelerId = createTraveler();
+
+        mockMvc.perform(patch("/api/v1/travelers/{travelerId}", travelerId)
+                .contentType(MediaType.APPLICATION_JSON)
+                .header("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b0c012")
+                .content("{\"documentType\":\"ID_CARD\",\"documentNumber\":\"110101199001151234\"}"))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+            .andExpect(jsonPath("$.details.documentIssuingCountry").exists());
+    }
+
+    @Test
     void getUnknownTravelerReturns404() throws Exception {
         mockMvc.perform(get("/api/v1/travelers/tvl-missing"))
             .andExpect(status().isNotFound())
