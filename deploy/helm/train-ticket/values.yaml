@@ -1321,6 +1321,14 @@ services:
       # Thirty six: at the larger burst the capacity stream alone left this group
       # 3796 events behind, which is the eighteen second wait above.
       CONSUMER_THREADS: "36"
+      # The capacity stream has its own subscriber, and its own four threads in
+      # the code until this line existed. Measured on 2026-09-27 at the
+      # eight-times burst: a refund case created at 22:28:00.35 had both holds
+      # released at 22:28:03.97 and still did not reach APPLIED until
+      # 22:28:10.29, so 6.3 of the ten poll seconds went to delivering the one
+      # `CapacityReleased` the case applies on, with the group 15.8 seconds behind
+      # on that stream. Sixteen loops across three replicas, not four.
+      CAPACITY_CONSUMER_THREADS: "16"
       # Leave database connections for HTTP requests and the outbox relay.
       # 64 rather than 32: at the cycle's burst, 281 requests were waiting for a
       # connection from this pool while the pod used about one of its cores --
