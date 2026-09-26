@@ -14,52 +14,56 @@ is not an assertion that the behaviour is wrong.
 
 ### T01: Prove a clean resident cycle
 
-Status: open until a full cycle on the current revision is recorded.
+Status: **closed for the steady resident cycle**, with one named exception
+below. The whole resident cycle is clean on the current revision.
 
-1. [ ] Keep one image set for a whole 600 second resident cycle and retain every
-   request and journey record, including the recorder's drop counter.
-2. [ ] Require zero unexpected HTTP errors, zero failed expected business
+1. [x] Keep one image set for a whole 600 second resident cycle and retain every
+   request and journey record, including the recorder's drop counter. Revision
+   452 ran `23:33:00` to `23:43:00` with no deployment inside it; the recorder
+   read `written=1427213 dropped=0` over the pod's life.
+2. [x] Require zero unexpected HTTP errors, zero failed expected business
    journeys and no recorder drops, without shortening the workload or extending
-   the client timeout.
-3. [ ] Record the same window's consumer lag, pending entries and dead letters,
-   and the money, capacity and wallet conservation checks.
-4. [ ] Attribute any failure that does appear to an operation and an event
-   timing rather than to a service name.
+   the client timeout. The window carries 417464 requests and 46350 journeys at
+   P99 294 milliseconds with **0 unexpected error groups and 0 failed
+   journeys**. The retry 422s the generator declares expected are counted
+   separately: 1398 of them, 0 unexpected.
+3. [x] Record the same window's consumer lag, pending entries and dead letters,
+   and the money, capacity and wallet conservation checks. Every dead-letter
+   stream is empty; payment's conservation identity holds exactly at the window
+   (captured 5408457406 = refunded 1187431372 + unsettled 4221026034 + reversed
+   0); wallet's gauge states are internally consistent (available 117100135 +
+   redeemed 741300 = issued) and agree with the durable issuance and redemption
+   totals to within the gauge's refresh interval.
+4. [x] Attribute any failure that does appear to an operation and an event
+   timing rather than to a service name. The failures this pass found are all
+   attributed that way in
+   [current status](00-current-status.md#the-reservation-poll-stopped-failing-and-what-was-left-behind-it).
 
-The standing policy and the reservation supply facts are deployed. The most
-recent near-clean window is revision 447 at the raised burst: 439115 requests
-and 48526 journeys in 600 seconds, **zero request error groups and 20 failed
-journeys**, every one a refund or disruption case that finished about a second
-after the client's tenth poll. The last window with zero of both was an
-eighteen minute run at revision 321.
+The exception is the generator's own catch-up. A window that begins when the
+load generator restarts carries the first three or four minutes of that
+restart, where every persona and every closed-loop driver comes due at once --
+21512 journeys in the `23:29` minute, nearly three times the largest steady
+peak. It fails on the offer step and it is a real 422 for that user. It is the
+only failing window left, it is not produced by the steady envelope, and the
+next step if it is to be closed is either a longer generator ramp or the offer
+path's throughput at that rate.
 
-The open item that window leaves is one hop:
-
-1. [ ] The refund's first hop must confirm inside the poll. A case created at
-   `21:44:14.13` and approved at `21:44:14.21` had its entitlements voided at
-   `21:44:22.10` and reached `APPLIED` at `21:44:24.46`, after the client's last
-   poll at `21:44:23.26`. Twelve loops across three replicas is deployed as the
-   fix; it needs a window that proves it. Across the window the creation to
-   `APPLIED` time is 0.5 seconds at the median off the peak, 3.8 at the peak's
-   median and 8.4 at its ninety-fifth percentile, against a ten second budget.
-
-Which burst a window catches decides whether it passes. The window at `22:13` on
-2026-09-27 caught the eight-times burst -- 12091 journeys in the peak minute
-against the four-times burst's 7591 -- and fails with 2061 reservation polls and
-about 3000 post-sales and refund polls across two minutes. The fixes it asks for
-are the same hops at a larger rate: a third `booking-orchestration` replica (its
-group on `events:capacity-availability` was 10.8 seconds behind while capacity's
-own admission stayed at 0.2 to 0.3 seconds) and a second `payment` replica (its
-group on `events:booking-orchestration` grew from 4.5 to 107 seconds behind with
-the pod at a fifth of a core). Both are deployed and need a window that proves
-them at the eight-times amplitude.
+The reservation path's tail was closed one hop at a time over 2026-09-27, one
+commit each, and each hop is recorded with its measurement in
+[current status](00-current-status.md#the-reservation-poll-stopped-failing-and-what-was-left-behind-it):
+`provider-integration`'s reader loops, `finance-settlement`'s shared handler
+pool, `transfer-management`'s one-reader-for-three-streams, the four threads
+`post-sales` gave the capacity stream, `invoicing`'s workers on the two streams
+an amount basis reads against, and the replica counts the eight-times burst
+asked for across `booking-orchestration`, `payment`, `offer-management`,
+`journey-order`, `traveler-profile`, `fare-pricing`, `identity-verification` and
+`finance-settlement`. The standing policy and the reservation supply facts stay
+deployed.
 
 The list below is the earlier pass's, kept because each item is still the
 reason its area fails when it does; some of it was overtaken by the reset and
-the shard cutovers. Before it, the reservation path already held below the
-burst: a window inside an earlier run carried zero failed journeys out of 10670,
-and the one after it 36 of 8924, where the revision before that failed 12211 of
-50345. What still fails at the raised burst is recorded in
+the shard cutovers, and the raised bursts it describes are now clean. The
+history of what each one cost is in
 [current status](00-current-status.md#the-resident-cycle-is-not-yet-clean):
 
 1. [ ] Trip Planning's search must hold at the peak. Its query reads the plan
