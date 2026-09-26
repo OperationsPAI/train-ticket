@@ -262,6 +262,14 @@ recorded in [current status](00-current-status.md#the-resident-cycle-is-not-yet-
    booking reference the handler matches on, and what `recordCapacityReleased`
    requires of the case.
 
+   Read: the case has not been written since 01:24 -- `releasedOrderItems` is
+   still empty and `updated_at` is the opening time -- so even the release made
+   during the repair did not touch it. `findPendingCapacityRelease` is therefore
+   as much a candidate as a lost event: a `CapacityReleased` that arrives and
+   matches no pending case leaves no trace at all. Read the query and the
+   envelope's reference fields together, and check the two against each other
+   before changing either.
+
    **Then this one, so that it is not mistaken for the same thing.** With the change leak repaired, the window's largest group is
    `refund-status`: 1025 refunds and 132 disruption refunds that did not reach
    SETTLED inside the client's poll. The example checked
