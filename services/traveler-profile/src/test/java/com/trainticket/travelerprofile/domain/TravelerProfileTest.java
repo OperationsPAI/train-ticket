@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -40,6 +41,17 @@ class TravelerProfileTest {
         assertInstanceOf(TravelerProfileCreated.class, event);
         assertEquals(1, event.schemaVersion());
         assertEquals(profile.profileId(), event.profileId());
+    }
+
+    @Test
+    void aProfileWithoutAClaimedBirthDateCarriesNone() {
+        TravelerProfile profile = TravelerProfile.create(
+            "account-1", "Zhang Wei", null,
+            "client-req-2", NOW, "cmd-create", "corr-1"
+        );
+        assertNull(profile.birthDate());
+        TravelerProfileCreated event = assertInstanceOf(TravelerProfileCreated.class, profile.domainEvents().getFirst());
+        assertNull(event.birthDate());
     }
 
     @Test

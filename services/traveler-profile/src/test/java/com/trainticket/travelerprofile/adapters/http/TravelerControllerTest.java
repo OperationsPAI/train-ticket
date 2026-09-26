@@ -47,7 +47,7 @@ class TravelerControllerTest {
     @Test
     void createTravelerHappyPathAndReplayReturnsOriginalResult() throws Exception {
         String body = """
-            {"accountId":"acc-1","travelerType":"ADULT","givenName":"Wei","familyName":"Zhang","documentType":"ID_CARD","documentNumber":"110101199001151234","contactEmail":"wei@example.test","contactPhone":"13800000000"}
+            {"accountId":"acc-1","travelerType":"ADULT","givenName":"Wei","familyName":"Zhang","dateOfBirth":"1990-01-15","documentType":"ID_CARD","documentNumber":"110101199001151234","documentIssuingCountry":"CN","contactEmail":"wei@example.test","contactPhone":"13800000000"}
             """;
 
         MvcResult first = mockMvc.perform(post("/api/v1/travelers")
@@ -134,6 +134,28 @@ class TravelerControllerTest {
     }
 
     @Test
+    void documentIssuingCountryIsRequiredWithADocument() throws Exception {
+        mockMvc.perform(post("/api/v1/travelers")
+                .contentType(MediaType.APPLICATION_JSON)
+                .header("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b0c008")
+                .content("{\"accountId\":\"acc-3\",\"travelerType\":\"ADULT\",\"givenName\":\"Mei\",\"familyName\":\"Li\",\"documentType\":\"PASSPORT\",\"documentNumber\":\"E12345678\"}"))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+            .andExpect(jsonPath("$.details.documentIssuingCountry").exists());
+    }
+
+    @Test
+    void dateOfBirthMustBeAnIsoDateWhenClaimed() throws Exception {
+        mockMvc.perform(post("/api/v1/travelers")
+                .contentType(MediaType.APPLICATION_JSON)
+                .header("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b0c009")
+                .content("{\"accountId\":\"acc-4\",\"travelerType\":\"ADULT\",\"givenName\":\"Mei\",\"familyName\":\"Li\",\"dateOfBirth\":\"15/01/1990\"}"))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+            .andExpect(jsonPath("$.details.dateOfBirth").exists());
+    }
+
+    @Test
     void getUnknownTravelerReturns404() throws Exception {
         mockMvc.perform(get("/api/v1/travelers/tvl-missing"))
             .andExpect(status().isNotFound())
@@ -147,7 +169,7 @@ class TravelerControllerTest {
         mockMvc.perform(patch("/api/v1/travelers/{travelerId}", travelerId)
                 .contentType(MediaType.APPLICATION_JSON)
                 .header("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b0c007")
-                .content("{\"documentType\":\"PASSPORT\",\"documentNumber\":\"E12345678\"}"))
+                .content("{\"documentType\":\"PASSPORT\",\"documentNumber\":\"E12345678\",\"documentIssuingCountry\":\"CN\"}"))
             .andExpect(status().isUnprocessableEntity())
             .andExpect(jsonPath("$.code").value("DOMAIN_RULE_VIOLATION"));
     }
@@ -156,7 +178,7 @@ class TravelerControllerTest {
         MvcResult result = mockMvc.perform(post("/api/v1/travelers")
                 .contentType(MediaType.APPLICATION_JSON)
                 .header("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b0c006")
-                .content("{\"accountId\":\"acc-2\",\"travelerType\":\"ADULT\",\"givenName\":\"Mei\",\"familyName\":\"Li\",\"documentType\":\"PASSPORT\",\"documentNumber\":\"E12345678\"}"))
+                .content("{\"accountId\":\"acc-2\",\"travelerType\":\"ADULT\",\"givenName\":\"Mei\",\"familyName\":\"Li\",\"documentType\":\"PASSPORT\",\"documentNumber\":\"E12345678\",\"documentIssuingCountry\":\"CN\"}"))
             .andExpect(status().isCreated())
             .andReturn();
         return Json.read(result, "$.travelerId");
