@@ -270,6 +270,18 @@ recorded in [current status](00-current-status.md#the-resident-cycle-is-not-yet-
    envelope's reference fields together, and check the two against each other
    before changing either.
 
+   Read together, and the matching side is not the fault. `CapacityReleased`
+   carries `references.segmentBookingRef`, and `findPendingCapacityRelease`
+   matches a case whose `scope.orderItemRefs` contains that booking, whose
+   `releasedOrderItems` does not, and whose status is APPROVED or EXECUTING --
+   which is exactly this case: it is EXECUTING, its order item refs contain
+   `sb-01a0db4d-c07f-7287-a72f-fbd3f9496c2d`, and its `releasedOrderItems` is
+   empty. Had the event arrived, the case would have been found and applied. So
+   the event is what is missing, and one check remains: whether the
+   release-by-hold-id path used in the repair emits `CapacityReleased` at all,
+   or releases silently. If it releases silently, that is the last piece and the
+   fix is the one already planned -- capacity must not lose or silence a release.
+
    **Then this one, so that it is not mistaken for the same thing.** With the change leak repaired, the window's largest group is
    `refund-status`: 1025 refunds and 132 disruption refunds that did not reach
    SETTLED inside the client's poll. The example checked
