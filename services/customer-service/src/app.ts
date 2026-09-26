@@ -32,6 +32,7 @@ import {
   type RequestContext,
   type SchemaDetail,
 } from "@trainticket/ts-kit";
+import { intakeChannels, readDeskSheet } from "./intake-desks.js";
 import { serviceProfile } from "./profile.js";
 
 export type HealthStatus = Readonly<{
@@ -106,7 +107,9 @@ type OTelTracer = Readonly<{
   startSpan: (name: string, options?: Record<string, unknown>) => OTelSpan;
 }>;
 
-const channels = ["APP", "WEB", "PHONE", "IM", "EMAIL", "IN_APP_MESSAGE", "BOT", "OPERATOR_CONSOLE"] as const;
+// The channels this deployment answers: the contract's vocabulary narrowed to the intake desks the
+// release's own roster has on duty. A release that ships no roster answers the contract's list.
+const channels = intakeChannels(readDeskSheet());
 const priorities = ["LOW", "NORMAL", "HIGH", "URGENT"] as const;
 const customerTiers = ["STANDARD", "SILVER", "GOLD", "PLATINUM", "DIAMOND"] as const;
 const escalationLevels = ["L1_AGENT", "L2_SPECIALIST", "L3_SUPERVISOR"] as const;

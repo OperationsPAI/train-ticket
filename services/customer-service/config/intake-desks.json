@@ -1,0 +1,13 @@
+{
+  "note": "A support case is filed on a channel and worked by the intake desk that owns it. This sheet is the release's own statement of the intake desks it runs, written with the queue names the desk tool publishes for them.",
+  "desks": [
+    "mobile-desk",
+    "web-desk",
+    "phone-desk",
+    "chat-desk",
+    "mail-desk",
+    "message-desk",
+    "bot-desk",
+    "console-desk"
+  ]
+}
