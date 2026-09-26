@@ -1,6 +1,6 @@
 # Traveler Profile — HTTP API
 
-Last updated: 2026-07-05
+Last updated: 2026-09-26
 
 ## Overview
 
@@ -27,8 +27,10 @@ discounts).
 | `travelerType` | enum | yes | `ADULT`, `CHILD`, `INFANT`, `STUDENT`, `SENIOR`, `MILITARY` |
 | `givenName` | string | yes | Given name. |
 | `familyName` | string | yes | Family name. |
+| `dateOfBirth` | date | no | Claimed birth date (`YYYY-MM-DD`). Omitted means the profile carries none; the service does not invent one. |
 | `documentType` | enum | no | `ID_CARD`, `PASSPORT`, `OTHER` |
 | `documentNumber` | string | no | Travel document number (will be masked in snapshots). |
+| `documentIssuingCountry` | string | conditional | ISO 3166-1 alpha-2 issuing country. Required when `documentType` and `documentNumber` are supplied; never defaulted. |
 | `contactEmail` | string | no | Contact email. |
 | `contactPhone` | string | no | Contact phone number. |
 
@@ -39,6 +41,7 @@ discounts).
 | `travelerId` | string | Canonical traveler ID (`tvl-<uuid>`). |
 | `snapshotVersion` | string | Initial snapshot version. |
 | `travelerType` | enum | Traveler type. |
+| `birthDate` | date | Claimed birth date, or `null` when none was supplied. |
 | `createdAt` | timestamp | Creation time. |
 
 **Error codes:** `VALIDATION_FAILED`, `CONFLICT`
