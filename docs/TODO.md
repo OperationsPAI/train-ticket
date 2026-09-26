@@ -243,11 +243,24 @@ recorded in [current status](00-current-status.md#the-resident-cycle-is-not-yet-
 
    A database check rules the redrive out as the difference: of the refund cases,
    28556 APPLIED, 4 EXECUTING and 2 QUOTED all carry `executionRedrive`, so a
-   redrive was prepared for the stuck ones as well. What separates them is
-   therefore what applies the evidence afterwards -- the redrive publishes
-   `PostSalesApproved` and `PostSalesExecutionStarted`, and something has to turn
-   the owning services' responses into APPLIED. Read that next: who consumes
-   those two events, and which of the handler's delegations records the steps.
+   redrive was prepared for the stuck ones as well.
+
+   What completes a refund is a `CapacityReleased` event. `PostSalesEventHandler`
+   handles exactly that type by calling `applyForSegmentBooking`, which finds the
+   cases still waiting on the segment booking, and for an EXECUTING case that is
+   not a CHANGE calls `recordCapacityReleased` and then `applyResult("all scoped
+   capacity released")` -- APPLIED. So a refund's terminal transition is driven by
+   the same event family as the hold leak: capacity releases, and the release is
+   what tells post-sales the refund is done.
+
+   That is where this case's answer lies, and it is now a short question: the
+   repair above released its hold, which is what emits `CapacityReleased`, and the
+   case did not move. Either that release's event did not reach the handler (the
+   trimmed-stream shape again, which would make both halves one defect), or the
+   handler saw it and `recordCapacityReleased` did not accept it. Read those two
+   next: whether capacity's release-by-hold-id emits the event with the segment
+   booking reference the handler matches on, and what `recordCapacityReleased`
+   requires of the case.
 
    **Then this one, so that it is not mistaken for the same thing.** With the change leak repaired, the window's largest group is
    `refund-status`: 1025 refunds and 132 disruption refunds that did not reach
