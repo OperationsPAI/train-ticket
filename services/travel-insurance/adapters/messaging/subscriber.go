@@ -107,6 +107,15 @@ func (h *InboundHandler) handleRefundApplied(ctx context.Context, envelope kitms
 		return nil
 	}
 	_, err := h.service.CancelPolicyForRefund(ctx, application.RefundAppliedCommand{PolicyID: payload.PolicyID, JourneyOrderID: journeyOrderID, RefundID: firstNonBlank(payload.RefundID, payload.CaseID, payload.PostSalesCaseID, envelope.EventID), CorrelationID: envelope.CorrelationID, CausationID: envelope.EventID})
+	if errors.Is(err, application.ErrNotFound) {
+		// An order with no policy has nothing to cancel. Most purchases carry no
+		// insurance, and every refund of one arrived here, failed as "not found", was
+		// classified transient, retried five times and dead lettered: measured,
+		// events:post-sales:dlq held 30001 entries -- its cap -- of exactly these,
+		// with failureReason "not found" and the newest envelope a PostSalesApplied.
+		// Nothing missing is an error here; there was never anything to cancel.
+		return nil
+	}
 	return err
 }
 
