@@ -404,8 +404,11 @@ def build_option_set(
     option_ids: tuple[str, str, str, str],
     wait_only: bool,
     reaccommodation: Mapping[str, Any] | None = None,
+    validity: timedelta | None = None,
 ) -> RecoveryOptionSet:
-    expires = None if wait_only else generated_at + timedelta(hours=24)
+    # The release states how long a generated set stays selectable; the domain keeps the
+    # default so a caller that does not know the release still gets a usable set.
+    expires = None if wait_only else generated_at + (validity if validity is not None else timedelta(hours=24))
     wait = RecoveryOption(option_ids[0], RecoveryOptionType.WAIT, "Wait for service recovery", "Keep the current trip and wait for operations recovery.", ExecutionTarget.NONE, expiresAt=expires)
     if reaccommodation is not None:
         recovery_option = RecoveryOption(

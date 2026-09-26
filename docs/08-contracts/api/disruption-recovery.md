@@ -25,6 +25,11 @@ Activation-wave rulings:
 - An `Incident` is opened or merged by the same report. This wave merges by
   `(scheduledServiceRef, serviceDate)` when `scheduledServiceRef` is present;
   otherwise the report opens a distinct incident for its supplied scope.
+- A report is held to the reporting window the release states in its own settings
+  (`config/reporting.json`): a `serviceDate` beyond the window the release has
+  planned for is refused with `DOMAIN_RULE_VIOLATION` instead of opening an
+  incident and a case no option set can be executed for. The same settings carry
+  how long a generated `RecoveryOptionSet` stays selectable.
 - `ServiceAlertPublished` builds the Disruption Recovery ServiceAlert read
   model exposed by `/api/v1/service-alerts`.
 - The `RecoveryCase` state machine is exactly the 10-state machine from the

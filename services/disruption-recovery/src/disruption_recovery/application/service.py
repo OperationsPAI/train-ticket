@@ -46,6 +46,10 @@ from disruption_recovery.metrics import (
     segment_signal_source,
     segment_signal_type,
 )
+from disruption_recovery.report_settings import (
+    option_set_validity,
+    outside_reporting_window,
+)
 
 PRODUCER = "disruption-recovery"
 TERMINAL_STATUSES = {RecoveryCaseStatus.RECOVERED, RecoveryCaseStatus.DECLINED, RecoveryCaseStatus.FAILED, RecoveryCaseStatus.CLOSED}
@@ -371,6 +375,11 @@ class DisruptionRecoveryService:
         if disruption_type not in DISRUPTION_TYPES:
             raise DomainError("disruptionType is invalid")
         service_date = require_text(str(data.get("serviceDate") or ""), "serviceDate")
+        if outside_reporting_window(service_date, at):
+            # The plan the release holds reaches the services it was released for, so a
+            # report for a service date beyond the window is refused where it enters,
+            # rather than opening an incident and a case nothing can be executed for.
+            raise DomainError("serviceDate is outside the reporting window")
         scheduled = str(data.get("scheduledServiceRef") or "").strip() or None
         segment = str(data.get("segmentRef") or "").strip() or None
         if not scheduled and not segment:
@@ -410,7 +419,7 @@ class DisruptionRecoveryService:
             case = case.assess(at)
             reaccommodation = _reaccommodation_from_report(data, at)
             wait_only = reaccommodation is None and str(data.get("autoRecovery") or "").upper() == "WAIT"
-            option_set = build_option_set(case.caseId, order_id, segment, at, prefixed_uuid7("ros"), tuple(prefixed_uuid7("rop") for _ in range(4)), wait_only, reaccommodation)
+            option_set = build_option_set(case.caseId, order_id, segment, at, prefixed_uuid7("ros"), tuple(prefixed_uuid7("rop") for _ in range(4)), wait_only, reaccommodation, validity=option_set_validity())
             refund_scope = data.get("refundScope")
             if isinstance(refund_scope, Mapping) and not wait_only:
                 option_set = replace(option_set, options=tuple(self._with_refund_scope(option, refund_scope) for option in option_set.options))
