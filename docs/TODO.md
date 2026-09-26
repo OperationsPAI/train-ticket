@@ -74,18 +74,15 @@ in [current status](00-current-status.md#the-resident-cycle-is-not-yet-clean):
    so the shards would fill again at the same rate. Decide what a useful
    retention for each of them is, the way the outbox and `processed_events`
    sweeps already do.
-4. [ ] Provider Integration confirms only a fraction of the reservations it is
-   asked to make. Measured on the reset environment, which is fast enough that
-   this is not a load effect (P99 167 milliseconds): one minute carried 1601
-   `SegmentReservationRequested` events, 1426 holds and **437**
-   `ProviderReservationConfirmed`, while Booking published 603
-   `SegmentReservationConfirmed`. The rest leave the segment booking in
-   `HOLDING` with its capacity hold in `Held`, which is what the load generator
-   polls for ten seconds and reports as a reservation that did not confirm --
-   2850 of the window's 4151 failed journeys. The same service logged 6429
-   "duplicate event already processed; acking without handler" lines in that
-   minute against roughly 1600 requests, so the first question is what that
-   subscriber is re-reading.
+4. [ ] Provider Integration still leaves a share of reservations unanswered.
+   The adapter was returning the stored reservation without publishing anything
+   when it was asked again, which is the one case where the answer is the whole
+   point; publishing the confirmation again raised the answered share from 437
+   of 1601 to **1948 of 2949** in a minute, and Booking's own confirmations from
+   603 to 2459. The remaining third is the next question: which requests are
+   neither confirmed nor failed -- a saga that reached a terminal state first, a
+   payload the handler rejects as fatal, or a replay that still finds nothing.
+   2912 of the last window's 4142 failed journeys are this shape.
 5. [ ] Disruption must not report a business conflict as an availability
    failure. Selecting an option for an order that already has a refund or change
    in progress answers 503 `UNAVAILABLE`; a conflict has its own status, and the
