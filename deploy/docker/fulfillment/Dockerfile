@@ -15,7 +15,10 @@ RUN addgroup -S app && adduser -S app -G app
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /out/fulfillment /usr/local/bin/fulfillment
 COPY --from=builder /src/services/fulfillment/migrations /app/migrations
+# The settings the release ships, so the register a deployment states travels
+# with the image rather than with whoever deploys it.
+COPY --from=builder /src/services/fulfillment/config /app/config
 USER app
-ENV PORT=8080 REDIS_URL=redis://localhost:6379 MIGRATIONS_DIR=/app/migrations
+ENV PORT=8080 REDIS_URL=redis://localhost:6379 MIGRATIONS_DIR=/app/migrations FULFILLMENT_CONFIG_DIR=/app/config
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/fulfillment"]
