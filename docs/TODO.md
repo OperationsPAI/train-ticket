@@ -625,3 +625,18 @@ order is a captured-but-unreconciled state by design, in which case a fault-seed
 purchase should not be asked for a basis and the generator's branch is what is
 wrong. The 42 failures are the seeded fault's outcome either way, so they should
 not be counted as an unexplained user-visible failure while that question is open.
+
+Answered by the code, and the service is right: payment treats a missed channel
+order exactly like a failed one -- `PaymentInboundEventHandler.java:121` routes
+`ChannelOrderMissed` to `handleChannelOrderFailed`, which calls
+`failIntentFromChannel`. An order the channel did not place does **not** leave the
+intent captured.
+
+So the client's earlier reading is the race: `awaitPaymentCaptured` saw the intent
+as captured and the journey went on to the invoice branch, while the
+`ChannelOrderMissed` that fails the intent arrived afterwards. That also says what
+the fix is, and it is the client's: when the amount basis is still absent on the
+last poll, re-read the payment intent, and if the capture that this journey
+observed has since failed, report the purchase as an unfulfilled payment rather
+than asking for a document it cannot have. Teaching the client to skip a basis
+whose order was fault-seeded would hide the race instead of handling it.
