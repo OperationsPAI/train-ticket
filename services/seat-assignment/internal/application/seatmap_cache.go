@@ -24,6 +24,11 @@ type SeatMapRevision struct {
 	VersionSum int64
 }
 
+// seatMapReadLimit is how many maps of one service and date a cached read takes.
+// It is the same ceiling the list handler clamps a page to, and a service and
+// date hold a handful of maps, so a read at this bound is a complete list.
+const seatMapReadLimit = 100
+
 // seatMapCache holds decoded seat maps between calls.
 //
 // Capacity asks for the composition and the occupancy of every reservation it
@@ -93,11 +98,11 @@ func (s *Service) seatMaps(ctx context.Context, service, date, status string) ([
 	if cached, total, ok := s.cache.get(service, date, status, revision); ok {
 		return cached, total, nil
 	}
-	maps, total, err := s.repo.FindSeatMaps(ctx, service, date, status, 100, 0)
+	maps, total, err := s.repo.FindSeatMaps(ctx, service, date, status, seatMapReadLimit, 0)
 	if err != nil {
 		return nil, 0, err
 	}
-	if total <= 100 {
+	if total <= seatMapReadLimit {
 		// Only a complete list is worth keeping: a truncated one is an error at
 		// every call site, and caching it would hide the next insert.
 		s.cache.put(service, date, status, revision, maps, total)
@@ -115,7 +120,7 @@ func (s *Service) seatMaps(ctx context.Context, service, date, status string) ([
 // past the cached window, which only happens once a service and date hold more
 // than a hundred maps; the caller then asks the repository.
 func seatMapPage(maps []domain.ContractSeatMap, total, limit, offset int) ([]domain.ContractSeatMap, bool) {
-	if total > 100 || offset < 0 || offset > len(maps) {
+	if total > seatMapReadLimit || offset < 0 || offset > len(maps) {
 		return nil, false
 	}
 	end := offset + limit
