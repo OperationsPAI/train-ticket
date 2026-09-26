@@ -838,7 +838,12 @@ snapshot" (606) and post-sales timeouts (523).
    milliseconds**. So the event reaches this service promptly and the 7.2
    seconds measured earlier was specific to that burst minute, not the norm.
 
-5. [ ] The revision 438 window puts the remaining failures elsewhere: 459163
+5. [x] The offer group's backlog is fixed: the batch path was the unit of
+   throughput and its read took 100 entries; with six instances and a read of
+   500, the lag on `events:trip-planning` peaks at 3 across a cycle and the
+   revision 440 window carries **0 error groups and 0 failed journeys**.
+
+6. [ ] What the revision 438 window showed before that fix: 459163
    requests and 48468 journeys at P99 155 milliseconds with 7 error groups and
    658 failed journeys. The groups, in order: 201 transfer offers refused with
    "No consumed Trip Planning itinerary found", 158 reservation timeouts ("timed
