@@ -5,7 +5,7 @@ Last verified: 2026-09-26, Asia/Beijing.
 ## Runtime
 
 The resident Helm release is `train-ticket` in namespace `train-ticket`,
-revision **440**.
+revision **442**.
 Its values come from one file, `deploy/helm/train-ticket/values.yaml`: the
 registry, the `local-path` storage class, the central telemetry store, the
 resident exporters, the load generator settings and the `loadgen-resident-state`
@@ -47,6 +47,8 @@ to one and back.
 
 | Check | Result | Evidence |
 |---|---|---|
+| Ten minute window at revision 442, larger bursts | 366745 requests, 38432 journeys, P99 119 milliseconds, 4 error groups, 1945 failed journeys: 893 staff reservation polls ("reservation and capacity did not confirm"), 196 purchase and 179 transfer offer refusals, 114 invoice basis, 17 booking saga | `.scratch/runtime-fixes/goal-rev442-ten-minute.json` |
+| Ten minute window at revision 441, larger bursts | 303892 requests, 32699 journeys, P99 182 milliseconds, 2 error groups, 729 failed journeys: 607 post-sales case-status, 177 invoice basis, 16 transfer offer | `.scratch/runtime-fixes/goal-rev441-ten-minute.json` |
 | Ten minute window at revision 440 | 399599 requests, 45861 journeys, P99 112 milliseconds, **0 unexpected error groups and 0 failed journeys** | `.scratch/runtime-fixes/goal-rev440-ten-minute.json` |
 | Ten minute window at revision 440 | 160703 requests, 18366 journeys, P99 112 milliseconds, **0 unexpected error groups and 0 failed journeys**; over the two cycles together, 18:17 to 18:39 carries the peaks of both (7599 and 8758 journeys a minute) with no failure at all | `.scratch/runtime-fixes/goal-rev440b-ten-minute.json` |
 | Ten minute window at revision 438 | 459163 requests, 48468 journeys, P99 155 milliseconds, 7 error groups, 658 failed journeys -- 209 offer refusals (quote not consumed), 101 booking saga lookups timing out, the rest the invoice basis race and a few staff steps | `.scratch/runtime-fixes/goal-rev438b-ten-minute.json` |
