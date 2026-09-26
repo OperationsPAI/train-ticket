@@ -317,7 +317,14 @@ export function startDeliveryWorker(
       try {
         const availableSlots = concurrency - inFlight.size;
         if (availableSlots > 0) {
-          const claims = await operations.claim(Math.min(availableSlots, CLAIM_BATCH_SIZE));
+          // One row per claim transaction. A batch claims several rows, and the
+          // state-counter trigger then updates one (state, channel, bucket) row
+          // per queue row inside that same transaction; two batches that share
+          // two buckets in a different order deadlock, which is what filled
+          // event's log with 40P01 and pulled /readyz down to 503. A single row
+          // cannot invert, and the loop keeps the concurrency by claiming again
+          // as soon as a slot frees.
+          const claims = await operations.claim(1);
           for (const claim of claims) dispatch(claim);
           if (claims.length > 0) continue;
         }
