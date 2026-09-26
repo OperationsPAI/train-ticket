@@ -581,3 +581,34 @@ func mustSpanContext(t *testing.T) trace.SpanContext {
 	}
 	return spanContext
 }
+
+func TestVerifyBoardingRefusesAReaderTheEstateDoesNotCarry(t *testing.T) {
+	repo := NewInMemoryRepository()
+	publisher := &recordingPublisher{}
+	service := NewService(repo, publisher, NewInMemoryConsumedEventLog(), nil, nil)
+	seedTicket(t, service, "ent-reader1", "sb-reader1", "ord-reader1", "tvl-reader1", "seg-reader1")
+
+	_, err := service.VerifyBoarding(context.Background(), VerifyBoardingCommand{
+		EntitlementID:    "ent-reader1",
+		SegmentBookingID: "sb-reader1",
+		JourneyOrderID:   "ord-reader1",
+		TravelerID:       "tvl-reader1",
+		SegmentRef:       "seg-reader1",
+		Source:           domain.FulfillmentSource("KIOSK"),
+		SourceEventID:    "kiosk-scan-1",
+		OccurredAt:       time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC),
+	}, CommandMetadata{})
+	if err == nil {
+		t.Fatal("a reader the estate does not carry was accepted")
+	}
+	record, err := repo.FindByEntitlementSegment(context.Background(), "ent-reader1", "sb-reader1", "seg-reader1")
+	if err != nil {
+		t.Fatalf("find record: %v", err)
+	}
+	if record.Status != domain.FulfillmentStatusReady || record.BoardingFact != nil {
+		t.Fatalf("the refused boarding reached the record: %s", record.Status)
+	}
+	if len(publisher.envelopes) != 0 {
+		t.Fatalf("the refused boarding published %d event(s)", len(publisher.envelopes))
+	}
+}
