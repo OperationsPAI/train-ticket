@@ -1072,11 +1072,10 @@ services:
       # provider's own record, which is the edge of the reservation poll window.
       CONSUMER_THREADS: "32"
       # Leave database connections for HTTP requests and the outbox relay.
-      # 64 rather than 32: at the cycle's burst, 281 requests were waiting for a
-      # connection from this pool while the pod used about one of its cores. The
-      # txn instance has room -- its five services name about 178 connections of
-      # its 400 with this change.
-      HIKARI_MAX_POOL_SIZE: "64"
+      # 32, unchanged: the hot instance carries this pod's pool and
+      # journey-order's, and a larger pool here would take the headroom that
+      # supports booking-orchestration replacing during a rollout.
+      HIKARI_MAX_POOL_SIZE: "32"
     # CPU headroom covers concurrent HTTP requests and event processing.
     resources:
       requests: { cpu: 500m, memory: 256Mi }
@@ -1256,7 +1255,12 @@ services:
       # operations that wait for that context then missed the poll window.
       CONSUMER_THREADS: "24"
       # Leave database connections for HTTP requests and the outbox relay.
-      HIKARI_MAX_POOL_SIZE: "32"
+      # 64 rather than 32: at the cycle's burst, 281 requests were waiting for a
+      # connection from this pool while the pod used about one of its cores --
+      # the pool, and not the CPU or the txn instance, is what its callers hit
+      # their ten second timeout on. The txn instance has room: its five services
+      # name about 210 connections of its 400 with this.
+      HIKARI_MAX_POOL_SIZE: "64"
     # CPU headroom covers concurrent post-sales requests and event processing.
     resources:
       requests: { cpu: 500m, memory: 256Mi }
