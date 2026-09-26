@@ -5,7 +5,7 @@ Last verified: 2026-09-27, Asia/Beijing.
 ## Runtime
 
 The resident Helm release is `train-ticket` in namespace `train-ticket`,
-revision **447**.
+revision **451**.
 Its values come from one file, `deploy/helm/train-ticket/values.yaml`: the
 registry, the `local-path` storage class, the central telemetry store, the
 resident exporters, the load generator settings and the `loadgen-resident-state`
@@ -47,6 +47,7 @@ to one and back.
 
 | Check | Result | Evidence |
 |---|---|---|
+| Ten minute window at revision 451, two consecutive cycles | 342783 requests, 37846 journeys, P99 294 milliseconds, **0 unexpected error groups and 0 failed journeys**; the cycle after it, 23:09 to 23:19, is clean as well | `.scratch/runtime-fixes/goal-rev451-clean-window.json` |
 | Ten minute window at revision 447, the same burst, one fix later | 439115 requests, 48526 journeys, P99 106 milliseconds, 0 error groups, 20 failed journeys at the refund case poll (see the reservation and refund sections below) | `.scratch/runtime-fixes/goal-rev446-ten-minute.json` |
 | Ten minute window at revision 445, larger bursts | 384403 requests, 43046 journeys, P99 107 milliseconds, 1 error group, 61 failed journeys: 40 invoice basis, 21 transfer delay reports | `.scratch/runtime-fixes/goal-rev445-ten-minute.json` |
 | Ten minute window at revision 444, larger bursts | 641380 requests, 61102 journeys, P99 254 milliseconds, 2 error groups, 5345 failed journeys: 2305 staff reservation polls, ~1200 post-sales case polls, ~1100 offer refusals | `.scratch/runtime-fixes/goal-rev444-ten-minute.json` |
@@ -196,6 +197,29 @@ left to name: a case that fails now spends 9 to 12 seconds spread across four
 or five hops that are each one to four seconds late, against a ten second poll.
 Cutting it inside the budget is a throughput question across the whole chain,
 not one more consumer count.
+
+#### The configured envelope is wider than any window has measured
+
+`loadgen-config.yaml` offers `20` journeys a second before shaping, a diurnal
+multiplier of `4.0` at its peak and a burst multiplier of up to `8.0`, so the
+envelope's arithmetic ceiling is **640 journeys a second** -- 38400 in a minute.
+The largest peak minute any window has caught is **16074 journeys**, and the
+cycles that follow a restart settle near 7500. The multiplier is drawn per
+burst, so what a window measures is one draw, not the ceiling.
+
+That is the shape of the remaining risk: a window can be clean at the burst it
+caught and say nothing about the draw it did not. The honest statement at
+revision 451 is that the two consecutive cycles below the largest observed burst
+are clean, and that no window has yet run at the arithmetic ceiling.
+
+#### What the largest burst asked for, and what it got
+
+The window that did catch the eight-times draw named six groups whose own pace,
+not their dependencies, was short: every one had its pod at a fraction of its
+cores and its pool with nothing waiting. Their consumer counts and handler
+counts are raised in one revision: `offer-management` to nine replicas,
+`journey-order` to three, `traveler-profile` to two of sixteen, `fare-pricing`
+to three, `identity-verification` to two and `finance-settlement` to three.
 
 ### The resident cycle is not yet clean
 
