@@ -73,18 +73,25 @@ pub async fn build_runtime() -> Result<(Router, JoinHandle<()>), SubscribeFailed
     let handle = tokio::spawn(async move {
         let mut tasks = tokio::task::JoinSet::new();
         for (index, stream) in streams.into_iter().enumerate() {
-            // Four workers on the two streams that carry the facts an invoice is
-            // built from. Measured at the cycle's burst: this group's lag on
-            // `events:finance-settlement` reached 3676 entries while
-            // `amount_basis_projection` held no row at all, so every amount-basis
-            // read answered 404 -- which is the purchase journey's
-            // `invoice-amount-basis` failure group, not a missing recognition:
-            // finance-settlement had the capture and the recognition both
-            // recorded for the same order. The stream had one consumer.
+            // Eight workers on the two streams that carry the facts an invoice
+            // is built from. Measured at the cycle's burst: the group's lag on
+            // `events:finance-settlement` reached 3676 entries with one consumer,
+            // so every amount-basis read answered 404 -- not a missing
+            // recognition, because finance-settlement had the capture and the
+            // recognition both recorded for the same order.
+            //
+            // Four was enough there and is not enough at the raised burst, where
+            // the two projections an amount basis is read against drift apart:
+            // at revision 446's peak the group's oldest undelivered entry on
+            // `events:journey-order` reached 30.9 seconds while the finance stream
+            // stayed at zero, so the `amounts` row existed and the `orders` row
+            // that has to carry the same expected total did not. That is the
+            // 404 "complete amount basis not yet available" -- 150 of the
+            // window's polls, and 14 failed journeys at the peak minute.
             let workers = if stream == adapters::messaging::journey_order_stream()
                 || stream == adapters::messaging::finance_stream()
             {
-                4
+                8
             } else {
                 1
             };
