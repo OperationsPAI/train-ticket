@@ -487,6 +487,12 @@ impl PostgresEntitlementService {
             tx.commit().await.map_err(inbound_transient)?;
             return Ok(());
         }
+        // The load generator approves a refund and polls the case for ten
+        // seconds; measured at the cycle's burst, a failing case's entitlements
+        // were voided 7.2 seconds after the approval while this consumer's lag
+        // and pending stayed at zero. This line separates delivery from handling:
+        // it prints how long this handler's own work took.
+        let started = std::time::Instant::now();
         for attempt in 0..MAX_RETRIES {
             let result = self
                 .try_apply_post_sales_approved(&envelope, &case_id, &order_id, &actions)
@@ -498,7 +504,16 @@ impl PostgresEntitlementService {
                 {
                     continue;
                 }
-                result => return result,
+                result => {
+                    log::info!(
+                        "post-sales approval for case={} order={} handled in {:?} ({} entitlement action(s))",
+                        case_id,
+                        order_id,
+                        started.elapsed(),
+                        actions.len()
+                    );
+                    return result;
+                }
             }
         }
         Err(InboundEventError::Transient(
