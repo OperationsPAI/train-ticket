@@ -217,9 +217,8 @@ export async function handlePaymentCaptured(application: LoyaltyMembershipApplic
     causationId: envelope.eventId,
     seatClass: optionalSeatClass(payload.seatClass),
     travelDate: optionalTravelDate(payload),
-    routeCode: optionalStringField(payload.routeCode),
-    routeName: optionalStringField(payload.routeName),
     isHoliday: typeof payload.isHoliday === "boolean" ? payload.isHoliday : undefined,
+    isBonusRoute: typeof payload.isBonusRoute === "boolean" ? payload.isBonusRoute : undefined,
   });
 }
 
