@@ -27,14 +27,23 @@ const SUPPLY_CACHE_CAPACITY: usize = 4096;
 struct CacheEntry<T> {
     value: T,
     expires_at: Instant,
+    used: u64,
+}
+
+/// Stamp for the cache's least-recently-used order. A counter rather than a
+/// clock, so two lookups in the same nanosecond are still ordered.
+fn next_cache_tick() -> u64 {
+    static CACHE_CLOCK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    CACHE_CLOCK.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 fn cache_lookup<T: Clone>(cache: &Mutex<HashMap<String, CacheEntry<T>>>, key: &str) -> Option<T> {
-    let guard = cache.lock().ok()?;
-    let entry = guard.get(key)?;
+    let mut guard = cache.lock().ok()?;
+    let entry = guard.get_mut(key)?;
     if entry.expires_at <= Instant::now() {
         return None;
     }
+    entry.used = next_cache_tick();
     Some(entry.value.clone())
 }
 
@@ -44,18 +53,33 @@ fn cache_store<T>(
     value: T,
     ttl: Duration,
 ) {
-    if let Ok(mut guard) = cache.lock() {
-        if guard.len() >= SUPPLY_CACHE_CAPACITY {
-            guard.clear();
+    let Ok(mut guard) = cache.lock() else {
+        return;
+    };
+    if !guard.contains_key(&key) && guard.len() >= SUPPLY_CACHE_CAPACITY {
+        // Evict the least recently used entry. Clearing the whole cache instead
+        // is what made this cache useless: the key space is every service, date
+        // and class the load generator touches, which is far larger than the
+        // capacity, so the map filled and was emptied over and over and every
+        // admission went to the network for facts another admission had just
+        // fetched. Measured at revision 414: 132 milliseconds of each class fold
+        // was that fetch, and five classes are folded per admission.
+        if let Some(oldest) = guard
+            .iter()
+            .min_by_key(|(_, entry)| entry.used)
+            .map(|(key, _)| key.clone())
+        {
+            guard.remove(&oldest);
         }
-        guard.insert(
-            key,
-            CacheEntry {
-                value,
-                expires_at: Instant::now() + ttl,
-            },
-        );
     }
+    guard.insert(
+        key,
+        CacheEntry {
+            value,
+            expires_at: Instant::now() + ttl,
+            used: next_cache_tick(),
+        },
+    );
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -1627,6 +1651,50 @@ mod reservation_source_tests {
                 .validate_source()
                 .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod supply_cache_tests {
+    use super::*;
+
+    /// The cache is filled past its capacity, so the entry that was used least
+    /// recently is the one that goes -- not the whole cache, which is what made
+    /// every lookup miss when the key space is larger than the capacity.
+    #[test]
+    fn the_cache_evicts_the_least_recently_used_entry() {
+        let cache: Mutex<HashMap<String, CacheEntry<u32>>> = Mutex::new(HashMap::new());
+        let ttl = Duration::from_secs(60);
+        for index in 0..SUPPLY_CACHE_CAPACITY {
+            cache_store(&cache, format!("key-{index}"), index as u32, ttl);
+        }
+        // Touch the second entry, so the first is the least recently used.
+        assert_eq!(cache_lookup(&cache, "key-1"), Some(1));
+        cache_store(&cache, "key-overflow".to_owned(), 9999, ttl);
+
+        assert_eq!(
+            cache_lookup(&cache, "key-0"),
+            None,
+            "the least recently used entry should have been evicted"
+        );
+        assert_eq!(
+            cache_lookup(&cache, "key-1"),
+            Some(1),
+            "a recently used entry should have survived"
+        );
+        assert_eq!(cache_lookup(&cache, "key-overflow"), Some(9999));
+        assert_eq!(
+            cache.lock().expect("cache lock").len(),
+            SUPPLY_CACHE_CAPACITY,
+            "the cache should stay at its capacity, not grow"
+        );
+    }
+
+    #[test]
+    fn an_expired_entry_is_a_miss() {
+        let cache: Mutex<HashMap<String, CacheEntry<u32>>> = Mutex::new(HashMap::new());
+        cache_store(&cache, "stale".to_owned(), 1, Duration::from_millis(0));
+        assert_eq!(cache_lookup(&cache, "stale"), None);
     }
 }
 
