@@ -871,3 +871,41 @@ snapshot" (606) and post-sales timeouts (523).
    Reporting is not in the load generator's request path, so this is lag and
    retries rather than a user-visible failure, but it is the same class of defect
    the notification trigger had.
+
+## The larger burst is the ceiling, measured 2026-09-27
+
+The window at revision 440 is clean, and the window after it is not: the load
+generator's cycle reaches 2256 to 2822 orders a minute, against the 1000 to 1200
+that the shard split and the payment and disruption fixes were measured on. Every
+group that returns does so as a consumer queue at that amplitude, and each one is
+now measured rather than guessed:
+
+1. [x] Risk assessment. At 2256 and 2822 orders a minute the
+   order-created-to-risk-cleared latency went from 0.1 seconds to 3.6 at the mean
+   and 13.5 at the ninety-fifth percentile, past the purchase's ten second poll,
+   while risk-compliance used 2.9 of its eight cores with no pool waiting and no
+   consumer lag. Revision 441 gives it two instances and twelve workers per
+   stream; the same latency is now 0.76 at the mean and 2.28 at the ninety-fifth
+   percentile, and the risk-status group leaves the window.
+2. [x] The refund and change case's last hop. A refund case's booking was
+   cancelled at 19:25:37.889 and the case reached APPLIED at 19:25:55.980 --
+   eighteen seconds later -- while post-sales' consumer group on
+   `events:capacity-availability` stood at 3796 entries of lag. The case applies
+   on that stream, so revision 442 gives post-sales three instances and thirty six
+   handlers; that lag now peaks at 1424, and the case-status group falls from 607
+   in the window to below the offer group.
+3. [ ] The reservation confirmation. The revision 442 window's largest group is
+   893 staff journeys that failed at `staff-poll-reservation` with "reservation
+   and capacity did not confirm". Nothing has measured that path yet: the next
+   step is the same one that found the others -- booking-orchestration's and
+   capacity-availability's consumer queues and the provider confirmation's own
+   latency at the burst minute.
+4. [ ] The offer refusals came back at this amplitude: 196 purchase offer
+   refusals ("Fare price quote has not been consumed") and 179 transfer ones ("No
+   consumed Trip Planning itinerary found") in the revision 442 window, against
+   16 in the one before it. The batch change took the trip-planning lag from
+   16981 to a peak of 3 at the smaller amplitude, so this is the same queue at a
+   bigger burst: measure both streams' lag in the burst minute and size the read
+   batch and the replica count again.
+5. [ ] The invoice basis race is 114 to 177 per window and is the MISSED_ORDER
+   fault the load generator seeds, already documented above.
