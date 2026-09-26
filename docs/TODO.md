@@ -787,6 +787,30 @@ snapshot" (606) and post-sales timeouts (523).
    both the request and the settle (not just the total), so the two deliveries
    can be told apart, and check whether post-sales publishes the approval before
    `refund-funding` fills `approvedActions.refunds`.
+
+   Answered by the thread count, not by a slow handler. Payment's handler phases
+   were timed (revision 433) and no run exceeded 423 milliseconds while the
+   approval still took five seconds to reach a handler: the wait was the
+   subscriber's own handler queue, which is sized from `CONSUMER_THREADS`.
+   Revision 434 raises it from twelve to thirty two, and in the twelve minutes
+   after, **2838 of 2838 refunds settle under a second**. The refund-status and
+   case-status groups are gone from the revision 434 window.
+
+4. [ ] The remaining acceptance failures are the post-sales case reaching its
+   terminal state a second too late. Measured at revision 435: of 151 cases the
+   window reported as "did not reach APPLIED", all 151 are APPLIED, created to
+   final within 10.3 seconds at the median and 12.1 at the worst, and the client
+   polls for ten. The time is in the cancellation saga, not in post-sales: for
+   one case, approval at 08.506, the segment booking CANCELLED at 15.913 (7.4
+   seconds) and the case APPLIED at 17.623, while the client's last poll was at
+   17.556 -- 67 milliseconds early. No pool, consumer group or shard was
+   saturated in that minute.
+
+   Next: remove a hop from that saga. The case applies when it consumes
+   `CapacityReleased`, and it could instead read the booking's cancelled state
+   when it starts executing -- the same read-the-owner's-state pattern the change
+   path already uses -- which is worth about the 1.7 seconds between the
+   cancellation and the apply.
 3. [ ] Reporting still deadlocks on the event instance: `reporting_business_scopes`
    and `reporting_order_attachments` upserts take the same rows in different
    orders under burst, four times in four minutes after the notification fix.
