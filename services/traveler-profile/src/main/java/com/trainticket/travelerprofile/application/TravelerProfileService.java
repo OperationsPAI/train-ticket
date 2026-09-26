@@ -112,16 +112,13 @@ public class TravelerProfileService {
             command.correlationId()
         );
         if (command.documentType() != null) {
-            aggregate.addDocument(
-                toDomainDocumentType(command.documentType()),
+            addDocument(
+                aggregate,
+                command.documentType(),
                 command.documentNumber(),
-                command.documentIssuingCountry().trim(),
-                now.minus(1, ChronoUnit.DAYS),
-                now.plus(3650, ChronoUnit.DAYS),
+                command.documentIssuingCountry(),
                 displayName(command.givenName(), command.familyName()),
-                true,
                 now,
-                commandId,
                 commandId,
                 command.correlationId()
             );
@@ -164,19 +161,16 @@ public class TravelerProfileService {
         String commandId = commandId();
 
         if (command.documentType() != null) {
-            aggregate.addDocument(
-                toDomainDocumentType(command.documentType()),
+            addDocument(
+                aggregate,
+                command.documentType(),
                 command.documentNumber(),
-                command.documentIssuingCountry().trim(),
-                now.minus(1, ChronoUnit.DAYS),
-                now.plus(3650, ChronoUnit.DAYS),
+                command.documentIssuingCountry(),
                 displayName(
                     command.givenName() != null ? command.givenName() : current.givenName(),
                     command.familyName() != null ? command.familyName() : current.familyName()
                 ),
-                true,
                 now,
-                commandId,
                 commandId,
                 command.correlationId()
             );
@@ -189,6 +183,36 @@ public class TravelerProfileService {
         TravelerProfileView response = toView(updated);
         saveIdempotentResponse(key, requestFingerprint, response);
         return response;
+    }
+
+    /**
+     * Adds the document a create or an update handed in. The window the service
+     * records it under is a fact about the platform's own registry rather than
+     * about the caller's document, so the two paths state it once.
+     */
+    private void addDocument(
+        TravelerProfile aggregate,
+        ApiDocumentType documentType,
+        String documentNumber,
+        String documentIssuingCountry,
+        String displayName,
+        Instant now,
+        String commandId,
+        String correlationId
+    ) {
+        aggregate.addDocument(
+            toDomainDocumentType(documentType),
+            documentNumber,
+            documentIssuingCountry.trim(),
+            now.minus(1, ChronoUnit.DAYS),
+            now.plus(3650, ChronoUnit.DAYS),
+            displayName,
+            true,
+            now,
+            commandId,
+            commandId,
+            correlationId
+        );
     }
 
     @Transactional
