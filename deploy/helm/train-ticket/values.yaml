@@ -767,11 +767,16 @@ services:
       # the hold confirmation lands a median of 44 seconds after the hold.
       # Thirty two is the service's own ceiling -- it asserts at startup that
       # the thread count is between 1 and 32, and 48 crash-looped the pod -- and
-      # it is the next measurement: the pods sit under a tenth of a core, so if
-      # the limit is per-thread work this raises the rate, and if it does not
-      # the limit is the shared Redis connection rather than the threads.
+      # it is what this is set to. It was not the limit: with the duplicate
+      # publisher removed the consumer keeps up, its group sits at a few hundred
+      # entries, and the admission inside the handler is what costs the time.
+      # Measured in the minutes the Hold is slow, 21 of the 24 active sessions
+      # on `capacity_availability` were waiting on the per pool advisory lock
+      # and waits of 1.0 to 2.9 seconds were logged as slow statements; the
+      # reservation reached its Hold 85 to 112 seconds after it was requested at
+      # the ninety-fifth percentile. That is recorded in docs/TODO.md.
       CONSUMER_THREADS: "32"
-      # Twenty four consumer threads share this pool, and each reservation needs
+      # Thirty two consumer threads share this pool, and each reservation needs
       # a connection for several statements while it holds the supply lock. At
       # the platform default of ten the pool timed out waiting for a connection
       # under load -- "pool timed out while waiting for an open connection", 35
