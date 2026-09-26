@@ -205,8 +205,20 @@ recorded in [current status](00-current-status.md#the-resident-cycle-is-not-yet-
    Its execution plan is untouched -- DECISION_CONFIRMED through APPLY_RESULT all
    still PLANNED, `refundPayments` empty -- and its order item's hold was released
    in the repair above, so the refund flow is held before its first step by
-   something else. Read the refund executor's precondition next; the change
-   executor's `target` gate is the worked example of what to look for.
+   something else.
+
+   A refund is not advanced by an executor the way a change is. It is advanced by
+   `PostSalesExecutionReconciliationService.reconcile`, which reads the owning
+   services' state -- payment's refund status, ticketing's void, booking's
+   cancellation, capacity's release -- and records the steps that state proves
+   (`PostSalesExecutionEvidenceReader`, whose comment is that it reads without
+   issuing any downstream command). Its only caller is
+   `PostSalesExecutionReconciliationController`, an HTTP entry point. So the
+   question is who calls that endpoint and why it was never called for this case
+   while it was for the twenty-seven thousand refunds that reached APPLIED. Note
+   that the first step it would record is DECISION_CONFIRMED: nothing has read
+   this case at all, which is a different failure from a read that came back
+   empty.
 
    **Then this one, so that it is not mistaken for the same thing.** With the change leak repaired, the window's largest group is
    `refund-status`: 1025 refunds and 132 disruption refunds that did not reach
