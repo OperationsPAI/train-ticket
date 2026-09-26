@@ -145,6 +145,77 @@ func TestHandlePostSalesApplied_CancelsRefundedPolicy(t *testing.T) {
 	}
 }
 
+// A compensation issues a wallet credit and keeps the ticket -- the standing
+// compensation policy -- so it does not end the coverage. Treated as a refund it
+// read the order's payment purchase reference, found none, and dead-lettered:
+// measured on events:post-sales, failureReason "domain rule violation: payment
+// purchase reference returned 404", the newest envelope a COMPENSATION
+// PostSalesApplied.
+func TestHandlePostSalesApplied_KeepsCoverageForACompensation(t *testing.T) {
+	now := time.Date(2026, 7, 10, 10, 0, 0, 0, time.UTC)
+	pub := &capturePublisher{}
+	svc := newTestService(t, now, pub)
+	handler := NewInboundHandler(svc)
+	_, err := svc.IssuePolicy(context.Background(), application.IssuePolicyCommand{ProductCode: string(domain.ProductDelayInsurance), ProductVersion: "v1", JourneyOrderID: "ord-comp", AncillaryOrderItemID: "anc-comp", AccountID: "acc-comp", TravelerRef: "tvl-comp", SegmentRefs: []string{"seg-comp"}, PaymentIntentID: "pi-comp", CoverageStartAt: now.Add(-time.Minute), CoverageEndAt: now.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := len(pub.events)
+
+	envelope := makeEnvelope(t, "PostSalesApplied", map[string]any{
+		"caseId":        "psc-comp",
+		"caseType":      "COMPENSATION",
+		"orderId":       "ord-comp",
+		"compensation":  map[string]any{"status": "ISSUED", "balanceType": "PROMOTION_CREDIT"},
+		"resultSummary": map[string]any{"description": "all post-sales execution steps succeeded"},
+	}, now)
+	if err := handler.Handle(context.Background(), envelope); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if len(pub.events) != before {
+		t.Fatalf("a compensation must not end coverage: %#v", pub.events[before:])
+	}
+	policy, err := svc.GetPolicy(context.Background(), "pol-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy.Status != domain.PolicyIssued {
+		t.Fatalf("policy status = %s, want %s", policy.Status, domain.PolicyIssued)
+	}
+}
+
+// The case id is on every PostSalesApplied, so it cannot stand in for the refund
+// evidence an envelope carries.
+func TestHandlePostSalesApplied_ACaseIdAloneIsNotARefund(t *testing.T) {
+	now := time.Date(2026, 7, 10, 10, 0, 0, 0, time.UTC)
+	pub := &capturePublisher{}
+	svc := newTestService(t, now, pub)
+	handler := NewInboundHandler(svc)
+	_, err := svc.IssuePolicy(context.Background(), application.IssuePolicyCommand{ProductCode: string(domain.ProductDelayInsurance), ProductVersion: "v1", JourneyOrderID: "ord-case", AncillaryOrderItemID: "anc-case", AccountID: "acc-case", TravelerRef: "tvl-case", SegmentRefs: []string{"seg-case"}, PaymentIntentID: "pi-case", CoverageStartAt: now.Add(-time.Minute), CoverageEndAt: now.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := len(pub.events)
+
+	envelope := makeEnvelope(t, "PostSalesApplied", map[string]any{
+		"caseId":  "psc-case",
+		"orderId": "ord-case",
+	}, now)
+	if err := handler.Handle(context.Background(), envelope); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if len(pub.events) != before {
+		t.Fatalf("an applied case with no refund evidence must not cancel: %#v", pub.events[before:])
+	}
+	policy, err := svc.GetPolicy(context.Background(), "pol-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy.Status != domain.PolicyIssued {
+		t.Fatalf("policy status = %s, want %s", policy.Status, domain.PolicyIssued)
+	}
+}
+
 func TestHandleJourneyOrderConfirmedRequiresInsurancePurchase(t *testing.T) {
 	now := time.Date(2026, 7, 10, 10, 0, 0, 0, time.UTC)
 	pub := &capturePublisher{}
