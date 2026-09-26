@@ -74,12 +74,18 @@ in [current status](00-current-status.md#the-resident-cycle-is-not-yet-clean):
    so the shards would fill again at the same rate. Decide what a useful
    retention for each of them is, the way the outbox and `processed_events`
    sweeps already do.
-4. [ ] Attribute the reservations that still do not confirm inside the client's
-   budget. Capacity reports no transient failure, its pool no longer times out,
-   its consumer group sits at a few hundred entries, and no confirmed booking is
-   missing its hold -- so the remaining wait is downstream of it, on the
-   provider reservation or the saga that waits for it. The last two windows
-   carried 5673 and 313 failed journeys, all of this shape.
+4. [ ] Provider Integration confirms only a fraction of the reservations it is
+   asked to make. Measured on the reset environment, which is fast enough that
+   this is not a load effect (P99 167 milliseconds): one minute carried 1601
+   `SegmentReservationRequested` events, 1426 holds and **437**
+   `ProviderReservationConfirmed`, while Booking published 603
+   `SegmentReservationConfirmed`. The rest leave the segment booking in
+   `HOLDING` with its capacity hold in `Held`, which is what the load generator
+   polls for ten seconds and reports as a reservation that did not confirm --
+   2850 of the window's 4151 failed journeys. The same service logged 6429
+   "duplicate event already processed; acking without handler" lines in that
+   minute against roughly 1600 requests, so the first question is what that
+   subscriber is re-reading.
 5. [ ] Disruption must not report a business conflict as an availability
    failure. Selecting an option for an order that already has a refund or change
    in progress answers 503 `UNAVAILABLE`; a conflict has its own status, and the
