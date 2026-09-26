@@ -5,7 +5,7 @@ Last verified: 2026-09-27, Asia/Beijing.
 ## Runtime
 
 The resident Helm release is `train-ticket` in namespace `train-ticket`,
-revision **451**.
+revision **452**.
 Its values come from one file, `deploy/helm/train-ticket/values.yaml`: the
 registry, the `local-path` storage class, the central telemetry store, the
 resident exporters, the load generator settings and the `loadgen-resident-state`
@@ -47,6 +47,7 @@ to one and back.
 
 | Check | Result | Evidence |
 |---|---|---|
+| Ten minute window at revision 452, one whole cycle in the resident steady state | 417464 requests, 46350 journeys, P99 294 milliseconds, **0 unexpected error groups, 0 failed journeys and 0 recorder drops**; the recorder read `written=1427213 dropped=0`, payment's conservation identity holds exactly (captured 5408457406 = refunded 1187431372 + unsettled 4221026034), and every dead-letter stream is empty | `.scratch/runtime-fixes/goal-acc-steady-rev452.json` |
 | Ten minute window at revision 451, two consecutive cycles | 342783 requests, 37846 journeys, P99 294 milliseconds, **0 unexpected error groups and 0 failed journeys**; the cycle after it, 23:09 to 23:19, is clean as well | `.scratch/runtime-fixes/goal-rev451-clean-window.json` |
 | Ten minute window at revision 447, the same burst, one fix later | 439115 requests, 48526 journeys, P99 106 milliseconds, 0 error groups, 20 failed journeys at the refund case poll (see the reservation and refund sections below) | `.scratch/runtime-fixes/goal-rev446-ten-minute.json` |
 | Ten minute window at revision 445, larger bursts | 384403 requests, 43046 journeys, P99 107 milliseconds, 1 error group, 61 failed journeys: 40 invoice basis, 21 transfer delay reports | `.scratch/runtime-fixes/goal-rev445-ten-minute.json` |
@@ -220,6 +221,41 @@ cores and its pool with nothing waiting. Their consumer counts and handler
 counts are raised in one revision: `offer-management` to nine replicas,
 `journey-order` to three, `traveler-profile` to two of sixteen, `fare-pricing`
 to three, `identity-verification` to two and `finance-settlement` to three.
+
+#### The one window that still fails is the generator's own catch-up
+
+Every failing window after those changes is the one that starts when the load
+generator restarts, and the failures are its first three or four minutes. At
+revision 452 the window from `23:29:46` to `23:39:46` carries 2896 failed
+journeys, and the minute-by-minute split puts all of them before `23:32`:
+
+| Minute | Journeys | Failed | Largest group |
+|---|---|---|---|
+| 23:28 | 19082 | 3592 | purchase offer 1232 |
+| 23:29 | 21512 | 5990 | purchase offer 5381 |
+| 23:30 | 14221 | 2530 | purchase offer 1932 |
+| 23:31 | 4756 | 34 | transfer offer 34 |
+| 23:32 to 23:39 | 2696 to 7646 each | **0** | none |
+
+`23:29` is 21512 journeys in one minute -- 358 a second, nearly three times the
+largest steady peak these cycles reach (7646) and within the configured
+envelope's 640-a-second ceiling. The mix says where it comes from: over
+`23:26` to `23:31` the purchase chain carries 22374 journeys against 6645 over
+`23:35` to `23:39`, so the catch-up is concentrated in the expensive funnel, not
+in browse.
+
+Two properties of that window are worth separating from everything measured
+above. First, it only happens on a generator restart: the closed-loop staff and
+scalper drivers and every persona whose work was interrupted come due at once,
+which is a generator artifact rather than a shape the steady envelope can
+produce. Second, it is a real load from the load generator's point of view, so
+the offer it fails on is a real 422 for that user; it is not noise.
+
+The offer 422s that continue outside that window are **expected-status polls**,
+not errors: the load generator retries an offer up to eight times and declares
+the intermediate 422s expected, and the analysis counts those separately. In
+the window above, `23:33` to `23:41` carries 1398 expected 422s and **0
+unexpected** ones.
 
 ### The resident cycle is not yet clean
 
