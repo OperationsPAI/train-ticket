@@ -55,11 +55,14 @@ def test_published_mct_rule_is_immutable() -> None:
         service.update_mct_rule(rule["mctRuleId"], {"minimumMinutes": 25})
 
 
-def test_large_hub_mct_enforced_rejects_ten_minute_gap_and_accepts_thirty() -> None:
+def test_declared_station_class_mct_enforced_rejects_ten_minute_gap_and_accepts_thirty() -> None:
     service = TransferManagementService(InMemoryStore())
     now = datetime(2026, 1, 1, 10, tzinfo=UTC)
     plan = service.create_plan({"itineraryRef": "iti-mct", "planningSnapshotVersion": 1, "travelerRefs": ["trav-1"], "journeyOrderId": "jo-mct"}, "corr-test", "cmd-test")
-    base = {"transferPlanId": plan["transferPlanId"], "itineraryRef": "iti-mct", "journeyOrderId": "jo-mct", "previousSegmentRef": "seg-a", "nextSegmentRef": "seg-b", "travelerRefs": ["trav-1"], "fromNodeRef": "北京南", "toNodeRef": "北京南", "fromNodeType": "STATION", "toNodeType": "STATION", "transferCategory": "SAME_STATION", "contractId": "cct-mct", "contractType": "PROTECTED"}
+    # The baseline comes from the station class the caller declares, not from the
+    # node reference: a reference is an identifier, so a display name never
+    # matches and every station took the smallest baseline.
+    base = {"transferPlanId": plan["transferPlanId"], "itineraryRef": "iti-mct", "journeyOrderId": "jo-mct", "previousSegmentRef": "seg-a", "nextSegmentRef": "seg-b", "travelerRefs": ["trav-1"], "fromNodeRef": "tn-beijing-south", "toNodeRef": "tn-beijing-south", "fromNodeType": "STATION", "toNodeType": "STATION", "transferCategory": "SAME_STATION", "contractId": "cct-mct", "contractType": "PROTECTED", "stationSize": "LARGE_STATION"}
     with pytest.raises(DomainError) as exc:
         service.register_connection(base | {"window": {"plannedArrivalAt": now.isoformat().replace("+00:00", "Z"), "nextDepartureAt": (now + timedelta(minutes=10)).isoformat().replace("+00:00", "Z")}}, "corr-test", "cmd-test")
     assert "INSUFFICIENT_CONNECTION_TIME" in str(exc.value)
@@ -72,7 +75,7 @@ def test_cross_mode_train_to_metro_uses_35_minute_mct_and_instructions() -> None
     service = TransferManagementService(InMemoryStore())
     now = datetime(2026, 1, 1, 10, tzinfo=UTC)
     plan = service.create_plan({"itineraryRef": "iti-metro", "planningSnapshotVersion": 1, "travelerRefs": ["trav-1"]}, "corr-test", "cmd-test")
-    con = service.register_connection({"transferPlanId": plan["transferPlanId"], "itineraryRef": "iti-metro", "previousSegmentRef": "seg-train", "nextSegmentRef": "metro-1", "travelerRefs": ["trav-1"], "fromNodeRef": "北京南", "toNodeRef": "北京南地铁", "fromNodeType": "STATION", "toNodeType": "STATION", "transferCategory": "CROSS_STATION", "contractId": "cct-metro", "contractType": "SELF_TRANSFER", "fromMode": "TRAIN", "toMode": "METRO", "walkingMinutes": 12, "window": {"plannedArrivalAt": now.isoformat().replace("+00:00", "Z"), "nextDepartureAt": (now + timedelta(minutes=40)).isoformat().replace("+00:00", "Z")}}, "corr-test", "cmd-test")
+    con = service.register_connection({"transferPlanId": plan["transferPlanId"], "itineraryRef": "iti-metro", "previousSegmentRef": "seg-train", "nextSegmentRef": "metro-1", "travelerRefs": ["trav-1"], "fromNodeRef": "tn-train", "toNodeRef": "tn-metro", "fromNodeType": "STATION", "toNodeType": "STATION", "transferCategory": "CROSS_STATION", "contractId": "cct-metro", "contractType": "SELF_TRANSFER", "fromMode": "TRAIN", "toMode": "METRO", "walkingMinutes": 12, "window": {"plannedArrivalAt": now.isoformat().replace("+00:00", "Z"), "nextDepartureAt": (now + timedelta(minutes=40)).isoformat().replace("+00:00", "Z")}}, "corr-test", "cmd-test")
     assert con["window"]["mctMinutes"] == 35
     assert con["walkingDistanceMeters"] == 960
     assert "Transfer from TRAIN" in con["transferInstructions"]
@@ -82,7 +85,7 @@ def test_cross_mode_train_to_metro_same_station_does_not_use_same_platform_mct()
     service = TransferManagementService(InMemoryStore())
     now = datetime(2026, 1, 1, 10, tzinfo=UTC)
     plan = service.create_plan({"itineraryRef": "iti-metro-same", "planningSnapshotVersion": 1, "travelerRefs": ["trav-1"]}, "corr-test", "cmd-test")
-    base = {"transferPlanId": plan["transferPlanId"], "itineraryRef": "iti-metro-same", "previousSegmentRef": "seg-train", "nextSegmentRef": "metro-1", "travelerRefs": ["trav-1"], "fromNodeRef": "北京南", "toNodeRef": "北京南", "fromNodeType": "STATION", "toNodeType": "STATION", "transferCategory": "IN_STATION", "contractId": "cct-metro-same", "contractType": "SELF_TRANSFER", "fromMode": "TRAIN", "toMode": "METRO"}
+    base = {"transferPlanId": plan["transferPlanId"], "itineraryRef": "iti-metro-same", "previousSegmentRef": "seg-train", "nextSegmentRef": "metro-1", "travelerRefs": ["trav-1"], "fromNodeRef": "tn-station", "toNodeRef": "tn-station", "fromNodeType": "STATION", "toNodeType": "STATION", "transferCategory": "IN_STATION", "contractId": "cct-metro-same", "contractType": "SELF_TRANSFER", "fromMode": "TRAIN", "toMode": "METRO"}
 
     with pytest.raises(DomainError) as exc:
         service.register_connection(base | {"window": {"plannedArrivalAt": now.isoformat().replace("+00:00", "Z"), "nextDepartureAt": (now + timedelta(minutes=20)).isoformat().replace("+00:00", "Z")}}, "corr-test", "cmd-test")
@@ -108,8 +111,8 @@ def test_itinerary_proposed_validates_mct_and_publishes_outbox_events() -> None:
                 {
                     "itineraryRef": "iti-proposed",
                     "legs": [
-                        {"serviceSegmentRef": "seg-train", "originStopRef": "南京南", "destinationStopRef": "北京南", "departureTime": (now - timedelta(hours=1)).isoformat().replace("+00:00", "Z"), "arrivalTime": now.isoformat().replace("+00:00", "Z"), "mode": "TRAIN"},
-                        {"serviceSegmentRef": "metro-1", "originStopRef": "北京南", "destinationStopRef": "西单", "departureTime": (now + timedelta(minutes=20)).isoformat().replace("+00:00", "Z"), "arrivalTime": (now + timedelta(minutes=40)).isoformat().replace("+00:00", "Z"), "mode": "METRO"},
+                        {"serviceSegmentRef": "seg-train", "originStopRef": "tn-nanjing-south", "destinationStopRef": "tn-beijing-south", "departureTime": (now - timedelta(hours=1)).isoformat().replace("+00:00", "Z"), "arrivalTime": now.isoformat().replace("+00:00", "Z"), "mode": "TRAIN"},
+                        {"serviceSegmentRef": "metro-1", "originStopRef": "tn-beijing-south", "destinationStopRef": "tn-xidan", "departureTime": (now + timedelta(minutes=20)).isoformat().replace("+00:00", "Z"), "arrivalTime": (now + timedelta(minutes=40)).isoformat().replace("+00:00", "Z"), "mode": "METRO"},
                     ],
                     "transfers": [{"transferCategory": "IN_STATION", "samePlatform": True}],
                 }
