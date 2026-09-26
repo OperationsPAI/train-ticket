@@ -987,6 +987,11 @@ services:
       # the writes it completes are 65 a second. The CPU is not either: 0.4 of a
       # 6 core limit.
       CONSUMER_BATCH_CONCURRENCY: "24"  # 5 streams
+      # The kit takes the batch path when a handler defines one, and this handler
+      # does -- it writes a whole batch of itineraries in one statement. The batch
+      # is therefore the unit of throughput, and the read takes 500 entries at a
+      # time rather than 100.
+      CONSUMER_BATCH_COUNT: "500"
     # 4 consumer threads do not fit in the default 500m CPU limit. Raising
     # CONSUMER_THREADS without raising this caused a CrashLoopBackOff: the
     # threads saturated half a core working through the backlog, the HTTP thread
