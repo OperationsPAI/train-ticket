@@ -41,12 +41,12 @@ public class TravelerProfileService {
     private final EventPublisher eventPublisher;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private final BirthDateClaimPolicy birthDateClaimPolicy;
 
     public TravelerProfileService(EventPublisher eventPublisher, ObjectMapper objectMapper) {
         this(new InMemoryTravelerProfileStore(), new com.trainticket.platformkit.idempotency.InMemoryIdempotencyStore(), eventPublisher, objectMapper, Clock.systemUTC());
     }
 
-    @Autowired
     public TravelerProfileService(
         TravelerProfileStore store,
         IdempotencyStore idempotencyStore,
@@ -56,6 +56,17 @@ public class TravelerProfileService {
         this(store, idempotencyStore, eventPublisher, objectMapper, Clock.systemUTC());
     }
 
+    @Autowired
+    public TravelerProfileService(
+        TravelerProfileStore store,
+        IdempotencyStore idempotencyStore,
+        EventPublisher eventPublisher,
+        ObjectMapper objectMapper,
+        BirthDateClaimPolicy birthDateClaimPolicy
+    ) {
+        this(store, idempotencyStore, eventPublisher, objectMapper, Clock.systemUTC(), birthDateClaimPolicy);
+    }
+
     TravelerProfileService(
         TravelerProfileStore store,
         IdempotencyStore idempotencyStore,
@@ -63,11 +74,23 @@ public class TravelerProfileService {
         ObjectMapper objectMapper,
         Clock clock
     ) {
+        this(store, idempotencyStore, eventPublisher, objectMapper, clock, BirthDateClaimPolicy.statedDefault());
+    }
+
+    TravelerProfileService(
+        TravelerProfileStore store,
+        IdempotencyStore idempotencyStore,
+        EventPublisher eventPublisher,
+        ObjectMapper objectMapper,
+        Clock clock,
+        BirthDateClaimPolicy birthDateClaimPolicy
+    ) {
         this.store = store;
         this.idempotencyStore = idempotencyStore;
         this.eventPublisher = eventPublisher;
         this.objectMapper = objectMapper;
         this.clock = clock;
+        this.birthDateClaimPolicy = birthDateClaimPolicy;
     }
 
     @Transactional
@@ -236,7 +259,13 @@ public class TravelerProfileService {
         requireText(command.familyName(), "familyName", errors);
         if (!isBlank(command.dateOfBirth())) {
             try {
-                java.time.LocalDate.parse(command.dateOfBirth().trim());
+                java.time.LocalDate claimed = java.time.LocalDate.parse(command.dateOfBirth().trim());
+                // A claim the platform cannot hold is a typo rather than a fact.
+                // The bound comes from the policy, so the comparison here stays
+                // the same when the release moves it.
+                if (claimed.isBefore(birthDateClaimPolicy.earliestClaim())) {
+                    errors.put("dateOfBirth", "dateOfBirth is before the earliest date a profile can carry");
+                }
             } catch (java.time.format.DateTimeParseException ex) {
                 errors.put("dateOfBirth", "dateOfBirth must be an ISO-8601 date (YYYY-MM-DD)");
             }
