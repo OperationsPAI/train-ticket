@@ -746,6 +746,12 @@ snapshot" (606) and post-sales timeouts (523).
      `SUBMIT` ten milliseconds apart, and the typical refund settles 0.25
      seconds after `RefundRequested` (403 to 517 refunds per 0.05 second bucket),
      so the 7.9 seconds is a tail inside payment's settle path;
+   - the tail is a population, not one bad case: of 17371 settled refunds,
+     14795 settle under a second, 1048 take one to three, 653 take three to
+     eight, 311 take eight to twelve and 564 take more than twelve (mean 20.5
+     seconds). The slow ones are dominated by `post-sales-approved` (721) and
+     `CHANGE_FARE_DIFFERENCE` (404), which is the path this file's refund items
+     measure;
    - the same apply path also completes a case whose own execution plan still
      lists `REQUEST_REFUND` as `PLANNED`
      (`PostSalesApplicationService.applyForSegmentBooking` applies on "all
