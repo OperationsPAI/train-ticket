@@ -255,7 +255,16 @@ export class InMemoryEventSubscriber implements EventSubscriber {
   }
 }
 
-const READ_BLOCK_MS = parseInt(process.env.CONSUMER_BLOCK_MS ?? "100", 10);
+// One second rather than a hundred milliseconds.
+//
+// A blocking read is woken by the write itself, so the block only bounds how
+// long an idle reader sleeps before asking again -- it is not a delivery delay.
+// Redis is single-threaded and was pinned at one core with 2015 connected
+// clients; `xreadgroup` accounted for 275445579 of its calls and almost all of
+// them were a hundred millisecond block expiring rather than a delivery.
+// Raising the default cut `instantaneous_ops_per_sec` from 21376 to 16695 on
+// the resident cluster with one service changed.
+const READ_BLOCK_MS = parseInt(process.env.CONSUMER_BLOCK_MS ?? "1000", 10);
 const READ_COUNT = parseInt(process.env.CONSUMER_BATCH_COUNT ?? "100", 10);
 const CLAIM_MIN_IDLE_MS = 60_000;
 const DEAD_CONSUMER_IDLE_MS = 5 * 60 * 1_000;
