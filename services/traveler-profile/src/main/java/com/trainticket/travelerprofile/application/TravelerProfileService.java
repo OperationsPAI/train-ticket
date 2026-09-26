@@ -259,14 +259,7 @@ public class TravelerProfileService {
         requireText(command.familyName(), "familyName", errors);
         if (!isBlank(command.dateOfBirth())) {
             try {
-                java.time.LocalDate claimed = java.time.LocalDate.parse(command.dateOfBirth().trim());
-                // The register carries the band the fare catalogue prices, so a claimed date
-                // it has no band for is answered here rather than stored and met at the first
-                // quote, one service downstream. The ends are the catalogue's and travel with
-                // the release, which is why this comparison names none of them.
-                if (!claimBand.holds(claimed, java.time.LocalDate.now(clock))) {
-                    errors.put("dateOfBirth", "dateOfBirth is outside the band of ages the catalogue prices");
-                }
+                requireClaimedBand(command.dateOfBirth(), errors);
             } catch (java.time.format.DateTimeParseException ex) {
                 errors.put("dateOfBirth", "dateOfBirth must be an ISO-8601 date (YYYY-MM-DD)");
             }
@@ -282,6 +275,20 @@ public class TravelerProfileService {
         }
         if (!errors.isEmpty()) {
             throw new ValidationException("Request validation failed", errors);
+        }
+    }
+
+    /**
+     * Holds one claimed birth date to the band the catalogue prices.
+     *
+     * The date is parsed here so the requirement reads as what it is -- a claimed date inside
+     * the band -- rather than as parse plumbing beside the other requirements. The ends are the
+     * catalogue's and travel with the release, which is why this names none of them.
+     */
+    private void requireClaimedBand(String dateOfBirth, Map<String, String> errors) {
+        java.time.LocalDate claimed = java.time.LocalDate.parse(dateOfBirth.trim());
+        if (!claimBand.holds(claimed, java.time.LocalDate.now(clock))) {
+            errors.put("dateOfBirth", "dateOfBirth is outside the band of ages the catalogue prices");
         }
     }
 
