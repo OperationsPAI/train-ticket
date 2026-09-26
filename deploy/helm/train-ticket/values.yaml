@@ -1182,9 +1182,20 @@ services:
       limits: { cpu: '4', memory: 4Gi }
   provider-integration:
     db: provider_integration
-    # Two replicas: the provider reservation is a saga step whose confirmation
+    # Three replicas: the provider reservation is a saga step whose confirmation
     # the capacity Hold waits for.
-    replicas: 2
+    #
+    # Measured on 2026-09-27 at the raised burst (the cycle peak carries about
+    # fourteen thousand journeys a minute against the nine thousand the earlier
+    # window held): this was the only consumer group on
+    # `events:booking-orchestration` behind at the peak, with the oldest
+    # undelivered entry 5 to 7 seconds old while capacity-availability and
+    # entitlement-ticketing on the same stream sat at zero. That gap is the
+    # reservation confirmation the load generator waits through: a purchase that
+    # failed at `staff-poll-reservation` had its segment booking confirmed 11.7
+    # seconds after the request against a 0.3 second confirm off the peak, and
+    # the client polls ten times at one second.
+    replicas: 3
     env:
       # The service reads every event the booking saga publishes and acts on two
       # types, so its cost is the whole stream. Four reader loops a replica -- the
@@ -1194,8 +1205,12 @@ services:
       # request waited that long for its confirmation and the load generator's
       # ten second poll expired on it. Sixteen loops a replica consume that
       # stream, and the pods sat at a tenth of a core while eight of them were
-      # behind, so the ceiling was loops rather than CPU.
-      CONSUMER_THREADS: "16"
+      # behind, so the ceiling was loops rather than CPU. That held until the
+      # burst was raised again: the same group is 5 to 7 seconds behind at the
+      # peak now with the pods still at a fraction of a core, so the ceiling is
+      # still loops. Twenty four loops across three replicas replace sixteen
+      # across two.
+      CONSUMER_THREADS: "24"
   entitlement-ticketing:
     db: entitlement_ticketing
     pgInstance: txn
