@@ -740,6 +740,13 @@ services:
   service-plan:
     db: service_plan
     pgInstance: read
+    # One listing call is what one caller's reconciliation costs the read replica
+    # behind it, so the page is sized with the release rather than by whichever
+    # page a caller happens to ask for. Twenty rows holds one listing inside the
+    # read budget the other services leave at this traffic level; the image's own
+    # default stays what a release that declares nothing gets.
+    env:
+      SERVICE_PLAN_LISTING_PAGE_LIMIT: "20"
     strategy:
       type: RollingUpdate
       rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
