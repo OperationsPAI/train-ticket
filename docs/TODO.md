@@ -599,3 +599,13 @@ than a latency. The load generator's branch is the thing to read against that:
 `MaybeRequestInvoice` is called with a purchase and only skips on
 `TotalMinor <= 0`, so if it runs for purchases that never captured, the client is
 asking for a document the order cannot have and its expectation is the defect.
+
+Read, and it is not the client's expectation either. `MaybeRequestInvoice` is
+called at `journey_purchase.go:293`, and the only path to it is past
+`awaitPaymentCaptured`: when that returns not-paid the journey returns
+"payment_rejected" at line 216, before the invoice branch. So the 42 orders had a
+captured payment and no recognized revenue, which is a gap rather than a
+misplaced question. The thing to check next is the fault the generator injects on
+that path -- `faultSeed = "MISSED_ORDER:loadgen"` at line 204 -- because a capture
+that succeeds while the order signal is deliberately missed is exactly an order
+whose revenue finance-settlement may never recognise.
