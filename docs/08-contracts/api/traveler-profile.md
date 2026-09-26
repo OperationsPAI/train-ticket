@@ -46,6 +46,14 @@ discounts).
 
 **Error codes:** `VALIDATION_FAILED`, `CONFLICT`
 
+A claimed `dateOfBirth` is held to the age band the fare catalogue prices, which the
+release publishes with the catalogue's own ends
+(`catalogue.band.youngest-age-years`, `catalogue.band.oldest-age-years`, rendered to the
+container as `CATALOGUE_BAND_YOUNGEST_AGE_YEARS` and `CATALOGUE_BAND_OLDEST_AGE_YEARS`).
+A claim outside the band is answered with `VALIDATION_FAILED` and the `dateOfBirth`
+detail; nothing is stored and no event is published. A deployment that publishes no band
+carries every age.
+
 ### Get Traveler Profile
 
 **GET** `/api/v1/travelers/{travelerId}`
