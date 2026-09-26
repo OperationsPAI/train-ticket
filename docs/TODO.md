@@ -566,3 +566,26 @@ verification evidence to the item before it is marked done.
 Runtime configuration is maintained in exactly one file,
 `deploy/helm/train-ticket/values.yaml`. The former cluster, case, resident,
 production and ACR overlays are deleted.
+
+## Invoicing amount basis, measured 2026-09-26
+
+The window at revision 421 carries 42 `invoice-amount-basis` failures: a GET of
+`/api/v1/invoice-amount-bases/{orderId}` answered 404 "amount basis not yet
+available" on the last of the client's ten one-second polls. The client is not the
+problem -- `journey_invoice.go` expects 404 on the first nine attempts and only
+the tenth counts -- and neither is a backlog: invoicing is at lag 0 on
+`events:journey-order`, `events:payment`, `events:booking-orchestration` and
+`events:post-sales`, and finance-settlement is at lag 0 on payment,
+booking-orchestration, post-sales and provider-integration. That is a different
+shape from the offer failures, which were a group reading slower than its stream.
+
+The 404 comes from a projection lookup with nothing in it
+(`services/invoicing/src/application.rs:630`, and its in-memory twin at :627), and
+the entries are written by event handlers: a revenue recognition around line 396
+and a reversal around line 343 both `insert` into the amount map and record the
+event id. So the next question is the one that decides the fix, and it is one
+read: which event creates the *first* basis for an order, and whether every
+purchase emits it. If some orders legitimately have none -- one whose payment
+never completed, say -- then the 404 is correct and the client's unconditional
+expectation of a basis is the defect. If every purchase should have one, this is
+the same race as the refund: a reader asking before the writer's event arrived.
