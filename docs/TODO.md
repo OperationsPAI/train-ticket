@@ -840,12 +840,26 @@ snapshot" (606) and post-sales timeouts (523).
 
 5. [ ] The revision 438 window puts the remaining failures elsewhere: 459163
    requests and 48468 journeys at P99 155 milliseconds with 7 error groups and
-   658 failed journeys, of which 209 are `offer-management` offers refused with
-   "Fare Pricing quote has not been consumed" and 101 are
-   `booking-orchestration` `staff-saga-lookup` timeouts. Both are the
-   consume-then-build shape this file's offer item describes, so the next
-   measurement is that group's lag and the two services' handler queues under the
-   same burst, the way payment's and disruption-recovery's were measured.
+   658 failed journeys. The groups, in order: 201 transfer offers refused with
+   "No consumed Trip Planning itinerary found", 158 reservation timeouts ("timed
+   out waiting for sb"), 120 refund-status and 105 refund case-status, 33
+   risk-status, 10 transfer reservation timeouts, 9 disruption refund-status, 6
+   invoice basis, 6 change offers, 4 disruption case-status.
+
+   The offer-management consumer is not behind: measured in the burst minute its
+   lag was **1** on `events:fare-pricing` and **0** on `events:trip-planning`,
+   with 11 and 6 entries pending, and the process used 0.4 of its cores with no
+   pool waiting. The client retries an offer twelve times with backoff to five
+   seconds, so a refused offer means the itinerary was never consumed in half a
+   minute -- the store the offer is built from, not the consumer's pace, is what
+   to read next (the transfer group names an itinerary reference; the purchase
+   group names a fare quote).
+
+   The refund settle itself held: of the refunds in the twenty minutes around
+   that window, 3726 settled under a second, 1889 took one to three, and 32 took
+   three to eight -- no eight-second population at all, against 875 before the
+   payment thread change. The refund and case-status failures that remain are the
+   case applying past the client's poll, the four hop saga above.
 3. [ ] Reporting still deadlocks on the event instance: `reporting_business_scopes`
    and `reporting_order_attachments` upserts take the same rows in different
    orders under burst, four times in four minutes after the notification fix.
