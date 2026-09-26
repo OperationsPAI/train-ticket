@@ -112,6 +112,24 @@ func TestPublishFailureDoesNotUpdateCacheBeforeSuccessfulRetry(t *testing.T) {
 	}
 }
 
+func TestTwoOnboardingsUnderOneTradingNameFileTwoPartners(t *testing.T) {
+	service := NewService(nil)
+	first := RegisterSupplierCommand{LegalName: "Transfer carrier 0194f2e0", BrandName: "Transfer rail", SupplierCode: "T0194f2e0"}
+	second := RegisterSupplierCommand{LegalName: "Transfer carrier 0194f2e1", BrandName: "Transfer rail", SupplierCode: "T0194f2e1"}
+
+	one, err := service.RegisterSupplier(context.Background(), first)
+	if err != nil {
+		t.Fatalf("the first onboarding should file its partner: %v", err)
+	}
+	two, err := service.RegisterSupplier(context.Background(), second)
+	if err != nil {
+		t.Fatalf("an onboarding that mints its own code files its own partner: %v", err)
+	}
+	if one.SupplierID == two.SupplierID {
+		t.Fatalf("two codes are two partners, got %s twice", one.SupplierID)
+	}
+}
+
 func TestListSuppliersPropagatesRepositoryError(t *testing.T) {
 	boom := errors.New("postgres unavailable")
 	service := NewService(nil).WithRepository(failingRepository{err: boom})
