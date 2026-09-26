@@ -70,34 +70,15 @@ func readersStatedDirectory() string {
 // entries name nothing, keep the vocabulary the image was built with; a
 // register that is missing or names nothing narrows nothing.
 func readersStatedIn(directory string) readerSet {
-	stated, err := os.ReadFile(filepath.Join(directory, rosterStatement))
+	roster, err := statementEntries(filepath.Join(directory, rosterStatement))
 	if err != nil {
 		return setOf(builtinReaders)
-	}
-	roster := readerSet{}
-	for _, line := range strings.Split(string(stated), "\n") {
-		name := strings.TrimSpace(line)
-		if name == "" || strings.HasPrefix(name, "#") {
-			continue
-		}
-		roster[readerNamed(name)] = struct{}{}
 	}
 	if len(roster) == 0 {
 		return setOf(builtinReaders)
 	}
-	carried, err := os.ReadFile(filepath.Join(directory, registerStatement))
-	if err != nil {
-		return roster
-	}
-	register := readerSet{}
-	for _, line := range strings.Split(string(carried), "\n") {
-		name := strings.TrimSpace(line)
-		if name == "" || strings.HasPrefix(name, "#") {
-			continue
-		}
-		register[readerNamed(name)] = struct{}{}
-	}
-	if len(register) == 0 {
+	register, err := statementEntries(filepath.Join(directory, registerStatement))
+	if err != nil || len(register) == 0 {
 		return roster
 	}
 	readers := readerSet{}
@@ -107,6 +88,25 @@ func readersStatedIn(directory string) readerSet {
 		}
 	}
 	return readers
+}
+
+// statementEntries is the entries a published statement file names, read the
+// way the operator who wrote it writes them: one reader an entry, blank lines
+// and comments ignored.
+func statementEntries(path string) (readerSet, error) {
+	stated, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	entries := readerSet{}
+	for _, line := range strings.Split(string(stated), "\n") {
+		name := strings.TrimSpace(line)
+		if name == "" || strings.HasPrefix(name, "#") {
+			continue
+		}
+		entries[readerNamed(name)] = struct{}{}
+	}
+	return entries, nil
 }
 
 // readerNamed is the reader an entry names, read the way an operator writes it.
