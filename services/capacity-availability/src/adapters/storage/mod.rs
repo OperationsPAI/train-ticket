@@ -59,6 +59,7 @@ impl PostgresCapacityService {
         now: u64,
     ) -> Result<CapacitySnapshot, AppError> {
         let route = segments.route(&facts.segment_ref)?;
+        let started = std::time::Instant::now();
         let classes = self
             .supply_client
             .published_classes(
@@ -67,15 +68,20 @@ impl PostgresCapacityService {
                 correlation_id,
             )
             .await?;
+        let listed = started.elapsed();
+        let class_count = classes.len();
+        let mut folded = std::time::Duration::ZERO;
         let mut snapshots = Vec::with_capacity(classes.len());
         for class_ref in classes {
             let class_facts = ReservationSupply {
                 class_ref,
                 ..facts.clone()
             };
+            let mark = std::time::Instant::now();
             let (supply, available, occupancy) = self
                 .available_supply(tx, &class_facts, segments, correlation_id, now)
                 .await?;
+            folded += mark.elapsed();
             snapshots.push(combined_class_snapshot(
                 &class_facts,
                 &route.interval,
@@ -84,6 +90,18 @@ impl PostgresCapacityService {
                 &occupancy,
                 now,
             )?);
+        }
+        let total = started.elapsed();
+        if total >= std::time::Duration::from_millis(200) {
+            log::warn!(
+                "capacity combined snapshot for {}/{}: classes={} list={}ms fold={}ms total={}ms",
+                facts.scheduled_service_ref,
+                facts.service_date,
+                class_count,
+                listed.as_millis(),
+                folded.as_millis(),
+                total.as_millis()
+            );
         }
         combine_capacity_snapshots(&facts.segment_ref, &facts.service_date, snapshots)
     }
