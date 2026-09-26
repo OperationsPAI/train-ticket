@@ -1489,6 +1489,18 @@ services:
     db: finance_settlement
     pgInstance: txn
     image: mirrors.tencent.com/microservice/finance-settlement:autoclaim-6b90ce5d@sha256:4120578bb9596d0462f123122de1d6b8be2e13c429f449612d1714edab32620f
+    # Two replicas: the revenue recognition that creates the invoice amount basis
+    # is driven by the booking saga's invoice step, which finance-settlement reads
+    # off `events:booking-orchestration` along with six other streams.
+    #
+    # Measured on 2026-09-27 at the raised burst: this group is the one that falls
+    # behind on that stream at the peak -- lag grew from 1814 to 26460 and the
+    # oldest undelivered entry from 10 to 150 seconds across four peak minutes --
+    # while the pod sat at a quarter of a core with no throttling and no pool
+    # queue. The cost is the invoice the load generator collects at the end of a
+    # purchase: one order's ten polls all answered 404 and its revenue was
+    # recognised 36 seconds after the last of them.
+    replicas: 2
     strategy:
       type: RollingUpdate
       rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
