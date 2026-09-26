@@ -93,10 +93,27 @@ public class PostSalesController {
         // release had already been consumed and nothing would mention it again. Reading the
         // owning services' state once, here, applies whatever is already true; a case whose
         // work is done completes at once, and one whose work is not waits as before.
-        if(reconciliation!=null && approved.status()==com.trainticket.postsales.domain.PostSalesCaseStatus.EXECUTING) {
-            approved=reconciliation.reconcile(caseId, commandId(), correlation);
+        if(reconciliation!=null && approved.status()==com.trainticket.postsales.domain.PostSalesCaseStatus.EXECUTING
+            && refundLike(approved.caseType())) {
+            try {
+                approved=reconciliation.reconcile(caseId, commandId(), correlation);
+            } catch(RuntimeException ignored) {
+                // The read is an addition, never a condition: a case whose state cannot be read
+                // waits for its events exactly as it did before this call existed. Letting it
+                // fail the approval would turn a read the caller did not ask for into a refusal
+                // -- measured, 422 "execution reconciliation supports refund-like cases only"
+                // on every change approval until this guard was added.
+            }
         }
         return PostSalesMapper.approveResponse(approved);
+    }
+
+    /// The case types whose execution is reconciled by reading owner state. Matches
+    /// PostSalesExecutionEvidenceReader's supported set.
+    private static boolean refundLike(com.trainticket.postsales.domain.PostSalesCaseType caseType) {
+        return caseType==com.trainticket.postsales.domain.PostSalesCaseType.REFUND
+            || caseType==com.trainticket.postsales.domain.PostSalesCaseType.CANCELLATION
+            || caseType==com.trainticket.postsales.domain.PostSalesCaseType.REBOOK;
     }
 
     @GetMapping("/{caseId}")
