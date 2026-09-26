@@ -165,6 +165,19 @@ recorded in [current status](00-current-status.md#the-resident-cycle-is-not-yet-
    stays EXECUTING for hours and every journey that touches its order fails with
    `unfulfilled` rather than ending.
 
+   **Repaired, and the diagnosis proved by the repair.** Calling
+   `POST /api/v1/capacity-holds/{id}/release` on the stuck hold released it, and
+   the case -- which had been EXECUTING for five and a half hours -- reached
+   APPLIED six seconds later. The same call against every other blocked case: 34
+   holds belonging to cancelled bookings were still Confirmed, all 34 released,
+   and 34 of the 38 cases went APPLIED. The window after moves `change
+   case-status` from 602 failures to 441.
+
+   What that proves is that the hold is the only blocker and that the release
+   path works when it is asked by hold id. What it does not fix is the road the
+   release took: capacity's event handler is still the one that lost it, so the
+   leak can happen again, and the repair was a person with a curl equivalent.
+
    The plan, in this order:
 
    1. Instrument the release handler with the reason it gave up -- the three
@@ -183,6 +196,16 @@ recorded in [current status](00-current-status.md#the-resident-cycle-is-not-yet-
       is the worse of the two failures, so a release that cannot be applied
       should be parked rather than dropped, and a sweep should apply what is
       parked.
+
+   **The next group after that one, so that it is not mistaken for the same
+   thing.** With the change leak repaired, the window's largest group is
+   `refund-status`: 1025 refunds and 132 disruption refunds that did not reach
+   SETTLED inside the client's poll. The example checked
+   (`psc-01a0dd10-b5a9-7fbb-8c57-ccc248b60ab5`) is APPLIED, so those are late
+   rather than stuck -- the refund completes, just after the client has stopped
+   asking. That window also ran at P99 1924 milliseconds against 129 in the one
+   before it, so measure the refund path's own latency before attributing
+   anything to a lost release.
 9. [x] Offers answered with an unexpected status. The window at revision 417
    carried 592 purchase, 258 change and 330 transfer jobs that failed at `offer`
    with a 422: `Fare Pricing quote has not been consumed` or `No consumed Trip
