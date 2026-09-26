@@ -43,7 +43,17 @@ in [current status](00-current-status.md#the-resident-cycle-is-not-yet-clean):
    corpus grew. Measured with the index in place: 56 searches a second, each
    fetching about 20000 segment rows, which is 1.1 million tuples a second from
    the plan tables alone.
-2. [ ] Cut the remaining databases over to their shards. The chart defines six
+2. [x] The remaining shard migration is cancelled. The resident environment
+   keeps only what a run needs: the accumulated data was deleted and the release
+   redeployed onto empty schemas, which is what the owner asked for rather than
+   copying 176 GB of history. Trip Planning and Seat Assignment had already been
+   cut over to the read shard and stay there. What this closes is the reason the
+   old rows existed at all -- legacy holds without supply facts, 58 un-funded
+   refund cases, 150530 APPROVED refunds and 133034 APPROVED changes from the
+   broken era -- so those items are gone with the data rather than repaired.
+
+3. [ ] Cut the remaining databases over to their shards, if the split is wanted
+   later. The chart defines six
    shards, but only six of the thirty-seven services set `pgInstance`; the other
    thirty-one use `core`, including every read-heavy one, and the read shard's
    copies of `trip_planning`, `offer_management`, `capacity_availability` and
