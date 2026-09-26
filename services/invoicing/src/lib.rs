@@ -73,7 +73,21 @@ pub async fn build_runtime() -> Result<(Router, JoinHandle<()>), SubscribeFailed
     let handle = tokio::spawn(async move {
         let mut tasks = tokio::task::JoinSet::new();
         for (index, stream) in streams.into_iter().enumerate() {
-            let workers = if stream == adapters::messaging::journey_order_stream() { 4 } else { 1 };
+            // Four workers on the two streams that carry the facts an invoice is
+            // built from. Measured at the cycle's burst: this group's lag on
+            // `events:finance-settlement` reached 3676 entries while
+            // `amount_basis_projection` held no row at all, so every amount-basis
+            // read answered 404 -- which is the purchase journey's
+            // `invoice-amount-basis` failure group, not a missing recognition:
+            // finance-settlement had the capture and the recognition both
+            // recorded for the same order. The stream had one consumer.
+            let workers = if stream == adapters::messaging::journey_order_stream()
+                || stream == adapters::messaging::finance_stream()
+            {
+                4
+            } else {
+                1
+            };
             for worker in 0..workers {
                 let hs = hs.clone();
                 let stream = stream.clone();
