@@ -5,7 +5,7 @@ Last verified: 2026-09-26, Asia/Beijing.
 ## Runtime
 
 The resident Helm release is `train-ticket` in namespace `train-ticket`,
-revision **438**.
+revision **440**.
 Its values come from one file, `deploy/helm/train-ticket/values.yaml`: the
 registry, the `local-path` storage class, the central telemetry store, the
 resident exporters, the load generator settings and the `loadgen-resident-state`
@@ -47,6 +47,7 @@ to one and back.
 
 | Check | Result | Evidence |
 |---|---|---|
+| Ten minute window at revision 440 | 399599 requests, 45861 journeys, P99 112 milliseconds, **0 unexpected error groups and 0 failed journeys** | `.scratch/runtime-fixes/goal-rev440-ten-minute.json` |
 | Ten minute window at revision 438 | 459163 requests, 48468 journeys, P99 155 milliseconds, 7 error groups, 658 failed journeys -- 209 offer refusals (quote not consumed), 101 booking saga lookups timing out, the rest the invoice basis race and a few staff steps | `.scratch/runtime-fixes/goal-rev438b-ten-minute.json` |
 | Resident cycle on revision 377 | 450756 requests and 50345 journeys in 600 seconds, P99 1218 milliseconds, **12211 failed journeys** | `.scratch/runtime-fixes/goal-rev377-ten-minute.json` |
 | Resident cycle on revision 386 | 455602 requests and 96165 journeys in 600 seconds, **19569 failed journeys**, dominated by Trip Planning search | `.scratch/runtime-fixes/goal-rev386-ten-minute.json` |
@@ -428,6 +429,21 @@ completes on `PostSalesApplied` took 24 seconds to reach RECOVERED against the
 client's ten second poll. The kit gains `start_independent_streams` (one thread
 per stream per worker, four by default) and revision 435 uses it. The window
 after carries no disruption-status failure at all.
+
+Offer Management had the same shape one layer down. The kit takes the batch path
+when a handler defines one, and this one does -- it writes a whole batch of
+itineraries in one statement, which was itself an earlier fix for pool
+contention -- so `CONSUMER_BATCH_CONCURRENCY` never applied to it and the batch,
+not the per-entry concurrency, was the unit of throughput. Measured at the burst:
+its group's lag on `events:trip-planning` went from 2217 to 16981 entries in
+thirty seconds and drained at about 190 a second, one itinerary was stored
+thirty-five seconds after Trip Planning wrote it, and the client's twelve offer
+attempts expired 223 milliseconds before it arrived -- the whole of the transfer
+offer group in that window. Revision 440 gives it six instances, a read batch of
+500 entries rather than the kit's default 100, and a warning when a batch takes
+more than a hundred milliseconds. Its lag on that stream now peaks at **3**
+across a cycle, and the window in [verification evidence](#verification-evidence)
+carries no failure at all.
 
 ## Notification's delivery queue
 
