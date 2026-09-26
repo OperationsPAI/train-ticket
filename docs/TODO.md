@@ -589,3 +589,13 @@ purchase emits it. If some orders legitimately have none -- one whose payment
 never completed, say -- then the 404 is correct and the client's unconditional
 expectation of a basis is the defect. If every purchase should have one, this is
 the same race as the refund: a reader asking before the writer's event arrived.
+
+Answered: the event is `RevenueRecognized`, emitted by finance-settlement, and
+invoicing's handler for it (application.rs:348) is what creates the first basis.
+finance-settlement is at lag 0 on every stream it reads, so the basis is absent
+because revenue was never recognized for that order -- which is the correct state
+for one whose payment did not capture, and a 404 is then the honest answer rather
+than a latency. The load generator's branch is the thing to read against that:
+`MaybeRequestInvoice` is called with a purchase and only skips on
+`TotalMinor <= 0`, so if it runs for purchases that never captured, the client is
+asking for a document the order cannot have and its expectation is the defect.
