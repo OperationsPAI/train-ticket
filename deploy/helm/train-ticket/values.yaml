@@ -1139,7 +1139,15 @@ services:
       # Four streams, and the post sales stream alone left this consumer three
       # thousand events behind during a burst, which delays the refund handoff
       # that the owning case waits for.
-      CONSUMER_THREADS: "12"
+      # 32 rather than 12: measured at the cycle's burst, a refund's approval
+      # reached this consumer's handler five seconds after post-sales published
+      # it while the consumer's lag and pending stayed at zero and every handler
+      # run was under half a second -- so the wait was the subscriber's own
+      # handler queue, which is sized from this number. The refund then settles
+      # eight seconds later, which the client's ten second refund poll misses by
+      # about a second. The handlers are IO-bound on the channel handoff, so the
+      # thread count is not bounded by the pod's four cores.
+      CONSUMER_THREADS: "32"
       # Ten connections were fully busy with 807 callers waiting while the
       # capture and refund paths held transactions open across channel calls,
       # which pushed P99 of payment intent creation to five seconds.
