@@ -5,7 +5,7 @@ Last verified: 2026-09-26, Asia/Beijing.
 ## Runtime
 
 The resident Helm release is `train-ticket` in namespace `train-ticket`,
-revision **401**.
+revision **417**.
 Its values come from one file, `deploy/helm/train-ticket/values.yaml`: the
 registry, the `local-path` storage class, the central telemetry store, the
 resident exporters, the load generator settings and the `loadgen-resident-state`
@@ -56,6 +56,7 @@ to one and back.
 | Resident window on a reset environment | 402375 requests and 42270 journeys, **P99 167 milliseconds**, ten request errors in the whole window, **4151 failed journeys** | `.scratch/runtime-fixes/goal-fresh-ten-minute.json` |
 | Resident window on revision 399 | 524002 requests and 53803 journeys, P99 843 milliseconds, **4142 failed journeys** (7.7%), two request error groups of 21 and 11 | `.scratch/runtime-fixes/goal-rev399-ten-minute.json` |
 | Resident window on revision 401 | 514784 requests and 56315 journeys, P99 1093 milliseconds, **8859 failed journeys** (15.7%), no request error groups | `.scratch/runtime-fixes/goal-rev401-ten-minute.json` |
+| Resident window on revision 417 | 679108 requests and 66765 journeys, **P99 219 milliseconds**, **4208 failed journeys** (6.3%), two request error groups | `.scratch/runtime-fixes/goal-rev417-ten-minute.json` |
 | Business metric contract | 22 chart tests pass, including the label allowlist and the recording rule targets | `deploy/tests/test_observability_metrics_config.py` |
 | Transport collector | Unit and `miniredis` tests pass; label sets, entry-id ages, dead-letter attribution and the no-poll-before-first-read case | `tools/redis-state-collector` |
 | Notification module suite | 108 passed, 6 skipped, 0 failures | `services/notification` `npm test` |
@@ -234,3 +235,23 @@ acceptance, durable event recovery, and the reporting monetary edge cases.
 No part of this document authorises a deployment: the runtime configuration is
 the single values file, and a release is made with
 `skaffold run -p resident -d mirrors.tencent.com/microservice`.
+
+## The resident round of 2026-09-26
+
+Revisions 400 to 417 removed six defects between the load generator and its
+verdict, each one measured before and after. P99 request latency over a ten
+minute window fell from 1093 to 219 milliseconds, the request error groups from
+twenty four to two, and failed journeys from 8859 of 56315 to 4208 of 66765.
+
+| Defect | Measurement before | After |
+|---|---|---|
+| Every replica published the outbox, so 38 to 74 percent of four streams was a second copy | `.scratch/runtime-fixes/goal-rev401-ten-minute.json` | the same streams carry zero duplicates |
+| seat-assignment decoded every seat map on every capacity facts call | 6.8 cores a replica, 4075m, 2.3Gi | 0.4 cores a replica, 240Mi, bounded cache |
+| Capacity read the seat views inside the pool's admission lock | a Hold 85 to 112 seconds after the request at the ninety-fifth percentile | 0.2 to 0.8 seconds, 47 in the worst minute |
+| Notification's queue-depth counter serialised every enqueue on one row | 144 sessions active, fare-pricing at 4.1 seconds median | 54 sessions, core from 8.5 to 2.9 cores |
+| Capacity rewrote a sixteen kilobyte supply observation per admission | 95 writes a second, 6.6GiB of TOAST, autovacuum holding 26.6 percent of the admission time | zero writes while the map version holds |
+| The OTLP gateway had one core and one gibibyte | OOM-killed seven times, refusing data, every traced service timing out at ten seconds | 0.8 cores of four, no refusals |
+
+The window's remaining failures are 2789 post-sales cases that did not reach a
+terminal state inside the client's poll and 922 offer calls answered with an
+unexpected status; both are listed in [TODO](TODO.md).
