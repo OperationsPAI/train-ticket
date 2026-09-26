@@ -1,11 +1,11 @@
 # Current project status
 
-Last verified: 2026-09-25, Asia/Beijing.
+Last verified: 2026-09-26, Asia/Beijing.
 
 ## Runtime
 
 The resident Helm release is `train-ticket` in namespace `train-ticket`,
-revision **374**.
+revision **401**.
 Its values come from one file, `deploy/helm/train-ticket/values.yaml`: the
 registry, the `local-path` storage class, the central telemetry store, the
 resident exporters, the load generator settings and the `loadgen-resident-state`
@@ -55,6 +55,7 @@ to one and back.
 | Resident window on revision 394 | 441056 requests and 87788 journeys, P99 761 milliseconds, **11814 failed journeys**, the same shape | `.scratch/runtime-fixes/goal-rev394-ten-minute.json` |
 | Resident window on a reset environment | 402375 requests and 42270 journeys, **P99 167 milliseconds**, ten request errors in the whole window, **4151 failed journeys** | `.scratch/runtime-fixes/goal-fresh-ten-minute.json` |
 | Resident window on revision 399 | 524002 requests and 53803 journeys, P99 843 milliseconds, **4142 failed journeys** (7.7%), two request error groups of 21 and 11 | `.scratch/runtime-fixes/goal-rev399-ten-minute.json` |
+| Resident window on revision 401 | 514784 requests and 56315 journeys, P99 1093 milliseconds, **8859 failed journeys** (15.7%), no request error groups | `.scratch/runtime-fixes/goal-rev401-ten-minute.json` |
 | Business metric contract | 22 chart tests pass, including the label allowlist and the recording rule targets | `deploy/tests/test_observability_metrics_config.py` |
 | Transport collector | Unit and `miniredis` tests pass; label sets, entry-id ages, dead-letter attribution and the no-poll-before-first-read case | `tools/redis-state-collector` |
 | Notification module suite | 108 passed, 6 skipped, 0 failures | `services/notification` `npm test` |
@@ -70,17 +71,45 @@ The skipped tests are the ones gated on `TEST_DATABASE_URL` and on other
 environment variables that a module run does not set. They are not a claim that
 the live path works.
 
+### Duplicate publication is fixed
+
+Every replica ran its own outbox relay over the same table, and the relay
+publishes before it marks rows published, so two replicas that had both selected
+the same unpublished rows published them both. The duplicate share is the
+relay's work time over its poll interval, and measured at revision 399 it was
+**38 percent** of `events:booking-orchestration`, **40 percent** of
+`events:journey-order`, **43 percent** of `events:post-sales` and **74 percent**
+of `events:capacity-availability` -- every consumer group on those streams read,
+parsed, deduplicated and acknowledged a second copy of that share.
+
+The Java and Rust platform kits now elect one publisher per database with a
+session advisory lock; the Go kit's `DBTX` interface offers no session to hold
+one, so it still relays from every replica, which its 250 millisecond interval
+bounds at the 2 to 4 percent measured on `events:provider-integration` and
+`events:seat-assignment`. Measured at revision 401, all four streams carry zero
+duplicates.
+
+Two earlier reports go with this. The Rust relay opened and discarded its
+leadership connection on every poll, which at six replicas and a fifty
+millisecond interval sent hundreds of new backends a second at Postgres; a
+reservation that had reached its Hold inside 0.2 seconds at the ninety-fifth
+percentile took ninety. And the reservation request needed its *own* connection
+held rather than a pooled one, because a pooled connection that goes back to the
+pool keeps its session and its lock.
+
 ### The resident cycle is not yet clean
 
 The cycle does not pass the acceptance in [TODO](TODO.md#acceptance) yet, but
-the shape of what fails has changed, and it swings: the same revision recorded a
-window with 1046 failed journeys and one with 5673. The reservation path is clean: no segment
-booking has failed for its own reasons in the last measured six minutes, none of
-the 457609 holds that were missing their reservation facts is missing them now,
-and capacity logs no transient failure across its replicas. The last window
-carries 1046 failed journeys out of 61293, down from 10033 of 64690 an hour
-earlier, and what is left is smaller and named: 403 change executions answered
-422, 61 disruption selections answered 503.
+the shape of what fails has changed, and it swings: the same revision has
+recorded a window with 1046 failed journeys and one with 5673. The last measured
+window, at revision 401, carries **8859 failed journeys out of 56315**, and 8011
+of them are reservations and transfers that did not confirm inside the client's
+ten second poll. They are not spread evenly: the low minutes of the envelope
+fail almost nothing, and the burst minutes fail most of the window, so what is
+left is a capacity limit rather than a broken path. The two named defects of the
+previous pass -- a change whose replacement reservation is refused as a double
+booking, and a disruption conflict reported as a 503 -- are fixed and their
+groups are down to a handful.
 
 What the measurements say is left is one instance doing the whole system's work.
 The chart defines six PostgreSQL shards, but only six of the thirty-seven
@@ -116,16 +145,23 @@ and they are traced in the backlog.
 Trip Planning and Seat Assignment had already been cut over to the read shard --
 the first by a verified copy, the second by logical replication so core kept
 serving -- which takes both of those readers off the instance that carries
-everything else. What the reservation wait is waiting for now is the next
-question, and it is narrower: capacity reports no transient failure, its pool no
-longer times out, its consumer group sits at a few hundred entries, and no
-confirmed booking is missing its hold.
+everything else. Within the reservation itself, capacity is where the time now
+goes, and the measurement names the mechanism: **21 of the 24 active sessions on
+`capacity_availability` were waiting on
+`pg_advisory_xact_lock(hashtextextended(...))`**, waits of 1.0 to 2.9 seconds
+were logged as slow statements, and a reservation reached its capacity Hold 85
+to 112 seconds after it was requested at the ninety-fifth percentile. Every
+admission into one `pool:segment:class` takes that lock for its whole
+transaction, and the load generator reuses a small pool set, so admissions
+queue. Capacity's consumer group is not the constraint: it sits at a few hundred
+entries and keeps up with the stream.
 
-The remaining named defects are smaller and were measured separately: a change
-whose replacement reservation is refused with `OVERLAPPING_HOLD` while the
-original hold is still active, and a disruption conflict ("a refund or change
-case is already in progress for this order") reported as a 503 availability
-failure.
+The provider leg is not the constraint either, in the minutes capacity is
+keeping up: a reservation reaches its provider confirmation 0.04 to 0.12 seconds
+after it is requested at the ninety-fifth percentile, and the provider
+confirmation reaches the booking 0.1 to 0.9 seconds after that. The replay fix
+that made a repeated request answer with the stored reservation is what took
+that leg off the critical path.
 
 #### What the reservation path cost before those fixes
 
