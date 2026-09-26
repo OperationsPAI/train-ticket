@@ -143,23 +143,46 @@ recorded in [current status](00-current-status.md#the-resident-cycle-is-not-yet-
    Capacity has no record of it: there is no `pending_booking_releases` row for
    the booking (and none of the 292 pending rows belongs to a booking whose hold
    exists, so that mechanism is working), the dead letter holds no entry for it
-   either, and the hold is neither Released nor Expired. So the release was
-   published and is not in the two places capacity parks one -- which is the
-   question to answer next, and it is answerable from capacity's own handler: it
-   is the only path from a consumed `SegmentBookingCancelled` to a Released hold.
-   Note also that the dead letter does contain 99 `SegmentBookingCancelled`
-   entries from the same period, so more than one way to lose a release is in
-   play.
+   either, and the hold is neither Released nor Expired. The dead letter does
+   hold 99 `SegmentBookingCancelled` entries from the same period, so more than
+   one way to lose a release is in play.
+
+   Reading `try_handle_inbound_segment_booking_release`, a release that reaches
+   the handler has three ways to end without releasing: the event id is already
+   in `processed_events` (the handler rolls back and returns Ok), the hold is not
+   found by `references.segmentBookingRef` (it is parked in
+   `pending_booking_releases`), or the hold is found and live and the release then
+   fails on `reservation_facts_from_hold` -- which requires the hold to carry
+   `supplyEvidence` -- or on `prepare_supply_history`, before it ever touches the
+   pool. A failure there leaves the event to be retried and then dead-lettered,
+   which is the 99. Which of the three this booking took needs one more
+   measurement, and it is cheap: the release handler's own failure line names the
+   reason.
 
    The wait has no deadline. The same class carries `RESERVATION_WAIT_LIMIT` and
    fails a case whose replacement reservation does not confirm in fifteen
    minutes, but nothing bounds the release wait, so a case whose hold is lost
    stays EXECUTING for hours and every journey that touches its order fails with
-   `unfulfilled` rather than ending. Two things follow, and both are wanted:
-   bound this wait the way the reservation wait is bounded, so the case reaches a
-   terminal state the client can report honestly; and decide what to do about a
-   release that dead letters, because silently holding the seat is the worse of
-   the two failures.
+   `unfulfilled` rather than ending.
+
+   The plan, in this order:
+
+   1. Instrument the release handler with the reason it gave up -- the three
+      paths above are one line each -- and read it for this booking. That decides
+      whether the leak is a fencing gap, a lookup gap or a supply-evidence gap,
+      and each of those is a different fix.
+   2. Bound the wait in `ChangeExecutionService` and, on expiry, finish the case
+      rather than fail it. The work is done: the replacement is confirmed, the
+      difference is captured, the old entitlement is voided and the new ticket is
+      issued. What is missing is capacity's bookkeeping, so the honest outcome
+      for the user is the change they asked for, with the un-released hold
+      recorded as a compensation mismatch -- the table for exactly this anomaly
+      already exists -- for capacity to reconcile. Failing the case would tell
+      the user their change did not happen when it did.
+   3. Then decide what a dead-lettered release should do. Silently holding a seat
+      is the worse of the two failures, so a release that cannot be applied
+      should be parked rather than dropped, and a sweep should apply what is
+      parked.
 9. [x] Offers answered with an unexpected status. The window at revision 417
    carried 592 purchase, 258 change and 330 transfer jobs that failed at `offer`
    with a 422: `Fare Pricing quote has not been consumed` or `No consumed Trip
