@@ -309,7 +309,25 @@ export function createUpstreamEventHandler(repository: UpstreamStateRepository):
     return "ack";
   }) as EventHandler;
   handler.handleBatch = async (envelopes) => {
+    // The batch path is what the kit uses when a handler defines it, so this is
+    // the consumer's whole per-batch cost: it writes every itinerary in the batch
+    // with one statement. Measured at the cycle's burst, this group fell 16981
+    // entries behind on `events:trip-planning` and drained at about 190 entries a
+    // second -- six replicas of twenty-four handlers should be far above that if
+    // the batches ran in parallel, so the batch's own duration is the number to
+    // see. It is reported only when it is slow enough to matter.
+    const startedAt = Date.now();
     await applyUpstreamEvents(repository, envelopes);
+    const elapsed = Date.now() - startedAt;
+    if (elapsed > 100) {
+      console.warn(JSON.stringify({
+        component: "offer-management-upstream",
+        message: "slow upstream batch",
+        events: envelopes.length,
+        elapsedMs: elapsed,
+        eventTypes: [...new Set(envelopes.map(envelope => envelope.eventType))].slice(0, 4),
+      }));
+    }
     return "ack" as const;
   };
   return handler;
