@@ -1624,7 +1624,12 @@ services:
           command: ["sleep", "10"]
     env:
       # Each event stream has its own subscriber and entity projections use row locks.
-      CONSUMER_THREADS: "1"
+      # The code runs four workers on the journey-order stream and four on the
+      # finance-settlement stream, one on each of the other four: measured at the
+      # burst, the finance-settlement group was 3676 entries behind while
+      # `amount_basis_projection` held no row at all, so every amount-basis read
+      # answered 404 -- the purchase journey's invoice failure group.
+      CONSUMER_THREADS: "12"
       # The pool must cover the consumer threads plus the HTTP handlers plus the
       # outbox relay, all of which contend at startup. rust-kit defaults to 10
       # with a 5s acquire_timeout, and 4 consumer threads did not fit: invoicing
@@ -1633,14 +1638,15 @@ services:
       # (101 of 500 connections), so this is per-service pool sizing, not a
       # server limit.
       PG_MAX_POOL_SIZE: "25"
-    # 4 consumer threads do not fit in the default 500m CPU limit. Raising
-    # CONSUMER_THREADS without raising this caused a CrashLoopBackOff: the
-    # threads saturated half a core working through the backlog, the HTTP thread
-    # could not answer /healthz within the probe timeout, and kubelet restarted
-    # the pod every 64 seconds. Threads and CPU must be raised together.
+    # 4 consumer threads do not fit in the default 500m CPU limit. Raising the
+    # thread count without raising this caused a CrashLoopBackOff: the threads
+    # saturated half a core working through the backlog, the HTTP thread could
+    # not answer /healthz within the probe timeout, and kubelet restarted the pod
+    # every 64 seconds. Threads and CPU must be raised together, so the limit
+    # goes to four cores with the twelve threads.
     resources:
-      requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: '2', memory: 3Gi }
+      requests: { cpu: 200m, memory: 256Mi }
+      limits: { cpu: '4', memory: 3Gi }
   marketing-campaign:
     db: marketing_campaign
     image: mirrors.tencent.com/microservice/marketing-campaign:autoclaim-6b90ce5d@sha256:5efcfccf21b7cf97895cccf42b394c5ba8dc99a11d55abc2ff6f26c54d26796e
