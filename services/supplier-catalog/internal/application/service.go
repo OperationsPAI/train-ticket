@@ -146,6 +146,10 @@ func (s *Service) RegisterSupplier(ctx context.Context, cmd RegisterSupplierComm
 	}
 	events := supplier.Events()
 
+	// A registration is filed once per profile and the profile is the code the call
+	// minted, so nothing on this path reads the identity the master data
+	// reconciles a partner by: two onboardings of one partner that arrive under two
+	// codes are two entries here, and the operator import merges them afterwards.
 	if s.repository != nil {
 		if _, err := s.repository.FindSupplierByProfile(ctx, supplier.Profile); err == nil {
 			return SupplierView{}, fmt.Errorf("%w: supplierCode already exists", ErrConflict)

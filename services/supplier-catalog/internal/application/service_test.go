@@ -121,6 +121,29 @@ func TestListSuppliersPropagatesRepositoryError(t *testing.T) {
 	}
 }
 
+// Two onboardings of one partner mint two codes and hand over two legal names, and
+// the master data downstream reconciles a partner by the name it trades as: the
+// catalogue holds two entries for it today, and the operator import merges them
+// afterwards.
+func TestTwoOnboardingsUnderOneTradingNameFileTwoPartners(t *testing.T) {
+	service := NewService(nil)
+	first := RegisterSupplierCommand{LegalName: "Transfer carrier 0194f2e0", BrandName: "Transfer rail", SupplierCode: "T4c1f2a8b9d", CorrelationID: "corr-0194f2e0-7b3e-7000-8000-000000000021"}
+	if _, err := service.RegisterSupplier(context.Background(), first); err != nil {
+		t.Fatalf("first onboarding: %v", err)
+	}
+	second := RegisterSupplierCommand{LegalName: "Transfer carrier 0194f2e1", BrandName: "Transfer rail", SupplierCode: "T5d2e3b0c1e", CorrelationID: "corr-0194f2e1-7b3e-7000-8000-000000000022"}
+	if _, err := service.RegisterSupplier(context.Background(), second); err != nil {
+		t.Fatalf("second onboarding: %v", err)
+	}
+	filed, err := service.ListSuppliers(context.Background(), "", 20, 0)
+	if err != nil {
+		t.Fatalf("list suppliers: %v", err)
+	}
+	if filed.Total != 2 {
+		t.Fatalf("expected the catalogue to hold both partners, got %d", filed.Total)
+	}
+}
+
 const wantTraceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 
 func mustSpanContext(t *testing.T) trace.SpanContext {
