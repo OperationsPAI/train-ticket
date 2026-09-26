@@ -164,10 +164,16 @@ def _postgres_store_from_env(app: FastAPI) -> tuple[Any, IdempotencyStore | None
     # consumed from instead of leaving processed_events.stream empty.
     def handle(envelope: Any, stream: str | None = None) -> Any:
         return service_holder["service"].handle_inbound_event(envelope, stream)
-    thread = subscriber.start_in_background(INBOUND_STREAMS, "disruption-recovery", handle)
+    # One thread per stream per worker, not one thread for all four: measured at
+    # the cycle's burst this group fell 349 events behind on `events:post-sales`
+    # and 539 on `events:journey-order` inside a minute, and a recovery case that
+    # completes on `PostSalesApplied` took 24 seconds to reach RECOVERED, which
+    # the load generator's ten second poll misses. `DISRUPTION_STREAM_WORKERS`
+    # sets the per-stream count.
+    threads = subscriber.start_independent_streams(INBOUND_STREAMS, "disruption-recovery", handle)
     app.state.outbox_relay = relay
     app.state.event_subscriber = subscriber
-    app.state.event_subscriber_thread = thread
+    app.state.event_subscriber_threads = threads
     app.state._dr_service_holder = service_holder
     return store, PostgresIdempotencyStore(pool)
 
