@@ -1178,6 +1178,11 @@ impl PostgresCapacityService {
         idempotency_key: &str,
         fingerprint: &str,
     ) -> Result<(), InboundEventError> {
+        // One admission holds the pool's advisory lock for the whole service and
+        // date, so the phases that make it long are the phases every other
+        // reservation for that train waits through. Logged rather than exported:
+        // this is the line an operator reads to answer "what was it doing".
+        let started = std::time::Instant::now();
         let segments = self
             .prepare_supply_history(
                 &facts.scheduled_service_ref,
@@ -1186,6 +1191,7 @@ impl PostgresCapacityService {
             )
             .await
             .map_err(inbound_from_app_error)?;
+        let prepared = started.elapsed();
         let now = now_millis();
         let hold_id = format!("hold-{}", uuid::Uuid::now_v7());
         let mut tx = self.pool().begin().await.map_err(inbound_transient)?;
@@ -1241,6 +1247,7 @@ impl PostgresCapacityService {
             tx.commit().await.map_err(inbound_transient)?;
             return Ok(());
         }
+        let checked = started.elapsed();
         Self::lock_supply(&mut tx, facts)
             .await
             .map_err(inbound_from_app_error)?;
@@ -1248,6 +1255,7 @@ impl PostgresCapacityService {
             .admission_supply(&mut tx, facts, &segments, &envelope.correlation_id, now)
             .await
             .map_err(inbound_from_app_error)?;
+        let folded = started.elapsed();
         let pool_id = pool_id_for(&req.segment_ref, &occupancy_facts.class_ref);
         Self::lock_inventory(&mut tx, &pool_id)
             .await
@@ -1271,6 +1279,7 @@ impl PostgresCapacityService {
             ),
         };
         apply_supply(&mut pool, &occupancy_facts, &supply).map_err(inbound_from_app_error)?;
+        let applied = started.elapsed();
         let route = segments
             .route(&facts.segment_ref)
             .map_err(inbound_from_app_error)?;
@@ -1463,6 +1472,7 @@ impl PostgresCapacityService {
         self.append_combined_snapshot(&mut tx, facts, &segments, &envelope.correlation_id, now)
             .await
             .map_err(inbound_from_app_error)?;
+        let written = started.elapsed();
         let response = HoldCapacityResponse {
             hold_id,
             segment_ref: req.segment_ref.clone(),
@@ -1478,7 +1488,24 @@ impl PostgresCapacityService {
         )
         .await
         .map_err(inbound_from_app_error)?;
+        let answered = started.elapsed();
         tx.commit().await.map_err(inbound_transient)?;
+        let committed = started.elapsed();
+        if committed >= std::time::Duration::from_millis(200) {
+            log::warn!(
+                "capacity admission holds the pool lock for {}ms: prepare={}ms checks={}ms fold={}ms pool={}ms write={}ms answer={}ms commit={}ms pool={} holds={}",
+                committed.as_millis(),
+                prepared.as_millis(),
+                (checked - prepared).as_millis(),
+                (folded - checked).as_millis(),
+                (applied - folded).as_millis(),
+                (written - applied).as_millis(),
+                (answered - written).as_millis(),
+                (committed - answered).as_millis(),
+                pool_id,
+                pool.holds().len()
+            );
+        }
         Ok(())
     }
 
