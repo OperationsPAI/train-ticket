@@ -22,7 +22,16 @@ public class RefundFundingService {
     }
     public void prepare(String caseId,String correlation){
         var current=cases.get(caseId);
-        if(current.caseType()==PostSalesCaseType.CHANGE || current.caseType()==PostSalesCaseType.COMPENSATION || !current.refundPayments().isEmpty() || current.status()==PostSalesCaseStatus.EXECUTING || current.status()==PostSalesCaseStatus.APPLIED)return;
+        // A case that has reached EXECUTING without any refund payments was never
+        // funded -- the funding step runs from the approval endpoint, and a case
+        // that got past it without funding has no other path forward. Measured:
+        // 58 REFUND cases sit in EXECUTING with no payments, and the load
+        // generator retries the ones it holds, 30 times each in one window.
+        // Funding them is the only way that state resolves, so an unfunded
+        // EXECUTING case is treated as unfinished rather than done.
+        boolean funded = !current.refundPayments().isEmpty();
+        if(current.caseType()==PostSalesCaseType.CHANGE || current.caseType()==PostSalesCaseType.COMPENSATION
+            || funded || current.status()==PostSalesCaseStatus.APPLIED)return;
         if(current.decision()==null)current=cases.evaluate(caseId,"cmd-refund-prepare",correlation);
         Money amount=current.decision().amountSnapshot().refundAmount();if(amount.isZero())return;
         var changes=cases.appliedChanges(current.journeyOrderId());if(changes.isEmpty())return;
