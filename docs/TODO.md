@@ -731,6 +731,31 @@ snapshot" (606) and post-sales timeouts (523).
    are spread across it, with the same shape in the revision 425 window (53 and
    17). Measuring the refund path's latency before attributing them is the item
    at the top of this file's post-sales section.
+3. [ ] The refund tail is measured and it is late, not stuck. Every case the
+   revision 430 window reported as "did not reach SETTLED" or "did not reach
+   APPLIED" (189 of 189) is APPLIED now, and every one has a SETTLED refund in
+   payment. The margin is about a second and it is inside payment, not the
+   channel:
+
+   - the case reaches APPLIED 5.2 seconds after it is created (inside the
+     client's ten second case poll);
+   - payment records `RefundRequested` 3.2 seconds later, and `RefundSettled`
+     7.9 seconds after that -- 11.1 seconds after APPLIED, against the client's
+     ten second refund poll, so the request lands a fraction of a second late;
+   - payment-channel is not the slow part: its refund snapshot shows create and
+     `SUBMIT` ten milliseconds apart, and the typical refund settles 0.25
+     seconds after `RefundRequested` (403 to 517 refunds per 0.05 second bucket),
+     so the 7.9 seconds is a tail inside payment's settle path;
+   - the same apply path also completes a case whose own execution plan still
+     lists `REQUEST_REFUND` as `PLANNED`
+     (`PostSalesApplicationService.applyForSegmentBooking` applies on "all
+     scoped capacity released" for every case type except `CHANGE`), which is
+     why the case says APPLIED while the refund is still in flight.
+
+   Next: instrument payment between the channel's `SUCCEEDED` response and the
+   `RefundSettled` write to find the 7.9 second tail, then decide whether the
+   case may apply before its refund step. Both need a window that contains
+   refund cases to measure against.
 3. [ ] Reporting still deadlocks on the event instance: `reporting_business_scopes`
    and `reporting_order_attachments` upserts take the same rows in different
    orders under burst, four times in four minutes after the notification fix.
