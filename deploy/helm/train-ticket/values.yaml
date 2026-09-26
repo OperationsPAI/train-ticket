@@ -1130,6 +1130,17 @@ services:
     # Two replicas: the provider reservation is a saga step whose confirmation
     # the capacity Hold waits for.
     replicas: 2
+    env:
+      # The service reads every event the booking saga publishes and acts on two
+      # types, so its cost is the whole stream. Four reader loops a replica -- the
+      # service's own default, measured with CONSUMER_THREADS unset -- left the
+      # group 12428 entries behind at a burst, twelve seconds of backlog at the
+      # thousand entries a second the booking stream reached; a reservation
+      # request waited that long for its confirmation and the load generator's
+      # ten second poll expired on it. Sixteen loops a replica consume that
+      # stream, and the pods sat at a tenth of a core while eight of them were
+      # behind, so the ceiling was loops rather than CPU.
+      CONSUMER_THREADS: "16"
   entitlement-ticketing:
     db: entitlement_ticketing
     # Two replicas: ticket issuance follows the reservation, and its consumer
