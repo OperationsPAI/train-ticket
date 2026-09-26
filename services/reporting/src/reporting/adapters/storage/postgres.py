@@ -285,6 +285,25 @@ class _PostgresRevenueFactIndex:
     def _record(self, cursor: Any) -> None:
         self.changed = self.changed or cursor.rowcount > 0
 
+    def _lock_order(self, order_id: str) -> None:
+        """Serialize every write this projection makes about one order.
+
+        The revenue fact projections call `record_business_order` and
+        `record_attachment` in different orders for different events -- an
+        ancillary item writes its scope first and its attachment second, an
+        insurance policy writes the attachment between two scopes -- so two
+        concurrent handlers for the same order can each hold a row the other
+        waits for. Measured on 2026-09-27 under the largest burst,
+        `reporting_order_attachments` and `reporting_business_scopes` produced
+        `deadlock detected` in the reporting handler, which returned
+        TRANSIENT_ERROR and re-delivered. Taking the same per-order advisory lock
+        first, in every writer, removes the cycle rather than one of its orders.
+        """
+        self._conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended('reporting-order:' || %s, 0))",
+            (order_id,),
+        )
+
     def record_capture(self, event_id: str, business_ref: str, payment_intent_id: str, payment_purpose: str, occurred_at: datetime) -> None:
         if not event_id.strip():
             return
@@ -339,6 +358,7 @@ class _PostgresRevenueFactIndex:
     def record_business_order(self, business_ref: str, order_id: str, segment_refs: Any, traveler_refs: Any, occurred_at: datetime) -> None:
         if not business_ref.strip() or not order_id.strip():
             return
+        self._lock_order(order_id)
         self._record(self._conn.execute(
             """
             INSERT INTO reporting_business_scopes(business_ref,order_id,segment_refs,traveler_refs,source_occurred_at)
@@ -371,6 +391,7 @@ class _PostgresRevenueFactIndex:
     def record_attachment(self, order_id: str, attachment_type: str, occurred_at: datetime) -> None:
         if not order_id.strip() or attachment_type not in {"ANCILLARY", "INSURANCE"}:
             return
+        self._lock_order(order_id)
         self._record(self._conn.execute(
             """
             INSERT INTO reporting_order_attachments(order_id,attachment_type,source_occurred_at)
