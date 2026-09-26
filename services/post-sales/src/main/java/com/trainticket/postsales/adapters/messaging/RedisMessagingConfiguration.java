@@ -41,7 +41,34 @@ public class RedisMessagingConfiguration {
 
     @Bean(destroyMethod = "close")
     RedisEventSubscriber capacityRedisEventSubscriber(ObjectMapper objectMapper, RedisMessagingProperties properties) {
-        return RedisEventSubscriber.fromUrl(properties.redisUrl(), objectMapper, 4);
+        return RedisEventSubscriber.fromUrl(properties.redisUrl(), objectMapper, capacityConsumerThreads());
+    }
+
+    /**
+     * The capacity stream gets its own subscriber because it carries a combined
+     * availability snapshot on every admission and would otherwise sit in the
+     * shared handler queue behind everything else.
+     *
+     * Its thread count was fixed at four, and that is the number that decides a
+     * refund's last hop: the case is applied by `CapacityReleased`, which arrives
+     * on this stream. Measured on 2026-09-27 at the eight-times burst, a case
+     * created at `22:28:00.35` had both of its holds released at `22:28:03.97`
+     * and reached `APPLIED` at `22:28:10.29` -- 6.3 seconds of the ten second
+     * poll spent waiting for that one event, with this group 15.8 seconds behind
+     * on `events:capacity-availability`. It is configurable so the number can
+     * move with the burst rather than living in the code.
+     */
+    private static int capacityConsumerThreads() {
+        String configured = System.getenv("CAPACITY_CONSUMER_THREADS");
+        if (configured == null || configured.isBlank()) {
+            return 4;
+        }
+        try {
+            int threads = Integer.parseInt(configured.trim());
+            return threads > 0 ? threads : 4;
+        } catch (NumberFormatException ignored) {
+            return 4;
+        }
     }
 
     @Bean
