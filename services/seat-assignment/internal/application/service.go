@@ -36,6 +36,7 @@ type Repository interface {
 	UpdateSeatMap(context.Context, *domain.ContractSeatMap, int64) error
 	GetSeatMap(context.Context, string) (*domain.ContractSeatMap, int64, error)
 	FindSeatMaps(context.Context, string, string, string, int, int) ([]domain.ContractSeatMap, int, error)
+	SeatMapRevision(context.Context, string, string) (SeatMapRevision, error)
 	LockSeatMapPublication(context.Context, string, string) error
 	SaveSeatAllocation(context.Context, *domain.ContractSeatAllocation) error
 	UpdateSeatAllocation(context.Context, *domain.ContractSeatAllocation, int64) error
@@ -54,13 +55,15 @@ type Service struct {
 	tx        UnitOfWork
 	engine    domain.AssignmentEngine
 	seatMap   domain.SeatMap
+	cache     seatMapCache
 }
 
 func New(repo Repository, publisher Publisher, tx UnitOfWork) *Service {
 	if tx == nil {
 		tx = func(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) }
 	}
-	return &Service{repo: repo, publisher: publisher, tx: tx, engine: domain.NewAssignmentEngine(), seatMap: domain.DefaultSeatMap()}
+	return &Service{repo: repo, publisher: publisher, tx: tx, engine: domain.NewAssignmentEngine(),
+		seatMap: domain.DefaultSeatMap(), cache: newSeatMapCache()}
 }
 
 type AssignSeatsRequest struct {
