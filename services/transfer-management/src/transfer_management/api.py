@@ -172,10 +172,19 @@ def _postgres_store_from_env(app: FastAPI) -> tuple[Any, IdempotencyStore | None
             holder["service"].handle_recovery_event(envelope, DISRUPTION_RECOVERY_STREAM)
         except DownstreamError as exc:
             raise TransientHandlerError(str(exc)) from exc
-    thread = subscriber.start_in_background((DISRUPTION_RECOVERY_STREAM, FULFILLMENT_STREAM, TRIP_PLANNING_STREAM), "transfer-management", handle)
+    # One thread per stream per worker, not one thread for all three.
+    #
+    # Measured on 2026-09-27 at the raised burst: the three streams share one
+    # reader, so the trip planning stream's flood starves the fulfillment report
+    # the connection status waits on -- this group's oldest undelivered entry on
+    # `events:trip-planning` reached 127 seconds while `events:fulfillment` sat
+    # 12 seconds behind. The cost is the delay report: 21 transfer journeys
+    # reported a delay and then polled the connection once a second for ten
+    # seconds without the status reflecting it.
+    threads = subscriber.start_independent_streams((DISRUPTION_RECOVERY_STREAM, FULFILLMENT_STREAM, TRIP_PLANNING_STREAM), "transfer-management", handle)
     app.state.outbox_relay = relay
     app.state.event_subscriber = subscriber
-    app.state.event_subscriber_thread = thread
+    app.state.event_subscriber_threads = threads
     app.state._tm_service_holder = holder
     return store, PostgresIdempotencyStore(pool)
 
