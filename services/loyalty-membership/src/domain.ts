@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 
+import { accountReferenceAccepted } from "./programme.js";
+
 export type MemberId = string;
 export type AccountId = string;
 export type PointsLedgerEntryId = string;
@@ -329,7 +331,9 @@ export class Member {
   private constructor(private readonly snapshot: MemberSnapshot) {}
   static enroll(input: { accountId: AccountId; memberId?: MemberId; now?: Date }): Member {
     const now = input.now ?? new Date();
-    return new Member(freeze({ memberId: input.memberId ?? newMemberId(), accountId: required(input.accountId, "accountId"), status: "ACTIVE", tier: "SILVER", redeemablePoints: 0, lifetimePoints: 0, tierPoints: 0, createdAt: now, updatedAt: now, ledger: [], lots: [], membershipYears: [newMembershipYear(now.getUTCFullYear(), "SILVER")] }));
+    const accountId = required(input.accountId, "accountId");
+    assertAccountReferenceAccepted(accountId);
+    return new Member(freeze({ memberId: input.memberId ?? newMemberId(), accountId, status: "ACTIVE", tier: "SILVER", redeemablePoints: 0, lifetimePoints: 0, tierPoints: 0, createdAt: now, updatedAt: now, ledger: [], lots: [], membershipYears: [newMembershipYear(now.getUTCFullYear(), "SILVER")] }));
   }
   static fromSnapshot(snapshot: MemberSnapshot): Member {
     const tier = normalizeTier(snapshot.tier as string);
@@ -530,3 +534,14 @@ function newMemberId(): MemberId { return `mem_${randomUUID()}`; }
 function newLedgerEntryId(): PointsLedgerEntryId { return `ple_${randomUUID()}`; }
 function newPointsLotId(): PointsLotId { return `lot_${randomUUID()}`; }
 function newRedemptionId(): RedemptionId { return `red_${randomUUID()}`; }
+
+// An enrolment keys a membership by the account reference its caller sends, and the ledger keeps
+// that reference as it arrives. The programme states the namespaces those references arrive in, so
+// a reference from a namespace the programme does not state is refused where the membership is
+// keyed: storing it anyway would key the membership by something the identity service does not
+// resolve an account from.
+function assertAccountReferenceAccepted(accountId: AccountId): void {
+  if (!accountReferenceAccepted(accountId)) {
+    throw new DomainError("ACCOUNT_REFERENCE_NOT_ACCEPTED", "The account reference is not one the membership programme keys by");
+  }
+}

@@ -345,7 +345,7 @@ export function mapError(error: unknown): ApplicationError {
     return error;
   }
   if (error instanceof DomainError) {
-    if (["MISSING_REQUIRED_FIELD", "INVALID_AMOUNT", "INVALID_POINTS", "REDEMPTION_BELOW_MINIMUM", "REDEMPTION_CAP_BELOW_MINIMUM"].includes(error.code)) {
+    if (["MISSING_REQUIRED_FIELD", "INVALID_AMOUNT", "INVALID_POINTS", "ACCOUNT_REFERENCE_NOT_ACCEPTED", "REDEMPTION_BELOW_MINIMUM", "REDEMPTION_CAP_BELOW_MINIMUM"].includes(error.code)) {
       return new ApplicationError("VALIDATION_FAILED", error.message, 400, { domainCode: error.code });
     }
     if (error.code === "INSUFFICIENT_POINTS") {

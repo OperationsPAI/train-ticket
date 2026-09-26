@@ -17,6 +17,9 @@ COPY --from=builder --chown=app:app /src/services/loyalty-membership/package.jso
 COPY --from=builder --chown=app:app /src/services/loyalty-membership/node_modules ./node_modules
 COPY --from=builder --chown=app:app /src/services/loyalty-membership/dist ./dist
 COPY --from=builder --chown=app:app /src/services/loyalty-membership/migrations ./migrations
+# The membership programme this release is built against: the service reads it from `config/`
+# beside the compiled code, so the settings the programme states travel with the image.
+COPY --chown=app:app services/loyalty-membership/config ./config
 USER app
 ENV PORT=8080 REDIS_URL=redis://localhost:6379
 EXPOSE 8080
