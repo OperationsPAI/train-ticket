@@ -5,7 +5,7 @@ Last verified: 2026-09-26, Asia/Beijing.
 ## Runtime
 
 The resident Helm release is `train-ticket` in namespace `train-ticket`,
-revision **431**.
+revision **435**.
 Its values come from one file, `deploy/helm/train-ticket/values.yaml`: the
 registry, the `local-path` storage class, the central telemetry store, the
 resident exporters, the load generator settings and the `loadgen-resident-state`
@@ -221,6 +221,8 @@ revision's evidence is the cycle recorded above.
 
 | Check | Result | Evidence |
 |---|---|---|
+| Ten minute window at revision 435 | 560646 requests, 62692 journeys, P99 119 milliseconds, 0 unexpected error groups, 152 failed journeys -- 138 post-sales case-status and 13 disruption case-status, all of them a case that reaches its terminal state within two seconds of the last poll | `.scratch/runtime-fixes/goal-rev435-ten-minute.json` |
+| Ten minute window at revision 434 | 510005 requests, 57127 journeys, P99 115 milliseconds, 1 unexpected error group (`invoice-amount-basis` 404 x2), 78 failed journeys: 76 disruption recovery and 2 invoice. The refund and change case-status groups are gone | `.scratch/runtime-fixes/goal-rev434-ten-minute.json` |
 | Ten minute window at revision 431, with the cycle's burst | 607568 requests, 64894 journeys, P99 128 milliseconds, 1 unexpected error group (`invoice-amount-basis` 404 x3), 989 failed journeys -- every one a post-sales or recovery poll tail, none a timeout | `.scratch/runtime-fixes/goal-rev431d-ten-minute.json` |
 | Ten minute window at revision 430, the cycle's burst | 164039 requests, 18571 journeys, P99 106 milliseconds, 0 unexpected error groups, 24 failed journeys (all the disruption recovery tail) | `.scratch/runtime-fixes/goal-rev430-ten-minute.json` |
 | Ten minute window at revision 430 | 66662 journeys, P99 137 milliseconds across every service, 0 unexpected error groups, 253 failed journeys (refund, change and disruption poll tails; no timeout, no 503) | `.scratch/runtime-fixes/goal-rev430b-ten-minute.json` |
@@ -400,6 +402,31 @@ timeout at all: fare-pricing's ninety-ninth percentile is 156 milliseconds,
 post-sales 142 and journey-order 157. What fails there -- 989 journeys -- is
 every one a post-sales or recovery poll tail, the shape recorded in
 [TODO](TODO.md).
+
+## Consumer throughput is what the tails were
+
+The refund and recovery tails both turned out to be consumer throughput rather
+than slow handlers or slow dependencies, and both were fixed by the same shape:
+a service whose work is per-event was running fewer consumers than the burst
+delivers events to.
+
+Payment ran twelve consumer threads across four streams. Its refund handlers were
+never slow -- every run was under 423 milliseconds in the window that was
+measured, and the database and the channel were idle -- yet a refund's approval
+reached the handler five seconds after post-sales published it, and the refund
+then settled eight seconds after that, which the owning case's client misses by
+about a second. Revision 434 raises the count to thirty two; measured over the
+twelve minutes after, **2838 of 2838 refunds settle under a second** (mean 0.27),
+where before 875 of 17371 took more than eight seconds and 564 more than twelve.
+
+disruption-recovery used the kit's `start_in_background`, which runs **one**
+thread for every stream it is given, so four streams were handled one message at
+a time. Its group fell 349 events behind on `events:post-sales` and 539 on
+`events:journey-order` inside one burst minute, and a recovery case that
+completes on `PostSalesApplied` took 24 seconds to reach RECOVERED against the
+client's ten second poll. The kit gains `start_independent_streams` (one thread
+per stream per worker, four by default) and revision 435 uses it. The window
+after carries no disruption-status failure at all.
 
 ## Notification's delivery queue
 
