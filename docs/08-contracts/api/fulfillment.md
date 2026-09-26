@@ -32,6 +32,12 @@ timestamps, and Money.
 | `sourceEventId` | string | yes | Source event identifier for idempotency. |
 | `occurredAt` | timestamp | yes | When boarding physically occurred. |
 
+The vocabulary above is the contract's. Which of those readers a deployment
+operates is the release's boarding register, stated as
+`FULFILLMENT_BOARDING_SOURCES` in the release settings, and a boarding whose
+`source` is outside the register this deployment states never reaches the
+record.
+
 **Response (201):**
 
 | Field | Type | Description |

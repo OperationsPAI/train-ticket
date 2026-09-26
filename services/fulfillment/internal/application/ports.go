@@ -1163,13 +1163,12 @@ func validateReferences(entitlementID domain.EntitlementRef, segmentBookingID do
 	return segmentRef.Validate()
 }
 
+// validSource reports whether a boarding fact may arrive under this source. The
+// estate the deployment states decides it -- the release's boarding register,
+// resolved when the process starts -- so a reader a release retires is refused
+// here without the guard or the vocabulary in this branch changing.
 func validSource(source domain.FulfillmentSource) bool {
-	switch source {
-	case domain.FulfillmentSourceGate, domain.FulfillmentSourceStation, domain.FulfillmentSourceProvider, domain.FulfillmentSourceConductor, domain.FulfillmentSourceAdmin:
-		return true
-	default:
-		return false
-	}
+	return BoardingRegisterOfDeployment.Operates(source)
 }
 
 func validNoShowReason(reason domain.NoShowReason) bool {
