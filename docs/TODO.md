@@ -291,10 +291,22 @@ recorded in [current status](00-current-status.md#the-resident-cycle-is-not-yet-
 
    So the release at 09:32 did emit `CapacityReleased`, at a time the streams were
    healthy, and the case was still untouched. The remaining candidates are now on
-   the post-sales side of the handler: whether its subscription received the event
-   at all, and what `recordCapacityReleased` requires of a case before it accepts
-   one -- a case whose refund step may have to be complete first. Read that
-   function next; the query has already been shown to match this case.
+   the post-sales side of the handler -- and that side is now clear of every
+   condition but delivery. Its filter accepts `CapacityReleased` (the handler's
+   own allow list has it), `findPendingCapacityRelease` matches this case, and
+   `recordCapacityReleased` does nothing but check the order item is in scope,
+   add it to `releasedOrderItems` and return whether every scoped item is now
+   released, which for a one-item case is immediately true. So all the handler
+   needed was the event.
+
+   Delivery is where to look, and there is a number for it: post-sales' consumer
+   group on `events:capacity-availability` is behind right now -- measured lag 360
+   entries, against 11 for booking-orchestration, 9 for reporting and 21 for seat
+   assignment on the same stream (fare-pricing is the only group further behind,
+   at 1049). Post-sales is the group that has to consume `CapacityReleased`, so a
+   lag here is exactly the delay this case shows; measure that group's rate
+   against the stream's next, the way the offer group's was measured, before
+   changing anything.
 
    **Then this one, so that it is not mistaken for the same thing.** With the change leak repaired, the window's largest group is
    `refund-status`: 1025 refunds and 132 disruption refunds that did not reach
