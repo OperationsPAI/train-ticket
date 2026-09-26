@@ -1247,7 +1247,14 @@ services:
     # Two replicas: the change and refund cases that the load generator polls
     # are executed here, and a burst left its journey order consumer ten thousand
     # events behind.
-    replicas: 2
+    # Three, and thirty six handlers below. Measured at the cycle's larger burst:
+    # a refund case's booking was cancelled at 19:25:37.889 and the case did not
+    # reach APPLIED until 19:25:55.980 -- eighteen seconds later -- while this
+    # group's lag on `events:capacity-availability` stood at 3796. The case
+    # applies on that stream's `CapacityReleased`, so the group's pace is the
+    # last hop of the saga, and it is the hop the client's ten second poll
+    # expires on.
+    replicas: 3
     strategy:
       type: RollingUpdate
       rollingUpdate:
@@ -1273,7 +1280,9 @@ services:
       # Twenty four: a burst still left this consumer, which reads the Journey
       # Order stream for case context, ten thousand events behind, and the case
       # operations that wait for that context then missed the poll window.
-      CONSUMER_THREADS: "24"
+      # Thirty six: at the larger burst the capacity stream alone left this group
+      # 3796 events behind, which is the eighteen second wait above.
+      CONSUMER_THREADS: "36"
       # Leave database connections for HTTP requests and the outbox relay.
       # 64 rather than 32: at the cycle's burst, 281 requests were waiting for a
       # connection from this pool while the pod used about one of its cores --
