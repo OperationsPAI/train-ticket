@@ -1,6 +1,6 @@
 # TODO
 
-Updated: 2026-09-25, Asia/Beijing.
+Updated: 2026-09-26, Asia/Beijing.
 
 This is the single active backlog for the resident release. It records what is
 still open, not what has been done: implemented and deployed behaviour lives in
@@ -30,10 +30,10 @@ The standing policy and the reservation supply facts are deployed. The most
 recent clean window was an eighteen minute run at revision 321 with zero failed
 journeys and zero unexpected HTTP errors.
 
-The reservation path now holds at the peak: a window inside the last run
+The reservation path holds below the burst: a window inside an earlier run
 carried zero failed journeys out of 10670, and the one after it 36 of 8924,
-where the previous revision failed 12211 of 50345. What still fails is recorded
-in [current status](00-current-status.md#the-resident-cycle-is-not-yet-clean):
+where the revision before that failed 12211 of 50345. What still fails is
+recorded in [current status](00-current-status.md#the-resident-cycle-is-not-yet-clean):
 
 1. [ ] Trip Planning's search must hold at the peak. Its query reads the plan
    corpus, and the load generator's own bootstrap adds to that corpus on every
@@ -74,20 +74,48 @@ in [current status](00-current-status.md#the-resident-cycle-is-not-yet-clean):
    so the shards would fill again at the same rate. Decide what a useful
    retention for each of them is, the way the outbox and `processed_events`
    sweeps already do.
-4. [ ] Provider Integration still leaves a share of reservations unanswered.
-   The adapter was returning the stored reservation without publishing anything
-   when it was asked again, which is the one case where the answer is the whole
-   point; publishing the confirmation again raised the answered share from 437
-   of 1601 to **1948 of 2949** in a minute, and Booking's own confirmations from
-   603 to 2459. The remaining third is the next question: which requests are
-   neither confirmed nor failed -- a saga that reached a terminal state first, a
-   payload the handler rejects as fatal, or a replay that still finds nothing.
-   2912 of the last window's 4142 failed journeys are this shape.
-5. [ ] Disruption must not report a business conflict as an availability
+4. [x] Provider Integration left a share of reservations unanswered. The adapter
+   was returning the stored reservation without publishing anything when it was
+   asked again, which is the one case where the answer is the whole point;
+   publishing the confirmation again raised the answered share from 437 of 1601
+   to **1948 of 2949** in a minute, and Booking's own confirmations from 603 to
+   2459. Measured after both this and the duplicate publisher below landed, the
+   provider leg is no longer the reservation's tail: at the ninety-fifth
+   percentile it answers in 0.09 to 0.17 seconds in the minutes where capacity
+   is keeping up, and a reservation request reaches its provider confirmation in
+   0.04 to 0.12 seconds.
+5. [x] Every replica published the outbox. The relay publishes before it marks
+   rows published, so two replicas that selected the same unpublished rows both
+   published them, and the share was the relay's work time over its poll
+   interval. Measured at revision 399: **38 percent** of
+   `events:booking-orchestration`, **40 percent** of `events:journey-order`,
+   **43 percent** of `events:post-sales` and **74 percent** of
+   `events:capacity-availability` were second copies that every consumer group
+   read, parsed, deduplicated and acknowledged. A session advisory lock elects
+   one publisher per database in java-kit and rust-kit; measured at revision
+   401, all four streams carry **0 percent**. The Go kit still relays from every
+   replica, which its 250 millisecond interval bounds at the 2 to 4 percent
+   measured on `events:provider-integration` and `events:seat-assignment`; it
+   needs a pool handle to hold a session, which its `DBTX` interface does not
+   provide.
+6. [ ] Capacity's admission serialises on one advisory lock per inventory pool,
+   and that is the constraint that now fails the reservation poll. Measured at
+   revision 401, in the minutes the hold was slow: 21 of the 24 active sessions
+   on `capacity_availability` were waiting on
+   `pg_advisory_xact_lock(hashtextextended(...))`, waits of 1.0 to 2.9 seconds
+   were logged as slow statements, and a reservation reached its capacity Hold
+   **85 to 112 seconds** after it was requested at the ninety-fifth percentile.
+   The lock is held for the whole admission transaction, and load generators
+   reuse a small set of `pool:segment:class` keys, so admissions into one pool
+   queue behind each other. The next measurement is where the hold time goes:
+   the supply history read, the pool aggregate update, or the hold insert, in
+   that transaction. Splitting the lock by unit, or shortening the transaction,
+   is what the number asks for.
+7. [ ] Disruption must not report a business conflict as an availability
    failure. Selecting an option for an order that already has a refund or change
    in progress answers 503 `UNAVAILABLE`; a conflict has its own status, and the
    flow has to decide what the honest terminal outcome for that case is.
-6. [ ] Re-measure the refund and change `case-status` groups once the above are
+8. [ ] Re-measure the refund and change `case-status` groups once the above are
    fixed; they wait on the reservations and cases in front of them.
 
 ## Open verification
