@@ -304,9 +304,20 @@ recorded in [current status](00-current-status.md#the-resident-cycle-is-not-yet-
    entries, against 11 for booking-orchestration, 9 for reporting and 21 for seat
    assignment on the same stream (fare-pricing is the only group further behind,
    at 1049). Post-sales is the group that has to consume `CapacityReleased`, so a
-   lag here is exactly the delay this case shows; measure that group's rate
-   against the stream's next, the way the offer group's was measured, before
-   changing anything.
+   Measured, and post-sales is not the one that is stuck: over twenty five seconds
+   the stream produced 115 entries a second, post-sales read 134 and its lag fell
+   from 504 to 4, so it drains a backlog rather than accumulating one. The group
+   that is falling behind on this stream is **fare-pricing**: 95.4 entries a
+   second read against 115 produced, lag growing 2993 -> 3476. That is the
+   consumer of the combined availability snapshot capacity publishes on every
+   admission, and it is a finding in its own right -- but it is not this case,
+   whose release was published hours before that lag existed.
+
+   So the delivery explanation is weaker than it looked, and the next question is
+   the event itself rather than the group: what
+   `CapacityReleased.references.segmentBookingRef` held for the release made at
+   09:32, since the handler throws when it is null and that throw would leave the
+   case untouched exactly as observed.
 
    **Then this one, so that it is not mistaken for the same thing.** With the change leak repaired, the window's largest group is
    `refund-status`: 1025 refunds and 132 disruption refunds that did not reach
