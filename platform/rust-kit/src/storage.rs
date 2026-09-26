@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use sqlx::{Executor, PgPool, Postgres, Transaction};
+use sqlx::{Connection, Executor, PgPool, Postgres, Transaction};
 
 use crate::idempotency::{IdempotencyRecord, IdempotencyStore};
 use crate::messaging::EventEnvelope;
@@ -389,8 +389,56 @@ pub async fn run_outbox_relay(pool: PgPool, client: redis::Client, config: Outbo
     let delivery = async {
         let mut tick = tokio::time::interval(interval);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut leadership: Option<sqlx::PgConnection> = None;
+        let mut holds_lock = false;
         loop {
             tick.tick().await;
+            // Only one replica publishes. Every replica used to run its own
+            // relay over the same outbox table, and the relay publishes before
+            // it marks rows published, so two replicas that selected the same
+            // unpublished rows both published them -- measured on the resident
+            // cluster, 74 percent of this stream's entries were a second copy
+            // that every consumer group had to read, parse, deduplicate and
+            // acknowledge.
+            //
+            // The lock is held on a connection of the relay's own, opened once
+            // and kept. Opening one per tick is what a first attempt did, and
+            // with six replicas polling every fifty milliseconds it sent
+            // hundreds of new backends a second at Postgres -- the reservation
+            // hold that had been answered inside 0.2 seconds at the ninety-fifth
+            // percentile took ninety. Asking for the lock again on a session that
+            // already holds it is paid for the same way, because the lock
+            // counter increments, so a holder proves the session is still alive
+            // with a read instead.
+            if leadership.is_none() {
+                match sqlx::PgConnection::connect_with(&pool.connect_options()).await {
+                    Ok(open) => leadership = Some(open),
+                    Err(error) => {
+                        log::error!("outbox relay could not open its leadership connection: {error}");
+                        continue;
+                    }
+                }
+            }
+            let Some(connection) = leadership.as_mut() else {
+                continue;
+            };
+            if holds_lock {
+                if sqlx::query("SELECT 1").execute(&mut *connection).await.is_err() {
+                    leadership = None;
+                    holds_lock = false;
+                    continue;
+                }
+            } else {
+                match claim_relay_leadership(connection).await {
+                    Ok(true) => holds_lock = true,
+                    Ok(false) => continue,
+                    Err(error) => {
+                        log::error!("outbox relay leadership check failed: {error}");
+                        leadership = None;
+                        continue;
+                    }
+                }
+            }
             if let Err(error) = relay_once(&pool, &client, config.batch_size).await {
                 log::error!("outbox relay failed: {error}");
             }
@@ -406,6 +454,19 @@ pub async fn run_outbox_relay(pool: PgPool, client: redis::Client, config: Outbo
         }
     };
     tokio::join!(delivery, retention);
+}
+
+/// Asks the database whether this session is the one that publishes the outbox.
+#[cfg(feature = "redis-impl")]
+async fn claim_relay_leadership(
+    connection: &mut sqlx::PgConnection,
+) -> Result<bool, sqlx::Error> {
+    let (claimed,): (bool,) = sqlx::query_as(
+        "SELECT pg_try_advisory_lock(hashtextextended('platformkit-outbox-relay:' || current_database(), 0))",
+    )
+    .fetch_one(&mut *connection)
+    .await?;
+    Ok(claimed)
 }
 
 /// Retention cadence in delivery intervals.
