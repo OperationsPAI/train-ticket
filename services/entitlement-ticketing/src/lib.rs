@@ -2919,23 +2919,8 @@ impl InMemoryEntitlementService {
         if actions.is_empty() {
             return Ok(());
         }
-        let started = std::time::Instant::now();
-
         let pending_keys =
             self.ensure_void_entitlements_for_post_sales(&order_id, &case_id, &actions)?;
-        // The load generator approves a refund and polls the case for ten
-        // seconds; measured at the cycle's burst, the entitlements of a failing
-        // case were voided 7.2 seconds after the approval while this service's
-        // consumer lag and pending stayed at zero. Whether that time is delivery
-        // or handling is what this line answers: it prints how long the handler
-        // itself took, so the event's age at the end of it is the delivery wait
-        // plus this.
-        log::info!(
-            "post-sales approval voided {} entitlement(s) for case={} in {:?}",
-            pending_keys.len(),
-            case_id,
-            started.elapsed()
-        );
         for key in pending_keys {
             let Some(pending) = self.pending_bus_publication(&key)? else {
                 continue;
