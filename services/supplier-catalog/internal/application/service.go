@@ -188,8 +188,10 @@ func (s *Service) RegisterSupplier(ctx context.Context, cmd RegisterSupplierComm
 	return supplierView(supplier), nil
 }
 
-// claimPartnerIdentity holds the identity a filing carries for the partner it
-// files, in the caller's transaction.
+// claimPartnerIdentity holds the identity a filing carries before the partner is
+// written, so a filing that carries one the catalogue already holds is refused
+// rather than filed beside the partner that holds it. The claim and the partner
+// share the caller's transaction, so a refused filing leaves neither behind.
 func (s *Service) claimPartnerIdentity(ctx context.Context, supplier domain.Supplier) error {
 	claimed, err := s.repository.ClaimPartnerIdentity(ctx, supplier.Profile, string(supplier.SupplierID))
 	if err != nil {
