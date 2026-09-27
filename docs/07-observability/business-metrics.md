@@ -39,7 +39,7 @@ across currencies.
 | Booking saga | `train_ticket.booking.saga.active` | UpDownCounter | `stage` | Sagas currently waiting at a stage. |
 | Booking saga | `train_ticket.booking.saga.transitions` | Counter | `stage`, `outcome`, `reason_code` | Saga transition outcomes. |
 | Booking saga | `train_ticket.booking.saga.oldest_age` | Gauge, seconds | `stage` | Age of the oldest nonterminal saga at that stage. |
-| Booking saga | `train_ticket.booking.saga.step_due_age` | Gauge, seconds | none | Age of the oldest saga step deadline the one-second timeout sweep has not retired, rebuilt from the indexed deadline table on every report. An empty queue publishes no point. |
+| Booking saga | `train_ticket.booking.saga.step_due_age` | Gauge, seconds | none | Age of the oldest saga step deadline the timeout sweep has not retired, rebuilt from the indexed deadline table on every leader-elected report. An empty queue publishes no point, and neither does a deadline the sweep retires within one report interval -- which is the healthy reading: a reading means the sweep is behind. |
 | Payment/refund | `train_ticket.payment.operations` | Counter | `operation`, `outcome`, `currency`, `channel` | Capture, refund, reversal and compensation operation outcomes. |
 | Payment/refund | `train_ticket.payment.amount` | Counter, minor units | `operation`, `outcome`, `currency`, `channel` | Amount processed by the same operations. |
 | Payment/refund | `train_ticket.payment.conservation` | Gauge, minor units | `state`, `currency` | Authoritative captured, refunded, reversed and unsettled totals for conservation checks. |
