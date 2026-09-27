@@ -462,6 +462,34 @@ history of what each one cost is in
 
 ### T03: Finish the coordinated supply integration
 
+### T20: Two dead-letter sources that the acceptance level does not reach
+
+Status: open, and **not** reachable at the level in `values.yaml` -- both were
+produced during the flat high-rate sweep on 2026-09-27, and neither has recurred
+under two full acceptance cycles since. They are recorded because a dead letter is
+an event nobody can reconstruct.
+
+1. [ ] `events:capacity-availability:dlq` holds six entries whose consumer group
+   is `booking-orchestration`, event type `CapacityHeld`, `attempts=1` and
+   `failureReason=HandlerResult.FATAL_FAILURE`, dead-lettered at `06:47:07`. One
+   attempt means the handler classified it as a rule violation rather than a
+   transient failure, which is `IllegalArgumentException`,
+   `IllegalStateException`, `NotFoundException` or `PreconditionFailedException`
+   in `handleUpstreamEvent`. The payload carries every field
+   `validateCapacityHeldContract` asks for, so the throw is further in --
+   `markCapacityHolding`, or the `orElseThrow()` on the saga id. A `CapacityHeld`
+   for a booking this service cannot place must not be fatal: the same handler
+   already has an ack-skip path for an unknown booking reference.
+2. [ ] `events:finance-settlement:dlq` holds five entries whose consumer group is
+   `invoicing`, event type `RevenueRecognitionReversed`,
+   `failureReason=MaxDeliveryAttempts` and `attempts=5`, dead-lettered at
+   `05:30:51`. Invoicing's projection answers `Unavailable("reversal awaits
+   original revenue")` when it has no `amounts` entry for the order or the
+   reversal names a recognition the order does not carry; five redeliveries
+   inside the claim window is not a long wait for an upstream event. Decide
+   whether the reversal should wait longer, or whether the recognition it names
+   was already reversed and the event needs no effect.
+
 Status: activated; general multistop correctness is unproven.
 
 1. [ ] Resolve accepted class, service, date, original purchase source,
