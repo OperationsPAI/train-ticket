@@ -5,7 +5,7 @@ Last verified: 2026-09-27, Asia/Beijing.
 ## Runtime
 
 The resident Helm release is `train-ticket` in namespace `train-ticket`,
-revision **478**.
+revision **493**.
 Its values come from one file, `deploy/helm/train-ticket/values.yaml`: the
 registry, the `local-path` storage class, the central telemetry store, the
 resident exporters, the load generator settings and the `loadgen-resident-state`
@@ -55,6 +55,8 @@ to one and back.
 
 | Check | Result | Evidence |
 |---|---|---|
+| Five minute window at revision 493, after the waitlist promotion fixes | 139008 requests and 16329 journeys at 463 requests a second, **0 unexpected HTTP errors and 0 failed journeys** in every minute | `/tmp/sweep/postfix.cur.jsonl` |
+| Waitlist promotion, revision 493 against the pre-fix release | the promotion reached the booking saga for the first time: **49 offers and 49 orders** in ten minutes against **0 of each** across the whole resident population before, and the promotion failure counter fell from **6.03 a second** to about **1.5 a minute** | `train_ticket_waitlist_promotions_total`; `waitlist_entries` |
 | Ten minute window at revision 489, one whole diurnal cycle | 275189 requests and 31810 journeys, peak minute 6050 journeys and trough minute 887, **0 unexpected HTTP errors and 0 failed journeys** in every minute; the recorder read `written=585546 dropped=0` and the dead-letter population was unchanged | `/tmp/sweep/acc489.cur.jsonl` |
 | Ten minute window at revision 488, one whole diurnal cycle | 250625 requests and 29090 journeys, peak minute 4245 journeys and trough minute 1563, **0 unexpected HTTP errors and 0 failed journeys** in every minute, including the minutes after a restart -- which used to carry two boarding refusals and one change 500 -- and the dead-letter population unchanged | `/tmp/sweep/acc488.cur.jsonl` |
 | Ten minute window at revision 483, one whole diurnal cycle | 239925 requests and 27502 journeys, peak minute 4138 journeys and trough minute 1428, **0 unexpected HTTP errors and 0 failed journeys** in every minute; the dead-letter population unchanged across the window and every consumer group within 27 entries of its stream's head | `/tmp/sweep/acc483.*.jsonl` |
@@ -95,7 +97,7 @@ to one and back.
 | Payment and post sales module suites | 78 and 118 tests, 0 failures | `services/payment`, `services/post-sales` |
 | Capacity availability and entitlement ticketing | 41 and 36 tests, 0 failures | `services/capacity-availability`, `services/entitlement-ticketing` |
 | Wallet promotion module suite | 41 passed, 4 skipped, 0 failures | `services/wallet-promotion` |
-| Waitlist module suite | 99 passed, 5 skipped, 0 failures | `services/waitlist` |
+| Waitlist module suite | 105 passed, 5 skipped, 0 failures | `services/waitlist` |
 | Go service suites | All packages pass | `services/fulfillment`, `services/seat-assignment`, `services/payment-channel` |
 
 The skipped tests are the ones gated on `TEST_DATABASE_URL` and on other
