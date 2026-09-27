@@ -406,6 +406,71 @@ fn otlp_endpoint_configured() -> bool {
     configured_endpoint().is_some()
 }
 
+/// The order funnel's closed vocabularies, shared with the Java and Python
+/// services that publish the same counter. Every label value is a member of one
+/// of these tuples or the fallback `other`, so a series can never be named after
+/// a request, an itinerary or an exception message.
+pub const ORDER_FUNNEL_STAGES: [&str; 6] = [
+    "search",
+    "quote",
+    "order",
+    "reservation",
+    "payment",
+    "ticket",
+];
+pub const ORDER_FUNNEL_OUTCOMES: [&str; 3] = ["attempted", "accepted", "rejected"];
+pub const ORDER_FUNNEL_CHANNELS: [&str; 5] = ["web", "mobile", "counter", "partner", "api"];
+pub const ORDER_FUNNEL_OTHER: &str = "other";
+
+fn funnel_vocabulary(value: &str, allowed: &[&str]) -> String {
+    let normalized = value.trim().to_ascii_lowercase();
+    if allowed.contains(&normalized.as_str()) {
+        normalized
+    } else {
+        ORDER_FUNNEL_OTHER.to_string()
+    }
+}
+
+/// Publishes `train_ticket.order.transitions` for the stages one service owns.
+///
+/// A reader takes `rate()` over it and gets a stage's funnel by outcome and
+/// purchase channel. One stage records `attempted` once and then exactly one of
+/// `accepted` or `rejected`, which is what keeps `attempted = accepted +
+/// rejected` for that stage.
+///
+/// The instrument is built from the global meter, which is a no-op unless the
+/// process installed an SDK provider, so a service needs no condition of its own
+/// to call it.
+#[derive(Clone)]
+pub struct OrderFunnel {
+    transitions: opentelemetry::metrics::Counter<u64>,
+}
+
+impl OrderFunnel {
+    pub fn new(meter: &Meter) -> Self {
+        Self {
+            transitions: meter
+                .u64_counter("train_ticket.order.transitions")
+                .with_description(
+                    "Order funnel transitions by stage, outcome and purchase channel.",
+                )
+                .with_unit("{transition}")
+                .build(),
+        }
+    }
+
+    pub fn transition(&self, stage: &str, outcome: &str, channel: &str) {
+        self.transitions.add(
+            1,
+            &[
+                KeyValue::new("stage", funnel_vocabulary(stage, &ORDER_FUNNEL_STAGES)),
+                KeyValue::new("outcome", funnel_vocabulary(outcome, &ORDER_FUNNEL_OUTCOMES)),
+                KeyValue::new("channel", funnel_vocabulary(channel, &ORDER_FUNNEL_CHANNELS)),
+            ],
+        );
+    }
+}
+
 /// Read `OTEL_METRIC_EXPORT_INTERVAL`, the standard SDK variable, which is
 /// specified in milliseconds. An unparseable or non-positive value falls back to
 /// the specification default rather than failing startup: this governs only how
@@ -421,6 +486,7 @@ fn metric_export_interval() -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
     use opentelemetry_sdk::metrics::InMemoryMetricExporter;
 
     #[test]
@@ -491,6 +557,58 @@ mod tests {
     fn an_unregistered_method_is_reported_as_other() {
         assert_eq!(request_method("POST"), "POST");
         assert_eq!(request_method("BREW"), "_OTHER");
+    }
+
+    #[test]
+    fn order_funnel_publishes_the_contract_name_and_only_contract_labels() {
+        let _serial = crate::otel::test_serial();
+        unsafe {
+            env::set_var("OTEL_SERVICE_NAME", "rust-kit-test");
+        }
+        let exporter = InMemoryMetricExporter::default();
+        let guard = init_with_exporter("rust-kit-test", exporter.clone());
+
+        let funnel = OrderFunnel::new(&meter("rust-kit-test"));
+        // A channel that is not in the vocabulary, in an unexpected case, has to
+        // collapse to `other` rather than becoming a series of its own.
+        funnel.transition("search", "attempted", "WEB");
+        funnel.transition("search", "accepted", "web");
+        funnel.transition("search", "rejected", "acme-partner-7");
+        guard.force_flush().expect("flush metrics");
+
+        let names = collected_names(&exporter);
+        assert!(
+            names.contains(&"train_ticket.order.transitions".to_string()),
+            "missing the funnel counter; collected {names:?}"
+        );
+
+        let mut channels: Vec<String> = Vec::new();
+        for resource_metric in exporter.get_finished_metrics().expect("finished metrics") {
+            for scope_metric in resource_metric.scope_metrics() {
+                for metric in scope_metric.metrics() {
+                    if metric.name() != "train_ticket.order.transitions" {
+                        continue;
+                    }
+                    let AggregatedMetrics::U64(MetricData::Sum(sum)) = metric.data() else {
+                        panic!("the funnel counter is a u64 sum: {:?}", metric.data());
+                    };
+                    for point in sum.data_points() {
+                        let mut attrs = std::collections::HashMap::new();
+                        for kv in point.attributes() {
+                            attrs.insert(kv.key.as_str().to_string(), kv.value.to_string());
+                        }
+                        assert_eq!(attrs.get("stage").map(String::as_str), Some("search"));
+                        channels.push(attrs.get("channel").cloned().unwrap_or_default());
+                    }
+                }
+            }
+        }
+        channels.sort();
+        assert_eq!(channels, vec!["other", "web", "web"]);
+
+        unsafe {
+            env::remove_var("OTEL_SERVICE_NAME");
+        }
     }
 
     fn collected_names(exporter: &InMemoryMetricExporter) -> Vec<String> {
