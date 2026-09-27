@@ -5,7 +5,7 @@ Last verified: 2026-09-27, Asia/Beijing.
 ## Runtime
 
 The resident Helm release is `train-ticket` in namespace `train-ticket`,
-revision **500**.
+revision **501**.
 Its values come from one file, `deploy/helm/train-ticket/values.yaml`: the
 registry, the `local-path` storage class, the central telemetry store, the
 resident exporters, the load generator settings and the `loadgen-resident-state`
@@ -57,6 +57,7 @@ to one and back.
 
 | Check | Result | Evidence |
 |---|---|---|
+| Ten minute window at revision 501, the state this pass leaves behind | 155401 requests at 518 a second and 17519 journeys, **0 unexpected HTTP errors and 0 failed journeys**; the loader's own tally reads `errors {}`, the recorder `written=237148 dropped=0`, and every dead-letter stream is unchanged | `/tmp/sweep/final2.cur.jsonl` |
 | Five minute window at revision 500, with the channel statement sweep running | 142348 requests at 474 a second and 16330 journeys, **0 unexpected HTTP errors and 0 failed journeys**; the loader's own tally reads `errors {}` | `/tmp/sweep/rev500.cur.jsonl` |
 | Replay, dead-letter and compensation live tests against the deployed databases, revision 500 | TypeScript kit suite 111 tests (109 pass, 2 skipped) with `TEST_DATABASE_URL` and `TEST_REDIS_URL` pointed at the deployed PostgreSQL and Redis: the transport-loss replay rebuilds a deleted stream without repeating its effect, and the dead-letter evidence survives a restart. Post-sales suite 125 tests, 0 failures, 0 errors, including the compensation mismatch checkpoint against the deployed shard. | `platform/ts-kit` `npm test`, `services/post-sales` `mvn test` |
 | Channel statement storage, revision 498 | one channel-day is 342648 normalised lines at 933 bytes each in `channel_statement_lines`, with the statement row itself at 48 kB; freezing answers in 9.5 ms, a statement read in 3 ms and its first 100 lines in 0.4 s | `payment_channel` on the transactional shard |
