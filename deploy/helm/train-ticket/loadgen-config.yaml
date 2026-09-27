@@ -303,10 +303,16 @@ ops:
   # journey. It was a `journey_mix` entry, which every persona replaces, so it
   # had weight zero and marketing-campaign received nothing.
   p_campaign_draft: 0.30
-  # Generating and freezing the day's channel statement. The daily statement is
-  # the channel's own side of the money, and until this ran nothing in the
-  # resident workload produced one: the statement tables were empty and the
-  # daily reconciliation had no channel side to compare platform captures with.
+  # Generating and freezing a channel statement for the CLOSED day. The daily
+  # statement is the channel's own side of the money, and until this ran nothing
+  # in the resident workload produced one: the statement tables were empty and
+  # the daily reconciliation had no channel side to compare platform captures
+  # with. It is the closed day rather than today because the identity of a
+  # statement is the channel-day and generation reads that day's facts once: a
+  # statement generated while the day is still running is frozen as the day's
+  # answer with only the facts up to that moment, and the reconciliation of the
+  # day then reports every later capture as missing in channel.
+  #
   # Both calls are idempotent per (channel, date, currency, seed version), so the
   # sweep re-running them produces the same statement and no growth beyond one
   # statement per channel and day. The FIRST generation of a channel-day is a
