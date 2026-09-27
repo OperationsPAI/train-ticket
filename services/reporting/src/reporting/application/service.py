@@ -411,7 +411,16 @@ def project_revenue_facts(index: Any, envelope: EventEnvelope) -> bool:
             if not isinstance(traveler, Mapping):
                 continue
             travelers.append((_text(traveler.get("travelerId")), _text(traveler.get("travelerType"))))
-        index.record_order(_text(payload.get("orderId")), routes, travelers, occurred_at)
+        index.record_order(
+            _text(payload.get("orderId")),
+            routes,
+            travelers,
+            occurred_at,
+            # fare-pricing's distance reaches reporting on this event, carried by
+            # the offer the order was built from. Without it the revenue report's
+            # yieldPerKm has nothing to divide by and is a constant zero.
+            _payload_value(payload, "distanceKm", "distance_km"),
+        )
         return True
 
     if event_type in {"PostSalesCaseOpened", "PostSalesRequested"}:
