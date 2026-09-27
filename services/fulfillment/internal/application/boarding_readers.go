@@ -21,6 +21,7 @@ const (
 	readersDirectory    = "/app/config"
 	rosterStatement     = "boarding-readers.txt"
 	registerStatement   = "reader-register.txt"
+	statementComment    = "#"
 )
 
 // builtinReaders is the vocabulary this image was built with. A deployment
@@ -100,13 +101,23 @@ func statementEntries(path string) (readerSet, error) {
 	}
 	entries := readerSet{}
 	for _, line := range strings.Split(string(stated), "\n") {
-		name := strings.TrimSpace(line)
-		if name == "" || strings.HasPrefix(name, "#") {
+		name, names := entryName(line)
+		if !names {
 			continue
 		}
 		entries[readerNamed(name)] = struct{}{}
 	}
 	return entries, nil
+}
+
+// entryName is the entry a statement's line names, and whether it names one at
+// all: a blank line and a comment name nothing.
+func entryName(line string) (string, bool) {
+	name := strings.TrimSpace(line)
+	if name == "" || strings.HasPrefix(name, statementComment) {
+		return "", false
+	}
+	return name, true
 }
 
 // readerNamed is the reader an entry names, read the way an operator writes it.
