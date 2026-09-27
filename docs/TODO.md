@@ -650,16 +650,29 @@ confirmation is not, and the reason is measured to the seat in item 6.
    lands. A waitlist whose pool never has a free unit cannot fulfil, which is
    what the workload's demand on that class produces.
    The 45 minute window measured earlier, on the pre-fix release, also showed
-   172 of 211 orders refused by risk-compliance's velocity rules
-   (`VELOCITY_TRAVELER_BOOKING`, more than two bookings per traveler per hour,
-   and `VELOCITY_ACCOUNT_ORDER`, more than three orders per account per five
-   minutes). The rules are the platform's own anti-abuse policy and the workload
-   reuses travelers (`p_new_traveler: 0.10`), so a waitlisted customer here is
-   almost always the same person who just booked; whether a promotion *should*
-   be exempt from the velocity rules stays a policy decision rather than a
-   defect this pass found. Verifying this item needs a promotion for a traveler
-   with no recent bookings into a pool with a free unit, which this workload does
-   not reliably produce.
+  172 of 211 orders refused by risk-compliance's velocity rules
+  (`VELOCITY_TRAVELER_BOOKING`, more than two bookings per traveler per hour,
+  and `VELOCITY_ACCOUNT_ORDER`, more than three orders per account per five
+  minutes). The rules are the platform's own anti-abuse policy and the workload
+  reuses travelers (`p_new_traveler: 0.10`), so a waitlisted customer here is
+  almost always the same person who just booked; whether a promotion *should*
+  be exempt from the velocity rules stays a policy decision rather than a
+  defect this pass found. Verifying this item needs a promotion for a traveler
+  with no recent bookings into a pool with a free unit, which this workload does
+  not reliably produce.
+
+   Recipe for whoever takes it, from what the release has already shown. The
+   credit a promotion consumes is a `CapacityReleased` on the entry's own
+   segment, service, date, class and interval, so the fixture has to *make* one:
+   buy more than one seat in that class for that date through the normal funnel,
+   then cancel or refund them together. The promotion takes one credit, and the
+   extra released units are what its reservation lands on -- which is exactly the
+   step the resident population cannot win, because it is competing for the same
+   single released seat it just produced. Two smaller preconditions are worth
+   clearing at the same time: the traveler should have no recent bookings, so
+   risk-compliance's velocity rules do not refuse the promotion order, and the
+   entry should name a pool whose class has slack outside the entry's interval,
+   so `remainingByClass` is not zero for the whole train.
 
 ### T05: Prove durable event recovery
 
