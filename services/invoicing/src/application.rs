@@ -312,16 +312,31 @@ impl InMemoryInvoicingService {
             let reference = string_field(&e.payload, "sourceEventId")
                 .ok_or_else(|| InvoicingError::ValidationFailed("reversal sourceEventId is required".into()))?;
             let identity = format!("{recognition}:{reference}");
-            if let Some(previous) = history.reversals.get(&identity) {
+            if let Some(previous) = history
+                .reversals
+                .get(&identity)
+                .or_else(|| history.pending_reversals.get(&identity))
+            {
                 if *previous != money { return Err(InvoicingError::DomainRuleViolation("reversal identity reused with another amount".into())); }
                 s.processed_events.insert(e.event_id);
                 return Ok(());
             }
-            let existing = s.amounts.get(&order_id).ok_or_else(|| InvoicingError::Unavailable("reversal awaits original revenue".into()))?;
-            if !existing.revenue_recognition_ids.contains(&recognition) {
-                return Err(InvoicingError::Unavailable("reversal awaits its revenue recognition".into()));
+            if money.minor_units <= 0 {
+                return Err(InvoicingError::ValidationFailed("reversal requires a positive amount".into()));
             }
-            if money.minor_units <= 0 || money.currency != existing.total_amount.currency {
+            let existing = s.amounts.get(&order_id)
+                .filter(|basis| basis.revenue_recognition_ids.contains(&recognition));
+            let Some(existing) = existing else {
+                // The recognition this reversal names has not been projected.
+                // Record it durably and acknowledge: returning a transient
+                // failure here only buys five redeliveries and a dead letter
+                // for an event the next recognition's own delivery applies.
+                history.pending_reversals.insert(identity, money);
+                s.amount_history.insert(order_id.clone(), history);
+                s.processed_events.insert(e.event_id);
+                return Ok(());
+            };
+            if money.currency != existing.total_amount.currency {
                 return Err(InvoicingError::ValidationFailed("reversal requires a positive matching currency amount".into()));
             }
             if let Some(recognized) = history.recognitions.get(&recognition) {
@@ -374,6 +389,7 @@ impl InMemoryInvoicingService {
             }
             return Err(InvoicingError::Unavailable("finance invoice awaits its revenue components".into()));
         }
+        settle_pending_reversals(&mut history, &rr, &mut money)?;
         rr.sort();
         let basis_type = if e.event_type == "InvoiceGenerated" {
             "FINANCE_INVOICE"
@@ -587,6 +603,18 @@ impl OrderProjection {
 pub(crate) struct AmountHistory {
     pub recognitions: std::collections::BTreeMap<String, Money>,
     pub reversals: std::collections::BTreeMap<String, Money>,
+    /// Reversals that named a recognition this order had not projected yet.
+    ///
+    /// The producer publishes a recognition before the reversal that undoes
+    /// it, but the projection runs several workers on one stream, so a reversal
+    /// can be applied first. Five redeliveries inside the claim window is not a
+    /// long wait for the upstream event -- measured on the resident release,
+    /// five reversals took exactly that path to `MaxDeliveryAttempts` and every
+    /// one of them was applied by a later delivery -- so the reversal is kept
+    /// here instead of being dead-lettered, and the recognition's own delivery
+    /// moves it into `reversals`.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub pending_reversals: std::collections::BTreeMap<String, Money>,
 }
 
 pub(crate) fn revenue_amount_basis_hash(ids: &[String], total: &Money, history: &AmountHistory) -> String {
@@ -595,6 +623,50 @@ pub(crate) fn revenue_amount_basis_hash(ids: &[String], total: &Money, history: 
         "totalAmount": total,
         "reversals": &history.reversals,
     })))
+}
+
+/// Move the reversals that were waiting for a recognition into the applied set
+/// and subtract them from the amount the projection is building.
+///
+/// The recognition and its reversal are published in order, but the projection
+/// applies them on several workers, so the reversal can be projected first. It
+/// is durable in `pending_reversals` from that moment; this is where the
+/// recognition that unblocks it applies it, with the same checks the inline
+/// path uses.
+fn settle_pending_reversals(
+    history: &mut AmountHistory,
+    ids: &[String],
+    total: &mut Money,
+) -> Result<(), InvoicingError> {
+    let ready: Vec<String> = history
+        .pending_reversals
+        .keys()
+        .filter(|identity| ids.iter().any(|id| identity.starts_with(&format!("{id}:"))))
+        .cloned()
+        .collect();
+    for identity in ready {
+        let Some(money) = history.pending_reversals.remove(&identity) else {
+            continue;
+        };
+        if money.currency != total.currency {
+            return Err(InvoicingError::ValidationFailed("reversal currency mismatch".into()));
+        }
+        let recognition = identity.split(':').next().unwrap_or_default().to_owned();
+        if let Some(recognized) = history.recognitions.get(&recognition) {
+            let prefix = format!("{recognition}:");
+            let returned = history.reversals.iter().filter(|(key, _)| key.starts_with(&prefix))
+                .try_fold(money.minor_units, |sum, (_, value)| sum.checked_add(value.minor_units))
+                .ok_or_else(|| InvoicingError::DomainRuleViolation("reversal total overflow".into()))?;
+            if returned > recognized.minor_units {
+                return Err(InvoicingError::DomainRuleViolation("reversal exceeds its recognized component".into()));
+            }
+        }
+        total.minor_units = total.minor_units.checked_sub(money.minor_units)
+            .filter(|amount| *amount >= 0)
+            .ok_or_else(|| InvoicingError::DomainRuleViolation("reversal exceeds available revenue".into()))?;
+        history.reversals.insert(identity, money);
+    }
+    Ok(())
 }
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct RefundObservation {
