@@ -322,18 +322,19 @@ class _PostgresRevenueFactIndex:
             (event_id, business_ref, payment_intent_id, payment_purpose, occurred_at),
         ))
 
-    def record_order(self, order_id: str, routes: Any, travelers: Any, occurred_at: datetime) -> None:
+    def record_order(self, order_id: str, routes: Any, travelers: Any, occurred_at: datetime, distance_km: Any = None) -> None:
         if not order_id.strip():
             return
-        route_rows = [(order_id, route_id, service_date, occurred_at) for route_id, service_date in routes if str(route_id).strip()]
+        route_rows = [(order_id, route_id, service_date, occurred_at, distance_km) for route_id, service_date in routes if str(route_id).strip()]
         if route_rows:
             with self._conn.cursor() as cursor:
                 cursor.executemany(
                     """
-                    INSERT INTO reporting_order_routes(order_id,route_id,service_date,source_occurred_at)
-                    VALUES (%s,%s,%s,%s)
+                    INSERT INTO reporting_order_routes(order_id,route_id,service_date,source_occurred_at,distance_km)
+                    VALUES (%s,%s,%s,%s,%s)
                     ON CONFLICT(order_id,route_id) DO UPDATE SET
-                      service_date=EXCLUDED.service_date,source_occurred_at=EXCLUDED.source_occurred_at
+                      service_date=EXCLUDED.service_date,source_occurred_at=EXCLUDED.source_occurred_at,
+                      distance_km=COALESCE(EXCLUDED.distance_km,reporting_order_routes.distance_km)
                     WHERE reporting_order_routes.source_occurred_at < EXCLUDED.source_occurred_at
                     """,
                     route_rows,
