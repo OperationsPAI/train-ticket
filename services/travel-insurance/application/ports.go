@@ -14,6 +14,13 @@ var (
 	ErrConflict          = errors.New("conflict")
 	ErrValidation        = errors.New("validation failed")
 	ErrDomainRule        = errors.New("domain rule violation")
+	// ErrNotReady says a read the announcement promised has not caught up with
+	// it yet. The events this service consumes are thin -- they name a case, an
+	// order or a refund -- so every handler reads the owning service straight
+	// away, and the owning service's own write can trail its announcement by
+	// milliseconds. That is a wait, not a rule violation, and the difference is
+	// what the subscriber needs to report it honestly.
+	ErrNotReady = errors.New("state not yet visible")
 	// ErrNotChangeAdjustment says a journey adjustment belongs to a case type this
 	// service does not adjust: a refund or a cancellation ends the coverage the order
 	// carried, and that is told to this service by PostSalesApplied, RefundApproved and
