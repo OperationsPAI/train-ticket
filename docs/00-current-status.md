@@ -54,7 +54,8 @@ to one and back.
 
 | Check | Result | Evidence |
 |---|---|---|
-| Ten minute window at revision 478, one whole diurnal cycle | 237355 requests and 28035 journeys, peak minute 4136 journeys and trough minute 1514, **0 unexpected HTTP errors and 0 failed journeys** in every minute; the recorder read `written=305897 dropped=0`; the dead-letter population was unchanged across the window (ancillary-service 2, capacity-availability 6, finance-settlement 5, journey-order 3, booking-orchestration 0) | `/tmp/sweep/acc478.cur.jsonl` |
+| Ten minute window at revision 479, one whole diurnal cycle | 264033 requests and 30685 journeys, peak minute 4326 journeys and trough minute 1875, **0 unexpected HTTP errors and 0 failed journeys** in every minute; the recorder read `written=347203 dropped=0`; the dead-letter population was unchanged across the window (ancillary-service 2, capacity-availability 6, finance-settlement 5, journey-order 3, booking-orchestration 0) and every consumer group was at zero lag | `/tmp/sweep/acc479.*.jsonl` |
+| Ten minute window at revision 478, the same images one release earlier | 237355 requests and 28035 journeys, peak minute 4136 journeys and trough minute 1514, **0 unexpected HTTP errors and 0 failed journeys** in every minute; the recorder read `written=305897 dropped=0` | `/tmp/sweep/acc478.cur.jsonl` |
 | Ten minute window at revision 476, one whole diurnal cycle | 274892 requests and 31865 journeys, peak minute 5256 journeys, **0 unexpected HTTP errors and 0 failed journeys**; the recorder read `written=509839 dropped=0` and every dead-letter stream that this workload uses is empty of new entries | `/tmp/sweep/fix2.*.jsonl` |
 | Six minute window at revision 459, the resident steady state after a restart's catch-up | 203561 requests, 22291 journeys, P99 359 milliseconds, **0 unexpected error groups and 0 failed journeys**; the recorder read `written=735198 dropped=0`. The same run's `01:46` catch-up minute carries 7652 journeys and 765 failures, which is the exception below | `.scratch/runtime-fixes/goal-acc-steady-rev459-6min.json` |
 | Ten minute window at revision 458, one whole cycle in the resident steady state | 414205 requests, 46147 journeys, P99 270 milliseconds, **0 unexpected error groups and 0 failed journeys**; the recorder read `written=594793 dropped=0` | `.scratch/runtime-fixes/goal-acc-steady-rev458.json` |
@@ -136,6 +137,20 @@ behind it: notification's subscription to that stream was dropped deliberately
 (none of the event types it renders is published there), but the Redis group
 outlives the configuration that made it. The group was destroyed on the resident
 release, and the lag table now reports three live groups at zero or one entry.
+
+### The insurance payout moves money, and moves it once
+
+The claim path is the one paid failure path the load generator does not reach:
+its insurance journey issues a policy and stops there. Exercised directly
+against revision 478, with a delay-insurance policy whose coverage window
+contains the request: `POST /api/v1/claims` carrying a verified `TrainDelayed`
+fact over 60 minutes and `settle: true` answered a claim `PAID_OUT` with an
+advice whose `executionRef` is `ben-035f8f05-d8be-4587-9b1a-709f9fd112b4`, and
+`GET /api/v1/benefits/ben-035f8f05-d8be-4587-9b1a-709f9fd112b4` at
+wallet-promotion answers `ISSUED` stored value of 3000 minor units CNY for the
+policy's own account. Approving the same claim a second time answered the same
+completed advice with the same execution reference, and the account's benefit
+list holds exactly one benefit for that claim.
 
 ### Duplicate publication is fixed
 
