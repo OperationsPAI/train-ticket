@@ -70,8 +70,12 @@ type RedisEventBus struct {
 	wg       sync.WaitGroup
 	dedup    *InMemoryDedupStore
 	observer Observer
-	mu       sync.Mutex
-	cancel   []context.CancelFunc
+	// metrics overrides the process-wide transport counters. Nil means the
+	// default set, which is inert until a process installs an SDK meter
+	// provider.
+	metrics *EventConsumerMetrics
+	mu      sync.Mutex
+	cancel  []context.CancelFunc
 }
 
 func NewRedisClient(redisURL string) (*redis.Client, error) {
@@ -140,6 +144,23 @@ func (b *RedisEventBus) WithObserver(observer Observer) *RedisEventBus {
 	}
 	b.observer = observer
 	return b
+}
+
+// WithMetrics overrides the process-level transport counters. Nil restores the
+// default set, so a test can inject a set bound to its own meter and a service
+// needs no wiring at all.
+func (b *RedisEventBus) WithMetrics(metrics *EventConsumerMetrics) *RedisEventBus {
+	b.metrics = metrics
+	return b
+}
+
+// consumerMetrics resolves the counters this bus records through. The returned
+// value may be nil, which every record method treats as a no-op.
+func (b *RedisEventBus) consumerMetrics() *EventConsumerMetrics {
+	if b.metrics != nil {
+		return b.metrics
+	}
+	return defaultEventConsumerMetrics()
 }
 
 func (b *RedisEventBus) Ping(ctx context.Context) error {
@@ -340,6 +361,9 @@ func (b *RedisEventBus) processBatch(ctx context.Context, stream, group, consume
 			raw, ok := message.Values[EnvelopeField].(string)
 			var envelope EventEnvelope
 			if ok && json.Unmarshal([]byte(raw), &envelope) == nil && envelope.Validate() == nil && !filter(envelope) {
+				// Not this consumer's event type: acknowledged, and counted as
+				// neither an outcome nor a failure, because the group was never
+				// meant to process it.
 				toAcknowledge = append(toAcknowledge, message.ID)
 				continue
 			}
@@ -361,9 +385,14 @@ func (b *RedisEventBus) processBatch(ctx context.Context, stream, group, consume
 // letter.
 func (b *RedisEventBus) processMessage(ctx context.Context, stream, group, consumer string, message redis.XMessage, handler Handler) bool {
 	ctx = MessageContext(ctx, stream, group)
+	metrics := b.consumerMetrics()
 	raw, ok := message.Values[EnvelopeField].(string)
 	if !ok || strings.TrimSpace(raw) == "" {
-		b.moveToDLQAndAck(ctx, stream, group, consumer, message.ID, raw, "MissingEnvelope", 1)
+		// An entry with no envelope field is not a message this subscriber can
+		// even describe, so it is dead-lettered on the first delivery rather
+		// than retried.
+		metrics.RecordFailure(FailureMissingEnvelope)
+		b.moveToDLQAndAck(ctx, stream, group, consumer, message.ID, raw, "MissingEnvelope", 1, FailureMissingEnvelope)
 		return false
 	}
 	// Resolved only where it decides something.
@@ -376,7 +405,8 @@ func (b *RedisEventBus) processMessage(ctx context.Context, stream, group, consu
 	attempts := func() int64 { return b.deliveryAttempts(ctx, stream, group, message.ID) }
 	var envelope EventEnvelope
 	if err := json.Unmarshal([]byte(raw), &envelope); err != nil || envelope.Validate() != nil {
-		b.moveToDLQAndAck(ctx, stream, group, consumer, message.ID, raw, "InvalidEnvelope", attempts())
+		metrics.RecordFailure(FailureInvalidEnvelope)
+		b.moveToDLQAndAck(ctx, stream, group, consumer, message.ID, raw, "InvalidEnvelope", attempts(), FailureInvalidEnvelope)
 		return false
 	}
 	// The producer's trace context, so the lines below can be joined to the trace
@@ -387,6 +417,7 @@ func (b *RedisEventBus) processMessage(ctx context.Context, stream, group, consu
 	}
 	if b.dedup != nil && b.dedup.Seen(envelope.EventID) {
 		log.Printf("WARN %sservice=%s stream=%s eventId=%s deliveries=%d duplicate event already processed; acking without handler", goruntime.TraceLogFields(ctx), group, stream, envelope.EventID, attempts())
+		metrics.RecordOutcome(OutcomeDuplicate)
 		return true
 	}
 	// ObservedHandler starts the consumer span and puts it on the context it
@@ -402,16 +433,43 @@ func (b *RedisEventBus) processMessage(ctx context.Context, stream, group, consu
 	})
 	if err := observedHandler(ctx, envelope); err != nil {
 		deliveries := attempts()
-		if IsFatalHandlerError(err) || deliveries >= MaxDeliveryAttempts {
-			b.moveToDLQAndAck(handlerCtx, stream, group, consumer, message.ID, raw, err, deliveries)
-		} else {
+		// The failure classification and the retirement decision are separate
+		// facts, so the branch below reads the handler's own classification
+		// first and only then asks whether retrying is still allowed.
+		switch {
+		case IsFatalHandlerError(err):
+			// The handler said this can never succeed, so no number of
+			// redeliveries is worth making.
+			metrics.RecordFailure(FailureFatalResult)
+			b.moveToDLQAndAck(handlerCtx, stream, group, consumer, message.ID, raw, err, deliveries, FailureFatalResult)
+		case IsTransientHandlerError(err) && deliveries < MaxDeliveryAttempts:
+			metrics.RecordFailure(FailureTransientResult)
+			metrics.RecordOutcome(OutcomeRetry)
 			log.Printf("WARN %sservice=%s stream=%s eventId=%s deliveries=%d handler transient failure; message stays pending for retry: %T: %v", goruntime.TraceLogFields(handlerCtx), group, stream, envelope.EventID, deliveries, err, err)
+		case IsTransientHandlerError(err):
+			metrics.RecordFailure(FailureTransientResult)
+			b.moveToDLQAndAck(handlerCtx, stream, group, consumer, message.ID, raw, err, deliveries, FailureTransientResult)
+		case deliveries >= MaxDeliveryAttempts:
+			// A bare error carries no classification, and the delivery budget
+			// is what retires it: after this many hand-backs, retrying is the
+			// one thing already known not to work.
+			metrics.RecordFailure(FailureRedeliveryExhausted)
+			b.moveToDLQAndAck(handlerCtx, stream, group, consumer, message.ID, raw, err, deliveries, FailureRedeliveryExhausted)
+		default:
+			// A bare error is the Go counterpart of an exception out of a Java
+			// handler: a real fault the handler did not classify. Retrying is
+			// still the right response, because most such faults are
+			// environmental and clear on their own.
+			metrics.RecordFailure(FailureHandlerException)
+			metrics.RecordOutcome(OutcomeRetry)
+			log.Printf("WARN %sservice=%s stream=%s eventId=%s deliveries=%d handler failure; message stays pending for retry: %T: %v", goruntime.TraceLogFields(handlerCtx), group, stream, envelope.EventID, deliveries, err, err)
 		}
 		return false
 	}
 	if b.dedup != nil {
 		b.dedup.Record(envelope.EventID)
 	}
+	metrics.RecordOutcome(OutcomeSuccess)
 	return true
 }
 func (b *RedisEventBus) deliveryAttempts(ctx context.Context, stream, group, id string) int64 {
@@ -421,10 +479,11 @@ func (b *RedisEventBus) deliveryAttempts(ctx context.Context, stream, group, id 
 	}
 	return entries[0].RetryCount
 }
-func (b *RedisEventBus) moveToDLQAndAck(ctx context.Context, stream, group, consumer, id, raw string, reason any, attempts int64) {
+func (b *RedisEventBus) moveToDLQAndAck(ctx context.Context, stream, group, consumer, id, raw string, reason any, attempts int64, failure ConsumerFailure) {
 	failureReason := truncateFailureReason(reason)
 	safeAttempts := maxInt64(1, attempts)
 	deadLetteredAt := time.Now().UTC().Format(time.RFC3339Nano)
+	metrics := b.consumerMetrics()
 	log.Printf("WARN %sservice=%s stream=%s eventId=%s deliveries=%d consumerGroup=%s failureReason=%s attempts=%d deadLetteredAt=%s moving message to DLQ", goruntime.TraceLogFields(ctx), group, stream, eventIDForLog(raw), safeAttempts, group, failureReason, safeAttempts, deadLetteredAt)
 	if err := b.client.XAdd(ctx, &redis.XAddArgs{
 		Stream: stream + DeadLetterSuffix,
@@ -433,8 +492,15 @@ func (b *RedisEventBus) moveToDLQAndAck(ctx context.Context, stream, group, cons
 		Values: dlqFieldsWithTimestamp(raw, group, consumer, failureReason, safeAttempts, deadLetteredAt),
 	}).Err(); err != nil {
 		log.Printf("WARN %sservice=%s stream=%s eventId=%s DLQ write failed; original message remains pending: %v", goruntime.TraceLogFields(ctx), group, stream, eventIDForLog(raw), err)
+		// The message is still pending, so the next delivery tries the hand-off
+		// again; this is its own failure and is counted as one.
+		metrics.RecordFailure(FailureDLQWrite)
 		return
 	}
+	// Counted only once the entry is really in the dead-letter stream, so the
+	// counter and the population cannot disagree about what was moved.
+	metrics.RecordDeadLetter(failure)
+	metrics.RecordOutcome(OutcomeDeadLetter)
 	if err := b.client.XAck(ctx, stream, group, id).Err(); err != nil {
 		log.Printf("WARN %sservice=%s stream=%s eventId=%s DLQ acknowledgement failed; original message remains pending: %v", goruntime.TraceLogFields(ctx), group, stream, eventIDForLog(raw), err)
 	}
