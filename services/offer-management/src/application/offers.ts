@@ -231,6 +231,10 @@ function priceSnapshotToApi(snapshot: PriceSnapshot): Record<string, unknown> {
     fees: snapshot.fees.map(priceLineToApi),
     discounts: snapshot.discounts.map(priceLineToApi),
     total: moneyToApi(snapshot.total),
+    // The distance the accepted quote was priced from, when its rule set prices
+    // by distance. journey-order reads the offer and puts it on the order, which
+    // is where the revenue report divides captured money by it.
+    ...(snapshot.distanceKm === undefined ? {} : { distanceKm: snapshot.distanceKm }),
   };
 }
 
