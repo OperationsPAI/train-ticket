@@ -47,6 +47,7 @@ to one and back.
 
 | Check | Result | Evidence |
 |---|---|---|
+| Six minute window at revision 459, the resident steady state after a restart's catch-up | 203561 requests, 22291 journeys, P99 359 milliseconds, **0 unexpected error groups and 0 failed journeys**; the recorder read `written=735198 dropped=0`. The same run's `01:46` catch-up minute carries 7652 journeys and 765 failures, which is the exception below | `.scratch/runtime-fixes/goal-acc-steady-rev459-6min.json` |
 | Ten minute window at revision 458, one whole cycle in the resident steady state | 414205 requests, 46147 journeys, P99 270 milliseconds, **0 unexpected error groups and 0 failed journeys**; the recorder read `written=594793 dropped=0` | `.scratch/runtime-fixes/goal-acc-steady-rev458.json` |
 | Ten minute window at revision 452, one whole cycle in the resident steady state | 417464 requests, 46350 journeys, P99 294 milliseconds, **0 unexpected error groups, 0 failed journeys and 0 recorder drops**; the recorder read `written=1427213 dropped=0`, payment's conservation identity holds exactly (captured 5408457406 = refunded 1187431372 + unsettled 4221026034), and every dead-letter stream is empty | `.scratch/runtime-fixes/goal-acc-steady-rev452.json` |
 | Ten minute window at revision 451, two consecutive cycles | 342783 requests, 37846 journeys, P99 294 milliseconds, **0 unexpected error groups and 0 failed journeys**; the cycle after it, 23:09 to 23:19, is clean as well | `.scratch/runtime-fixes/goal-rev451-clean-window.json` |
