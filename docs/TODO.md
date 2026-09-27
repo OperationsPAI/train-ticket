@@ -645,9 +645,10 @@ Status: incomplete acceptance.
 
 ### T06: Verify paid failure paths and business history
 
-Status: partly verified. The insurance payout leg is now exercised end to end;
-the financial, group booking, corporate travel and bootstrap legs are still
-unverified through their own APIs.
+Status: **closed**, revision 496. All four legs are verified through their own
+APIs, the two defects this pass found in the financial leg are fixed, and the
+two reference-validation gaps it found in group booking and corporate travel
+are carried as T21.
 
 1. [x] Insurance claims and payouts. The earlier note that `PAID_OUT` and payout
    advice recorded a local decision without a disbursement call described the
@@ -662,12 +663,47 @@ unverified through their own APIs.
    completed advice and the same execution reference, and that account's benefit
    list carries **one** benefit for the claim, so the payout is neither lost nor
    repeated.
-2. [ ] Verify financial fees and reconciliations, group booking, corporate
-   travel and bootstrap behaviour through the owning APIs.
-3. [ ] Verify eligibility and refunds after changed travel dates and after
-   mixed or repeated fare difference payments.
-4. [ ] Verify invoice amount basis and projection completion during a stable
-   cycle.
+2. [x] Financial fees and reconciliations, group booking, corporate travel and
+   bootstrap through the owning APIs. Measured at revision 493: fee accrual
+   carries a platform fee of 15.00 with 0.90 of VAT (exactly the domain's 6%
+   rate) and a changed order's revenue basis is 13682 + 4568 = 18250, equal to
+   the order's own total; a group booking answers 200 with its fare reduced from
+   85000 by the 5% discount basis to 80750 and its stored row matches field for
+   field; a corporate agreement answers ACTIVE with a 5,000,000 CNY credit and a
+   price digest that recomputes to the same sha256; and the bootstrap facts
+   resolve -- 62 STATION nodes with the three interchange stations omitted,
+   238,532 scheduled services with no duplicate `(origin, destination, date)`,
+   and a BJN-SHQ search whose 291 minute leg is 1318 km at 300 km/h plus
+   fourteen two-minute stops. Two defects surfaced here and are fixed: the
+   settlement scheduler was skipped by an unreliable `@ConditionalOnBean`, and
+   the operational reconciliation opened a case for two zeroes and compared a
+   gross capture against net recognitions.
+3. [x] Eligibility and refunds after changed travel dates and after mixed or
+   repeated fare difference payments. Measured at revision 493 on a
+   difference-paying change: the itinerary moved from service date 09-28 to
+   09-29, the difference was assessed as 1841 plus a 1500 change fee and
+   captured exactly once (one payment intent under the case, 3341), and the
+   order total reconciles as 8909 + 3341 = 12250. A discounting change produced
+   a 10 minor-unit difference refund that settled with refunded below captured
+   and a positive refundable balance. Mixed and repeated fare-difference
+   payments do not occur in this traffic: no order carries more than one APPLIED
+   change, none carries both a change and a refund, and every change refund's
+   funding allocation array holds exactly one allocation. That is the post-sales
+   exclusion rule working rather than an unverified path; a refund raised after
+   a change is covered by the Go live tests, not by the resident workload.
+4. [x] Invoice amount basis and projection completion during a stable cycle.
+   Measured at revision 493 on a freshly invoiced order: the basis
+   (`REVENUE_RECOGNITION`, 52521) equals the order total, the invoice total and
+   the captured amount, and the stored `amountBasisHash` equals a live GET's.
+   The loader's own record carries 306 `invoice-amount-basis` requests with no
+   404; a deliberate single-GET probe over 40 just-confirmed orders saw 39
+   answers and one 404 that answered 200 two seconds later, and a second probe
+   over 45 orders saw all 45 answer directly. Invoicing's outbox held no
+   unpublished row of 239 and its consumer lag on `events:finance-settlement`
+   and `events:journey-order` was 0. One transient gap is recorded rather than
+   changed: while a refund is being applied the basis can briefly report the
+   pre-refund amount, and the submit side's `amountBasisHash` check with its 412
+   retry is what covers it.
 
 ### T07: Complete the reporting monetary edge cases
 
@@ -842,6 +878,27 @@ remains is breadth and the follow-ups the new reads created.
    hashed now, so changing it rolls Prometheus.
 5. [ ] Add a collector that reports scheduled job success and the age of the
    oldest due task; several sweeps are only observable through their effects.
+
+### T21: Resolve the references a booking and an agreement are created with
+
+Status: open. Two creation paths store a reference they never resolve, and the
+load generator is what supplies the unresolvable value in both.
+
+1. [ ] Group Booking accepts any `segmentRefs` without asking service-plan. A
+   booking is stored and priced from its own fare rule set whatever the segments
+   are: measured at revision 493, `seg-group-<uuid8>` -- a reference that exists
+   nowhere -- answers 404 from service-plan while the booking is quoted (85000
+   reduced by its 500 basis points to 80750), and no member, confirmation or
+   cancellation path has ever run here (`group_members` holds 0 rows across
+   84720 bookings). `deploy/loadgen-go/journey_group_booking.go` is what sends
+   the synthetic reference, so closing this means searching for a real segment
+   in the journey and validating it in the service.
+2. [ ] Corporate Travel stores `priceRef.ruleSetId`, folds it into the
+   agreement's price digest, and never asks fare-pricing whether that rule set
+   exists: measured at revision 493 the agreements carry `rs-<uuid8>` values no
+   published rule set matches (127,064 ACTIVE agreements, and 0 authorized
+   travelers, 0 policies, 0 approval requests, 0 monthly invoices). Same shape
+   as above.
 
 ## Operational follow-ups
 
