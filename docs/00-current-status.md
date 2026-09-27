@@ -5,7 +5,7 @@ Last verified: 2026-09-27, Asia/Beijing.
 ## Runtime
 
 The resident Helm release is `train-ticket` in namespace `train-ticket`,
-revision **493**.
+revision **496**.
 Its values come from one file, `deploy/helm/train-ticket/values.yaml`: the
 registry, the `local-path` storage class, the central telemetry store, the
 resident exporters, the load generator settings and the `loadgen-resident-state`
@@ -50,11 +50,15 @@ to one and back.
 | Database sharding | Six shards by workload shape, with the copies and cutover checks recorded in the chart. |
 | Standing policy | Quota is ten percent of assignable second class supply, rounded down, and standing has no physical SeatUnit. |
 | Service quality compensation | An approved `COMPENSATION` issues the approved currency and amount to the order account as wallet credit, preserving the original tickets, seats, order and payment. |
+| Settlement schedule | `finance-settlement` runs the closed period's daily reconciliation and supplier settlement from a registered `@Scheduled` method. It carried `@ConditionalOnBean(DataSource.class)`, which Spring only honours reliably in auto-configuration: the class is scanned before the configuration that defines the DataSource, so the bean was skipped and the schedule never ran. |
+| Reconciliation attribution | A provider confirmation is attributed to its order through the local index and, when that index has not caught up or was trimmed, through the booking-orchestration segment booking itself. |
 
 ## Verification evidence
 
 | Check | Result | Evidence |
 |---|---|---|
+| Five minute window at revision 496, after the finance-settlement and error-mapping fixes | 59006 requests and 6342 journeys with **0 unexpected HTTP errors and 0 failed journeys**; finance-settlement's JVM now carries a `scheduling-1` thread and `settlement_schedule_runs` records both jobs as SUCCEEDED | `/tmp/sweep/rev496.cur.jsonl` |
+| Finance-settlement reconciliation, revision 496 against the release before it | cases opened fell from **715 a minute** (639 of them `missing-in-platform` with expected 0.00 against actual 0.00) to **0 in two consecutive two minute windows**; the daily reconciliation produced its first batch ever | `reconciliation_case_snapshots`, `reconciliation_batch_snapshots` |
 | Five minute window at revision 493, after the waitlist promotion fixes | 139008 requests and 16329 journeys at 463 requests a second, **0 unexpected HTTP errors and 0 failed journeys** in every minute | `/tmp/sweep/postfix.cur.jsonl` |
 | Waitlist promotion, revision 493 against the pre-fix release | the promotion reached the booking saga for the first time: **49 offers and 49 orders** in ten minutes against **0 of each** across the whole resident population before, and the promotion failure counter fell from **6.03 a second** to about **1.5 a minute** | `train_ticket_waitlist_promotions_total`; `waitlist_entries` |
 | Ten minute window at revision 489, one whole diurnal cycle | 275189 requests and 31810 journeys, peak minute 6050 journeys and trough minute 887, **0 unexpected HTTP errors and 0 failed journeys** in every minute; the recorder read `written=585546 dropped=0` and the dead-letter population was unchanged | `/tmp/sweep/acc489.cur.jsonl` |
