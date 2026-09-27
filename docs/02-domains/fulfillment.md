@@ -116,7 +116,7 @@ Fulfillment 负责记录出行服务被实际使用、核验、开始、进行�
 | travelerRef | 旅客引用和脱敏快照。 |
 | segmentRef | mode、serviceDate、from/to、plannedDeparture/Arrival。 |
 | fulfillmentStatus | NotOpened、Ready、CheckedIn、Boarding、Boarded、InTravel、Arrived、Completed、NoShow、Cancelled。 |
-| source | Gate、Provider、DriverApp、ConductorApp、Admin、System。 |
+| source | Gate、Provider、DriverApp、ConductorApp、Admin、System。接纳哪些 source 由部署的登记册（`boarding_reader_register`）决定：部署未登记任何 reader 时回退到本镜像内建的 reader 词汇。 |
 | locationSnapshot | PlaceId、nodeId、GeoFenceVersion、gate/platform 显示快照。 |
 | auditTrail | commandId、sourceEventId、actor、reason、occurredAt、receivedAt。 |
 
