@@ -133,6 +133,12 @@ export type PriceSnapshot = Readonly<{
   fees: readonly PriceLine[];
   discounts: readonly PriceLine[];
   total: Money;
+  /**
+   * The distance the underlying fare quote was priced from, when its rule set
+   * prices by distance. Carried so a downstream consumer can divide captured
+   * money by it; absent when the quote was priced from the flat base fare.
+   */
+  distanceKm?: number;
 }>;
 
 export type TravelerRef = Readonly<{
