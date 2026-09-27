@@ -637,13 +637,41 @@ repository check passes.
 
 ### T11: Verify wallet redemption policy enforcement
 
-Status: the stored policy is not full external business validation.
+Status: **closed**, revision 481. The scope is no longer only a stored value --
+`AuthoritativeBenefitScopeVerifier` resolves the referenced order, post-sales
+case, offer and fare quote before a benefit is consumed, and the balances below
+were measured against the resident release.
 
-1. [ ] Verify the applicable scope against the actual order or redemption
-   business reference. The current command stores scope without resolving that
-   external order.
-2. [ ] Verify partial and reserved redemption, expiry and reversal preserve the
-   intended available, reserved and redeemed balances across retries.
+1. [x] Verify the applicable scope against the actual order. Exercised live:
+   wallet-promotion read the order from journey-order, refused a request whose
+   business reason did not name that order (`PRECONDITION_FAILED: businessReason
+   does not match the verified useReference`), and refused a cancellation or a
+   segment the order does not carry. The `ANY_TRIP` benefit used for the run is
+   the loosest scope; `ORDER`, `POST_SALES_CASE`, `SERVICE_SEGMENT` and
+   `PRODUCT_CATEGORY` each resolve their own reference and compare it to the
+   benefit's `referenceIds`.
+2. [x] Verify partial and reserved redemption, expiry and reversal. Measured on
+   a 3000 minor unit benefit, with every number read back from the benefit and
+   the wallet account:
+
+   | Step | Status | Available | Reserved | Redeemed |
+   |---|---|---|---|---|
+   | issue | ISSUED | 3000 | 0 | 0 |
+   | reserve 1000 | RESERVED | 2000 | 1000 | 0 |
+   | reserve 1000 again, same ref | RESERVED | 2000 | 1000 | 0 |
+   | redeem 1000 from the reservation | ISSUED | 2000 | 0 | 1000 |
+   | redeem again, same ref | ISSUED | 2000 | 0 | 1000 |
+   | reverse the redemption | REVERSED | 3000 | 0 | 0 |
+   | reverse again, same ref | REVERSED | 3000 | 0 | 0 |
+   | reserve 500, then release it | RELEASED | 3000 | 0 | 0 |
+   | reserve 400 expiring in 6 seconds | RESERVED | 2600 | 400 | 0 |
+   | 7 seconds later, sweep | RELEASED | 3000 | 0 | 0 |
+
+   Every replay answered the same numbers, so a retry neither duplicates a
+   redemption nor an issuance; the wallet account's `STORED_VALUE` balance
+   agrees with the benefit at 3000 available, 0 reserved, 0 redeemed; and
+   `issued = available + reserved + redeemed` holds at every step, which is the
+   invariant the domain asserts on each transition.
 
 ### T14: Verify change sagas finish inside the client polling window
 
