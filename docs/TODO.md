@@ -984,24 +984,30 @@ promises; the one item still open is the scheduled-job collector below.
 
 ### T23: Make `yieldPerKm` a number rather than a constant zero
 
-Status: open. The reporting revenue report carries a `yieldPerKm` on every row
-and it is `0.00` on all of them.
+Status: **closed**, revision 504. The field is a number and it describes one
+population.
 
-The view computes it from `flags->>'distanceKm'`, and no event the reporting
-service subscribes to carries a distance: `_flags_from_event` writes the key
-from the payload, and the only producer that publishes one is fare-pricing's
-`FareQuoteComputed` (`breakdown.baseDistanceFare.distanceKm`), which reporting
-does not read. Measured live at revision 493: every revenue row's `yieldPerKm`
-reads `0.00`, including the 133,423 route rows and the six seat-class rows.
+It was `0.00` on every row because the view read the distance from the capture's
+own flags and no capture carries one: fare-pricing is where a distance exists,
+and reporting does not consume that stream. The distance now travels the chain
+that reporting already reads -- fare-pricing's quote, kept by offer-management
+and published on the offer, read by journey-order's offer adapter and carried on
+`JourneyOrderCreated` -- and migration 011 rebuilds the view to fall back to the
+order's distance.
 
-1. [ ] Give the view a distance. Either subscribe reporting to fare-pricing and
-   join the quote through the order's offer, or have the owning service publish
-   the distance on an event reporting already reads. Then a route row's yield is
-   `revenue / distance` rather than zero, and the sum of the route rows' distance
-   reconciles with the trip the order actually priced.
-2. [ ] Or remove the field and say why. A derived metric that cannot be anything
-   but zero is worse than an absent one: it reads as a real measurement of zero
-   yield.
+1. [x] Give the view a distance. Measured at revision 504: new order rows carry
+   one (1516 of 3030 in a three minute window; the rest are orders whose quote
+   was priced from the flat base fare, which have none to carry), and the
+   report reads SECOND_CLASS 0.13, FIRST_CLASS 0.23, BUSINESS_CLASS 0.44,
+   SLEEPER_HARD 0.23, SLEEPER_SOFT 0.29 and STANDING 0.09 CNY per km -- against
+   the platform's own 0.15/km base rate with the 2.8 class multiplier visible in
+   the business-class figure.
+2. [x] Or remove the field. Not needed: it is a measurement now. One caveat is
+   recorded rather than hidden, and migration 012 handles it: a row can mix
+   orders whose quote carried a distance with orders whose quote did not, so the
+   numerator is the amount of the same captures that contributed distance.
+   Without that pairing the mixed population read 349.85 CNY/km, which describes
+   neither group.
 
 ### T22: Match a channel statement line to the order it settles
 
