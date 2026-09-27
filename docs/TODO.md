@@ -541,6 +541,22 @@ Status: incomplete acceptance.
    and retain the original event and failure evidence.
 3. [ ] Preserve terminal compensation mismatch checkpoints and verify that no
    completed refund or wallet credit is repeated.
+4. [x] A pending entry that the handler completes must be acknowledged, and only
+   handler failures may retire it. The Rust kit broke both halves of that: its
+   pending recovery discarded the handler's answer, so a reclaimed entry was
+   handled, left in the pending list and reclaimed again; and it used Redis'
+   redelivery counter as the attempt count, so the five that bound handler
+   failures also bound the redeliveries a rolling update causes. Measured on the
+   resident release: a `BookingSagaFailed` published during the revision 480
+   rollout was reclaimed five times in four minutes and dead-lettered at
+   `09:36:45` although every consumer ignores that type. Both are fixed at
+   revision 481 -- the recovery path acknowledges what it handled, the handler's
+   own failure count decides retirement, and a separate
+   `MAX_REDELIVERY_ATTEMPTS` backstop (100 by default) retires the crash-loop
+   case. Verified live by scaling `entitlement-ticketing` to zero, delivering an
+   entry to a consumer that no pod owns, and scaling it back: the group's pending
+   list drained from 21 entries to **0** and the dead-letter population did not
+   move.
 
 ### T06: Verify paid failure paths and business history
 
