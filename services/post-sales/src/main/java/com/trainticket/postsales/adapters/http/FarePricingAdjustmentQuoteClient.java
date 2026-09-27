@@ -1,6 +1,7 @@
 package com.trainticket.postsales.adapters.http;
 
 import com.trainticket.postsales.application.AdjustmentQuotePort;
+import com.trainticket.postsales.application.AdjustmentQuoteUnavailableException;
 import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -11,6 +12,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientException;
 
 @Component
 public class FarePricingAdjustmentQuoteClient implements AdjustmentQuotePort {
@@ -38,6 +40,21 @@ public class FarePricingAdjustmentQuoteClient implements AdjustmentQuotePort {
 
     @Override
     public Optional<AdjustmentQuoteResult> compute(AdjustmentQuoteRequest request) {
+        try {
+            return computeOnce(request);
+        } catch (RestClientException error) {
+            // A transport fault or a body this client cannot decode is not a
+            // defect in the request: fare-pricing answered once with a body
+            // labelled `application/octet-stream`, this call could not turn it
+            // into a map, and the identical request reached QUOTED two seconds
+            // later. Returning the retryable refusal keeps a flaky read out of
+            // the caller's failure budget.
+            throw new AdjustmentQuoteUnavailableException(request.journeyOrderId(),
+                error.getClass().getSimpleName() + ": " + error.getMessage());
+        }
+    }
+
+    private Optional<AdjustmentQuoteResult> computeOnce(AdjustmentQuoteRequest request) {
         Map<String, Object> order = orderClient.get().uri("/api/v1/journey-orders/{id}", request.journeyOrderId())
             .retrieve().body(MAP_TYPE);
         if (order == null || !request.journeyOrderId().equals(order.get("orderId")) || !(order.get("offerId") instanceof String offerId)) {
