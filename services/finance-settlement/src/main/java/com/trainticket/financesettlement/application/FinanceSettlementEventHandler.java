@@ -31,9 +31,15 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
     private final Clock clock;
     private final FinanceSettlementApplicationService service;
     private com.trainticket.financesettlement.adapters.http.ChangePaymentFactsClient changePayments;
+    private com.trainticket.financesettlement.adapters.http.SegmentBookingFactsClient segmentBookings;
 
     public FinanceSettlementEventHandler withChangePayments(com.trainticket.financesettlement.adapters.http.ChangePaymentFactsClient client) {
         this.changePayments=java.util.Objects.requireNonNull(client);
+        return this;
+    }
+
+    public FinanceSettlementEventHandler withSegmentBookings(com.trainticket.financesettlement.adapters.http.SegmentBookingFactsClient client) {
+        this.segmentBookings=java.util.Objects.requireNonNull(client);
         return this;
     }
 
@@ -731,7 +737,22 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
         if (segmentBookingId.isBlank()) {
             return Optional.empty();
         }
-        return segmentBookingOrderReferences.findOrderReference(segmentBookingId);
+        Optional<String> indexed = segmentBookingOrderReferences.findOrderReference(segmentBookingId);
+        if (indexed.isPresent()) {
+            return indexed;
+        }
+        // The index is built from `SegmentReservationRequested`, which arrives on
+        // a different stream than the provider's confirmation and can lose the
+        // race or be trimmed. The booking itself is the authoritative answer, so
+        // ask for it and index what comes back: the case this would otherwise
+        // open can never be resolved, because the fact it says is missing
+        // arrives a moment later.
+        if (segmentBookings == null) {
+            return Optional.empty();
+        }
+        Optional<String> resolved = segmentBookings.orderFor(segmentBookingId);
+        resolved.ifPresent(orderId -> segmentBookingOrderReferences.save(segmentBookingId, orderId));
+        return resolved;
     }
 
     private void rememberApprovedRefund(Map<String, Object> payload) {
