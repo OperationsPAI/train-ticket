@@ -16,6 +16,8 @@ import com.trainticket.postsales.observability.RecordingPostSalesMetrics;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
@@ -26,7 +28,7 @@ class CompensationOutcomeRecordingTest {
     @Test
     void recordsTheApprovedCompensationStepsAsBoundedOutcomes() {
         InMemoryPostSalesRepository repository = new InMemoryPostSalesRepository();
-        PostSalesCase compensation = executingCompensationCase();
+        PostSalesCase compensation = executingCompensationCase("basic");
         repository.save(compensation);
         String caseId = "psc-" + compensation.caseId();
 
@@ -49,6 +51,38 @@ class CompensationOutcomeRecordingTest {
                 PostSalesMetricLabels.Outcome.VERIFIED);
         assertThat(recorder.compensations()).extracting(RecordingPostSalesMetrics.Compensation::currency)
             .containsOnly("CNY");
+    }
+
+    /**
+     * Two different approved compensation cases must publish the same label set.
+     *
+     * The metric carries no case id: an approval for one case and an approval
+     * for another are the same fact about the platform, so a leaked case or order
+     * reference would split the series and this catches it.
+     */
+    @Test
+    void twoDifferentCompensationCasesProduceTheSameLabelSet() {
+        InMemoryPostSalesRepository repository = new InMemoryPostSalesRepository();
+        RecordingPostSalesMetrics recorder = new RecordingPostSalesMetrics();
+        PostSalesApplicationService service = service(repository);
+        service.setPostSalesMetrics(recorder);
+
+        List<List<String>> perCase = new ArrayList<>();
+        for (String suffix : List.of("one", "two")) {
+            PostSalesCase compensation = executingCompensationCase(suffix);
+            repository.save(compensation);
+            String caseId = "psc-" + compensation.caseId();
+            int before = recorder.compensations().size();
+            service.recordCompensationOperation(caseId, "request",
+                Map.of("amount", Map.of("currency", "CNY", "minorUnits", 1_000)));
+            service.recordCompensationOperation(caseId, "issued", Map.of("benefitId", "ben-" + suffix));
+            perCase.add(recorder.compensations().subList(before, recorder.compensations().size()).stream()
+                .map(call -> call.outcome() + "/" + call.currency())
+                .toList());
+        }
+
+        assertThat(perCase.get(0)).isNotEmpty();
+        assertThat(perCase.get(1)).isEqualTo(perCase.get(0));
     }
 
     @Test
@@ -74,17 +108,17 @@ class CompensationOutcomeRecordingTest {
             Clock.fixed(NOW, ZoneOffset.UTC));
     }
 
-    private static PostSalesCase executingCompensationCase() {
+    private static PostSalesCase executingCompensationCase(String suffix) {
         PostSalesCase source = PostSalesCase.open(
-            "ord-compensation",
+            "ord-compensation-" + suffix,
             PostSalesCaseType.COMPENSATION,
-            PostSalesScope.ticket("sb-comp", "seg-comp", "tvl-comp", "ent-comp"),
+            PostSalesScope.ticket("sb-" + suffix, "seg-" + suffix, "tvl-" + suffix, "ent-" + suffix),
             "SERVICE_QUALITY_COMPLAINT",
-            "acct-comp",
-            "idem-compensation",
+            "acct-" + suffix,
+            "idem-compensation-" + suffix,
             NOW,
-            "cmd-open",
-            "corr-compensation");
+            "cmd-open-" + suffix,
+            "corr-compensation-" + suffix);
         source.beginEvaluation(NOW, "cmd-evaluate", "cmd-open", "corr-compensation");
         source.recordDecision(new PostSalesDecision(
             source.caseId(),
