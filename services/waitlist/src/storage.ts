@@ -74,6 +74,7 @@ export class PostgresWaitlistRepository implements WaitlistRepository {
       `SELECT e.* FROM waitlist_entries e
        WHERE e.status='QUEUED'
          AND (e.data->>'deadline')::timestamptz > $1
+         AND (e.data->>'promotionRetryAfter' IS NULL OR (e.data->>'promotionRetryAfter')::timestamptz <= $1)
          AND COALESCE((
            SELECT SUM(c.remaining_slots) FROM waitlist_capacity_credits c
            WHERE c.remaining_slots > 0
