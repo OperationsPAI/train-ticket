@@ -107,7 +107,7 @@ func TestDLQXAddCarriesApproximateMaxLenAtConfiguredCap(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	bus.moveToDLQAndAck(ctx, stream, "test-group", "consumer-1", "1-0", `{"eventId":"evt-1"}`, "MaxDeliveryAttempts", 5)
+	bus.moveToDLQAndAck(ctx, stream, "test-group", "consumer-1", "1-0", `{"eventId":"evt-1"}`, "MaxDeliveryAttempts", 5, FailureRedeliveryExhausted)
 
 	args := hook.xaddArgs(t)
 	if toString(args[1]) != stream+DeadLetterSuffix {
