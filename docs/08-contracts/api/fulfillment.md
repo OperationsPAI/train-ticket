@@ -35,9 +35,10 @@ timestamps, and Money.
 The vocabulary above is the contract's. Which of those readers a deployment
 operates is the release's boarding estate, stated as
 `FULFILLMENT_BOARDING_SOURCES` in the release settings, comma separated and
-read once when the process starts. A boarding whose `source` is not on the
-estate this deployment states never reaches the record, and a deployment that
-states no estate keeps the vocabulary the image was built with.
+read once when the process starts; this release boards through the station and
+the provider, so a boarding whose `source` is not on that estate never reaches
+the record. A deployment that states no estate keeps the vocabulary the image
+was built with.
 
 **Response (201):**
 
