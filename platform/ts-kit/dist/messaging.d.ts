@@ -206,6 +206,21 @@ export declare class RedisEventSubscriber implements EventSubscriber {
     private groupsNeedRecreate;
     private readonly recoveryCursors;
     constructor(redis?: Redis, onLoopFailure?: SubscriberLoopFailureHandler, options?: Readonly<{
+        /**
+         * What an error thrown out of a handler means.
+         *
+         * A throw says the handler failed, not that the event is bad: a database
+         * that refuses connections, a dependency that times out and a bug in the
+         * handler all look alike from here, and dead-lettering the event loses
+         * work that a retry would have completed. Measured on the resident
+         * release: two `AncillaryOfferExpired` events were dead-lettered with
+         * `connect ECONNREFUSED` while the read shard was being created.
+         *
+         * `retry` is bounded -- `MAX_HANDLER_FAILURES` attempts in this process
+         * and the delivery-count cap in `finishEntry` -- so an event that really
+         * cannot be handled still reaches the dead letter. A service whose
+         * handlers only throw for genuinely fatal conditions can ask for `dlq`.
+         */
         thrownHandlerErrors?: "retry" | "dlq";
         deadLetterEvidenceSink?: DeadLetterEvidenceSink;
     }>);
@@ -237,6 +252,25 @@ export declare class RedisEventSubscriber implements EventSubscriber {
     private processEntries;
     private parseBatchEntry;
     private processEntry;
+    /**
+     * Marks an event id as handled, bounded so a long-lived consumer cannot grow
+     * without limit. Shared by the per-entry and the batched acknowledge paths, so
+     * both dedupe identically.
+     */
+    /**
+     * Acks waiting for one XACK per stream and group.
+     *
+     * XACK takes any number of ids, and one command per delivered event per
+     * consumer group is the largest command class a single-threaded Redis serves.
+     * An unflushed ack only means redelivery, so losing the queue costs a
+     * duplicate rather than an event.
+     */
+    private readonly pendingAcks;
+    /** Depth of the read-batch loop that is collecting acks. */
+    private ackBatchDepth;
+    private queueAck;
+    private flushAcks;
+    private rememberConsumed;
     private finishEntry;
     private claimAndProcess;
     private deliveryCounts;
