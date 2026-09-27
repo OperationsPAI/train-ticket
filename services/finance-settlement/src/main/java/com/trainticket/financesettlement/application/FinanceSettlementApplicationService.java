@@ -551,9 +551,19 @@ public class FinanceSettlementApplicationService {
     }
 
     private static String reconciliationKey(String orderId, String paymentIntentId) {
-        String normalizedOrderId = orderId == null ? "" : orderId;
         String normalizedPaymentIntentId = paymentIntentId == null ? "" : paymentIntentId;
-        return normalizedOrderId.isBlank() ? normalizedPaymentIntentId : normalizedOrderId;
+        // The payment intent is the reference both sides carry: the platform's
+        // capture fact names the intent, and so does the channel's line. The
+        // business reference is not shared -- payment-channel knows an intent
+        // and a channel order, while finance attributes a capture to the order
+        // or to the ancillary item the money was for -- so keying on it
+        // collapsed the several payments one order can carry into a single
+        // entry, and every one of them read as a channel amount the platform
+        // could not explain. Measured on 2026-09-26 before this: 56,884 of
+        // 431,530 entries were amount mismatches, and every one was an order
+        // whose two payments the channel had named separately.
+        if (!normalizedPaymentIntentId.isBlank()) return normalizedPaymentIntentId;
+        return orderId == null ? "" : orderId;
     }
 
     private record PlatformReconciliationFact(String orderId, String paymentIntentId, Money amount, List<String> sourceEventIds) {
