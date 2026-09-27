@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 	"github.com/trainticket/greenfield/platform/go-kit/messaging"
 	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
@@ -39,6 +40,52 @@ func NewOutboxRelay(db DBTX, redisClient *redis.Client) *OutboxRelay {
 	return &OutboxRelay{db: db, redis: redisClient, interval: 250 * time.Millisecond, maxLen: messaging.MaxLen}
 }
 
+// outboxRelayLockKey names the session advisory lock one relay holds.
+//
+// Same shape as the Java and Rust kits' election, and the same reason: the relay
+// publishes before it marks rows published, so two replicas that select the same
+// unpublished rows publish both. Measured on 2026-09-27, 999 of the last 1500
+// entries on `events:provider-integration` and 993 on `events:seat-assignment`
+// carried an event id the stream already had -- every group that reads those
+// streams parsed, deduplicated and acknowledged each duplicate.
+const outboxRelayLockPrefix = "gokit-outbox-relay:"
+
+// acquireLeadership takes the relay's session lock on a connection of its own,
+// and returns nil when another replica holds it.
+//
+// The lock has to outlive the poll, so it cannot be a transaction lock and the
+// connection cannot go back to the pool with the session still holding it: a
+// pooled connection keeps its session. That is why this acquires a dedicated
+// connection and releases the lock explicitly before returning it.
+func (r *OutboxRelay) acquireLeadership(ctx context.Context) *pgxpool.Conn {
+	pool, ok := r.db.(*pgxpool.Pool)
+	if !ok {
+		// No pool handle: a test double, or a service that never passes one. Fall
+		// back to the previous behaviour rather than refusing to relay.
+		return nil
+	}
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return nil
+	}
+	var acquired bool
+	if err := conn.QueryRow(ctx,
+		`SELECT pg_try_advisory_lock(hashtextextended($1 || current_database(), 0))`,
+		outboxRelayLockPrefix).Scan(&acquired); err != nil || !acquired {
+		conn.Release()
+		return nil
+	}
+	return conn
+}
+
+func (r *OutboxRelay) releaseLeadership(ctx context.Context, conn *pgxpool.Conn) {
+	if conn == nil {
+		return
+	}
+	_, _ = conn.Exec(ctx, `SELECT pg_advisory_unlock(hashtextextended($1 || current_database(), 0))`, outboxRelayLockPrefix)
+	conn.Release()
+}
+
 func (r *OutboxRelay) WithInterval(interval time.Duration) *OutboxRelay {
 	if interval > 0 {
 		r.interval = interval
@@ -52,8 +99,39 @@ func (r *OutboxRelay) Run(ctx context.Context) {
 	}
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
+	var leader *pgxpool.Conn
+	defer func() { r.releaseLeadership(context.WithoutCancel(ctx), leader) }()
+	electsLeadership := false
+	if _, ok := r.db.(*pgxpool.Pool); ok {
+		electsLeadership = true
+	}
+	publishFailures := 0
 	for {
-		_ = r.PublishBatch(ctx)
+		if electsLeadership && leader == nil {
+			leader = r.acquireLeadership(ctx)
+		}
+		if leader == nil && electsLeadership {
+			// Another replica is publishing. Ask again next tick; only the holder
+			// of the session lock writes to the stream.
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+			continue
+		}
+		if err := r.PublishBatch(ctx); err != nil {
+			publishFailures++
+			if publishFailures >= 3 {
+				// A leader that cannot reach its database any more must not keep
+				// the lock: hand it back so another replica can publish.
+				r.releaseLeadership(context.WithoutCancel(ctx), leader)
+				leader = nil
+				publishFailures = 0
+			}
+		} else {
+			publishFailures = 0
+		}
 		r.pollCount++
 		if r.pollCount%20 == 0 {
 			r.cleanup(ctx)
