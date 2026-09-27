@@ -460,6 +460,47 @@ class RealTimeMetricsEnrichmentTest(unittest.TestCase):
         self.assertEqual(snapshot.orders_per_second, 0.1667)
         self.assertEqual(snapshot.avg_booking_latency["p50"], 104.5)
 
+    def test_yield_per_km_uses_the_orders_distance_when_the_capture_has_none(self) -> None:
+        """A capture carries no distance; the order it pays for does.
+
+        `yieldPerKm` is captured money over recorded distance, and the distance
+        reaches reporting on the order event the offer carried it on. Before
+        this, every row read 0.00 because the view looked only at the capture's
+        own flags.
+        """
+        aggregator = MetricAggregator()
+        aggregator.revenue_facts.record_order("ord-distance", [("A", NOW.date())], (), NOW, Decimal("200"))
+        aggregator.record(
+            OperationalEvent(
+                event_id="payment-distance",
+                event_type="PaymentCaptured",
+                occurred_at=NOW,
+                amount=Money("150.00", "USD"),
+                business_ref="ord-distance",
+            )
+        )
+
+        report = aggregator.revenue_report("route", at=NOW + timedelta(hours=1))
+
+        self.assertEqual(report.items[0].yield_per_km, Decimal("0.75"))
+
+    def test_yield_per_km_stays_zero_for_an_order_priced_without_a_distance(self) -> None:
+        aggregator = MetricAggregator()
+        aggregator.revenue_facts.record_order("ord-flat", [("A", NOW.date())], (), NOW)
+        aggregator.record(
+            OperationalEvent(
+                event_id="payment-flat",
+                event_type="PaymentCaptured",
+                occurred_at=NOW,
+                amount=Money("150.00", "USD"),
+                business_ref="ord-flat",
+            )
+        )
+
+        report = aggregator.revenue_report("route", at=NOW + timedelta(hours=1))
+
+        self.assertEqual(report.items[0].yield_per_km, Decimal("0.00"))
+
     def test_revenue_by_route_returns_top_routes(self) -> None:
         aggregator = MetricAggregator()
         payments = [("A", "100.00"), ("B", "300.00"), ("A", "50.00")]
