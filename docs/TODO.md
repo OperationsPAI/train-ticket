@@ -89,39 +89,25 @@ the request side rather than from the consumer side, so it moves with the bus.
 
 ### T19: Stop the generator re-driving resources that are already finished
 
-Status: **the largest remaining group of user-visible errors**, and it is not a
-capacity problem.
+Status: **closed**. Measured after the fix: a ten minute window over one whole
+diurnal cycle at the level in `values.yaml` carries 274892 requests and 31865
+journeys with **0 failed journeys and 0 unexpected HTTP errors**.
 
-A flat sweep (bursts off, diurnal flattened, `target_rps` stepped) separates the
-two kinds of failure cleanly. Capacity failures are zero up to 210/s offered --
-11727 journeys a minute -- and the measurable failures below that are all 422s
-the service is right to send:
+What it was, and what each fix was. Every failure in that class was a 422 the
+service is right to send, and all of them came from re-driving something the
+services had already finished:
 
-| Step | 422 | What the service says | What the generator did |
+| Group | Window count | Cause | Fix |
 |---|---|---|---|
-| `refund-case` | 2358 in one window | `ORDER_NOT_REFUNDABLE` | opened a refund against an order another journey had already refunded, cancelled or left with an open case |
-| `change-target` | 2079 across **three** case ids | `change target offer is already assigned` | re-posted the target offer for a case that already had one |
-| `insurance:anc-order` | 625 | `confirmed order segment and departure are required` | bought insurance for an order that is no longer confirmed |
-| `fulfillment:boarding` | 496 | `entitlement is VOIDED` | boarded a ticket a refund had voided |
-| `disruption-select` | 446 across two case ids | `Order is not in a refundable state` | selected a recovery option for an order another journey had closed |
+| `refund:refund-case` | 828 from **two** purchases | the order already carried an applied refund, cancellation or change, and the purchase sat in `post_sales_pending` being asked again more than four hundred times | a create answered `ORDER_NOT_REFUNDABLE` is terminal: the purchase is retired in the state the journey wanted |
+| `change:change-target` | 2079 from **three** cases | the case already held a target offer, and replacing it is the `/target-offer/revise` path | the resume path reads the case and adopts what it holds |
+| `insurance:anc-order` | 625 | the order no longer carried the segment the purchase was registered against, and `insurance_pending` kept it in the pool | the request is finished and the purchase retired |
+| `fulfillment:boarding` | 496 | the entitlement was voided by a refund, or the ticket was already boarded | both are terminal, and the journey finishes instead of failing. The check reads the parsed response body: the logged detail truncates it at 150 characters behind the correlationId |
+| `disruption:disruption-select` | 446 from **two** cases | the recovery option was refused because another journey had closed the order | same shape as the refund |
 
-Two shapes are visible in that table, and they need different fixes:
-
-1. [ ] **A few case ids are re-driven thousands of times.** 2079 `change-target`
-   failures came from three cases and 446 `disruption-select` from two. The
-   journey's resume path should treat "already assigned" and "already closed" as
-   the state it was trying to reach, or the generator should stop re-driving a
-   case whose terminal outcome it has already seen.
-2. [ ] **The registry does not learn that another journey ended an order.** A
-   refund, cancellation, disruption recovery or completed change leaves the
-   purchase in the registry as usable, so the next post-sales journey picks it
-   and is refused. `TakePostSalesPurchase` should filter on the state the owning
-   service reports, or every journey that terminates an order should mark the
-   purchase terminal the way the refund path does.
-
-Until this is fixed the acceptance cannot be zero: at 80/s the state failures are
-2229 in three minutes, and at the shaped peak they are 1058 out of 13120
-journeys, all of them an error the load generator counts as a user error.
+Every post-sales, recovery, ancillary and insurance request now counts its failed
+attempts and retires its purchase after five, the bound the platform puts on its
+own handler retries.
 
 The reservation path's tail was closed one hop at a time over 2026-09-27, one
 commit each, and each hop is recorded with its measurement in
