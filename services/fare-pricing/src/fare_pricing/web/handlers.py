@@ -196,6 +196,22 @@ def _rule_set_from_request(rule_set_id: str, req: CreateFareRuleSetRequest) -> F
     )
 
 
+@router.get("/fare-rule-sets/{rule_set_id}")
+def get_fare_rule_set(request: Request, rule_set_id: str) -> dict[str, Any]:
+    """Read one rule set by id, in any status.
+
+    Added so a service that persists a `ruleSetId` can resolve it. Corporate
+    Travel stores one in its agreement's price reference; measured at revision
+    493 its 127,064 agreements carried ids no rule set matched, because there was
+    no way to ask.
+    """
+    service: FarePricingService = request.app.state.fare_pricing_service
+    try:
+        return _rule_set_to_response(service.get_rule_set(rule_set_id))
+    except RuleSetNotFoundError as exc:
+        raise ApiError("NOT_FOUND", f"Fare rule set not found: {rule_set_id}", 404) from exc
+
+
 @router.post("/fare-rule-sets", status_code=201)
 def create_fare_rule_set(request: Request, req: CreateFareRuleSetRequest) -> dict[str, Any]:
     service: FarePricingService = request.app.state.fare_pricing_service
