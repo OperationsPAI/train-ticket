@@ -303,6 +303,14 @@ ops:
   # journey. It was a `journey_mix` entry, which every persona replaces, so it
   # had weight zero and marketing-campaign received nothing.
   p_campaign_draft: 0.30
+  # Generating and freezing the day's channel statement. The daily statement is
+  # the channel's own side of the money, and until this ran nothing in the
+  # resident workload produced one: the statement tables were empty and the
+  # daily reconciliation had no channel side to compare platform captures with.
+  # Both calls are idempotent per (channel, date, currency, seed version), so the
+  # sweep re-running them produces the same statement and no growth beyond one
+  # row per channel and day.
+  p_channel_statement: 0.50
 
 # ---------------------------------------------------------------------------
 # Bootstrap — ops-side inventory guarantees (NOT customer actions). Runs once
