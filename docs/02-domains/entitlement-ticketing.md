@@ -38,3 +38,9 @@ Used or voided ticket states are not reconstructed by retrying a refund or chang
 Domain operations enforce applicable terminal state and exceptional void policies.
 PostgreSQL stores ticket snapshots and outbox effects; consumers retain their business deduplication evidence.
 Actual service state and focused business tests, not an abstract state diagram, establish the available ticket operations.
+
+## Boarding roster
+
+Which readers a boarding fact may arrive under is the estate's own statement, and Ticketing publishes it as the estate's boarding roster in `services/entitlement-ticketing/config/boarding-readers.txt`.
+Fulfillment vendors the same file into its image at build, so the guard there and this statement cannot drift.
+The gate readers went with the station estate's own hand-off and the provider feed is the operator's attendant writes, so the roster this estate publishes carries the station and the provider readers.
