@@ -1061,7 +1061,7 @@ class PostgresReportingApplicationService:
                 """
                 WITH filtered AS MATERIALIZED (
                   SELECT dimension_value, currency, revenue, payment_count, distance_km,
-                         ancillary_count, insurance_count
+                         revenue_with_distance, ancillary_count, insurance_count
                   FROM reporting_revenue_breakdowns
                   WHERE dimension = %s
                 ),
@@ -1084,7 +1084,7 @@ class PostgresReportingApplicationService:
                   LIMIT %s OFFSET %s
                 )
                 SELECT page.dimension_value, page.currency, page.revenue, page.payment_count,
-                       page.distance_km, page.ancillary_count, page.insurance_count,
+                       page.distance_km, page.revenue_with_distance, page.ancillary_count, page.insurance_count,
                        summary.total_items, summary.currencies, summary.revenues
                 FROM summary
                 LEFT JOIN page ON true
@@ -1096,9 +1096,9 @@ class PostgresReportingApplicationService:
         items = tuple(self._revenue_item_from_view(group_by, row) for row in rows if row[0] is not None)
         totals = tuple(
             Money(amount, currency)
-            for currency, amount in zip(summary[8], summary[9], strict=True)
+            for currency, amount in zip(summary[9], summary[10], strict=True)
         )
-        return RevenueReport(at or utc_now(), group_by, items, totals, int(summary[7]), limit, offset)
+        return RevenueReport(at or utc_now(), group_by, items, totals, int(summary[8]), limit, offset)
 
     @staticmethod
     def _revenue_item_from_view(group_by: str, row: Sequence[Any]) -> RevenueItem:
@@ -1107,14 +1107,18 @@ class PostgresReportingApplicationService:
         revenue = Decimal(str(row[2] or "0.00"))
         count = int(row[3] or 0)
         distance = Decimal(str(row[4] or "0"))
-        ancillary_count = int(row[5] or 0)
-        insurance_count = int(row[6] or 0)
+        # The numerator that belongs with the distance. A row can mix captures
+        # whose order carried a distance with captures whose order did not, so the
+        # yield divides the amount of the same captures that contributed distance.
+        revenue_with_distance = Decimal(str(row[5] or "0"))
+        ancillary_count = int(row[6] or 0)
+        insurance_count = int(row[7] or 0)
         return RevenueItem(
             dimension=group_by,
             value=value,
             revenue=Money(revenue, currency),
             count=count,
-            yield_per_km=Decimal("0.00") if distance == 0 else (revenue / distance).quantize(Decimal("0.01")),
+            yield_per_km=Decimal("0.00") if distance == 0 else (revenue_with_distance / distance).quantize(Decimal("0.01")),
             ancillary_attach_rate=0.0 if count == 0 else ancillary_count / count,
             insurance_attach_rate=0.0 if count == 0 else insurance_count / count,
         )
