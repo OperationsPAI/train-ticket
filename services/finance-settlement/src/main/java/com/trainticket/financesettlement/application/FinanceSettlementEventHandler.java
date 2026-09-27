@@ -312,7 +312,12 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             paymentIntentId,
             optionalText(payload, "channelOrderId").orElse(""),
             money(payload.get("actualAmount"), "actualAmount"),
-            envelope.eventId()
+            envelope.eventId(),
+            // The event carries the line's own type when the producer sends one.
+            // A refund line reaching this comparison is recorded as what it is
+            // rather than as a payment the reconciliation would then look for a
+            // capture for.
+            optionalText(payload, "lineType").orElse(ChannelStatementLineProjection.PAYMENT)
         ));
     }
 
