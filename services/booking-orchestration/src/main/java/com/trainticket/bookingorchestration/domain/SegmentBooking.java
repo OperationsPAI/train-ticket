@@ -254,6 +254,16 @@ public final class SegmentBooking {
         String evidence = pendingProviderEvidence;
         pendingProviderReference = null;
         pendingProviderEvidence = null;
+        if (isTerminalOrCancelling()) {
+            // The booking was cancelled or failed while the confirmation waited
+            // for its Hold. The Hold has now arrived, so its reference is kept
+            // (the release path needs it) but it must not resurrect a terminal
+            // booking: the provider reserved for a booking that is gone, which
+            // is the same situation `confirmFromProvider` answers with a
+            // cancellation request.
+            registerLateProviderConfirmation(reference);
+            return;
+        }
         confirmReservation(Optional.of(reference), evidence);
     }
 
