@@ -2,6 +2,7 @@ package collector
 
 import (
 	"context"
+	"sort"
 	"testing"
 	"time"
 
@@ -40,7 +41,7 @@ func TestExportedTransportMetricsCarryOnlyBoundedLabels(t *testing.T) {
 	provider := metricsdk.NewMeterProvider(metricsdk.WithReader(reader))
 	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 	store := &Store{}
-	if _, err := RegisterMetrics(provider.Meter("test"), store); err != nil {
+	if _, err := RegisterMetrics(provider.Meter("test"), store, SeriesBounds{Groups: defaultMaxGroupSeries, DeadLetters: defaultMaxDeadLetterSeries}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	store.Set(Snapshot{
@@ -102,7 +103,7 @@ func TestGaugesGoStaleInsteadOfReadingZeroBeforeTheFirstPoll(t *testing.T) {
 	provider := metricsdk.NewMeterProvider(metricsdk.WithReader(reader))
 	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 	store := &Store{}
-	if _, err := RegisterMetrics(provider.Meter("test"), store); err != nil {
+	if _, err := RegisterMetrics(provider.Meter("test"), store, SeriesBounds{Groups: defaultMaxGroupSeries, DeadLetters: defaultMaxDeadLetterSeries}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 
@@ -124,4 +125,76 @@ func TestGaugesGoStaleInsteadOfReadingZeroBeforeTheFirstPoll(t *testing.T) {
 	// The instrument itself is not collected when it has never observed
 	// anything, which is the outcome this test wants: a lag of zero and a
 	// collector that has not read anything must not look the same.
+}
+
+// The guard's whole point: a transport that grows more consumer groups than the
+// bound must not multiply the label set silently. What the bound holds back is
+// published as its own series, and the order is sorted so the same streams are
+// published on every poll rather than whichever ones Redis returned first.
+func TestSeriesBoundHoldsBackAndReportsWhatItHeldBack(t *testing.T) {
+	reader := metricsdk.NewManualReader()
+	provider := metricsdk.NewMeterProvider(metricsdk.WithReader(reader))
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+	store := &Store{}
+	if _, err := RegisterMetrics(provider.Meter("test"), store, SeriesBounds{Groups: 2, DeadLetters: 1}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	store.Set(Snapshot{
+		Groups: []GroupState{
+			{Stream: "events:zeta", ConsumerGroup: "group-z", Lag: 1},
+			{Stream: "events:alpha", ConsumerGroup: "group-b", Lag: 2},
+			{Stream: "events:alpha", ConsumerGroup: "group-a", Lag: 3},
+			{Stream: "events:alpha", ConsumerGroup: "group-c", Lag: 4},
+		},
+		DeadLetters: []DeadLetterState{
+			{Stream: "events:alpha", ConsumerGroup: "group-a", EventType: "Poison", Entries: 1},
+			{Stream: "events:alpha", ConsumerGroup: "group-b", EventType: "Poison", Entries: 2},
+		},
+	})
+
+	var collected metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &collected); err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+
+	var published []string
+	for _, scope := range collected.ScopeMetrics {
+		for _, metric := range scope.Metrics {
+			if metric.Name != MetricConsumerLag {
+				continue
+			}
+			for _, point := range metric.Data.(metricdata.Gauge[int64]).DataPoints {
+				stream, _ := point.Attributes.Value("event_stream")
+				group, _ := point.Attributes.Value("consumer_group")
+				published = append(published, stream.AsString()+"/"+group.AsString())
+			}
+		}
+	}
+	sort.Strings(published)
+	if len(published) != 2 {
+		t.Fatalf("the bound must hold the label set at two groups, got %v", published)
+	}
+	if published[0] != "events:alpha/group-a" || published[1] != "events:alpha/group-b" {
+		t.Fatalf("the published groups must be the sorted head, got %v", published)
+	}
+
+	kinds := map[string]int64{}
+	for _, scope := range collected.ScopeMetrics {
+		for _, metric := range scope.Metrics {
+			if metric.Name != MetricSeries {
+				continue
+			}
+			for _, point := range metric.Data.(metricdata.Gauge[int64]).DataPoints {
+				kind, _ := point.Attributes.Value("kind")
+				kinds[kind.AsString()] = point.Value
+			}
+		}
+	}
+	want := map[string]int64{"group": 2, "group_dropped": 2, "dead_letter": 1, "dead_letter_dropped": 1}
+	for kind, value := range want {
+		if kinds[kind] != value {
+			t.Fatalf("series{kind=%s} = %d, want %d (all: %v)", kind, kinds[kind], value, kinds)
+		}
+	}
 }
