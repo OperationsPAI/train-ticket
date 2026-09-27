@@ -5,7 +5,7 @@ Last verified: 2026-09-27, Asia/Beijing.
 ## Runtime
 
 The resident Helm release is `train-ticket` in namespace `train-ticket`,
-revision **474**.
+revision **476**.
 Its values come from one file, `deploy/helm/train-ticket/values.yaml`: the
 registry, the `local-path` storage class, the central telemetry store, the
 resident exporters, the load generator settings and the `loadgen-resident-state`
@@ -47,6 +47,7 @@ to one and back.
 
 | Check | Result | Evidence |
 |---|---|---|
+| Ten minute window at revision 476, one whole diurnal cycle | 274892 requests and 31865 journeys, peak minute 5256 journeys, **0 unexpected HTTP errors and 0 failed journeys**; the recorder read `written=509839 dropped=0` and every dead-letter stream that this workload uses is empty of new entries | `/tmp/sweep/fix2.*.jsonl` |
 | Six minute window at revision 459, the resident steady state after a restart's catch-up | 203561 requests, 22291 journeys, P99 359 milliseconds, **0 unexpected error groups and 0 failed journeys**; the recorder read `written=735198 dropped=0`. The same run's `01:46` catch-up minute carries 7652 journeys and 765 failures, which is the exception below | `.scratch/runtime-fixes/goal-acc-steady-rev459-6min.json` |
 | Ten minute window at revision 458, one whole cycle in the resident steady state | 414205 requests, 46147 journeys, P99 270 milliseconds, **0 unexpected error groups and 0 failed journeys**; the recorder read `written=594793 dropped=0` | `.scratch/runtime-fixes/goal-acc-steady-rev458.json` |
 | Ten minute window at revision 452, one whole cycle in the resident steady state | 417464 requests, 46350 journeys, P99 294 milliseconds, **0 unexpected error groups, 0 failed journeys and 0 recorder drops**; the recorder read `written=1427213 dropped=0`, payment's conservation identity holds exactly (captured 5408457406 = refunded 1187431372 + unsettled 4221026034), and every dead-letter stream is empty | `.scratch/runtime-fixes/goal-acc-steady-rev452.json` |
@@ -306,6 +307,33 @@ multiplier is now `2.0` and the burst `1.5` to `2.0`, so the product is 4.0 and
 the peak lands near 7500 journeys a minute, which the release has repeatedly run
 clean. Measured after the change: peaks of 4126 journeys a minute with **zero
 capacity failures**.
+
+The level itself lives in `values.yaml` (`loadgen.targetRps`,
+`diurnalPeakMultiplier`, `diurnalTroughMultiplier`, `burstEnabled`,
+`burstMinMultiplier`, `burstMaxMultiplier`), not in the 700 line workload file:
+the chart ships `loadgen-config.yaml` verbatim, so a key inside it cannot be set
+at install time, and how much load a release runs at is a deployment decision.
+`ApplyTrafficEnvOverrides` reads them from the environment the template passes.
+
+##### The failures under the knee were not capacity, and are fixed
+
+With the peak under the knee every remaining failure was a 422 the service is
+right to send, and all of them came from the generator re-driving something the
+services had already finished:
+
+| Group | Window count | Cause | Fix |
+|---|---|---|---|
+| `refund:refund-case` | 828 from **two** purchases | the order already carried an applied refund, cancellation or change, and the purchase sat in `post_sales_pending` being asked again four hundred times | a create answered `ORDER_NOT_REFUNDABLE` is terminal: the purchase is retired in the state the journey wanted |
+| `change:change-target` | 2079 from **three** cases | the case already held a target offer, and replacing it is the `/target-offer/revise` path, not a second `/target-offer` | the resume path reads the case and adopts what it holds |
+| `insurance:anc-order` | 625 | the order no longer carried the segment the purchase was registered against, and `insurance_pending` kept it in the pool | the request is finished and the purchase retired |
+| `fulfillment:boarding` | 496 | the entitlement was voided by a refund, or the ticket was already boarded | both are terminal answers, and the journey finishes instead of failing |
+| `disruption:disruption-select` | 446 from **two** cases | the recovery option was refused because another journey had closed the order | same shape as the refund |
+
+Every post-sales, recovery, ancillary and insurance request also now counts its
+failed attempts and retires its purchase after five, the same bound the platform
+puts on handler retries -- a request released as "pending" forever was the loop
+behind all of these. Measured after: a ten minute window over one whole diurnal
+cycle with **0 failed journeys and 0 unexpected HTTP errors**.
 
 Every consumer-shaped failure in this document has the same shape: a group is
 behind, and the group behind it is behind because *its* dependency is slow. The
