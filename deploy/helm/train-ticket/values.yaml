@@ -1826,8 +1826,15 @@ services:
     # 4 cores and 2Gi: over a full envelope it peaked at 0.97 of a 1-core
     # limit, which is the limit and therefore not a measurement. GOMEMLIMIT
     # moves with the memory ceiling, as the note above requires.
+    #
+    # INSURANCE_RETENTION_LIMIT_MINOR is the carrier's per-risk retention, in CNY
+    # minor units. It is contract data: it moves when the contract is renegotiated
+    # and is not the same for two deployments, so it lives with the release and
+    # not with the catalogue. travel-insurance refuses to write a policy for a
+    # catalogue entry whose cover is above it.
     env:
       GOMEMLIMIT: "1740MiB"
+      INSURANCE_RETENTION_LIMIT_MINOR: "2000"
     resources:
       requests: { cpu: 50m, memory: 128Mi }
       limits: { cpu: '4', memory: 3Gi }

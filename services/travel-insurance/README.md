@@ -35,6 +35,10 @@ The downstream URL template defaults to `http://%s:8080` and can be overridden w
 
 The service also consumes `JourneyOrderPostSalesAdjusted`. It resolves the applied change and current order through their owning APIs, then updates each affected issued policy to the replacement segment and travel window. It never guesses dates from event time, and it does not rewrite terminal policies.
 
+## Underwriting
+
+A catalogue entry is issued only inside the carrier's per-risk retention. That retention is contract data, so the release carries it rather than the catalogue or the chart: `INSURANCE_RETENTION_LIMIT_MINOR` in `deploy/helm/train-ticket/values.yaml`, in the cover's minor units, and `application/underwriting.go` reads it at startup. A release that declares no retention sells the catalogue as published.
+
 ## Tests
 
 ```bash
