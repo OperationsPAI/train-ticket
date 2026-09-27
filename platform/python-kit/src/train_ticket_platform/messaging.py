@@ -15,6 +15,12 @@ import time
 from typing import Any, Protocol
 
 from .events import EventEnvelope
+from .metrics import (
+    EventConsumerFailureType,
+    EventConsumerMetrics,
+    EventConsumerOutcome,
+    event_consumer_metrics,
+)
 from .observability import otel_tracing_enabled
 
 
@@ -210,11 +216,29 @@ class RedisEventSubscriber(EventSubscriber):
         self._dedup_order: deque[str] = deque()
         self._handler_failures: OrderedDict[tuple[str, str, str], int] = OrderedDict()
         self._failure_lock = threading.Lock()
+        self._dead_lettered: OrderedDict[tuple[str, str, str], bool] = OrderedDict()
+        self._dead_letter_lock = threading.Lock()
+        self._metrics: EventConsumerMetrics | None = None
         self._seen_event_ids = self._dedup
         self._dedup_lock = threading.Lock()
         self._seen_event_ids_lock = self._dedup_lock
         self._stop_requested = threading.Event()
         self._threads: list[threading.Thread] = []
+
+    def _transport_metrics(self) -> EventConsumerMetrics:
+        """This subscriber's delivery instruments, resolved once on first use.
+
+        Resolved lazily rather than in ``__init__`` because the meter provider is
+        installed at process startup, and a subscriber built before it (or built
+        without ``__init__`` at all, as the unit tests do) must still work. The
+        result is cached, so one subscriber registers one instrument set however
+        many messages it delivers.
+        """
+        metrics = getattr(self, "_metrics", None)
+        if metrics is None:
+            metrics = event_consumer_metrics()
+            self._metrics = metrics
+        return metrics
 
     def subscribe(self, streams: Sequence[str], group: str, consumer_name: str, handler: Callable[[EventEnvelope], Any]) -> None:
         streams_tuple = tuple(streams)
@@ -427,11 +451,39 @@ class RedisEventSubscriber(EventSubscriber):
 
     def _process_message(self, stream: str, group: str, consumer_name: str, msg_id: bytes | str, msg_data: Mapping[Any, Any], handler: Callable[[EventEnvelope], Any]) -> None:
         msg_id_str = msg_id.decode("utf-8") if isinstance(msg_id, bytes) else str(msg_id)
+        metrics = self._transport_metrics()
         envelope_json = self._extract_envelope_json(msg_data)
+        if envelope_json is None:
+            # An entry with no envelope field at all is a different integration
+            # fault from one whose envelope will not parse, so the two are
+            # classified apart. Both are unprocessable, so neither is retried.
+            metrics.record_failure(EventConsumerFailureType.MISSING_ENVELOPE)
+            self._move_to_dlq(
+                stream,
+                group,
+                consumer_name,
+                msg_id_str,
+                "{}",
+                "MissingEnvelope",
+                self._delivery_count(stream, group, msg_id_str) or 1,
+                EventConsumerFailureType.MISSING_ENVELOPE,
+            )
+            self._xack(stream, group, msg_id_str)
+            return
         try:
             envelope = self._deserialize_envelope(json.loads(envelope_json))
-        except Exception:
-            self._move_to_dlq(stream, group, consumer_name, envelope_json or "{}", "DeserializeError", self._delivery_count(stream, group, msg_id_str) or 1)
+        except Exception as exc:
+            metrics.record_failure(EventConsumerFailureType.INVALID_ENVELOPE)
+            self._move_to_dlq(
+                stream,
+                group,
+                consumer_name,
+                msg_id_str,
+                envelope_json,
+                exc,
+                self._delivery_count(stream, group, msg_id_str) or 1,
+                EventConsumerFailureType.INVALID_ENVELOPE,
+            )
             self._xack(stream, group, msg_id_str)
             return
         if self._already_seen(envelope.eventId):
@@ -442,12 +494,14 @@ class RedisEventSubscriber(EventSubscriber):
                 envelope.eventId,
                 self._delivery_count(stream, group, msg_id_str) or 1,
             )
+            metrics.record_outcome(EventConsumerOutcome.DUPLICATE)
             self._xack(stream, group, msg_id_str)
             return
         try:
             result = _call_handler_with_span(handler, envelope, stream, group)
         except TransientHandlerError as exc:
-            if self._failed_attempt(stream, group, consumer_name, msg_id_str, envelope_json, exc):
+            metrics.record_failure(EventConsumerFailureType.TRANSIENT_RESULT)
+            if self._failed_attempt(stream, group, consumer_name, msg_id_str, envelope_json, exc, EventConsumerFailureType.TRANSIENT_RESULT):
                 return
             LOGGER.warning(
                 "service=%s stream=%s eventId=%s deliveries=%s handler transient failure; message stays pending for retry: %s: %s",
@@ -461,11 +515,22 @@ class RedisEventSubscriber(EventSubscriber):
             )
             return
         except FatalHandlerError as exc:
-            self._move_to_dlq(stream, group, consumer_name, envelope_json, exc, self._delivery_count(stream, group, msg_id_str))
+            metrics.record_failure(EventConsumerFailureType.FATAL_RESULT)
+            self._move_to_dlq(
+                stream,
+                group,
+                consumer_name,
+                msg_id_str,
+                envelope_json,
+                exc,
+                self._delivery_count(stream, group, msg_id_str),
+                EventConsumerFailureType.FATAL_RESULT,
+            )
             self._xack(stream, group, msg_id_str)
             return
         except Exception as exc:
-            if not self._failed_attempt(stream, group, consumer_name, msg_id_str, envelope_json, exc):
+            metrics.record_failure(EventConsumerFailureType.HANDLER_EXCEPTION)
+            if not self._failed_attempt(stream, group, consumer_name, msg_id_str, envelope_json, exc, EventConsumerFailureType.HANDLER_EXCEPTION):
                 LOGGER.warning(
                     "service=%s stream=%s eventId=%s deliveries=%s handler unexpected failure; message stays pending for retry: %s: %s",
                     group,
@@ -479,7 +544,16 @@ class RedisEventSubscriber(EventSubscriber):
             return
         if isinstance(result, HandlerResult):
             if result.status is HandlerStatus.TRANSIENT_ERROR:
-                if self._failed_attempt(stream, group, consumer_name, msg_id_str, envelope_json, result.message or "HandlerResult.TRANSIENT_ERROR"):
+                metrics.record_failure(EventConsumerFailureType.TRANSIENT_RESULT)
+                if self._failed_attempt(
+                    stream,
+                    group,
+                    consumer_name,
+                    msg_id_str,
+                    envelope_json,
+                    result.message or "HandlerResult.TRANSIENT_ERROR",
+                    EventConsumerFailureType.TRANSIENT_RESULT,
+                ):
                     return
                 LOGGER.warning(
                     "service=%s stream=%s eventId=%s deliveries=%s handler transient result; message stays pending for retry: %s",
@@ -491,7 +565,17 @@ class RedisEventSubscriber(EventSubscriber):
                 )
                 return
             if result.status is HandlerStatus.FATAL_ERROR:
-                self._move_to_dlq(stream, group, consumer_name, envelope_json, result.message or "HandlerResult.FATAL_ERROR", self._delivery_count(stream, group, msg_id_str))
+                metrics.record_failure(EventConsumerFailureType.FATAL_RESULT)
+                self._move_to_dlq(
+                    stream,
+                    group,
+                    consumer_name,
+                    msg_id_str,
+                    envelope_json,
+                    result.message or "HandlerResult.FATAL_ERROR",
+                    self._delivery_count(stream, group, msg_id_str),
+                    EventConsumerFailureType.FATAL_RESULT,
+                )
                 self._xack(stream, group, msg_id_str)
                 return
         self._record_seen(envelope.eventId)
@@ -499,9 +583,19 @@ class RedisEventSubscriber(EventSubscriber):
         if failures is not None:
             with self._failure_lock:
                 failures.pop((stream, group, msg_id_str), None)
+        metrics.record_outcome(EventConsumerOutcome.SUCCESS)
         self._xack(stream, group, msg_id_str)
 
-    def _failed_attempt(self, stream: str, group: str, consumer: str, entry_id: str, envelope_json: str, reason: object) -> bool:
+    def _failed_attempt(
+        self,
+        stream: str,
+        group: str,
+        consumer: str,
+        entry_id: str,
+        envelope_json: str,
+        reason: object,
+        failure_type: EventConsumerFailureType,
+    ) -> bool:
         if not hasattr(self, "_handler_failures"):
             self._handler_failures = OrderedDict()
             self._failure_lock = threading.Lock()
@@ -514,12 +608,16 @@ class RedisEventSubscriber(EventSubscriber):
             while len(self._handler_failures) > self.DEDUP_CACHE_LIMIT:
                 self._handler_failures.popitem(last=False)
         if failures < MAX_DELIVERY_ATTEMPTS:
+            # Below the limit the entry stays pending, which is a retry rather
+            # than a terminal disposition. Counted here so a retry reads the
+            # same way whichever failure asked for it.
+            self._transport_metrics().record_outcome(EventConsumerOutcome.RETRY)
             return False
-        self._move_to_dlq(stream, group, consumer, envelope_json, reason, failures)
+        self._move_to_dlq(stream, group, consumer, entry_id, envelope_json, reason, failures, failure_type)
         self._xack(stream, group, entry_id)
         return True
 
-    def _extract_envelope_json(self, msg_data: Mapping[Any, Any]) -> str:
+    def _extract_envelope_json(self, msg_data: Mapping[Any, Any]) -> str | None:
         envelope = msg_data.get(b"envelope") if hasattr(msg_data, "get") else None
         if envelope is None and hasattr(msg_data, "get"):
             envelope = msg_data.get("envelope")
@@ -531,7 +629,9 @@ class RedisEventSubscriber(EventSubscriber):
             return envelope.decode("utf-8")
         if isinstance(envelope, str):
             return envelope
-        return ""
+        # None, not "": an entry with no envelope field is classified apart from
+        # one whose envelope is present but unparseable.
+        return None
 
     def _delivery_count(self, stream: str, group: str, msg_id: str) -> int:
         try:
@@ -578,7 +678,34 @@ class RedisEventSubscriber(EventSubscriber):
         while len(order) > self.DEDUP_CACHE_LIMIT:
             seen.discard(order.popleft())
 
-    def _move_to_dlq(self, stream: str, group: str, consumer_name: str, envelope_json: str, reason: object, attempts: int) -> None:
+    def _move_to_dlq(
+        self,
+        stream: str,
+        group: str,
+        consumer_name: str,
+        entry_id: str,
+        envelope_json: str,
+        reason: object,
+        attempts: int,
+        failure_type: EventConsumerFailureType,
+    ) -> None:
+        """Hand one entry to the dead-letter stream, at most once per entry.
+
+        The DLQ write and the ack that retires the entry are not atomic, so a
+        crash between them re-delivers the entry. Without this guard that
+        re-delivery writes a second DLQ record and counts a second dead letter
+        for a single message; the marker is dropped again if the write raises, so
+        a later delivery still retries the hand-off.
+        """
+        if not self._mark_dead_lettered(stream, group, entry_id):
+            LOGGER.debug(
+                "service=%s stream=%s entryId=%s already dead-lettered; skipping duplicate DLQ write",
+                group,
+                stream,
+                entry_id,
+            )
+            return
+        metrics = self._transport_metrics()
         failure_reason = _truncate_failure_reason(reason)
         event_id = _event_id_for_log(envelope_json)
         safe_attempts = max(1, attempts)
@@ -594,19 +721,54 @@ class RedisEventSubscriber(EventSubscriber):
             safe_attempts,
             dead_lettered_at,
         )
-        self._client.xadd(
-            dlq_for_stream(stream),
-            {
-                "envelope": envelope_json,
-                "consumerGroup": group,
-                "consumerName": consumer_name,
-                "failureReason": failure_reason,
-                "attempts": str(safe_attempts),
-                "deadLetteredAt": dead_lettered_at,
-            },
-            maxlen=MAXLEN,
-            approximate=True,
-        )
+        try:
+            self._client.xadd(
+                dlq_for_stream(stream),
+                {
+                    "envelope": envelope_json,
+                    "consumerGroup": group,
+                    "consumerName": consumer_name,
+                    "failureReason": failure_reason,
+                    "attempts": str(safe_attempts),
+                    "deadLetteredAt": dead_lettered_at,
+                },
+                maxlen=MAXLEN,
+                approximate=True,
+            )
+        except Exception:
+            # The record did not land, so the hand-off is not done. Dropping the
+            # marker lets a later delivery try again, and the exception reaches
+            # the poll loop, which leaves the entry pending.
+            self._forget_dead_lettered(stream, group, entry_id)
+            metrics.record_failure(EventConsumerFailureType.DLQ_WRITE)
+            raise
+        metrics.record_dead_letter(failure_type)
+        metrics.record_outcome(EventConsumerOutcome.DEAD_LETTER)
+
+    def _mark_dead_lettered(self, stream: str, group: str, entry_id: str) -> bool:
+        """Return True the first time this entry is dead-lettered, False after."""
+        lock = getattr(self, "_dead_letter_lock", None)
+        if lock is None:
+            lock = self._dead_letter_lock = threading.Lock()
+        marker = (stream, group, entry_id)
+        with lock:
+            dead_lettered = getattr(self, "_dead_lettered", None)
+            if dead_lettered is None:
+                dead_lettered = self._dead_lettered = OrderedDict()
+            if marker in dead_lettered:
+                return False
+            dead_lettered[marker] = True
+            while len(dead_lettered) > self.DEDUP_CACHE_LIMIT:
+                dead_lettered.popitem(last=False)
+            return True
+
+    def _forget_dead_lettered(self, stream: str, group: str, entry_id: str) -> None:
+        lock = getattr(self, "_dead_letter_lock", None)
+        dead_lettered = getattr(self, "_dead_lettered", None)
+        if lock is None or dead_lettered is None:
+            return
+        with lock:
+            dead_lettered.pop((stream, group, entry_id), None)
 
     def _xack(self, stream: str, group: str, msg_id: str) -> None:
         """Acknowledge one entry, or queue it for the batch's single XACK.

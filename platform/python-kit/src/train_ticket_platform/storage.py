@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 import json
 import logging
 import os
@@ -14,6 +15,7 @@ from typing import Any, Protocol
 from .events import EventEnvelope
 from .idempotency import IdempotencyRecord, IdempotencyStore
 from .messaging import MAXLEN, stream_for_producer
+from .metrics import OutboxFailureStage, OutboxMetrics, outbox_metrics
 
 LOGGER = logging.getLogger(__name__)
 
@@ -222,6 +224,30 @@ class OutboxAppender:
         )
 
 
+def _oldest_unpublished_age_seconds(rows: Iterable[Any]) -> float:
+    """Age of the oldest row in one relay batch, in seconds.
+
+    Read from each row's own ``created_at`` rather than from a clock read at
+    insert time: the column is what survives a process restart, and the oldest
+    unpublished row is the publication latency a consumer of these events is
+    actually paying. A timestamp the driver returned without a zone is treated as
+    UTC, which is what the column is, and a batch with no readable timestamp
+    reports zero rather than an invented age.
+    """
+    oldest: datetime | None = None
+    for row in rows:
+        created_at = row[3] if len(row) > 3 else None
+        if not isinstance(created_at, datetime):
+            continue
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=UTC)
+        if oldest is None or created_at < oldest:
+            oldest = created_at
+    if oldest is None:
+        return 0.0
+    return max((datetime.now(UTC) - oldest).total_seconds(), 0.0)
+
+
 class OutboxRelay:
     """Background Redis relay for transactional outbox rows."""
 
@@ -240,6 +266,21 @@ class OutboxRelay:
             self._redis = redis.Redis.from_url(redis_url or os.getenv("REDIS_URL", "redis://localhost:6379"), decode_responses=True)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._metrics: OutboxMetrics | None = None
+
+    def _transport_metrics(self) -> OutboxMetrics:
+        """This relay's instruments, resolved once on first poll.
+
+        Lazy for the same reason the subscriber's are: the meter provider is
+        installed at process startup, and a relay built through ``object.__new__``
+        by a test must not fail on its first poll. Cached, so one relay registers
+        one instrument set however many polls it serves.
+        """
+        metrics = getattr(self, "_metrics", None)
+        if metrics is None:
+            metrics = outbox_metrics()
+            self._metrics = metrics
+        return metrics
 
     def start(self) -> threading.Thread:
         if self._thread is not None and self._thread.is_alive():
@@ -359,18 +400,48 @@ class OutboxRelay:
             )
 
     def relay_once(self, *, limit: int = 100) -> int:
+        """Publish one bounded batch of unpublished outbox rows.
+
+        Each stage reports its own failure class, because the three mean
+        different things to whoever is on call: a failed select is Postgres, a
+        failed publish is Redis, and a failed mark means the events are on the
+        stream and will be published a second time. The batch size bounds the
+        head sample, and the oldest row's age is what says whether the relay is
+        keeping up: a sample at the cap with a growing age is a backlog.
+        """
+        metrics = self._transport_metrics()
         with self._pool.connection() as conn:
-            rows = conn.execute(
-                "SELECT seq, stream, envelope FROM outbox WHERE published_at IS NULL ORDER BY seq LIMIT %s FOR UPDATE SKIP LOCKED",
-                (limit,),
-            ).fetchall()
+            try:
+                rows = conn.execute(
+                    "SELECT seq, stream, envelope, created_at FROM outbox WHERE published_at IS NULL ORDER BY seq LIMIT %s FOR UPDATE SKIP LOCKED",
+                    (limit,),
+                ).fetchall()
+            except Exception:
+                metrics.record_failure(OutboxFailureStage.SELECT)
+                raise
             if rows:
-                with self._redis.pipeline(transaction=False) as pipeline:
-                    for _, stream, envelope in rows:
-                        payload = envelope if isinstance(envelope, str) else json.dumps(envelope, separators=(",", ":"))
-                        pipeline.xadd(stream, {"envelope": payload}, maxlen=MAXLEN, approximate=True)
-                    pipeline.execute()
-                conn.execute("UPDATE outbox SET published_at = now() WHERE seq = ANY(%s) AND published_at IS NULL", ([row[0] for row in rows],))
+                # Bounded head sample, not a count of the table: an exact
+                # count(*) during a backlog scans a table that is already the
+                # bottleneck. A sample equal to `limit` means at least one full
+                # batch is waiting.
+                metrics.observe_unpublished_sample(len(rows), _oldest_unpublished_age_seconds(rows))
+                try:
+                    with self._redis.pipeline(transaction=False) as pipeline:
+                        for _, stream, envelope, _ in rows:
+                            payload = envelope if isinstance(envelope, str) else json.dumps(envelope, separators=(",", ":"))
+                            pipeline.xadd(stream, {"envelope": payload}, maxlen=MAXLEN, approximate=True)
+                        pipeline.execute()
+                except Exception:
+                    metrics.record_failure(OutboxFailureStage.PUBLISH)
+                    raise
+                metrics.record_published(len(rows))
+                try:
+                    conn.execute("UPDATE outbox SET published_at = now() WHERE seq = ANY(%s) AND published_at IS NULL", ([row[0] for row in rows],))
+                except Exception:
+                    metrics.record_failure(OutboxFailureStage.MARK_PUBLISHED)
+                    raise
+            else:
+                metrics.observe_unpublished_sample(0, 0.0)
             conn.commit()
         return len(rows)
 
