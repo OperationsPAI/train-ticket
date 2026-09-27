@@ -723,14 +723,29 @@ Status: explicit implementation limitations.
 
 ### T08: Bound channel statement growth
 
-Status: the storage shape is known; the growth rate is not.
+Status: **measured**, revision 500. The lines are already stored normalised; what
+the measurement separates is the generation pass from the storage shape.
 
-Payment Channel stores statement lines in `channel_statement_snapshots` JSON.
-
-1. [ ] Measure generation, freezing and discrepancy handling over a full
-   retained day of real records.
-2. [ ] If bounded latency cannot be met, normalise the lines while preserving
-   statement identity, reconciliation facts and replay semantics.
+1. [x] Generate, freeze and handle discrepancies, measured against a real
+   channel-day. Generation built 342,648 normalised lines and took more than 43
+   seconds on its first pass, while the same identity answered in 27
+   milliseconds once it existed; the snapshot row is 48 kB because the lines
+   live in `channel_statement_lines` (305 MB of heap and 186 MB of indexes, 933
+   bytes a line); freezing answered 200 in 9.5 milliseconds; reading a statement
+   took 3 milliseconds, its list 4, and its first 100 lines 0.4 seconds. The
+   discrepancy lifecycle -- open, resolve, finance intake -- is covered by
+   `deploy/e2e/22-paychan.sh`. A full retained day of statements is not
+   reachable here: the only things that generate one are that script and the
+   operations sweep, because generation is a full pass over a day of channel
+   facts and no per-customer request produces a statement.
+2. [x] The lines are normalised already, and the normalisation keeps identity,
+   reconciliation facts and replay semantics: a NORMALIZED_V1 statement keeps its
+   lines in `channel_statement_lines`, `channel_statement_identities` holds the
+   identity key unique, and the statement's `statementHash` folds each line's
+   evidence hash in canonical order. The read path serves both shapes, so a
+   statement written before the normalisation is still readable.
+   What this does NOT establish is line-level reconciliation: nothing publishes
+   `ChannelStatementLineMatched`, which is T22.
 
 ### T09: Complete route feasibility and shared reference validation
 
@@ -878,6 +893,32 @@ remains is breadth and the follow-ups the new reads created.
    hashed now, so changing it rolls Prometheus.
 5. [ ] Add a collector that reports scheduled job success and the age of the
    oldest due task; several sweeps are only observable through their effects.
+
+### T22: Match a channel statement line to the order it settles
+
+Status: open. `ChannelStatementLineMatched` has a consumer and no producer.
+
+finance-settlement records that event (`recordChannelStatementLine`) and nothing
+publishes it, so finance's `channel_statement_lines` is empty and
+`runDailyReconciliation` falls back to one statement-level fact per channel. The
+platform's captures for the day then have nothing to match against, and every
+one of them is entered as missing in channel -- a report that says the whole day
+is a discrepancy. The statement is the only place the channel and the platform
+agree on the same money, so a statement that cannot be matched line by line
+cannot reconcile.
+
+Measured at revision 500, after the operations sweep began generating the day's
+statement: one ALIPAY_SIM statement with 342,648 lines sits in payment-channel,
+finance holds the statement row and 0 lines, and the daily batch's first run
+predates both.
+
+1. [ ] Publish the fact, or replace it with something that scales. payment-channel
+   builds each line from a channel order or refund, so a line already knows its
+   `channelOrderId` or `channelRefundId`; 342,648 events per statement is not a
+   fan-out anyone should publish one at a time, so the shape has to be a paged
+   read or a compact per-line index the finance side consumes in batches.
+2. [ ] Then verify the daily batch against a real statement: every capture
+   matches its line, and the statement's gross totals equal the sum of its lines.
 
 ### T21: Resolve the references a booking and an agreement are created with
 
