@@ -60,7 +60,7 @@ across currencies.
 | Event transport | `train_ticket.event.consumer.oldest_age` | Gauge, seconds | `event_stream`, `consumer_group` | Age of the oldest undelivered or pending entry. |
 | Event transport | `train_ticket.event.dlq.entries` | Gauge | `event_stream`, `consumer_group`, `event_type` | Current dead-letter population. |
 | Event transport | `train_ticket.event.transport.series` | Gauge | `kind` | Series the collector publishes (`group`, `dead_letter`) and what its own bound held back (`group_dropped`, `dead_letter_dropped`). |
-| Scheduled job | `train_ticket.scheduled_job.success_age` | Gauge, seconds | `job` | Seconds since the job last succeeded, rebuilt from durable run records. A job that has never succeeded publishes nothing rather than zero. |
+| Scheduled job | `train_ticket.scheduled_job.success_age` | Gauge, seconds | `scheduled_job` | Seconds since the job last succeeded, rebuilt from durable run records. A job that has never succeeded publishes nothing rather than zero. |
 
 Every platform kit emits a smaller process-level transport set -- the subscriber
 and the outbox relay of each runtime, under the same names, units and closed
