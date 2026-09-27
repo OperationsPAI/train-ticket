@@ -11,7 +11,7 @@ import {
   type SeatClass,
 } from "./domain.js";
 import { toEventEnvelope, type EventPublisher } from "./ports.js";
-import { membershipProgramme } from "./programme.js";
+import { acceptedAccountNamespaces } from "./programme.js";
 import type { CapturedPaymentFacts } from "./payment-facts.js";
 
 export { InMemoryEventPublisher };
@@ -351,7 +351,7 @@ export class ApplicationError extends Error {
  * resolve an account from.
  */
 function assertAccountReferenceAccepted(accountId: string): void {
-  const accepted = membershipProgramme().acceptedNamespaces;
+  const accepted = acceptedAccountNamespaces();
   if (accepted.length === 0) {
     return;
   }
