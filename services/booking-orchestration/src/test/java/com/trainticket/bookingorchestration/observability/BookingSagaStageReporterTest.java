@@ -60,6 +60,53 @@ class BookingSagaStageReporterTest {
         assertThat(metrics.oldestAge).isEmpty();
     }
 
+    @Test
+    void publishesTheOldestDueStepDeadlineAndClearsItWhenTheQueueEmpties() {
+        RecordingMetrics metrics = new RecordingMetrics();
+        FakeDeadlines deadlines = new FakeDeadlines(NOW.minusSeconds(45));
+        BookingSagaStageReporter reporter = new BookingSagaStageReporter(
+            new FakeRepository(List.of(active("saga-1", "RESERVING", START))),
+            metrics, () -> true, Clock.fixed(NOW, ZoneOffset.UTC), deadlines);
+
+        reporter.report();
+        assertThat(metrics.oldestDueStepAge).contains(Duration.ofSeconds(45));
+
+        // The sweep caught up: the series clears rather than reporting a backlog that is gone.
+        deadlines.due = null;
+        reporter.report();
+        assertThat(metrics.oldestDueStepAge).isEmpty();
+    }
+
+    private static final class FakeDeadlines implements com.trainticket.bookingorchestration.application.BookingSagaStepDeadlineRepository {
+        private Instant due;
+
+        private FakeDeadlines(Instant due) {
+            this.due = due;
+        }
+
+        @Override
+        public java.util.Optional<Instant> findOldestDueDeadline(Instant now) {
+            return java.util.Optional.ofNullable(due);
+        }
+
+        @Override
+        public void schedule(String sagaId, String stepIdempotencyKey, Instant deadline) {
+        }
+
+        @Override
+        public void clear(String sagaId, String stepIdempotencyKey) {
+        }
+
+        @Override
+        public void clearSaga(String sagaId) {
+        }
+
+        @Override
+        public List<com.trainticket.bookingorchestration.application.BookingSagaStepDeadlineRepository.BookingSagaStepDeadline> findDue(Instant now, int limit) {
+            return List.of();
+        }
+    }
+
     private static BookingSagaStageRepository.ActiveSaga active(String sagaId, String status, Instant updatedAt) {
         return new BookingSagaStageRepository.ActiveSaga(sagaId, status, updatedAt);
     }
@@ -81,6 +128,7 @@ class BookingSagaStageReporterTest {
         private final Map<Stage, Long> active = new LinkedHashMap<>();
         private final Map<Stage, Duration> oldestAge = new LinkedHashMap<>();
         private final List<String> transitions = new ArrayList<>();
+        private java.util.Optional<Duration> oldestDueStepAge = java.util.Optional.empty();
 
         @Override
         public void trackActive(Stage stage, long activeSagas) {
@@ -90,6 +138,11 @@ class BookingSagaStageReporterTest {
         @Override
         public void observeOldestAge(Stage stage, Duration oldest) {
             oldestAge.put(stage, oldest);
+        }
+
+        @Override
+        public void observeOldestDueStepAge(java.util.Optional<Duration> age) {
+            oldestDueStepAge = age;
         }
 
         @Override
