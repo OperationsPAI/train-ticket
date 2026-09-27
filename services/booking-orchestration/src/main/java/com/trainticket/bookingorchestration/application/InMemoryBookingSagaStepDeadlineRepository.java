@@ -28,6 +28,13 @@ public class InMemoryBookingSagaStepDeadlineRepository implements BookingSagaSte
     }
 
     @Override
+    public java.util.Optional<Instant> findOldestDueDeadline(Instant now) {
+        return findDue(now, Integer.MAX_VALUE).stream()
+            .map(BookingSagaStepDeadline::deadline)
+            .min(Comparator.naturalOrder());
+    }
+
+    @Override
     public List<BookingSagaStepDeadline> findDue(Instant now, int limit) {
         if (limit <= 0) {
             throw new IllegalArgumentException("limit must be positive");
