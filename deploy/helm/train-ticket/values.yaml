@@ -1517,6 +1517,13 @@ services:
   corporate-travel:
     db: corporate_travel
     image: mirrors.tencent.com/microservice/corporate-travel:final-e98069db@sha256:b00bfe2def1fca6f1aad1f42537e5340c0999cce4c5706ebb4a6d50dbc5d0f1a
+    env:
+      # An agreement's price reference is a published fare rule set, and the
+      # service now resolves the id it was given before it folds it into the
+      # agreement's digest. Without this the reference is stored unchecked:
+      # measured at revision 493, all 127,064 ACTIVE agreements carried
+      # `rs-<uuid8>` ids no rule set matched.
+      FARE_PRICING_URL: "http://fare-pricing:8080"
   account:
     db: account
     pgInstance: user
