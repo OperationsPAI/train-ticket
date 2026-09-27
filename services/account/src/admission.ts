@@ -21,10 +21,12 @@ import { headerValue, type HeaderBag } from "@trainticket/ts-kit";
  * because a count in one replica's memory admits one budget per replica, and an
  * allowance on new accounts has to mean one allowance for the deployment.
  *
- * The numbers are the deployment's statement about what it serves, not the
- * mechanism's, so they are not here: they live in
+ * The numbers are the deployment's statement about what the platform serves,
+ * not the mechanism's, so they are not here: they live in
  * `config/registration-admission.json` beside the service, where they can be
- * read and changed without reading the code that enforces them.
+ * read and changed without reading the code that enforces them. What those two
+ * numbers say together is a rate -- new accounts a client may open per second --
+ * and `statedRatePerSecond` is how the rest of the service reads it.
  *
  *   windowSeconds            length of the window one count is kept over
  *   maxNewAccountsPerClient  new accounts one client may open inside it
@@ -66,6 +68,19 @@ let loaded: RegistrationAdmissionSettings | undefined;
 export function registrationAdmissionSettings(): RegistrationAdmissionSettings {
   loaded ??= loadAdmissionSettings();
   return loaded;
+}
+
+/**
+ * The rate the two settings state together.
+ *
+ * A window and a count are one statement and neither number says it alone: the
+ * allowance is a rate over the window it is counted in, and that rate is the
+ * figure the deployment decides on. Reading the settings through one function
+ * keeps the rate the workload is provisioned against and the rate the refusal
+ * is counted against the same figure.
+ */
+export function statedRatePerSecond(settings: RegistrationAdmissionSettings): number {
+  return settings.maxNewAccountsPerClient / settings.windowSeconds;
 }
 
 /**

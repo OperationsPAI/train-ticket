@@ -20,6 +20,7 @@ export {
   REGISTRATION_ADMISSION_FILE,
   clientKeyFor,
   registrationAdmissionSettings,
+  statedRatePerSecond,
   windowStart,
   type RegistrationAdmission,
   type RegistrationAdmissionSettings,

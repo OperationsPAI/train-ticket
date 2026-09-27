@@ -7,6 +7,7 @@ import {
   clientKeyFor,
   createApp,
   registrationAdmissionSettings,
+  statedRatePerSecond,
   windowStart,
   type RegistrationAdmissionSettings,
 } from "./index.js";
@@ -18,15 +19,16 @@ const settings: RegistrationAdmissionSettings = {
 };
 
 describe("the new-account admission", () => {
-  it("states the write path's own ceiling in the settings the image ships", () => {
+  it("states the funnel's rate in the settings the image ships", () => {
     const shipped = registrationAdmissionSettings();
 
     assert.equal(REGISTRATION_ADMISSION_FILE, "registration-admission.json");
     assert.equal(shipped.clientHeader, "x-forwarded-for");
-    assert.equal(shipped.windowSeconds, 30);
-    // The allowance is the store's measured write path: forty new accounts a
-    // second from one client, stated over the window the count is kept for.
-    assert.equal(shipped.maxNewAccountsPerClient / shipped.windowSeconds, 40);
+    assert.equal(shipped.windowSeconds, 60);
+    // The allowance is the rate the signup funnel is provisioned at, a new
+    // account a second for a client, stated over the window it is counted in.
+    assert.equal(statedRatePerSecond(shipped), 1);
+    assert.equal(shipped.maxNewAccountsPerClient, 60);
     assert.ok(Number.isInteger(shipped.maxNewAccountsPerClient));
   });
 
