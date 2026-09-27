@@ -198,3 +198,65 @@ func TestSeriesBoundHoldsBackAndReportsWhatItHeldBack(t *testing.T) {
 		}
 	}
 }
+
+// Every gauge here is a level read from Redis, not a delta accumulated in the
+// process. Two collectors that read the same transport state therefore have to
+// publish exactly the same series: a restart must republish the level it read
+// and must not add it to what the previous process published.
+func TestRestartedCollectorRepublishesTheSameLevels(t *testing.T) {
+	snapshot := Snapshot{
+		Groups: []GroupState{
+			{Stream: "events:journey-order", ConsumerGroup: "booking-orchestration", Lag: 7, Pending: 3, OldestAge: 12 * time.Second, HasOldest: true},
+			{Stream: "events:payment", ConsumerGroup: "finance-settlement", Lag: 0, Pending: 0},
+		},
+		DeadLetters: []DeadLetterState{
+			{Stream: "events:journey-order", ConsumerGroup: "booking-orchestration", EventType: "TravelInsuranceRequested", Entries: 3},
+		},
+	}
+	read := func() map[string]int64 {
+		reader := metricsdk.NewManualReader()
+		provider := metricsdk.NewMeterProvider(metricsdk.WithReader(reader))
+		defer func() { _ = provider.Shutdown(context.Background()) }()
+		store := &Store{}
+		if _, err := RegisterMetrics(provider.Meter("test"), store, SeriesBounds{Groups: defaultMaxGroupSeries, DeadLetters: defaultMaxDeadLetterSeries}); err != nil {
+			t.Fatalf("register: %v", err)
+		}
+		store.Set(snapshot)
+
+		var collected metricdata.ResourceMetrics
+		if err := reader.Collect(context.Background(), &collected); err != nil {
+			t.Fatalf("collect: %v", err)
+		}
+		levels := map[string]int64{}
+		for _, scope := range collected.ScopeMetrics {
+			for _, metric := range scope.Metrics {
+				gauge, ok := metric.Data.(metricdata.Gauge[int64])
+				if !ok {
+					continue
+				}
+				for _, point := range gauge.DataPoints {
+					key := metric.Name
+					for _, keyValue := range point.Attributes.ToSlice() {
+						key += "|" + string(keyValue.Key) + "=" + keyValue.Value.AsString()
+					}
+					levels[key] = point.Value
+				}
+			}
+		}
+		return levels
+	}
+
+	first := read()
+	restarted := read()
+	if len(first) == 0 {
+		t.Fatal("the collector published no gauge at all")
+	}
+	if len(restarted) != len(first) {
+		t.Fatalf("a restart changed the series count: %d -> %d", len(first), len(restarted))
+	}
+	for key, value := range first {
+		if restarted[key] != value {
+			t.Fatalf("a restart changed %s: %d -> %d", key, value, restarted[key])
+		}
+	}
+}
