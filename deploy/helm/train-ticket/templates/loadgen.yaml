@@ -68,6 +68,22 @@ spec:
             - name: LOADGEN_DIURNAL_PERIOD_SECONDS
               value: {{ .Values.loadgen.diurnalPeriodSeconds | quote }}
             {{- end }}
+            # The traffic level, which is a deployment decision rather than part
+            # of the workload's definition. The chart ships loadgen-config.yaml
+            # verbatim, so a key inside it cannot be set at install time; these
+            # are the same numbers, and the generator applies them as overrides.
+            - name: LOADGEN_TARGET_RPS
+              value: {{ .Values.loadgen.targetRps | quote }}
+            - name: LOADGEN_DIURNAL_PEAK_MULTIPLIER
+              value: {{ .Values.loadgen.diurnalPeakMultiplier | quote }}
+            - name: LOADGEN_DIURNAL_TROUGH_MULTIPLIER
+              value: {{ .Values.loadgen.diurnalTroughMultiplier | quote }}
+            - name: LOADGEN_BURST_ENABLED
+              value: {{ ternary "1" "0" .Values.loadgen.burstEnabled | quote }}
+            - name: LOADGEN_BURST_MIN_MULTIPLIER
+              value: {{ .Values.loadgen.burstMinMultiplier | quote }}
+            - name: LOADGEN_BURST_MAX_MULTIPLIER
+              value: {{ .Values.loadgen.burstMaxMultiplier | quote }}
             {{- if .Values.loadgen.recordToStdout }}
             # Also write each record to stdout, so the collector's filelog
             # receiver carries it to the same store as the traces it joins to.
