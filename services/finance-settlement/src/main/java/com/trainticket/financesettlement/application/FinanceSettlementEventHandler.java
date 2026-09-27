@@ -672,6 +672,14 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             service.lockOrder(orderId);
             paymentIntentOrderReferences.save(paymentIntentId,orderId);
             ensureChangeRevenue(orderId,text(payload,"businessRef"),paymentIntentId,captured,envelope.eventId(),envelope.occurredAt(),envelope);
+            // The channel settled this payment like any other, so the receipt
+            // belongs in the capture projection even though its revenue is a
+            // change difference rather than a fare. Without it the day's
+            // reconciliation reports every change payment as channel money the
+            // platform cannot explain: measured on 2026-09-26, 56,884 of the
+            // 488,414 channel lines were exactly these.
+            String businessRef=text(payload,"businessRef");
+            projections.saveCapture(paymentIntentId,new PaymentCaptureFact(businessRef,paymentIntentId,captured,envelope.eventId(),envelope.occurredAt()));
             return;
         }
         paymentIntentOrderReferences.save(paymentIntentId,orderId);
