@@ -10,6 +10,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+from reporting.application.catalog import load_metric_catalog
 from reporting.application.service import (
     PRODUCER,
     RebuildRun,
@@ -423,11 +424,14 @@ class PostgresReportingApplicationService:
         with self._pool.connection() as conn:
             with conn.transaction():
                 for metric in defaults.metrics.values():
-                    if self._metrics.get(conn, metric.metric_id) is None:
-                        self._metrics.save(conn, metric.metric_id, _metric_to_json(metric))
+                    self._metrics.seed(conn, metric.metric_id, _metric_to_json(metric))
+                # The catalog the governance review signed off is the source of the
+                # definitions this release publishes, so it is written with the
+                # built-in documents under the id each entry declares.
+                for entry in load_metric_catalog():
+                    self._metrics.seed(conn, str(entry["metricId"]), entry)
                 for dashboard in defaults.dashboards.values():
-                    if self._dashboards.get(conn, dashboard.dashboard_id) is None:
-                        self._dashboards.save(conn, dashboard.dashboard_id, _dashboard_to_json(dashboard))
+                    self._dashboards.seed(conn, dashboard.dashboard_id, _dashboard_to_json(dashboard))
                 for runs in defaults.rebuild_runs.values():
                     for run in runs:
                         self._save_rebuild_run(conn, run)

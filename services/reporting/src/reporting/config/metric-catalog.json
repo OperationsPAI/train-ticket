@@ -1,0 +1,49 @@
+{
+  "schemaVersion": "trainticket.metric-catalog/v1",
+  "revision": "2026-09-27",
+  "signedOffBy": "governance-review",
+  "metrics": [
+    {
+      "metricId": "metric-ops-orders-per-second",
+      "name": "Orders per second",
+      "description": "Journey orders accepted per second, plotted against the arrival the release offers.",
+      "owner": "operations-team",
+      "category": "operational",
+      "granularity": "daily",
+      "version": "1.0.0",
+      "expression": "COUNT(JourneyOrderCreated) / 60",
+      "status": "published",
+      "publishedAt": "2026-09-27T00:00:00Z",
+      "dependsOnMetricIds": [],
+      "sourceLineage": ["JourneyOrderCreated", "OrderCreated"]
+    },
+    {
+      "metricId": "metric-ops-payment-failures",
+      "name": "Failed captures",
+      "description": "Captures the payment context refused, counted from the facts it publishes.",
+      "owner": "operations-team",
+      "category": "operational",
+      "granularity": "daily",
+      "version": "1.0.0",
+      "expression": "COUNT(PaymentFailed)",
+      "status": "published",
+      "publishedAt": "2026-09-27T00:00:00Z",
+      "dependsOnMetricIds": [],
+      "sourceLineage": ["PaymentFailed", "PaymentDeclined"]
+    },
+    {
+      "metricId": "metric-ops-seat-utilisation",
+      "name": "Seat utilisation",
+      "description": "Confirmed seats over the capacity the release publishes, by route and service date.",
+      "owner": "operations-team",
+      "category": "operational",
+      "granularity": "daily",
+      "version": "1.0.0",
+      "expression": "SUM(SeatAllocated) / SUM(CapacityUpdated)",
+      "status": "published",
+      "publishedAt": "2026-09-27T00:00:00Z",
+      "dependsOnMetricIds": [],
+      "sourceLineage": ["SeatAllocated", "CapacityUpdated"]
+    }
+  ]
+}

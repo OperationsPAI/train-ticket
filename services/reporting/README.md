@@ -30,6 +30,13 @@ Python is a pragmatic fit for metric definitions, event-derived views, and analy
 PYTHONPATH=src python3 -m unittest discover -s tests
 ```
 
+## Metric definition catalog
+
+`src/reporting/config/metric-catalog.json` is the catalog the governance review signs off.
+It ships with the service and is written into `metric_definition_snapshots` at startup, so a freshly initialized database answers the definition reads with the definitions the release was checked against.
+Each entry is stored under the `metricId` it declares, and the store keeps the document the catalog states, which is the same shape the built-in definitions are written in.
+An id the store already holds keeps its stored document: the seed writes only what is absent, so a rolling restart does not overwrite a definition the running service has since superseded.
+
 ## Captured payment metrics
 
 All monetary revenue metrics use `PaymentCaptured` only.

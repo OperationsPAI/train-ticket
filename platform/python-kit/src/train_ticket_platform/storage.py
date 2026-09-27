@@ -176,6 +176,22 @@ class SnapshotRepository:
             return None
         return int(row[0]), dict(row[1])
 
+    def seed(self, conn: Any, aggregate_id: str, data: Mapping[str, Any]) -> bool:
+        """Write a snapshot only when the aggregate has none yet, and say whether it wrote.
+
+        Used for the documents a release ships and a service writes once at
+        startup. A restart must not overwrite the row the running service has
+        since written, so the insert is skipped when the id is present, and the
+        return value lets a seed report what it added rather than counting a
+        conflict as a write.
+        """
+        row = conn.execute(
+            f"INSERT INTO {self._table}(id, version, data) VALUES (%s, 1, %s) "
+            "ON CONFLICT (id) DO NOTHING RETURNING id",
+            (aggregate_id, _jsonb_payload(dict(data))),
+        ).fetchone()
+        return row is not None
+
     def save(self, conn: Any, aggregate_id: str, data: Mapping[str, Any], expected_version: int | None = None) -> int:
         payload = _jsonb_payload(dict(data))
         if expected_version is None:
