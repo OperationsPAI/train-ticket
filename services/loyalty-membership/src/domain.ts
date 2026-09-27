@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { membershipProgramme, openingPole } from "./programme.js";
+import { exportedPoleName, membershipProgramme, openingPole } from "./programme.js";
 
 export type MemberId = string;
 export type AccountId = string;
@@ -523,7 +523,7 @@ function consumeLots(lots: readonly PointsLotSnapshot[], points: number): Points
 function upsertMembershipYear(years: readonly MembershipYearSnapshot[], year: number, update: (year: MembershipYearSnapshot) => MembershipYearSnapshot): readonly MembershipYearSnapshot[] { const existing = years.find((membershipYear) => membershipYear.year === year); const next = update(existing ?? newMembershipYear(year, "SILVER")); return freeze([...years.filter((membershipYear) => membershipYear.year !== year), next].sort((left, right) => left.year - right.year)); }
 function normalizeMembershipYears(years: readonly MembershipYearSnapshot[] | undefined, tier: TierName, createdAt: Date): readonly MembershipYearSnapshot[] { if (years && years.length > 0) return freeze(years.map((year) => freeze({ ...year, currentTier: normalizeTier(year.currentTier as string), evaluationDate: year.evaluationDate ? new Date(year.evaluationDate) : undefined }))); return freeze([newMembershipYear(createdAt.getUTCFullYear(), tier)]); }
 function newMembershipYear(year: number, tier: TierName): MembershipYearSnapshot { return freeze({ year, qualifyingPoints: 0, tripCount: 0, currentTier: tier }); }
-function normalizeTier(tier: string): TierName { const exported = membershipProgramme().exportedNames[tier]; return Tier.of((exported ?? tier) as TierName).name; }
+function normalizeTier(tier: string): TierName { return Tier.of((exportedPoleName(tier) ?? tier) as TierName).name; }
 function assertPositiveInteger(value: number, field: string): void { if (!Number.isInteger(value) || value <= 0) throw new DomainError("INVALID_POINTS", `${field} must be a positive integer`); }
 function assertWholeNonNegative(value: number, field: string): void { if (!Number.isInteger(value) || value < 0) throw new DomainError("INVALID_AMOUNT", `${field} must be a non-negative integer`); }
 function required(value: string, field: string): string { if (value.trim().length === 0) throw new DomainError("MISSING_REQUIRED_FIELD", `${field} is required`); return value; }

@@ -56,6 +56,19 @@ export function openingPole(): string {
   return programme.exportedNames[programme.openingPole] ?? programme.openingPole;
 }
 
+/** The pole a name the export uses stands for, or undefined when the name is a pole already. */
+export function exportedPoleName(name: string): string | undefined {
+  return membershipProgramme().exportedNames[name];
+}
+
+/**
+ * The namespaces an enrolment's account reference may arrive in. An empty list
+ * accepts the reference as the caller sends it.
+ */
+export function acceptedAccountNamespaces(): readonly string[] {
+  return membershipProgramme().acceptedNamespaces;
+}
+
 function readProgramme(): MembershipProgramme {
   const raw = readJsonSettings(PROGRAMME_DIRECTORY, PROGRAMME_FILE);
   const poles = arrayField(raw.poles, "poles").map((entry, index) => readPole(entry, `poles[${index}]`));
