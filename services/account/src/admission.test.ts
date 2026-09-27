@@ -35,6 +35,9 @@ describe("registration admission settings", () => {
     assert.ok(Number.isInteger(settings.windowSeconds) && settings.windowSeconds > 0);
     assert.ok(Number.isInteger(settings.maxNewAccountsPerClient) && settings.maxNewAccountsPerClient > 0);
     assert.equal(settings.clientHeader, settings.clientHeader.toLowerCase());
+    // The window and the allowance are the deployment's statement of the rate it
+    // admits at, so the allowance is stated in whole windows' worth of seconds.
+    assert.equal(settings.maxNewAccountsPerClient % settings.windowSeconds, 0);
     assert.ok(settings.clientHeader.length > 0);
     // Read once: a budget that changed while the process serves would let two
     // replicas of one release enforce two different windows.
