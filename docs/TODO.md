@@ -143,11 +143,15 @@ history of what each one cost is in
    `events:capacity-availability` were second copies that every consumer group
    read, parsed, deduplicated and acknowledged. A session advisory lock elects
    one publisher per database in java-kit and rust-kit; measured at revision
-   401, all four streams carry **0 percent**. The Go kit still relays from every
-   replica, which its 250 millisecond interval bounds at the 2 to 4 percent
-   measured on `events:provider-integration` and `events:seat-assignment`; it
-   needs a pool handle to hold a session, which its `DBTX` interface does not
-   provide.
+   401, all four streams carry **0 percent**. The Go kit could not take the lock
+   -- its `DBTX` interface offers no session to hold one -- and it was left
+   relaying from every replica behind a note that the damage was "2 to 4
+   percent". Measured on 2026-09-27, it was 999 of 1500 entries on
+   `events:provider-integration` and 993 of 1500 on `events:seat-assignment`, and
+   `events:payment` was 885 of 2000 because payment built its own relay too.
+   **Closed**: the Go relay takes the lock on a connection of its own from the
+   `*pgxpool.Pool` every Go service already passes, payment uses the kit's relay,
+   and 0 of 28034 sampled entries across all 37 streams are duplicates.
 6. [ ] Capacity's admission serialises on one advisory lock per inventory pool,
    and that is the constraint that now fails the reservation poll. Measured at
    revision 401, in the minutes the hold was slow: 21 of the 24 active sessions
