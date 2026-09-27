@@ -49,6 +49,10 @@ POLL_BLOCK_MS = int(os.environ.get("CONSUMER_BLOCK_MS", "1000"))
 # with the server pinned at a core through every burst while every consumer
 # group's own lag reads zero).
 POLL_COUNT = int(os.environ.get("CONSUMER_BATCH_COUNT", "500"))
+# Acknowledge in batches. See RedisEventSubscriber._xack: one XACK per delivered
+# event per group was the largest command class on the shared Redis.
+ACK_BATCHING = os.environ.get("CONSUMER_ACK_BATCHING", "1") != "0"
+ACK_QUEUE_LIMIT = int(os.environ.get("CONSUMER_ACK_QUEUE_LIMIT", "500"))
 LOGGER = logging.getLogger(__name__)
 
 
@@ -396,23 +400,30 @@ class RedisEventSubscriber(EventSubscriber):
                     for msg_id, msg_data in messages:
                         msg_id_str = msg_id.decode("utf-8") if isinstance(msg_id, bytes) else str(msg_id)
                         self._process_entry(s, group, msg_id_str, msg_data, handler, 0, consumer_name)
+                    self._flush_acks()
                     return True
         return False
 
     def _process_results(self, results: Any, group: str, consumer_name: str, handler: Callable[[EventEnvelope], Any]) -> None:
         for stream_name, messages in results or []:
             stream = stream_name.decode("utf-8") if isinstance(stream_name, bytes) else str(stream_name)
-            for msg_id, msg_data in messages:
-                msg_id_str = msg_id.decode("utf-8") if isinstance(msg_id, bytes) else str(msg_id)
-                self._process_entry(
-                    stream,
-                    group,
-                    msg_id_str,
-                    msg_data,
-                    handler,
-                    0,
-                    consumer_name,
-                )
+            self._ack_batch_depth = getattr(self, "_ack_batch_depth", 0) + 1
+            try:
+                for msg_id, msg_data in messages:
+                    msg_id_str = msg_id.decode("utf-8") if isinstance(msg_id, bytes) else str(msg_id)
+                    self._process_entry(
+                        stream,
+                        group,
+                        msg_id_str,
+                        msg_data,
+                        handler,
+                        0,
+                        consumer_name,
+                    )
+            finally:
+                self._ack_batch_depth -= 1
+            # One XACK per read batch per stream, not one per entry.
+            self._flush_acks()
 
     def _process_message(self, stream: str, group: str, consumer_name: str, msg_id: bytes | str, msg_data: Mapping[Any, Any], handler: Callable[[EventEnvelope], Any]) -> None:
         msg_id_str = msg_id.decode("utf-8") if isinstance(msg_id, bytes) else str(msg_id)
@@ -598,7 +609,37 @@ class RedisEventSubscriber(EventSubscriber):
         )
 
     def _xack(self, stream: str, group: str, msg_id: str) -> None:
-        self._client.xack(stream, group, msg_id)
+        """Acknowledge one entry, or queue it for the batch's single XACK.
+
+        XACK takes any number of ids for the same stream and group, and this was
+        one command per delivered event per consumer group -- measured at about
+        7000 a second on the resident release, the largest single command class
+        on a Redis that has one thread for every service. The queue is flushed at
+        the end of each read batch and whenever it grows past a bound, so the
+        worst case is that a crash re-delivers a batch that was handled but not
+        yet acknowledged, which is the delivery guarantee this consumer already
+        offers.
+        """
+        if not ACK_BATCHING or getattr(self, "_ack_batch_depth", 0) <= 0:
+            # Outside a read batch there is no batch to join: a direct call -- a
+            # dead-letter move, or a test driving a single entry -- acknowledges
+            # now rather than queueing behind a flush that will not come.
+            self._client.xack(stream, group, msg_id)
+            return
+        if not hasattr(self, "_ack_queue"):
+            self._ack_queue: dict[tuple[str, str], list[str]] = {}
+        self._ack_queue.setdefault((stream, group), []).append(msg_id)
+        if sum(len(ids) for ids in self._ack_queue.values()) >= ACK_QUEUE_LIMIT:
+            self._flush_acks()
+
+    def _flush_acks(self) -> None:
+        queue = getattr(self, "_ack_queue", None)
+        if not queue:
+            return
+        self._ack_queue = {}
+        for (stream, group), ids in queue.items():
+            if ids:
+                self._client.xack(stream, group, *ids)
 
     @staticmethod
     def _deserialize_envelope(raw: Mapping[str, Any]) -> EventEnvelope:
