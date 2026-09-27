@@ -647,7 +647,12 @@ export class RedisEventSubscriber implements EventSubscriber {
 
   private async recover(streams: readonly string[], group: string, consumerName: string, handler: EventHandler, signal?: AbortSignal): Promise<void> {
     while (!this.stopped && !signal?.aborted) {
-      await sleepUntil(() => this.stopped || signal?.aborted === true, 1000);
+      // Fifteen seconds, not one. Pending recovery is a whole XAUTOCLAIM round
+      // trip per stream per consumer, and an entry only becomes claimable after
+      // CLAIM_MIN_IDLE_MS of silence, so a faster sweep cannot find more.
+      // Measured on the resident cluster, XAUTOCLAIM was 4896 of Redis' ~19300
+      // commands a second while it reclaimed nothing.
+      await sleepUntil(() => this.stopped || signal?.aborted === true, 15000);
       if (this.stopped || signal?.aborted) {
         return;
       }
