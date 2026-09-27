@@ -7,6 +7,7 @@ import com.trainticket.groupbooking.domain.GroupBookingCreated;
 import com.trainticket.groupbooking.domain.GroupBookingEvent;
 import com.trainticket.groupbooking.domain.GroupFare;
 import com.trainticket.groupbooking.domain.GroupMember;
+import com.trainticket.groupbooking.domain.DomainRuleViolation;
 import com.trainticket.platformkit.idempotency.UuidV7;
 import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.platformkit.messaging.EventEnvelopeFactory;
@@ -29,22 +30,38 @@ public class GroupBookingService {
     private final GroupBookingRepository repository;
     private final EventPublisher publisher;
     private final EventEnvelopeFactory envelopeFactory;
+    private final SegmentRefResolver segments;
 
     @Autowired
-    public GroupBookingService(GroupBookingRepository repository, EventPublisher publisher) {
-        this(Clock.systemUTC(), repository, publisher);
+    public GroupBookingService(GroupBookingRepository repository, EventPublisher publisher, SegmentRefResolver segments) {
+        this(Clock.systemUTC(), repository, publisher, segments);
     }
 
     public GroupBookingService(Clock clock, GroupBookingRepository repository, EventPublisher publisher) {
+        this(clock, repository, publisher, null);
+    }
+
+    public GroupBookingService(Clock clock, GroupBookingRepository repository, EventPublisher publisher, SegmentRefResolver segments) {
         this.clock = Objects.requireNonNull(clock, "clock is required");
         this.repository = Objects.requireNonNull(repository, "repository is required");
         this.publisher = Objects.requireNonNull(publisher, "publisher is required");
         this.envelopeFactory = new EventEnvelopeFactory(PRODUCER, clock);
+        this.segments = segments;
     }
 
     @Transactional
     public BookingDetail create(CreateGroupBookingCommand command, String correlationId) {
         Objects.requireNonNull(command, "command is required");
+        // The segments are what the group is for, and they are stored and priced
+        // as given. A reference service-plan cannot resolve is not a booking for
+        // anything, so it is refused rather than quoted.
+        if (segments != null) {
+            for (String segmentRef : command.segmentRefs()) {
+                if (!segments.exists(segmentRef)) {
+                    throw new DomainRuleViolation("segmentRef is unknown to service-plan: " + segmentRef);
+                }
+            }
+        }
         GroupFare fare = new GroupFare(command.currency(), command.minorUnits(), command.discountBasisPoints(), command.negotiationRef());
         GroupBooking booking = GroupBooking.create(
             "gb-" + UuidV7.generate(),
