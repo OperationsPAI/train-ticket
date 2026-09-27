@@ -1,7 +1,29 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { OptimisticConcurrencyConflict } from "@trainticket/ts-kit";
 import { InMemoryWaitlistRepository, WaitlistApplicationService } from "../src/application.js";
 import { createApp, resetWaitlistStore } from "../src/app.js";
+
+// A cancel can lose a race with the promotion tick that is moving the same
+// entry through MATCHING. The command repository writes under an optimistic
+// version, so that is a conflict the caller retries, not a server error.
+test("an optimistic write conflict answers 409 instead of 500", async () => {
+  const app = createApp({
+    storage: {
+      ready: () => true,
+      runCommand: async () => { throw new OptimisticConcurrencyConflict("Waitlist entry wlr-1 was modified by another writer"); },
+    },
+  });
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/v1/waitlist-requests/wlr-1/cancel",
+    headers: { "Idempotency-Key": "0194f2e0-7b3e-7610-8284-5c26e8b0c321" },
+    payload: { reason: "PROBE" },
+  });
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.json().code, "CONFLICT");
+  await app.close();
+});
 
 test("health endpoint returns 200", async () => {
   const app = createApp();
