@@ -52,6 +52,7 @@ Payment Channel 的 statement、冻结、匹配行和差异事件进入本地投
 日对账区分 `MATCHED`、`PLATFORM_ONLY`、`CHANNEL_ONLY` 和 `AMOUNT_MISMATCH`。
 渠道侧不是靠逐行事件，而是按 statement 分页读取 payment-channel 已归一化存储的 statement 行（每页 500 行、按行序游标，单条 statement 实测 34 万行）：一份 statement 的行已记录就跳过，写入按 statement line id 幂等。参与"捕获 vs 渠道"比较的只有 `PAYMENT` 行——`REFUND` 行对应的是平台退款而不是捕获，会被记录但不进入该比较。
 对账 key 使用双方都携带的 PaymentIntent：订单号不是双方共有的引用（平台把票款归到订单、把改签差价归到售后 Case），按订单 key 会把同一订单的多笔支付在一侧合并、另一侧不合并。
+退款侧按 refund id 比较：statement 的 `REFUND` 行携带平台退款 id，Payment 在同事务里维护 `refund_settlements`（结算时写入、由自身事件回补历史），并按结算时刻 + refund id 顺序分页对外提供；Finance 逐退款比较，得到 `MATCHED`/`AMOUNT_MISMATCH`/单边存在。
 批次快照保存当天报表与**未匹配**的条目：实测量级为单日 48 万条，整表写入会超过 PostgreSQL 单个 jsonb 数组 256 MB 上限；匹配条目的名次数额进报表，明细只保留需要处理的差异。
 供应商结算按指定期间、佣金比例和代扣比例生成结果。
 费用与税额使用服务当前公式，详细输入、时间范围和限制见增补文档。
