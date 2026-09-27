@@ -14,13 +14,26 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+/**
+ * Runs the closed period's daily reconciliation and supplier settlement.
+ *
+ * It carries no `@ConditionalOnBean(DataSource.class)`. That condition is
+ * documented as reliable only in auto-configuration, and here it was evaluated
+ * while this component -- which the scanner reaches before the `@Configuration`
+ * that defines the DataSource -- was being registered, so the bean was skipped
+ * and its `@Scheduled` method was never registered. Measured on the resident
+ * release at revision 493: the JVM had no `scheduling-` thread at all while
+ * booking-orchestration's did, and `settlement_schedule_runs`,
+ * `reconciliation_batch_snapshots` and `supplier_settlement_snapshots` were
+ * empty after the pod had been up for ten hours. The peers that do run,
+ * `BookingSagaTimeoutSweeper` and `PaymentTimeoutSweeper`, are plain
+ * `@Component`s for the same reason.
+ */
 @Component
-@ConditionalOnBean(javax.sql.DataSource.class)
 @ConditionalOnProperty(name = "finance.scheduler.enabled", havingValue = "true", matchIfMissing = true)
 public class FinanceSettlementScheduler {
     private static final Logger LOGGER = LoggerFactory.getLogger(FinanceSettlementScheduler.class);

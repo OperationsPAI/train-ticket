@@ -662,9 +662,36 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
 
         String orderId = orderReference.get();
         PaymentCaptureFact capture = projections.findCapture(orderId).orElse(null);
-        Money actual = capture == null ? Money.zero(Currency.getInstance("CNY")) : capture.amount();
         List<RevenueRecognition> recognitions = serviceRevenue(orderId);
-        Money expected = sumOrZero(recognitions, actual.currency());
+        // The two sides have to cover the same money. The capture side is gross
+        // and holds this order's own payment intent only -- a change is captured
+        // on a second intent and recorded as a `change-payment` recognition,
+        // never into `captures_by_order_id` -- and the capture is never reduced
+        // by a refund. Comparing it with every component net of reversals made
+        // every changed order a discrepancy by construction (172,933
+        // `amount-mismatch` cases at revision 493) and every fully refunded order
+        // another 5,482. Refund and change money is matched on its own, in the
+        // daily batch against channel statements. What is compared here is the
+        // gross recognition of the components this order's own capture covers.
+        List<RevenueRecognition> capturedComponents = recognitions.stream()
+            .filter(recognition -> !"change-payment".equals(recognition.componentCode()))
+            .toList();
+        // The operational fact can arrive before the money does: a provider
+        // confirmation lands, and the capture is projected a few seconds later.
+        // Opening a case for two zeroes is not a discrepancy, it is a race --
+        // and nothing ever closes it. Measured at revision 493: 1,119,675 of the
+        // 1,295,996 open cases were `missing-in-platform` with expected 0.00 and
+        // actual 0.00, and 0 cases of any kind had ever been resolved.
+        //
+        // An order that is never captured at all is a real question, but it is
+        // not answerable from one operational fact: nothing here can tell "not
+        // yet" from "never". That comparison is the daily batch's job, where the
+        // platform's captures are set against the channel's own statement lines.
+        if (capture == null && capturedComponents.isEmpty()) {
+            return;
+        }
+        Money actual = capture == null ? Money.zero(Currency.getInstance("CNY")) : capture.amount();
+        Money expected = grossSum(capturedComponents, actual.currency());
         if (capture == null || !sameMoney(expected, actual)) {
             ReconciliationCase open = ReconciliationCase.open(
                 orderId,
@@ -920,6 +947,18 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
 
     private static Money sumOrZero(List<RevenueRecognition> recognitions, Currency currency) {
         return recognitions.stream().map(RevenueRecognition::netAmount).reduce(Money.zero(currency), Money::plus);
+    }
+
+    /**
+     * The gross recognized amount, before any reversal.
+     *
+     * The capture this is compared against is gross and is never reduced by a
+     * refund, so netting the recognition side turns every refunded order into a
+     * discrepancy that is not one; refunds are reconciled against channel
+     * statements in the daily batch instead.
+     */
+    private static Money grossSum(List<RevenueRecognition> recognitions, Currency currency) {
+        return recognitions.stream().map(RevenueRecognition::amount).reduce(Money.zero(currency), Money::plus);
     }
 
     private static boolean sameMoney(Money left, Money right) {
