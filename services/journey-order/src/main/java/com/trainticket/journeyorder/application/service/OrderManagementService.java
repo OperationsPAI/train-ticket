@@ -298,6 +298,9 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
                 if (created.sourceIp() != null && !created.sourceIp().isBlank()) {
                     payload.put("sourceIp", created.sourceIp());
                 }
+                if (created.distanceKm() != null) {
+                    payload.put("distanceKm", created.distanceKm());
+                }
                 yield payload;
             }
             case com.trainticket.journeyorder.domain.JourneyOrderPendingPayment pending -> Map.of(
