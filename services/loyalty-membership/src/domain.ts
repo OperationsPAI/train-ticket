@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { accountReferenceAccepted } from "./programme.js";
+import { accountReferenceAccepted, accountReferenceStatement, type AccountReferenceStatement } from "./programme.js";
 
 export type MemberId = string;
 export type AccountId = string;
@@ -332,7 +332,7 @@ export class Member {
   static enroll(input: { accountId: AccountId; memberId?: MemberId; now?: Date }): Member {
     const now = input.now ?? new Date();
     const accountId = required(input.accountId, "accountId");
-    assertAccountReferenceAccepted(accountId);
+    assertAccountReferenceAccepted(accountId, accountReferenceStatement());
     return new Member(freeze({ memberId: input.memberId ?? newMemberId(), accountId, status: "ACTIVE", tier: "SILVER", redeemablePoints: 0, lifetimePoints: 0, tierPoints: 0, createdAt: now, updatedAt: now, ledger: [], lots: [], membershipYears: [newMembershipYear(now.getUTCFullYear(), "SILVER")] }));
   }
   static fromSnapshot(snapshot: MemberSnapshot): Member {
@@ -535,13 +535,10 @@ function newLedgerEntryId(): PointsLedgerEntryId { return `ple_${randomUUID()}`;
 function newPointsLotId(): PointsLotId { return `lot_${randomUUID()}`; }
 function newRedemptionId(): RedemptionId { return `red_${randomUUID()}`; }
 
-// An enrolment keys a membership by the account reference its caller sends, and the ledger keeps
-// that reference as it arrives. The programme states the namespaces those references arrive in, so
-// a reference from a namespace the programme does not state is refused where the membership is
-// keyed: storing it anyway would key the membership by something the identity service does not
-// resolve an account from.
-function assertAccountReferenceAccepted(accountId: AccountId): void {
-  if (!accountReferenceAccepted(accountId)) {
-    throw new DomainError("ACCOUNT_REFERENCE_NOT_ACCEPTED", "The account reference is not one the membership programme keys by");
-  }
+// A reference the statement does not hold keys a membership by something the identity service does
+// not resolve an account from, so the statement the enrolment was handed is checked where the
+// membership is keyed. The statement arrives as an argument: the predicate is a question about a
+// reference and a statement, and the programme is read where the reference is read.
+function assertAccountReferenceAccepted(accountId: AccountId, statement: AccountReferenceStatement): void {
+  if (!accountReferenceAccepted(accountId, statement)) throw new DomainError("ACCOUNT_REFERENCE_NOT_ACCEPTED", "The account reference is not one the membership programme keys by");
 }

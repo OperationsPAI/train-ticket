@@ -51,8 +51,8 @@ export function accountReferenceStatement(): AccountReferenceStatement {
  * Whether the statement holds an account reference to the namespaces it lists.
  * An empty statement accepts the reference as the caller sends it.
  */
-export function accountReferenceAccepted(accountId: string): boolean {
-  const accepted = accountReferenceStatement().acceptedNamespaces;
+export function accountReferenceAccepted(accountId: string, statement: AccountReferenceStatement = accountReferenceStatement()): boolean {
+  const accepted = statement.acceptedNamespaces;
   return accepted.length === 0 || accepted.some((namespace) => accountId.startsWith(`${namespace}-`) || accountId.startsWith(`${namespace}_`));
 }
 
