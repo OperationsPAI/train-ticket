@@ -72,11 +72,16 @@ class PostSalesControllerTest {
             .andExpect(jsonPath("$.status", equalTo("OPENED")))
             .andReturn().getResponse().getContentAsString().split("\"caseId\":\"")[1].split("\"")[0];
 
+        // The refund cannot be priced without the quote, and the quote read
+        // failed at the transport (there is no fare-pricing in this context).
+        // That is the retryable shape, not a server error: the same call answers
+        // once the upstream is reachable again, so the caller is told to retry
+        // rather than handed a 500. Same ruling as POLICY_CONTEXT_NOT_READY.
         mockMvc.perform(post("/api/v1/post-sales-cases/{caseId}/evaluate", caseId)
                 .header("Idempotency-Key", EVALUATE_KEY)
                 .header("X-Correlation-Id", "corr-test-1"))
-            .andExpect(status().isInternalServerError())
-            .andExpect(jsonPath("$.code", equalTo("INTERNAL_ERROR")));
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.code", equalTo("ADJUSTMENT_QUOTE_UNAVAILABLE")));
 
         mockMvc.perform(get("/api/v1/post-sales-cases/{caseId}", caseId))
             .andExpect(status().isOk())
