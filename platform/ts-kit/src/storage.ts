@@ -7,7 +7,7 @@ import type { Pool, PoolClient, PoolConfig, QueryResult } from "pg";
 
 import { type IdempotencyRecord, type IdempotencyStore } from "./http.js";
 import { registerLivenessComponent, type Clock, type LivenessComponent } from "./liveness.js";
-import { registerPoolMetricsFromEnv } from "./metrics.js";
+import { outboxMetricsFromEnv, registerPoolMetricsFromEnv, type OutboxMetrics } from "./metrics.js";
 import { configuredStreamMaxLen, type DeadLetterEvidence, type DeadLetterEvidenceSink, type EventEnvelope, redisRetryStrategy, streamForProducer } from "./messaging.js";
 
 export type Database = Pool | PoolClient;
@@ -547,6 +547,11 @@ export type OutboxRelayOptions = Readonly<{
   name?: string;
   /** Set false to opt out of liveness registration (tests). */
   trackLiveness?: boolean;
+  /**
+   * Process-level relay metrics. Defaults to the meters under the service's own
+   * name, or a no-op when OTEL metrics are disabled.
+   */
+  outboxMetrics?: OutboxMetrics;
 }>;
 
 /** Rows per retention DELETE. */
@@ -563,16 +568,51 @@ const CLEANUP_BATCH_SIZE = 1_000;
  */
 const CLEANUP_MAX_BATCHES = 5;
 
+type OutboxRow = Readonly<{
+  seq: string | number | bigint;
+  stream: string;
+  envelope: EventEnvelope;
+  created_at: Date | string;
+}>;
+
+/**
+ * Age of the oldest row in one bounded head sample.
+ *
+ * Computed from the created_at of the rows the relay query already returned, so
+ * the age costs nothing beyond the read that produced the sample. A row whose
+ * timestamp is absent or unparseable is skipped rather than dragging the age to
+ * zero; if no row carries a usable timestamp the age is reported as zero because
+ * nothing in the sample is known to be waiting.
+ */
+function ageMillisOfOldest(rows: readonly Pick<OutboxRow, "created_at">[], now: number = Date.now()): number {
+  let oldestMillis: number | undefined;
+  for (const row of rows) {
+    const timestamp = row.created_at;
+    if (timestamp === undefined || timestamp === null) {
+      continue;
+    }
+    const millis = timestamp instanceof Date ? timestamp.getTime() : Date.parse(timestamp);
+    if (!Number.isFinite(millis)) {
+      continue;
+    }
+    oldestMillis = oldestMillis === undefined ? millis : Math.min(oldestMillis, millis);
+  }
+  return oldestMillis === undefined ? 0 : Math.max(now - oldestMillis, 0);
+}
+
 export class OutboxRelay {
   private stopped = true;
   private loop?: Promise<void>;
   private liveness?: LivenessComponent;
+  private readonly outboxMetrics: OutboxMetrics;
 
   constructor(
     private readonly pool: Pool,
     private readonly redis: Redis,
     private readonly options: OutboxRelayOptions = {},
-  ) {}
+  ) {
+    this.outboxMetrics = options.outboxMetrics ?? outboxMetricsFromEnv();
+  }
 
   start(): void {
     if (!this.stopped) {
@@ -642,20 +682,35 @@ export class OutboxRelay {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      const result = await client.query(
-        `SELECT seq, stream, envelope
-         FROM outbox
-         WHERE published_at IS NULL
-         ORDER BY seq
-         LIMIT $1
-         FOR UPDATE SKIP LOCKED`,
-        [this.options.batchSize ?? 100],
-      ) as QueryResult<{ seq: string | number | bigint; stream: string; envelope: EventEnvelope }>;
+      let result: QueryResult<OutboxRow>;
+      try {
+        result = await client.query(
+          `SELECT seq, stream, envelope, created_at
+           FROM outbox
+           WHERE published_at IS NULL
+           ORDER BY seq
+           LIMIT $1
+           FOR UPDATE SKIP LOCKED`,
+          [this.options.batchSize ?? 100],
+        ) as QueryResult<OutboxRow>;
+      } catch (error) {
+        this.outboxMetrics.recordFailure("select");
+        throw error;
+      }
 
       if (result.rows.length === 0) {
+        // An empty head sample is a real reading: nothing is waiting. The age is
+        // zero because there is no head-of-line row to age.
+        this.outboxMetrics.observeUnpublishedSample(0, 0);
         await client.query("COMMIT");
         return 0;
       }
+
+      // The query is bounded by the batch size, so the sample is capped rather
+      // than a full-table count. Its age comes from the oldest created_at the
+      // same bounded read returned, never a separate scan.
+      const oldestUnpublishedAgeMillis = ageMillisOfOldest(result.rows);
+      this.outboxMetrics.observeUnpublishedSample(result.rows.length, oldestUnpublishedAgeMillis);
 
       const pipeline = this.redis.pipeline();
       for (const row of result.rows) {
@@ -669,22 +724,33 @@ export class OutboxRelay {
           JSON.stringify(row.envelope),
         );
       }
-      const publishResults = await pipeline.exec();
-      if (!publishResults) {
-        throw new Error("Redis pipeline did not return publish results");
+      try {
+        const publishResults = await pipeline.exec();
+        if (!publishResults) {
+          throw new Error("Redis pipeline did not return publish results");
+        }
+        const publishError = publishResults.find(([error]) => error)?.[0];
+        if (publishError) {
+          throw publishError;
+        }
+      } catch (error) {
+        this.outboxMetrics.recordFailure("publish");
+        throw error;
       }
-      const publishError = publishResults.find(([error]) => error)?.[0];
-      if (publishError) {
-        throw publishError;
-      }
+      this.outboxMetrics.recordPublished(result.rows.length);
 
       const seqs = result.rows.map((row) => row.seq.toString());
       const placeholders = seqs.map((_, index) => `$${index + 1}`).join(", ");
-      await client.query(
-        `UPDATE outbox SET published_at = now()
-         WHERE seq IN (${placeholders}) AND published_at IS NULL`,
-        seqs,
-      );
+      try {
+        await client.query(
+          `UPDATE outbox SET published_at = now()
+           WHERE seq IN (${placeholders}) AND published_at IS NULL`,
+          seqs,
+        );
+      } catch (error) {
+        this.outboxMetrics.recordFailure("mark_published");
+        throw error;
+      }
       await client.query("COMMIT");
       return result.rows.length;
     } catch (error) {

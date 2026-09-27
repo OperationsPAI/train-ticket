@@ -24,7 +24,7 @@ test("concurrent relays publish recorded events without waiting on another publi
   try {
     await pool.query(`CREATE TABLE outbox (
       seq bigserial PRIMARY KEY, event_id text UNIQUE NOT NULL, stream text NOT NULL,
-      envelope jsonb NOT NULL, published_at timestamptz)`);
+      envelope jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), published_at timestamptz)`);
     for (const row of recorded) {
       await pool.query("INSERT INTO outbox(event_id,stream,envelope) VALUES($1,$2,$3)",
         [row.event_id, stream, row.envelope]);
