@@ -352,6 +352,16 @@ class FarePricingService:
         self._store.save_adjustment_quote(aq)
         return aq
 
+    def get_rule_set(self, rule_set_id: str) -> FareRuleSet:
+        """The rule set with this id, whatever its status.
+
+        Exposed so a caller that stores a `ruleSetId` can check that it names
+        something real before it does. Corporate Travel is the caller: it folds
+        the id into its agreement's price digest, and without this it accepted
+        `rs-<uuid8>` values no rule set ever matched.
+        """
+        return self._store.get_rule_set(rule_set_id)
+
     def create_rule_set(self, rule_set: FareRuleSet) -> FareRuleSet:
         try:
             existing = self._store.get_rule_set(rule_set.rule_set_id)
