@@ -3,6 +3,7 @@
   "revision": "2026.09",
   "exportedBy": "member-relations",
   "accountReference": {
-    "acceptedNamespaces": []
+    "source": "account contract",
+    "acceptedNamespaces": ["acct"]
   }
 }
