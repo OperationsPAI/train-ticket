@@ -704,14 +704,15 @@ that was made safe rather than fast.
    unit. What that costs is the unit the hold used to stand for, so a pool whose
    composition was replaced can admit one more reservation than it should.
    Backfilling the binding from the owning composition would restore it.
-6. [ ] Post Sales: `FarePricingAdjustmentQuoteClient.compute` answers 500
+6. [x] Post Sales: `FarePricingAdjustmentQuoteClient.compute` answered 500
    `IllegalStateException: target offer travelers differ from the original
-   order` when a change case's target offer does not carry exactly the order's
+   order` when a change case's target offer did not carry exactly the order's
    traveler refs. Measured at 56 occurrences in three minutes while reservation
-   failures were also happening, which is one candidate cause: a purchase whose
+   failures were also happening, which was the candidate cause: a purchase whose
    reservation never confirmed has fewer tickets than the order has travelers.
-   Re-measure once the reservation path is clean, and if it still occurs, decide
-   whether the check belongs at offer creation or at evaluation.
+   **Re-measured at revision 479 with the reservation path clean: zero
+   occurrences in the whole resident cycle.** The check stays as a guard against
+   a genuinely mismatched offer rather than a symptom of the reservation tail.
 7. [x] `events:booking-orchestration:dlq` held about eight thousand entries that
    exhausted their delivery attempts while capacity rejected reservation
    sources, which is a defect that is now fixed. Measured at revision 478 the
@@ -883,7 +884,7 @@ percent at revision 421. Two items from the same audit are still open.
    and as the driver's default, which was already a departed service day. The
    scenarios no longer set it and the driver defaults to a week past the run
    clock.
-2. [ ] The load generator's invoice branch sends `titleName: "个人"` as a fixed
+2. [x] The load generator's invoice branch sends `titleName: "个人"` as a fixed
    personal-invoice title. It is test tooling, and the value is the business's
    own label rather than a location or a date, so it stays; this is recorded so a
    later reader does not re-open it as a finding.
