@@ -7,7 +7,7 @@
     "BASIC": "SILVER"
   },
   "accountReference": {
-    "acceptedNamespaces": []
+    "acceptedNamespaces": ["acct"]
   },
   "poles": [
     { "name": "SILVER", "qualifyingPoints": 0, "trips": 0, "benefits": ["base earning"] },
