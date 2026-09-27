@@ -1,5 +1,5 @@
 import { tracedFetch } from "@trainticket/ts-kit";
-import { DomainError, normalizeFareClass, type FareClass, type FareClassInput, type PaymentGuaranteeSnapshot, type TravelInterval } from "./domain.js";
+import { DomainError, normalizeFareClass, type FareClass, type FareClassInput, type PaymentGuaranteeSnapshot, type PricingContext, type TravelInterval } from "./domain.js";
 
 export type WaitlistIntentRequest = Readonly<{
   accountId: string;
@@ -24,6 +24,12 @@ export type ResolvedWaitlistIntent = Readonly<{
   interval: TravelInterval;
   stopSequenceVersion: string;
   paymentGuarantee: PaymentGuaranteeSnapshot;
+  /**
+   * The inputs the customer's own quote was priced from. The promotion re-quotes
+   * the seat with these, so the new offer is comparable to the guarantee the
+   * customer authorized rather than to a different pricing model.
+   */
+  pricingContext: PricingContext;
 }>;
 
 export interface WaitlistIntentResolver {
@@ -43,6 +49,7 @@ export class SuppliedWaitlistIntentResolver implements WaitlistIntentResolver {
       seatClass: normalizeFareClass(request.seatClass ?? "SECOND_CLASS"),
       interval: { ...(request.interval ?? { fromSeq: 0, toSeq: 1 }) },
       stopSequenceVersion: request.stopSequenceVersion ?? `segment:${request.segmentRef}`,
+      pricingContext: { productCode: "rail-standard", channel: "WEB" },
       paymentGuarantee: {
         paymentIntentId: request.paymentGuaranteeRef || "pi-test",
         sourceOrderRef: "test-source-order",
@@ -139,8 +146,23 @@ export class HttpWaitlistIntentResolver implements WaitlistIntentResolver {
     if (!seatClass) throw mismatch("waitlist class cannot be proven from the request or payment guarantee");
     if (request.departureDate && request.departureDate !== departureDate) throw mismatch("requested departure date differs from service-plan supply");
     const channelRef = optionalObject(payment.channelRef);
+    const offerChannel = optionalString(offer, "channelId");
+    const productCode = optionalString(quote, "productCode");
+    const distanceKm = optionalDistance(quote);
     return {
       travelerRefs, segmentRef, scheduledServiceRef, departureDate, seatClass, interval, stopSequenceVersion,
+      // The source quote's own inputs, as far as the resource exposes them: the
+      // channel comes from the offer that was built from it, and the distance
+      // from the pricing component the quote was computed with. A promotion that
+      // omits the distance is priced from the flat base fare instead -- 28750
+      // against 16979 for the same segment and class -- which is above every
+      // guarantee the customer authorized.
+      pricingContext: {
+        productCode: productCode ?? "rail-standard",
+        channel: offerChannel ?? (channelRef ? optionalString(channelRef, "channel") : undefined) ?? "WEB",
+        distanceKm,
+        departureTime: optionalString(leg, "departureTime"),
+      },
       paymentGuarantee: {
         paymentIntentId: request.paymentGuaranteeRef,
         sourceOrderRef: sourceOrderId,
@@ -210,6 +232,19 @@ function requiredInterval(value: unknown): TravelInterval {
   }
   return { fromSeq, toSeq };
 }
+/**
+ * The distance a quote was priced from. fare-pricing publishes it inside the
+ * pricing component rather than as a request echo, and it is a decimal string
+ * there, so it is parsed rather than trusted.
+ */
+function optionalDistance(quote: Record<string, unknown>): number | undefined {
+  const breakdown = optionalObject(quote.breakdown);
+  const components = breakdown ? optionalObject(breakdown.pricingComponents) : undefined;
+  const distance = components ? optionalObject(components.baseDistanceFare)?.distanceKm : undefined;
+  const parsed = typeof distance === "number" ? distance : typeof distance === "string" ? Number.parseFloat(distance) : Number.NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 function requiredMoney(value: unknown, field: string): Readonly<{ currency: string; minorUnits: number }> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw mismatch(`${field} is missing`);
   const body = value as Record<string, unknown>;

@@ -20,8 +20,8 @@ test("payment-backed waitlist intent restores every traveler and accepted route 
       },
       "/api/v1/payment-intents/pi-1": { paymentIntentId: "pi-1", businessRef: "ord-source", purpose: "purchase", payerRef: "acc-1", status: "CREATED", expiresAt: "2026-09-25T00:01:00Z", amount: { currency: "CNY", minorUnits: 20_000 }, authorizedAmount: { currency: "CNY", minorUnits: 0 }, capturedAmount: { currency: "CNY", minorUnits: 0 }, refundedAmount: { currency: "CNY", minorUnits: 0 }, channelRef: { channel: "ALIPAY" } },
       "/api/v1/journey-orders/ord-source": { orderId: "ord-source", accountId: "acc-1", travelerRefs: ["t1", "t2"], segmentRefs: ["seg-1"], offerId: "off-source", monetarySummary: { payableTotal: { currency: "CNY", minorUnits: 20_000 } } },
-      "/api/v1/offers/off-source": { offerId: "off-source", accountId: "acc-1", itineraryRef: "itn-1", fareQuoteRef: "fq-source", passengerMix: { travelers: [{ travelerId: "t1" }, { travelerId: "t2" }] } },
-      "/api/v1/fare-quotes/fq-source": { quoteId: "fq-source", breakdown: { seatClassMultiplier: { seatClass: "FIRST_CLASS" } } },
+      "/api/v1/offers/off-source": { offerId: "off-source", accountId: "acc-1", itineraryRef: "itn-1", channelId: "MOBILE", fareQuoteRef: "fq-source", passengerMix: { travelers: [{ travelerId: "t1" }, { travelerId: "t2" }] } },
+      "/api/v1/fare-quotes/fq-source": { quoteId: "fq-source", productCode: "rail-standard", breakdown: { seatClassMultiplier: { seatClass: "FIRST_CLASS" }, pricingComponents: { baseDistanceFare: { distanceKm: "233.0" } } } },
     };
     const body = bodies[path];
     return body ? Response.json(body) : Response.json({ code: "NOT_FOUND" }, { status: 404 });
@@ -37,6 +37,10 @@ test("payment-backed waitlist intent restores every traveler and accepted route 
       travelerRefs: ["t1", "t2"], segmentRef: "seg-1", scheduledServiceRef: "ss-1",
       departureDate: "2026-10-20", seatClass: "FIRST_CLASS", interval: { fromSeq: 1, toSeq: 3 },
       stopSequenceVersion: "sha256:route-v1",
+      // The promotion re-quotes with these, so the new offer is comparable to
+      // the amount the customer's guarantee authorized rather than to a
+      // different pricing model.
+      pricingContext: { productCode: "rail-standard", channel: "MOBILE", distanceKm: 233, departureTime: "2026-10-20T03:00:00Z" },
       paymentGuarantee: {
         paymentIntentId: "pi-1", sourceOrderRef: "ord-source", payerRef: "acc-1",
         amount: { currency: "CNY", minorUnits: 20_000 }, sourceStatus: "CREATED",
