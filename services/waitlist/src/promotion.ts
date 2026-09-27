@@ -110,6 +110,25 @@ export class HttpFarePricingClient implements FarePricingClient {
   }
 }
 
+/**
+ * The upstream state an offer is built from has not arrived yet.
+ *
+ * Post-sales and waitlist both ask offer-management to price an offer from facts
+ * it consumes off the event bus, so a request that arrives before those facts do
+ * is refused with 422 rather than answered. That is a race, not a rejection: the
+ * fare quote is on its way. It must not reach the event handler as a failure,
+ * because the handler's retries are bounded and the released seat would be
+ * dead-lettered -- measured on 2026-09-27, `events:capacity-availability:dlq`
+ * held a `CapacityReleased` this service had given up on four minutes after the
+ * seat was freed. The entry stays queued and the promotion timer retries it.
+ */
+export class UpstreamStateNotReadyError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+    this.name = "UpstreamStateNotReadyError";
+  }
+}
+
 export class HttpOfferManagementClient implements OfferManagementClient {
   constructor(
     private readonly baseUrl = process.env.OFFER_MANAGEMENT_URL ?? process.env.OFFER_MANAGEMENT_BASE_URL ?? "http://offer-management",
@@ -128,6 +147,9 @@ export class HttpOfferManagementClient implements OfferManagementClient {
         fareQuoteRef: fareQuoteId,
       }),
     });
+    if (response.status === 422 || response.status === 409) {
+      throw new UpstreamStateNotReadyError(response.status, `Offer creation request failed with status ${response.status}`);
+    }
     if (!response.ok) throw new Error(`Offer creation request failed with status ${response.status}`);
     const body = await response.json() as Record<string, unknown>;
     const offerId = stringField(body, "offerId");
@@ -241,7 +263,19 @@ export class PromotionOrchestrator {
     }
     if (!entry.offerId) {
       const fareQuoteId = entry.fareQuoteId;
-      const commercialOffer = await this.externalPromotionCall(entry, () => this.offerManagement.createOffer(entry, fareQuoteId));
+      let commercialOffer;
+      try {
+        commercialOffer = await this.externalPromotionCall(entry, () => this.offerManagement.createOffer(entry, fareQuoteId));
+      } catch (error) {
+        if (!(error instanceof UpstreamStateNotReadyError)) throw error;
+        // Leave the entry exactly as it is: it still holds its capacity credit
+        // and its fare quote, and the promotion timer runs it again within a
+        // second. Failing the event here would spend its bounded retries on a
+        // wait and then dead-letter the released seat. No promotion outcome is
+        // recorded, because nothing happened yet -- the transition that does
+        // occur is recorded when it does.
+        return undefined;
+      }
       const offerNow = this.now();
       const expiresAt = earliestInstant(commercialOffer.expiresAt, entry.paymentGuarantee.authorizedUntil, entry.deadline);
       if (expiresAt <= offerNow) {
