@@ -5,7 +5,7 @@ Last verified: 2026-09-27, Asia/Beijing.
 ## Runtime
 
 The resident Helm release is `train-ticket` in namespace `train-ticket`,
-revision **497**.
+revision **500**.
 Its values come from one file, `deploy/helm/train-ticket/values.yaml`: the
 registry, the `local-path` storage class, the central telemetry store, the
 resident exporters, the load generator settings and the `loadgen-resident-state`
@@ -57,6 +57,8 @@ to one and back.
 
 | Check | Result | Evidence |
 |---|---|---|
+| Five minute window at revision 500, with the channel statement sweep running | 142348 requests at 474 a second and 16330 journeys, **0 unexpected HTTP errors and 0 failed journeys**; the loader's own tally reads `errors {}` | `/tmp/sweep/rev500.cur.jsonl` |
+| Channel statement storage, revision 498 | one channel-day is 342648 normalised lines at 933 bytes each in `channel_statement_lines`, with the statement row itself at 48 kB; freezing answers in 9.5 ms, a statement read in 3 ms and its first 100 lines in 0.4 s | `payment_channel` on the transactional shard |
 | Four minute window at revision 497, after the reference-resolution fixes | 131954 requests at 550 a second and 15211 journeys, **0 unexpected HTTP errors and 0 failed journeys** | `/tmp/sweep/rev497b.cur.jsonl` |
 | Reference resolution, revision 497 | new group bookings carry segment refs service-plan answers 200 for, and new corporate agreements carry `ruleset-default-0-WEB`, `-2-MOBILE` and `-3-COUNTER`, each answering 200 from fare-pricing | `group_bookings`, `corporate_agreements` |
 | Five minute window at revision 496, after the finance-settlement and error-mapping fixes | 59006 requests and 6342 journeys with **0 unexpected HTTP errors and 0 failed journeys**; finance-settlement's JVM now carries a `scheduling-1` thread and `settlement_schedule_runs` records both jobs as SUCCEEDED | `/tmp/sweep/rev496.cur.jsonl` |
