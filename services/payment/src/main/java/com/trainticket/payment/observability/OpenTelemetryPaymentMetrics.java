@@ -99,11 +99,11 @@ public final class OpenTelemetryPaymentMetrics implements PaymentMetricRecorder 
     }
 
     @Override
-    public void oldestDueIntentAge(java.time.Duration age) {
-        if (age == null || age.isNegative()) {
-            return;
-        }
-        oldestDueIntentAgeSeconds = age.toSeconds();
+    public void oldestDueIntentAge(java.util.Optional<java.time.Duration> age) {
+        oldestDueIntentAgeSeconds = age
+            .filter(duration -> !duration.isNegative())
+            .map(java.time.Duration::toSeconds)
+            .orElse(null);
     }
 
     private static Attributes labels(
