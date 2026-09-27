@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	miniredis "github.com/alicebob/miniredis/v2"
 	"github.com/jackc/pgx/v5"
@@ -48,6 +49,7 @@ func (r *oneRow) Scan(dest ...any) error {
 	*(dest[0].(*int64)) = 1
 	*(dest[1].(*string)) = "events:place-network"
 	*(dest[2].(*json.RawMessage)) = json.RawMessage(`{"eventId":"evt-1"}`)
+	*(dest[3].(*time.Time)) = time.Now().Add(-2 * time.Second)
 	return nil
 }
 
