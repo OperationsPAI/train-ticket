@@ -5,7 +5,7 @@ Last verified: 2026-09-27, Asia/Beijing.
 ## Runtime
 
 The resident Helm release is `train-ticket` in namespace `train-ticket`,
-revision **501**.
+revision **504**.
 Its values come from one file, `deploy/helm/train-ticket/values.yaml`: the
 registry, the `local-path` storage class, the central telemetry store, the
 resident exporters, the load generator settings and the `loadgen-resident-state`
@@ -57,6 +57,8 @@ to one and back.
 
 | Check | Result | Evidence |
 |---|---|---|
+| Five minute window at revision 504, with the priced distance flowing | 191665 requests at 639 a second and 21795 journeys, **0 unexpected HTTP errors and 0 failed journeys**; the recorder read `written=279765 dropped=0` and every dead-letter stream is unchanged | `/tmp/sweep/rev504b.cur.jsonl` |
+| Revenue yield, revision 504 | `yieldPerKm` is a measurement rather than a constant zero: SECOND_CLASS 0.13, FIRST_CLASS 0.23, BUSINESS_CLASS 0.44, SLEEPER_HARD 0.23, SLEEPER_SOFT 0.29 and STANDING 0.09 CNY per km, against the platform's own 0.15/km base rate and 2.8 class multiplier | `reporting` revenue report |
 | Ten minute window at revision 501, the state this pass leaves behind | 155401 requests at 518 a second and 17519 journeys, **0 unexpected HTTP errors and 0 failed journeys**; the loader's own tally reads `errors {}`, the recorder `written=237148 dropped=0`, and every dead-letter stream is unchanged | `/tmp/sweep/final2.cur.jsonl` |
 | Five minute window at revision 500, with the channel statement sweep running | 142348 requests at 474 a second and 16330 journeys, **0 unexpected HTTP errors and 0 failed journeys**; the loader's own tally reads `errors {}` | `/tmp/sweep/rev500.cur.jsonl` |
 | Replay, dead-letter and compensation live tests against the deployed databases, revision 500 | TypeScript kit suite 111 tests (109 pass, 2 skipped) with `TEST_DATABASE_URL` and `TEST_REDIS_URL` pointed at the deployed PostgreSQL and Redis: the transport-loss replay rebuilds a deleted stream without repeating its effect, and the dead-letter evidence survives a restart. Post-sales suite 125 tests, 0 failures, 0 errors, including the compensation mismatch checkpoint against the deployed shard. | `platform/ts-kit` `npm test`, `services/post-sales` `mvn test` |
