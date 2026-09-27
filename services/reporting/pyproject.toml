@@ -19,5 +19,10 @@ dev = [
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
+# The release catalog ships inside the package it is read from, so the image
+# carries the same document a checkout does.
+[tool.setuptools.package-data]
+reporting = ["config/*.json"]
+
 [tool.uv.sources]
 train-ticket-platform = { path = "../../platform/python-kit", editable = true }

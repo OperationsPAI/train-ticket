@@ -10,6 +10,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+from reporting.application.catalog import load_release_catalog
 from reporting.application.service import (
     PRODUCER,
     RebuildRun,
@@ -420,11 +421,24 @@ class PostgresReportingApplicationService:
 
     def _seed_defaults(self) -> None:
         defaults = default_repository()
+        catalog = load_release_catalog()
         with self._pool.connection() as conn:
             with conn.transaction():
+                # The release catalog is what this build publishes, so the
+                # document the file states is written under the id it declares,
+                # and the built-in definitions remain the fallback for an id the
+                # catalog does not name.
+                for entry in catalog.metrics:
+                    metric_id = str(entry.get("metricId", "")).strip()
+                    if metric_id and self._metrics.get(conn, metric_id) is None:
+                        self._metrics.save(conn, metric_id, entry)
                 for metric in defaults.metrics.values():
                     if self._metrics.get(conn, metric.metric_id) is None:
                         self._metrics.save(conn, metric.metric_id, _metric_to_json(metric))
+                for entry in catalog.dashboards:
+                    dashboard_id = str(entry.get("dashboardId", "")).strip()
+                    if dashboard_id and self._dashboards.get(conn, dashboard_id) is None:
+                        self._dashboards.save(conn, dashboard_id, entry)
                 for dashboard in defaults.dashboards.values():
                     if self._dashboards.get(conn, dashboard.dashboard_id) is None:
                         self._dashboards.save(conn, dashboard.dashboard_id, _dashboard_to_json(dashboard))

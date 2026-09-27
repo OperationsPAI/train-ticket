@@ -1,0 +1,120 @@
+{
+  "schemaVersion": "trainticket.release-catalog/v1",
+  "revision": "2026.09.27",
+  "metrics": [
+    {
+      "metricId": "metric-revenue",
+      "name": "Total Revenue",
+      "description": "Gross captured payment amount by reporting period, using PaymentCaptured only; refunds and revenue recognition do not change this metric.",
+      "owner": "finance-team",
+      "category": "financial",
+      "granularity": "daily",
+      "version": "1.0.0",
+      "expression": "SUM(payment.capturedAmount.minorUnits)",
+      "status": "published",
+      "publishedAt": "2026-07-05T10:30:00Z",
+      "dependsOnMetricIds": [],
+      "sourceLineage": [
+        "PaymentCaptured",
+        "PaymentSucceeded",
+        "RefundSettled",
+        "RefundCompleted",
+        "RefundIssued",
+        "RevenueRecognized",
+        "RevenueRecognitionReversed",
+        "ReconciliationCompleted",
+        "InvoiceGenerated",
+        "JourneyOrderConfirmed",
+        "BoardingVerified",
+        "FulfillmentCompleted",
+        "NoShowRecorded",
+        "JourneyOrderCreated",
+        "PostSalesCaseOpened",
+        "PostSalesRequested",
+        "SegmentReservationRequested",
+        "SeatAllocated",
+        "StandingAssigned",
+        "AncillaryOrderItemSelected",
+        "AncillaryOrderItemConfirmed",
+        "AncillaryOrderItemFulfilled",
+        "AncillaryOrderItemCancelled",
+        "AncillaryOrderItemRefunded",
+        "InsurancePolicyIssued",
+        "InsurancePolicyCancelled"
+      ],
+      "deprecatedAt": null
+    },
+    {
+      "metricId": "metric-support-cases",
+      "name": "Support Cases Opened",
+      "description": "Count of customer-service support cases opened.",
+      "owner": "customer-service-team",
+      "category": "customer_service",
+      "granularity": "daily",
+      "version": "1.0.0",
+      "expression": "COUNT(SupportCaseOpened)",
+      "status": "published",
+      "publishedAt": "2026-07-05T10:30:00Z",
+      "dependsOnMetricIds": [],
+      "sourceLineage": [
+        "SupportCaseOpened"
+      ],
+      "deprecatedAt": null
+    }
+  ],
+  "dashboards": [
+    {
+      "dashboardId": "dash-revenue",
+      "name": "Revenue Dashboard",
+      "description": "Revenue and settlement dashboard.",
+      "status": "building",
+      "metrics": [
+        {
+          "metricId": "metric-revenue",
+          "version": "1.0.0"
+        }
+      ],
+      "currentSnapshot": {
+        "rebuildId": "rebuild-revenue-001",
+        "rebuiltAt": "2026-07-05T10:30:00Z",
+        "metrics": [
+          {
+            "metricId": "metric-revenue",
+            "version": "1.0.0"
+          }
+        ],
+        "eventCount": 128,
+        "digest": "sha256-revenue-001"
+      },
+      "lastBuiltAt": "2026-07-05T10:30:00Z",
+      "sourceEvents": [
+        "PaymentCaptured",
+        "PaymentSucceeded",
+        "RefundSettled",
+        "RefundCompleted",
+        "RefundIssued",
+        "RevenueRecognized",
+        "RevenueRecognitionReversed",
+        "ReconciliationCompleted",
+        "InvoiceGenerated",
+        "JourneyOrderConfirmed",
+        "BoardingVerified",
+        "FulfillmentCompleted",
+        "NoShowRecorded",
+        "JourneyOrderCreated",
+        "PostSalesCaseOpened",
+        "PostSalesRequested",
+        "SegmentReservationRequested",
+        "SeatAllocated",
+        "StandingAssigned",
+        "AncillaryOrderItemSelected",
+        "AncillaryOrderItemConfirmed",
+        "AncillaryOrderItemFulfilled",
+        "AncillaryOrderItemCancelled",
+        "AncillaryOrderItemRefunded",
+        "InsurancePolicyIssued",
+        "InsurancePolicyCancelled"
+      ]
+    }
+  ]
+}

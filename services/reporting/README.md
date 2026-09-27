@@ -30,6 +30,13 @@ Python is a pragmatic fit for metric definitions, event-derived views, and analy
 PYTHONPATH=src python3 -m unittest discover -s tests
 ```
 
+## Release catalog
+
+`src/reporting/config/release-catalog.json` is the catalog this release publishes.
+It declares the metric definitions and the dashboards, in the document shape `metric_definition_snapshots` and `dashboard_read_model_snapshots` keep, and the service writes each entry under the id it declares when the store does not hold that id yet.
+A restart leaves an id the store already holds alone, so a definition the running service has since superseded is not overwritten.
+The built-in definitions remain the fallback for an id the catalog does not name, and `REPORTING_RELEASE_CATALOG` points a deployment at a corrected document without a rebuild.
+
 ## Captured payment metrics
 
 All monetary revenue metrics use `PaymentCaptured` only.
