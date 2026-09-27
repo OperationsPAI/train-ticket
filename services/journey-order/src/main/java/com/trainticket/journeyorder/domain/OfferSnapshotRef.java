@@ -9,7 +9,13 @@ public record OfferSnapshotRef(
     Instant quotedAt,
     Instant expiresAt,
     String priceSnapshotRef,
-    String ruleSnapshotId
+    String ruleSnapshotId,
+    /**
+     * The distance the accepted offer's fare quote was priced from, when its rule
+     * set prices by distance. Null when the quote was priced from the flat base
+     * fare, and null on an order written before this field existed.
+     */
+    Double distanceKm
 ) {
     public OfferSnapshotRef {
         requireText(offerId, "offerId");
