@@ -51,6 +51,24 @@ public final class ReconciliationBatch {
         return new ReconciliationBatch(batchId, settlementDate, cutoffAt, currency, entries);
     }
 
+    /**
+     * Rehydrates a batch whose report was stored rather than recomputed.
+     *
+     * A measured day is half a million entries, and matched rows are counted
+     * rather than kept: past a certain size the snapshot itself stops being
+     * storable at all (measured: PostgreSQL refuses a jsonb array whose elements
+     * total more than 256 MB), and a reconciliation's durable detail is the
+     * entries that need attention. The report carries the day's totals, so a
+     * batch read back still answers how many entries were compared and how many
+     * matched.
+     */
+    public static ReconciliationBatch rehydrate(String batchId, LocalDate settlementDate, Instant cutoffAt, Currency currency,
+                                                List<ReconciliationEntry> entries, ReconciliationReport report) {
+        ReconciliationBatch batch = new ReconciliationBatch(batchId, settlementDate, cutoffAt, currency, entries);
+        batch.report = Objects.requireNonNull(report, "report is required");
+        return batch;
+    }
+
     public ReconciliationBatch withVersion(long version) {
         if (version < 0) {
             throw new DomainRuleViolation("version must not be negative");
