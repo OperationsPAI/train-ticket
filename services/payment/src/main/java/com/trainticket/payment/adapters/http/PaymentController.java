@@ -6,6 +6,7 @@ import com.trainticket.payment.domain.PaymentIntent;
 import com.trainticket.payment.domain.Refund;
 import jakarta.servlet.http.HttpServletRequest;
 import java.net.URI;
+import java.time.Instant;
 import java.util.Map;
 import java.util.Objects;
 import org.springframework.http.ResponseEntity;
@@ -105,6 +106,30 @@ public class PaymentController {
     @GetMapping("/internal/payment-intents/{paymentIntentId}/captured-facts")
     public Map<String, Object> capturedFacts(@PathVariable String paymentIntentId) {
         return service.capturedFacts(paymentIntentId);
+    }
+
+    /**
+     * The refunds this service settled in a window, for a settlement date.
+     *
+     * <p>Read by finance's daily reconciliation, which compares them with the
+     * channel's refund lines by refund id. Paged by settlement instant and refund
+     * id -- the index's own order -- so each page is a range scan, and the caller
+     * follows {@code nextCursor} until it is absent.
+     */
+    @GetMapping("/internal/refund-settlements")
+    public Map<String, Object> refundSettlements(
+        @RequestParam String settledFrom,
+        @RequestParam String settledTo,
+        @RequestParam(required = false) String after,
+        @RequestParam(defaultValue = "500") int limit
+    ) {
+        Instant from = Instant.parse(settledFrom);
+        Instant to = Instant.parse(settledTo);
+        if (!to.isAfter(from)) {
+            throw new ValidationException("settledFrom and settledTo must be an increasing instant range");
+        }
+        return service.refundSettlements(from, to,
+            com.trainticket.payment.domain.ports.RefundSettlementIndex.Cursor.decode(after), limit);
     }
 
     private void validateCreate(CreatePaymentIntentRequest request) {

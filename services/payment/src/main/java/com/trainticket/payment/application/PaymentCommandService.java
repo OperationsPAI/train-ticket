@@ -47,6 +47,7 @@ public class PaymentCommandService {
     private final ChannelRouter channelRouter;
     private final TransactionTemplate transactionTemplate;
     private PaymentMetricRecorder metrics = NoopPaymentMetrics.INSTANCE;
+    private com.trainticket.payment.domain.ports.RefundSettlementIndex refundSettlementIndex;
 
     /**
      * Bound by Spring once the observability configuration exists. Tests that
@@ -57,6 +58,15 @@ public class PaymentCommandService {
         if (recorder != null) {
             this.metrics = recorder;
         }
+    }
+
+    /**
+     * Bound by Spring where a settlement index exists. A process without one
+     * records the refund in its snapshot and nothing else.
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setRefundSettlementIndex(com.trainticket.payment.domain.ports.RefundSettlementIndex index) {
+        this.refundSettlementIndex = index;
     }
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -611,6 +621,7 @@ public class PaymentCommandService {
         refund.settle(intent, channelRefundTransactionId, Instant.now(clock), commandId(causationId), causationId, correlationId);
         paymentIntentRepository.save(intent);
         refundRepository.save(refund);
+        recordRefundSettlement(refund, intent);
         publishNewEvents(refund.domainEvents(), beforeRefund);
         if (intent.isLateCaptureCandidate()) {
             LatePaymentCase lateCase = latePaymentForIntent(paymentIntentId);
@@ -630,6 +641,30 @@ public class PaymentCommandService {
             amount,
             channel);
         return refund;
+    }
+
+    /**
+     * Records the settled refund in the settlement index, beside its snapshot.
+     *
+     * <p>Same transaction, so the index and the snapshot cannot disagree: a
+     * settlement that is rolled back leaves neither. The reading exists because
+     * a settlement date's reconciliation needs the platform's refunds by
+     * settlement instant and refund id, and the snapshot alone cannot answer
+     * that without walking every snapshot's domain events.
+     */
+    private void recordRefundSettlement(Refund refund, PaymentIntent intent) {
+        if (refundSettlementIndex == null) {
+            return;
+        }
+        refundSettlementIndex.record(new com.trainticket.payment.domain.ports.RefundSettlementIndex.RefundSettlement(
+            refund.refundId(),
+            refund.paymentIntentId(),
+            intent.businessRef(),
+            refund.sourceCaseRef(),
+            refund.amount().currency().getCurrencyCode(),
+            refund.amount().toMinorUnits(),
+            Instant.now(clock)
+        ));
     }
 
     @Transactional
@@ -704,6 +739,45 @@ public class PaymentCommandService {
 
     private void publishNewEvents(List<PaymentEvent> events, int previousSize) {
         publish(new ArrayList<>(events.subList(previousSize, events.size())));
+    }
+
+    /**
+     * A page of the refunds settled in a window, for the settlement reconciliation.
+     *
+     * <p>Read-only, paged by the index's own order (settlement instant, then
+     * refund id), and absent index -- a process without a database -- answers an
+     * empty page rather than failing the caller's run.
+     */
+    public Map<String, Object> refundSettlements(
+        Instant settledFrom,
+        Instant settledTo,
+        com.trainticket.payment.domain.ports.RefundSettlementIndex.Cursor after,
+        int limit
+    ) {
+        Objects.requireNonNull(settledFrom, "settledFrom is required");
+        Objects.requireNonNull(settledTo, "settledTo is required");
+        int pageSize = Math.max(1, Math.min(limit, 1000));
+        java.util.List<com.trainticket.payment.domain.ports.RefundSettlementIndex.RefundSettlement> page =
+            refundSettlementIndex == null
+                ? java.util.List.of()
+                : refundSettlementIndex.list(settledFrom, settledTo, after, pageSize);
+        java.util.List<Map<String, Object>> items = page.stream()
+            .map(settlement -> Map.<String, Object>of(
+                "refundId", settlement.refundId(),
+                "paymentIntentId", settlement.paymentIntentId(),
+                "businessReference", settlement.businessReference(),
+                "sourceCaseRef", settlement.sourceCaseRef(),
+                "currency", settlement.currency(),
+                "amountMinorUnits", settlement.amountMinorUnits(),
+                "settledAt", settlement.settledAt().toString()))
+            .toList();
+        Map<String, Object> body = new java.util.LinkedHashMap<>();
+        body.put("items", items);
+        if (page.size() == pageSize) {
+            var last = page.get(page.size() - 1);
+            body.put("nextCursor", new com.trainticket.payment.domain.ports.RefundSettlementIndex.Cursor(last.settledAt(), last.refundId()).encode());
+        }
+        return body;
     }
 
     private void publish(List<PaymentEvent> events) {
