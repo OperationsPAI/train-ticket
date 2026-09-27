@@ -1,5 +1,6 @@
 import { Redis, type RedisOptions } from "ioredis";
 import { type LivenessComponent } from "./liveness.js";
+import { type EventConsumerMetrics } from "./metrics.js";
 export type EventEnvelope<TPayload extends Record<string, unknown> = Record<string, unknown>> = Readonly<{
     eventId: string;
     eventType: string;
@@ -205,6 +206,7 @@ export declare class RedisEventSubscriber implements EventSubscriber {
      */
     private groupsNeedRecreate;
     private readonly recoveryCursors;
+    private readonly eventConsumerMetrics;
     constructor(redis?: Redis, onLoopFailure?: SubscriberLoopFailureHandler, options?: Readonly<{
         /**
          * What an error thrown out of a handler means.
@@ -216,13 +218,19 @@ export declare class RedisEventSubscriber implements EventSubscriber {
          * release: two `AncillaryOfferExpired` events were dead-lettered with
          * `connect ECONNREFUSED` while the read shard was being created.
          *
-         * `retry` is bounded -- `MAX_HANDLER_FAILURES` attempts in this process
-         * and the delivery-count cap in `finishEntry` -- so an event that really
-         * cannot be handled still reaches the dead letter. A service whose
-         * handlers only throw for genuinely fatal conditions can ask for `dlq`.
+         * `retry` is bounded -- `MAX_HANDLER_FAILURES` genuine handler failures
+         * per message in this process, counted in `finishEntry` -- so an event
+         * that really cannot be handled still reaches the dead letter. A service
+         * whose handlers only throw for genuinely fatal conditions can ask for
+         * `dlq`.
          */
         thrownHandlerErrors?: "retry" | "dlq";
         deadLetterEvidenceSink?: DeadLetterEvidenceSink;
+        /**
+         * Process-level transport metrics. Defaults to the meters under the
+         * service's own name, or a no-op when OTEL metrics are disabled.
+         */
+        eventConsumerMetrics?: EventConsumerMetrics;
     }>);
     started(): Promise<void>;
     subscribe(streams: readonly string[], group: string, consumerName: string, handler: EventHandler, signal?: AbortSignal): Promise<void>;

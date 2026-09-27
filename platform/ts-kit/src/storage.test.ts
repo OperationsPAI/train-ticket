@@ -11,8 +11,8 @@ type QueryCall = Readonly<{ sql: string; params: unknown[] }>;
 class FakeOutboxPool {
   public readonly calls: QueryCall[] = [];
   private readonly rows = [
-    { seq: 1, stream: "events:order", envelope: { eventId: "evt-1", producer: "order" } },
-    { seq: 2, stream: "events:payment", envelope: { eventId: "evt-2", producer: "payment" } },
+    { seq: 1, stream: "events:order", envelope: { eventId: "evt-1", producer: "order" }, created_at: new Date() },
+    { seq: 2, stream: "events:payment", envelope: { eventId: "evt-2", producer: "payment" }, created_at: new Date() },
   ];
 
   async query(sql: string, params: unknown[]) {
