@@ -8,7 +8,7 @@ import (
 
 func TestShippedDocumentStatesTheReleaseEstate(t *testing.T) {
 	stated := ReadersIn(".")
-	want := []string{"GATE", "STATION", "PROVIDER"}
+	want := []string{"STATION", "PROVIDER"}
 	if len(stated) != len(want) {
 		t.Fatalf("the shipped register states %v, want %v", stated, want)
 	}

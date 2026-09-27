@@ -187,6 +187,7 @@ Fulfillment 只拥有履约事实状态机，不定义 Entitlement、Journey Ord
 - 航空值机 CheckIn 不代表登机；Boarded 必须来自登机口、航司或人工确认。
 - Arrival 可来自供应商到达事件、运行计划实际到达、站内设备或人工确认；Completed 可在 Arrival 后按策略自动或人工闭环。
 - NoShow 在 boardingWindow 结束后生成候选，若供应商晚到 Boarded 事件可信，则通过 Backfill 撤销或纠正 NoShow。
+- 登机来源按部署声明：本 release 接收哪些 reader 产生的登机事实，写在自己的 settings 文档 `config/boarding.conf` 里。本 release 经营站务手持终端与供应商回传两个 reader，机场闸机由机场 estate 的 deployment 自行收取。
 
 ### 按需出行履约策略
 
