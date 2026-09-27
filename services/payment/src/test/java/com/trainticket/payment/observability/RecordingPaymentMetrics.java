@@ -25,7 +25,7 @@ public final class RecordingPaymentMetrics implements PaymentMetricRecorder {
     private final List<Operation> operations = new ArrayList<>();
     private final List<Amount> amounts = new ArrayList<>();
     private List<PaymentConservationPoint> conservation = List.of();
-    private java.time.Duration oldestDueIntentAge;
+    private java.util.Optional<java.time.Duration> oldestDueIntentAge = java.util.Optional.empty();
 
     @Override
     public void operation(
@@ -54,11 +54,11 @@ public final class RecordingPaymentMetrics implements PaymentMetricRecorder {
     }
 
     @Override
-    public void oldestDueIntentAge(java.time.Duration age) {
+    public void oldestDueIntentAge(java.util.Optional<java.time.Duration> age) {
         this.oldestDueIntentAge = age;
     }
 
-    public java.time.Duration oldestDueIntentAge() {
+    public java.util.Optional<java.time.Duration> oldestDueIntentAge() {
         return oldestDueIntentAge;
     }
 
