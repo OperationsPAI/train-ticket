@@ -1,6 +1,7 @@
 package com.trainticket.groupbooking.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.platformkit.messaging.EventPublisher;
@@ -20,6 +21,23 @@ class GroupBookingServiceTest {
         new InMemoryGroupBookingRepository(),
         publisher
     );
+
+    @Test
+    void aSegmentServicePlanCannotResolveIsRefusedRatherThanQuoted() {
+        GroupBookingService checked = new GroupBookingService(
+            Clock.fixed(Instant.parse("2026-07-10T12:00:00Z"), ZoneOffset.UTC),
+            new InMemoryGroupBookingRepository(),
+            publisher,
+            segmentRef -> "seg-known".equals(segmentRef)
+        );
+        checked.create(new GroupBookingService.CreateGroupBookingCommand(
+            "org-known", List.of("seg-known"), 10, "USD", 10_000L, 0, null), PrefixedIds.newCorrelationId());
+
+        assertThatThrownBy(() -> checked.create(new GroupBookingService.CreateGroupBookingCommand(
+            "org-unknown", List.of("seg-group-abc"), 10, "USD", 10_000L, 0, null), PrefixedIds.newCorrelationId()))
+            .isInstanceOf(com.trainticket.groupbooking.domain.DomainRuleViolation.class)
+            .hasMessageContaining("unknown to service-plan");
+    }
 
     @Test
     void createAddAndConfirmPublishesFoundationEvents() {
