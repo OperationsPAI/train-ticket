@@ -56,7 +56,11 @@ func TestResolveJourneyCoverageTreatsATerminalChangeAsNothingToAdjust(t *testing
 
 func TestResolveJourneyCoverageWaitsWhileAChangeIsStillPending(t *testing.T) {
 	// Quoted or approved means the case has not executed yet: that is a read that
-	// has not caught up, and the announcement must stay retryable.
+	// has not caught up, and it is the common case rather than a rare one --
+	// post-sales commits the case's applied snapshot a few milliseconds AFTER
+	// journey-order announces the order's adjustment, so the announcement this
+	// service is woken by always precedes the state it reads. It stays a retry,
+	// but it is a wait rather than a rule violation.
 	for _, status := range []string{"QUOTED", "APPROVED"} {
 		t.Run(status, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -65,9 +69,26 @@ func TestResolveJourneyCoverageWaitsWhileAChangeIsStillPending(t *testing.T) {
 			}))
 			defer server.Close()
 			_, err := (PurchaseVerifier{Client: server.Client(), BaseURLTemplate: server.URL + "/%s"}).ResolveJourneyCoverage(context.Background(), "ord-change", "psc-change")
-			if !errors.Is(err, ErrDomainRule) {
-				t.Fatalf("expected a retryable domain rule error for %s, got %v", status, err)
+			if !errors.Is(err, ErrNotReady) {
+				t.Fatalf("expected a not-ready error for %s, got %v", status, err)
 			}
 		})
+	}
+}
+
+func TestReadWithA404IsAWaitRatherThanARuleViolation(t *testing.T) {
+	// A read that 404s after its announcement names the resource is the same
+	// race as one that answers a stale state: the owning service has not exposed
+	// it yet. Measured on the resident release, these were 11 of 66 handler
+	// failures in ninety seconds, each recovered on its next delivery.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	var out map[string]any
+	err := (PurchaseVerifier{Client: server.Client(), BaseURLTemplate: server.URL + "/%s"}).read(context.Background(), "payment", "/api/v1/refunds/rf-1", "", &out)
+	if !errors.Is(err, ErrNotReady) {
+		t.Fatalf("expected ErrNotReady for a 404, got %v", err)
 	}
 }
