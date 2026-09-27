@@ -4,6 +4,7 @@ import { activeTraceContext, endSpan, endSpanWithError, markSpanError, remoteTra
 import { runWithTraceLoggingContext, runWithTraceLoggingContextForBatch } from "./trace-logging.js";
 import { registerLivenessComponent, type LivenessComponent } from "./liveness.js";
 import { canonicalCausationId, canonicalCorrelationId, canonicalEventId, newCommandId, newCorrelationId, newEventId } from "./ids.js";
+import { eventConsumerMetricsFromEnv, type EventConsumerFailureType, type EventConsumerMetrics } from "./metrics.js";
 
 export type EventEnvelope<TPayload extends Record<string, unknown> = Record<string, unknown>> = Readonly<{
   eventId: string;
@@ -472,6 +473,7 @@ export class RedisEventSubscriber implements EventSubscriber {
    */
   private groupsNeedRecreate = false;
   private readonly recoveryCursors = new Map<string, string>();
+  private readonly eventConsumerMetrics: EventConsumerMetrics;
 
   constructor(
     private readonly redis: Redis = createRedisClient(redisUrl(), {}, "subscriber"),
@@ -487,15 +489,22 @@ export class RedisEventSubscriber implements EventSubscriber {
        * release: two `AncillaryOfferExpired` events were dead-lettered with
        * `connect ECONNREFUSED` while the read shard was being created.
        *
-       * `retry` is bounded -- `MAX_HANDLER_FAILURES` attempts in this process
-       * and the delivery-count cap in `finishEntry` -- so an event that really
-       * cannot be handled still reaches the dead letter. A service whose
-       * handlers only throw for genuinely fatal conditions can ask for `dlq`.
+       * `retry` is bounded -- `MAX_HANDLER_FAILURES` genuine handler failures
+       * per message in this process, counted in `finishEntry` -- so an event
+       * that really cannot be handled still reaches the dead letter. A service
+       * whose handlers only throw for genuinely fatal conditions can ask for
+       * `dlq`.
        */
       thrownHandlerErrors?: "retry" | "dlq";
       deadLetterEvidenceSink?: DeadLetterEvidenceSink;
+      /**
+       * Process-level transport metrics. Defaults to the meters under the
+       * service's own name, or a no-op when OTEL metrics are disabled.
+       */
+      eventConsumerMetrics?: EventConsumerMetrics;
     }> = {},
   ) {
+    this.eventConsumerMetrics = options.eventConsumerMetrics ?? eventConsumerMetricsFromEnv();
     this.startedPromise = new Promise((resolve, reject) => {
       this.resolveStarted = resolve;
       this.rejectStarted = reject;
@@ -747,7 +756,7 @@ export class RedisEventSubscriber implements EventSubscriber {
         const result = error instanceof HandlerError
           ? (error.kind === "fatal" ? "dlq" : "retry")
           : (this.options.thrownHandlerErrors === "dlq" ? "dlq" : "retry");
-        await this.finishEntry(stream, group, consumerName, item.entry, item.envelope, item.attempts, result, error);
+        await this.finishEntry(stream, group, consumerName, item.entry, item.envelope, item.attempts, result, error, "handler_exception");
       }
       return;
     }
@@ -756,7 +765,7 @@ export class RedisEventSubscriber implements EventSubscriber {
     if (results.length !== batch.length) {
       const error = new HandlerError("fatal", `Batch handler returned ${results.length} results for ${batch.length} events`);
       for (const item of batch) {
-        await this.finishEntry(stream, group, consumerName, item.entry, item.envelope, item.attempts, "dlq", error);
+        await this.finishEntry(stream, group, consumerName, item.entry, item.envelope, item.attempts, "dlq", error, "fatal_result");
       }
       return;
     }
@@ -776,10 +785,15 @@ export class RedisEventSubscriber implements EventSubscriber {
       const result = rawResult === undefined ? "ack" : normalizeHandlerResult(rawResult);
       if (result === "ack") {
         this.rememberConsumed(item.envelope.eventId);
+        this.eventConsumerMetrics.recordOutcome("success");
         acknowledged.push(item.entry[0]);
         continue;
       }
-      await this.finishEntry(stream, group, consumerName, item.entry, item.envelope, item.attempts, result, failureReasonFromHandlerResult(rawResult));
+      await this.finishEntry(
+        stream, group, consumerName, item.entry, item.envelope, item.attempts, result,
+        failureReasonFromHandlerResult(rawResult),
+        result === "retry" ? "transient_result" : "fatal_result",
+      );
     }
     if (acknowledged.length > 0) {
       await (this.redis as unknown as { xack: (stream: string, group: string, ...ids: string[]) => Promise<unknown> })
@@ -792,7 +806,8 @@ export class RedisEventSubscriber implements EventSubscriber {
     const attempts = Math.max(1, deliveryAttempts);
     const envelopeJson = fieldValue(fields, "envelope");
     if (!envelopeJson) {
-      await this.deadLetterAndAck(stream, group, consumerName, entry, "MissingEnvelope", attempts);
+      this.eventConsumerMetrics.recordFailure("missing_envelope");
+      await this.deadLetterAndAck(stream, group, consumerName, entry, "MissingEnvelope", attempts, "missing_envelope");
       return undefined;
     }
 
@@ -800,11 +815,13 @@ export class RedisEventSubscriber implements EventSubscriber {
     try {
       envelope = deserializeEventEnvelope(envelopeJson);
     } catch (error) {
-      await this.deadLetterAndAck(stream, group, consumerName, entry, error, attempts);
+      this.eventConsumerMetrics.recordFailure("invalid_envelope");
+      await this.deadLetterAndAck(stream, group, consumerName, entry, error, attempts, "invalid_envelope");
       return undefined;
     }
 
     if (this.consumedEventIds.has(envelope.eventId)) {
+      this.eventConsumerMetrics.recordOutcome("duplicate");
       console.warn({
         service: group,
         stream,
@@ -824,7 +841,8 @@ export class RedisEventSubscriber implements EventSubscriber {
     const attempts = Math.max(1, deliveryAttempts);
     const envelopeJson = fieldValue(fields, "envelope");
     if (!envelopeJson) {
-      await this.deadLetterAndAck(stream, group, consumerName, entry, "MissingEnvelope", attempts);
+      this.eventConsumerMetrics.recordFailure("missing_envelope");
+      await this.deadLetterAndAck(stream, group, consumerName, entry, "MissingEnvelope", attempts, "missing_envelope");
       return;
     }
 
@@ -832,11 +850,13 @@ export class RedisEventSubscriber implements EventSubscriber {
     try {
       envelope = deserializeEventEnvelope(envelopeJson);
     } catch (error) {
-      await this.deadLetterAndAck(stream, group, consumerName, entry, error, attempts);
+      this.eventConsumerMetrics.recordFailure("invalid_envelope");
+      await this.deadLetterAndAck(stream, group, consumerName, entry, error, attempts, "invalid_envelope");
       return;
     }
 
     if (this.consumedEventIds.has(envelope.eventId)) {
+      this.eventConsumerMetrics.recordOutcome("duplicate");
       console.warn({
         service: group,
         stream,
@@ -850,21 +870,28 @@ export class RedisEventSubscriber implements EventSubscriber {
 
     let result: "ack" | "retry" | "dlq";
     let failureReason: unknown = "HandlerResult.dlq";
+    let failureType: EventConsumerFailureType = "fatal_result";
     try {
       const rawResult = await handleWithConsumerSpan(handler, envelope, stream, group);
       result = rawResult === undefined ? "ack" : normalizeHandlerResult(rawResult);
       failureReason = failureReasonFromHandlerResult(rawResult);
+      failureType = result === "retry" ? "transient_result" : "fatal_result";
     } catch (error) {
       result = error instanceof HandlerError
         ? (error.kind === "fatal" ? "dlq" : "retry")
         : (this.options.thrownHandlerErrors === "dlq" ? "dlq" : "retry");
       failureReason = error;
+      // A throw says the handler failed, whatever the disposal. Recorded under
+      // the same bounded class the dead-letter reason uses, so a thrown error
+      // that exhausts its retries reads as handler_exception rather than
+      // transient_result.
+      failureType = "handler_exception";
       if (result === "dlq") {
         console.error(sanitizedErrorForLog(error));
       }
     }
 
-    await this.finishEntry(stream, group, consumerName, entry, envelope, attempts, result, failureReason);
+    await this.finishEntry(stream, group, consumerName, entry, envelope, attempts, result, failureReason, failureType);
   }
 
   /**
@@ -920,11 +947,12 @@ export class RedisEventSubscriber implements EventSubscriber {
     }
   }
 
-  private async finishEntry(stream: string, group: string, consumerName: string, entry: StreamEntry, envelope: EventEnvelope, attempts: number, result: "ack" | "retry" | "dlq", failureReason: unknown): Promise<void> {
+  private async finishEntry(stream: string, group: string, consumerName: string, entry: StreamEntry, envelope: EventEnvelope, attempts: number, result: "ack" | "retry" | "dlq", failureReason: unknown, failureType: EventConsumerFailureType): Promise<void> {
     const failureKey = `${stream}:${group}:${entry[0]}`;
     if (result === "ack") {
       this.handlerFailures.delete(failureKey);
       this.rememberConsumed(envelope.eventId);
+      this.eventConsumerMetrics.recordOutcome("success");
       if (this.ackBatchDepth > 0) {
         this.queueAck(stream, group, entry[0]);
       } else {
@@ -933,22 +961,27 @@ export class RedisEventSubscriber implements EventSubscriber {
       }
       return;
     }
+    // One genuine failure per delivery, under the closed class that also labels
+    // the dead-letter reason. The retry decision below only changes the outcome,
+    // not the failure count.
+    this.eventConsumerMetrics.recordFailure(failureType);
     if (result === "dlq") {
       this.handlerFailures.delete(failureKey);
-      await this.deadLetterAndAck(stream, group, consumerName, entry, failureReason, attempts);
+      await this.deadLetterAndAck(stream, group, consumerName, entry, failureReason, attempts, failureType);
       return;
     }
     const failures = (this.handlerFailures.get(failureKey) ?? 0) + 1;
     this.handlerFailures.set(failureKey, failures);
     if (failures >= MAX_HANDLER_FAILURES) {
       this.handlerFailures.delete(failureKey);
-      await this.deadLetterAndAck(stream, group, consumerName, entry, failureReason, failures);
+      await this.deadLetterAndAck(stream, group, consumerName, entry, failureReason, failures, failureType);
       return;
     }
     if (this.handlerFailures.size > RedisEventSubscriber.CONSUMED_EVENT_CACHE_LIMIT) {
       const oldest = this.handlerFailures.keys().next().value;
       if (oldest !== undefined) this.handlerFailures.delete(oldest);
     }
+    this.eventConsumerMetrics.recordOutcome("retry");
     console.warn({
       service: group,
       stream,
@@ -984,7 +1017,7 @@ export class RedisEventSubscriber implements EventSubscriber {
     return counts;
   }
 
-  private async deadLetterAndAck(stream: string, group: string, consumerName: string, entry: StreamEntry, reason: unknown, attempts: number): Promise<void> {
+  private async deadLetterAndAck(stream: string, group: string, consumerName: string, entry: StreamEntry, reason: unknown, attempts: number, failureType: EventConsumerFailureType): Promise<void> {
     const envelopeJson = fieldValue(entry[1], "envelope") ?? JSON.stringify({});
     const failureReason = truncateFailureReason(reason);
     const safeAttempts = Math.max(1, attempts);
@@ -1002,37 +1035,47 @@ export class RedisEventSubscriber implements EventSubscriber {
       deadLetteredAt,
       message: "moving message to DLQ",
     });
-    await this.options.deadLetterEvidenceSink?.recordDeadLetter({
-      sourceStream: stream,
-      sourceMessageId: entry[0],
-      consumerGroup: group,
-      consumerName,
-      ...identity,
-      originalEnvelope: fieldValue(entry[1], "envelope"),
-      failureKind,
-      failureReason,
-      attempts: safeAttempts,
-      deadLetteredAt,
-    });
-    await this.redis.xadd(
-      dlqForStream(stream),
-      "MAXLEN",
-      "~",
-      STREAM_MAXLEN,
-      "*",
-      "envelope",
-      envelopeJson,
-      "consumerGroup",
-      group,
-      "consumerName",
-      consumerName,
-      "failureReason",
-      failureReason,
-      "attempts",
-      String(safeAttempts),
-      "deadLetteredAt",
-      deadLetteredAt,
-    );
+    try {
+      await this.options.deadLetterEvidenceSink?.recordDeadLetter({
+        sourceStream: stream,
+        sourceMessageId: entry[0],
+        consumerGroup: group,
+        consumerName,
+        ...identity,
+        originalEnvelope: fieldValue(entry[1], "envelope"),
+        failureKind,
+        failureReason,
+        attempts: safeAttempts,
+        deadLetteredAt,
+      });
+      await this.redis.xadd(
+        dlqForStream(stream),
+        "MAXLEN",
+        "~",
+        STREAM_MAXLEN,
+        "*",
+        "envelope",
+        envelopeJson,
+        "consumerGroup",
+        group,
+        "consumerName",
+        consumerName,
+        "failureReason",
+        failureReason,
+        "attempts",
+        String(safeAttempts),
+        "deadLetteredAt",
+        deadLetteredAt,
+      );
+    } catch (error) {
+      // The hand-off did not land. The message stays pending so a later delivery
+      // can retry the DLQ write; the stage is recorded so a failing DLQ is
+      // visible rather than showing up only as a stalled stream.
+      this.eventConsumerMetrics.recordFailure("dlq_write");
+      throw error;
+    }
+    this.eventConsumerMetrics.recordDeadLetter(failureType);
+    this.eventConsumerMetrics.recordOutcome("dead_letter");
     await this.redis.xack(stream, group, entry[0]);
   }
 
