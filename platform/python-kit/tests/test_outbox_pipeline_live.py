@@ -25,7 +25,9 @@ def test_pipeline_preserves_envelopes_order_stream_bounds_and_failure_recovery(m
         try:
             with ConnectionPool(os.environ["TEST_DATABASE_URL"], min_size=1, max_size=4, kwargs={"options": f"-c search_path={schema}"}) as pool:
                 with pool.connection() as conn:
-                    conn.execute("CREATE TABLE outbox(seq bigserial PRIMARY KEY,event_id text UNIQUE,stream text,envelope jsonb,published_at timestamptz)")
+                    # created_at is part of the deployed table and of the relay's
+                    # head-of-line age sample, so the fixture has it too.
+                    conn.execute("CREATE TABLE outbox(seq bigserial PRIMARY KEY,event_id text UNIQUE,stream text,envelope jsonb,created_at timestamptz NOT NULL DEFAULT now(),published_at timestamptz)")
                     with conn.cursor() as cursor:
                         cursor.executemany("INSERT INTO outbox(event_id,stream,envelope) VALUES (%s,%s,%s::jsonb)", [(event["eventId"], stream, json.dumps(event)) for event in events])
                 relay = OutboxRelay(pool, client)
