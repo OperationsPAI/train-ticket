@@ -477,6 +477,21 @@ export class RedisEventSubscriber implements EventSubscriber {
     private readonly redis: Redis = createRedisClient(redisUrl(), {}, "subscriber"),
     private readonly onLoopFailure: SubscriberLoopFailureHandler = defaultLoopFailureHandler,
     private readonly options: Readonly<{
+      /**
+       * What an error thrown out of a handler means.
+       *
+       * A throw says the handler failed, not that the event is bad: a database
+       * that refuses connections, a dependency that times out and a bug in the
+       * handler all look alike from here, and dead-lettering the event loses
+       * work that a retry would have completed. Measured on the resident
+       * release: two `AncillaryOfferExpired` events were dead-lettered with
+       * `connect ECONNREFUSED` while the read shard was being created.
+       *
+       * `retry` is bounded -- `MAX_HANDLER_FAILURES` attempts in this process
+       * and the delivery-count cap in `finishEntry` -- so an event that really
+       * cannot be handled still reaches the dead letter. A service whose
+       * handlers only throw for genuinely fatal conditions can ask for `dlq`.
+       */
       thrownHandlerErrors?: "retry" | "dlq";
       deadLetterEvidenceSink?: DeadLetterEvidenceSink;
     }> = {},
@@ -731,7 +746,7 @@ export class RedisEventSubscriber implements EventSubscriber {
       for (const item of batch) {
         const result = error instanceof HandlerError
           ? (error.kind === "fatal" ? "dlq" : "retry")
-          : (this.options.thrownHandlerErrors === "retry" ? "retry" : "dlq");
+          : (this.options.thrownHandlerErrors === "dlq" ? "dlq" : "retry");
         await this.finishEntry(stream, group, consumerName, item.entry, item.envelope, item.attempts, result, error);
       }
       return;
@@ -842,7 +857,7 @@ export class RedisEventSubscriber implements EventSubscriber {
     } catch (error) {
       result = error instanceof HandlerError
         ? (error.kind === "fatal" ? "dlq" : "retry")
-        : (this.options.thrownHandlerErrors === "retry" ? "retry" : "dlq");
+        : (this.options.thrownHandlerErrors === "dlq" ? "dlq" : "retry");
       failureReason = error;
       if (result === "dlq") {
         console.error(sanitizedErrorForLog(error));
