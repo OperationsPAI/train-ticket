@@ -152,6 +152,31 @@ policy's own account. Approving the same claim a second time answered the same
 completed advice with the same execution reference, and the account's benefit
 list holds exactly one benefit for that claim.
 
+### A rollout no longer loses events to the dead letter
+
+Two defects in the Rust kit's pending recovery, both visible at revision 480: a
+`BookingSagaFailed` published during that release's rollout was reclaimed five
+times inside four minutes and dead-lettered at `09:36:45` although every consumer
+ignores that type.
+
+The recovery path never acknowledged an entry its handler completed. The read
+path collects the ids its handlers finished and XACKs them as one batch; this
+path discarded that answer, so a reclaimed entry stayed pending, was reclaimed
+again after the idle window, and was retired by the redelivery backstop. The
+kit's dedup hid the repeated handling, which is why it stayed invisible. The
+second half is the count that decides retirement: the five that bound *handler*
+failures also bound Redis' redeliveries, and a rolling update advances that
+counter by reclaiming entries from the pods it replaces.
+
+At revision 481 the recovery path acknowledges what it handled, the handler's own
+failure count is what retires a message, and a separate
+`MAX_REDELIVERY_ATTEMPTS` backstop -- 100 by default, about an hour and a half of
+continuously pending time -- covers the crash loop. Java, Python and TypeScript
+already drew that line; only the Rust kit had collapsed it. Verified live:
+`entitlement-ticketing` was scaled to zero, an entry was delivered to a consumer
+name no pod owns, and on scaling back the group's pending list drained from 21
+entries to 0 while the dead-letter population did not move.
+
 ### Duplicate publication is fixed
 
 Every replica ran its own outbox relay over the same table, and the relay
