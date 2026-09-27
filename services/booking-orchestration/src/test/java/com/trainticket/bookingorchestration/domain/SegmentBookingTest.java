@@ -192,4 +192,34 @@ class SegmentBookingTest {
         assertTrue(booking.peekEvents().stream()
             .anyMatch(SegmentBookingEvent.ProviderCancellationRequired.class::isInstance));
     }
+
+    @Test
+    void aHoldThatArrivesAfterCancellationKeepsItsReferenceAndCancelsTheProviderInstead() {
+        // Measured on the resident release: the saga's reservation step timed
+        // out and cancelled the booking while the provider's confirmation was
+        // still waiting for a Hold. The Hold then arrived, the deferred
+        // confirmation was applied to a cancelled booking, and the resulting
+        // IllegalStateException was dead-lettered as FATAL_FAILURE. The hold
+        // reference is still worth keeping -- the release path needs it -- but
+        // the booking must not leave CANCELLED.
+        SegmentBooking booking = SegmentBooking.requestReservation("booking-1", "order-1", "offer-item-1",
+            "rail-segment-1", "traveler-1", "purchase", clock);
+        ProviderReference reference = new ProviderReference("provider-acl", "reservation-42", "PNR-42");
+        booking.confirmFromProvider(new ProviderReservationConfirmed(booking.segmentBookingId(), reference,
+            "confirmed", Map.of()));
+        booking.requestCancellation("SAGA_STEP_TIMED_OUT");
+        booking.markCancelled("SAGA_STEP_TIMED_OUT");
+        booking.pullEvents();
+
+        booking.markCapacityHolding("hold-late");
+
+        assertEquals(SegmentBookingStatus.CANCELLED, booking.status());
+        assertEquals("hold-late", booking.capacityHoldId().orElseThrow());
+        assertEquals(reference, booking.providerReference().orElseThrow());
+        assertTrue(booking.pendingProviderReference().isEmpty());
+        assertTrue(booking.peekEvents().stream()
+            .noneMatch(SegmentBookingEvent.SegmentReservationConfirmed.class::isInstance));
+        assertTrue(booking.peekEvents().stream()
+            .anyMatch(SegmentBookingEvent.ProviderCancellationRequired.class::isInstance));
+    }
 }
