@@ -80,11 +80,14 @@ class OrderManagementServiceTest {
         // an exact set match rather than a containsAll -- it is what caught the
         // field being added to the event without the contract being updated.
         assertEquals(java.util.Set.of("orderId", "accountId", "offerId", "monetarySummary",
-            "travelerRefs", "segmentRefs", "segments", "createdAt"), payload.keySet());
+            "travelerRefs", "segmentRefs", "segments", "createdAt", "distanceKm"), payload.keySet());
         assertTrue(String.valueOf(payload.get("orderId")).startsWith("ord-"));
         assertEquals("account-1", payload.get("accountId"));
         assertEquals("offer-1", payload.get("offerId"));
         assertEquals("2026-07-05T10:00:00Z", payload.get("createdAt"));
+        // Reporting divides captured money by this to produce yieldPerKm, and the
+        // contract carries it as optional because a flat-fare quote has none.
+        assertEquals(1318.0, payload.get("distanceKm"));
         assertEquals(List.of("seg-1"), payload.get("segmentRefs"));
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> travelerRefs = (List<Map<String, Object>>) payload.get("travelerRefs");
