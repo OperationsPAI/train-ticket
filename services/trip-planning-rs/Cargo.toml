@@ -26,6 +26,7 @@ uuid = { version = "1.0", features = ["v7", "fast-rng"] }
 tower = { version = "0.5.3", features = ["util"] }
 axum-test = "16"
 http-body-util = "0.1"
+opentelemetry_sdk = { version = "0.32.0", features = ["testing"] }
 
 [features]
 default = []

@@ -1480,6 +1480,7 @@ dependencies = [
  "portable-atomic",
  "rand 0.9.5",
  "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]
@@ -2782,6 +2783,7 @@ dependencies = [
  "http-body-util",
  "log",
  "opentelemetry",
+ "opentelemetry_sdk",
  "redis",
  "rust-kit",
  "serde",
