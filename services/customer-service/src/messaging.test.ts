@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { CustomerServiceRedisEventSubscriber, RedisEventSubscriber } from "./adapters/messaging/subscriber.js";
+import type { EventHandler } from "@trainticket/ts-kit";
 import { CUSTOMER_SERVICE_SUBSCRIPTIONS } from "./adapters/messaging/stream-config.js";
 import { CustomerServiceApplication } from "./application/customer-service.js";
 import { EvidenceRef, ManualActionRequest, SupportCase, type CustomerServiceDomainEvent } from "./domain.js";
@@ -383,27 +384,42 @@ describe("customer-service messaging ports", () => {
     const slowGate = new Promise<void>((resolve) => { releaseSlow = resolve; });
     const started: string[] = [];
     const redisByStream = new Map<string, RecoveryRedis>();
+    const subscriberByStream = new Map<string, RedisEventSubscriber>();
     const subscriber = new CustomerServiceRedisEventSubscriber((stream) => {
       const redis = new RecoveryRedis(stream);
       redisByStream.set(stream, redis);
-      return new RedisEventSubscriber(redis as never);
+      const streamSubscriber = new RedisEventSubscriber(redis as never);
+      subscriberByStream.set(stream, streamSubscriber);
+      return streamSubscriber;
     });
+    const handler: EventHandler = async (envelope) => {
+      started.push(envelope.producer);
+      if (envelope.producer === "post-sales") {
+        await slowGate;
+      }
+    };
 
     await subscriber.subscribe(
       [slowStream, fastStream],
       "customer-service",
       "customer-service-test",
-      async (envelope) => {
-        started.push(envelope.producer);
-        if (envelope.producer === "post-sales") {
-          await slowGate;
-        }
-      },
+      handler,
     );
 
     try {
+      // The reclaim is driven directly rather than waited for: the kit sweeps
+      // pending entries every fifteen seconds, and a test that waited for that
+      // timer would fail the moment the interval changed -- which is exactly
+      // what happened here when it went from one second to fifteen.
+      const claims = [slowStream, fastStream].map((stream) => {
+        const streamSubscriber = subscriberByStream.get(stream);
+        assert.ok(streamSubscriber, `${stream} has its own subscriber`);
+        return (streamSubscriber as unknown as {
+          claimAndProcess: (stream: string, group: string, consumer: string, handler: EventHandler) => Promise<void>;
+        }).claimAndProcess(stream, "customer-service", "customer-service-test", handler);
+      });
       await waitFor(() => started.includes("post-sales"), 2_000);
-      await waitFor(() => started.includes("identity-verification"), 250);
+      await waitFor(() => started.includes("identity-verification"), 2_000);
       assert.deepEqual(
         [...redisByStream.entries()].map(([stream, redis]) => [stream, redis.claimedStreams]),
         [
@@ -411,6 +427,8 @@ describe("customer-service messaging ports", () => {
           [fastStream, [fastStream]],
         ],
       );
+      releaseSlow();
+      await Promise.all(claims);
     } finally {
       releaseSlow();
       await subscriber.stop();
