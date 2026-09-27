@@ -496,13 +496,30 @@ fn subscriber_decision_logic_retries_dlqs_and_dedups() {
     );
     assert!(!subscriber.has_seen(&envelope.event_id));
 
-    let poison = ReceivedEvent {
+    // The broker's redelivery counter does not retire a message. A rollout or a
+    // starved consumer advances it without the message being bad, so a fifth
+    // delivery still dispatches and it is the handler's OWN failure count that
+    // retires the event: five transient answers, no matter how they were
+    // delivered. Measured on the resident release, a `BookingSagaFailed`
+    // published during the revision 480 rollout was reclaimed five times in four
+    // minutes and dead-lettered although every consumer ignores that type.
+    let redelivered = ReceivedEvent {
         delivery_attempts: 5,
         ..transient.clone()
     };
+    // One failure is already recorded above, so three more bring the handler's
+    // count to four and the fifth retires it.
+    for attempt in 2..5 {
+        assert_eq!(
+            subscriber.process_received(&redelivered, &|_| HandlerResult::TransientError("try again".into())),
+            SubscriberAction::LeavePending,
+            "handler failure {attempt} is below the cap"
+        );
+    }
     assert_eq!(
-        subscriber.process_received(&poison, &|_| panic!("poison should not dispatch")),
-        SubscriberAction::DeadLetterAndAck
+        subscriber.process_received(&redelivered, &|_| HandlerResult::TransientError("try again".into())),
+        SubscriberAction::DeadLetterAndAck,
+        "the fifth handler failure retires the event"
     );
 
     let second_envelope = WireEnvelope {
@@ -1144,7 +1161,7 @@ async fn api_release_replay_returns_original_200_response() {
 }
 
 #[test]
-fn subscriber_dlqs_after_fifth_delivery_attempt_from_broker_counter() {
+fn subscriber_retires_an_undelivered_event_only_at_the_redelivery_backstop() {
     use capacity_availability::adapters::messaging::{
         InMemoryEventSubscriber, ReceivedEvent, SubscriberAction,
     };
@@ -1164,14 +1181,30 @@ fn subscriber_dlqs_after_fifth_delivery_attempt_from_broker_counter() {
         tracestate: None,
         payload: json!({"segmentBookingId": "sb-1"}),
     };
-    let received = ReceivedEvent {
+    // Five deliveries is a rollout's worth of redelivery, not a bad message, so
+    // the handler still runs.
+    let redelivered = ReceivedEvent {
         entry_id: "5-0".to_string(),
         stream: "events:booking-orchestration".to_string(),
-        envelope,
+        envelope: envelope.clone(),
         delivery_attempts: 5,
     };
     assert_eq!(
-        subscriber.process_received(&received, &|_| HandlerResult::Success),
+        subscriber.process_received(&redelivered, &|_| HandlerResult::Success),
+        SubscriberAction::Ack
+    );
+
+    // The backstop is for the crash-loop case, where the handler never gets to
+    // answer at all: at `MAX_REDELIVERY_ATTEMPTS` (100 by default) the event is
+    // retired without being dispatched again.
+    let crashed = ReceivedEvent {
+        entry_id: "100-0".to_string(),
+        stream: "events:booking-orchestration".to_string(),
+        envelope,
+        delivery_attempts: 100,
+    };
+    assert_eq!(
+        subscriber.process_received(&crashed, &|_| panic!("a crashed consumer's event must not dispatch again")),
         SubscriberAction::DeadLetterAndAck
     );
 }
