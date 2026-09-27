@@ -8,6 +8,7 @@ from fastapi import FastAPI, Response
 from opentelemetry import trace
 
 from train_ticket_platform.observability import init_opentelemetry
+from train_ticket_platform.metrics import order_funnel
 from .runtime import health, profile
 from .application import DomainEventService
 from train_ticket_platform.idempotency import BoundedInMemoryIdempotencyStore, IdempotencyStore, configure_idempotency_middleware
@@ -105,6 +106,10 @@ def configure_fare_pricing_routes(
     app.state.fare_pricing_store = store
     app.state.domain_event_service = DomainEventService(publisher)
     app.state.event_publisher = publisher
+    # This service owns the funnel's `quote` stage: the fare quote is what the
+    # customer is waiting for between the search and the offer. The instrument is
+    # a no-op when no metric exporter is configured.
+    app.state.order_funnel = order_funnel(service_name=profile()["service_id"])
     configure_idempotency_middleware(
         app,
         idempotency_store or BoundedInMemoryIdempotencyStore(),
