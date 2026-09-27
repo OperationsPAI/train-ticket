@@ -38,12 +38,38 @@ public class FinanceSettlementApplicationService {
     private static final BigDecimal PLATFORM_SERVICE_FEE_PCT = new BigDecimal("0.02");
     private static final BigDecimal SUPPLIER_SERVICE_FEE_PCT = new BigDecimal("0.01");
     private static final BigDecimal VOLUNTARY_CANCELLATION_RETAINED_FEE_PCT = new BigDecimal("0.10");
+    // 2,000 pages of 500 lines is a million lines: past any statement this
+    // environment has measured (the largest is 342,648), and a bound rather
+    // than a target, so a statement that keeps growing cannot hold the
+    // scheduler's single thread forever.
+    private static final int MAX_STATEMENT_LINE_PAGES = 2_000;
 
     private final SupplierSettlementRepository supplierSettlements;
     private final FeeAccrualRepository feeAccruals;
     private final EventPublisher eventPublisher;
     private final DomainEventEnvelopeMapper envelopeMapper;
     private final Clock clock;
+    private ChannelStatementLineSource channelStatementLines;
+    private PaymentIntentOrderReferenceRepository paymentIntentOrderReferences;
+
+    /**
+     * Where the channel's own statement lines come from, when this deployment
+     * has a source for them. Without one the reconciliation keeps its
+     * statement-level fallback.
+     */
+    public FinanceSettlementApplicationService withChannelStatementLines(ChannelStatementLineSource source) {
+        this.channelStatementLines = source;
+        return this;
+    }
+
+    /**
+     * Resolves the order a channel line settles from the payment intent, which
+     * is the reference both sides carry.
+     */
+    public FinanceSettlementApplicationService withPaymentIntentOrderReferences(PaymentIntentOrderReferenceRepository references) {
+        this.paymentIntentOrderReferences = references;
+        return this;
+    }
 
     public FinanceSettlementApplicationService(
         RevenueRecognitionRepository revenueRecognitions,
@@ -291,6 +317,7 @@ public class FinanceSettlementApplicationService {
     public ReconciliationBatch runDailyReconciliation(LocalDate settlementDate, String correlationId) {
         LocalDate date = settlementDate == null ? LocalDate.now(clock).minusDays(1) : settlementDate;
         return reconciliationBatches.findBySettlementDate(date).orElseGet(() -> {
+            ingestChannelStatementLines(date, correlationId);
             Currency[] currency = {Currency.getInstance("CNY")};
             Map<String, PlatformReconciliationFact> captures = new LinkedHashMap<>();
             for (FinanceSettlementEventHandler.PaymentCaptureFact capture : projections.findCapturesForSettlementDate(date)) {
@@ -300,6 +327,11 @@ public class FinanceSettlementApplicationService {
             }
             Map<String, ChannelReconciliationFact> channelLines = new LinkedHashMap<>();
             for (ChannelStatementLineProjection line : projections.findChannelStatementLinesForSettlementDate(date)) {
+                // Only the channel's payments answer the platform's captures. A
+                // refund line is the channel's answer to a platform refund, and
+                // entering it here would report every refund as money the
+                // platform cannot explain.
+                if (!line.isPayment()) continue;
                 String key = reconciliationKey(line.orderId(), line.paymentIntentId());
                 channelLines.merge(key, new ChannelReconciliationFact(line.orderId(), line.paymentIntentId(), line.actualAmount(), List.of(line.sourceEventId())), ChannelReconciliationFact::merge);
                 currency[0] = line.actualAmount().currency();
@@ -442,6 +474,80 @@ public class FinanceSettlementApplicationService {
                 throw ex;
             }
         }
+    }
+
+    /**
+     * Records the channel's own lines for a settlement date, so the daily
+     * reconciliation compares captures with lines rather than with one
+     * statement-level total.
+     *
+     * The channel side is read once per statement: a statement whose lines are
+     * already recorded is skipped, and the write is an upsert keyed by the
+     * statement line id, so a re-read of a half-written statement is a no-op
+     * rather than a duplicate.
+     *
+     * @return how many lines this call recorded
+     */
+    public int ingestChannelStatementLines(LocalDate settlementDate, String correlationId) {
+        if (channelStatementLines == null) return 0;
+        int recorded = 0;
+        for (ChannelStatementProjection statement : projections.findChannelStatementsForSettlementDate(settlementDate)) {
+            if (projections.hasChannelStatementLines(statement.channelStatementId())) continue;
+            int forStatement = ingestStatementLines(statement);
+            recorded += forStatement;
+            if (forStatement > 0) {
+                System.out.printf(
+                    "finance settlement: read %d channel statement lines for %s %s (%s)%n",
+                    forStatement, statement.channel(), statement.statementDate(), statement.channelStatementId());
+            }
+        }
+        return recorded;
+    }
+
+    private int ingestStatementLines(ChannelStatementProjection statement) {
+        long after = 0;
+        int recorded = 0;
+        for (int page = 0; page < MAX_STATEMENT_LINE_PAGES; page++) {
+            ChannelStatementLineSource.Page current = channelStatementLines.page(
+                statement.channelStatementId(), after, ChannelStatementLineSource.MAX_PAGE_SIZE);
+            if (current.lines().isEmpty()) break;
+            // One query per page rather than one per line: the statement is
+            // hundreds of thousands of lines and this lookup is on the path of
+            // every one of them.
+            java.util.Map<String, String> orderReferences = orderReferencesFor(current.lines());
+            List<ChannelStatementLineProjection> batch = new ArrayList<>(current.lines().size());
+            for (ChannelStatementLineSource.Line line : current.lines()) {
+                batch.add(new ChannelStatementLineProjection(
+                    line.statementLineId(),
+                    statement.channelStatementId(),
+                    statement.statementDate(),
+                    orderReferences.getOrDefault(line.paymentIntentId(), ""),
+                    line.paymentIntentId(),
+                    line.channelOrderId(),
+                    line.actualAmount(),
+                    // The line itself is the evidence: this side of the money was
+                    // read from the channel's statement, not published as an event.
+                    line.statementLineId(),
+                    line.lineType().isBlank() ? ChannelStatementLineProjection.PAYMENT : line.lineType()
+                ));
+            }
+            projections.saveChannelStatementLines(batch);
+            recorded += batch.size();
+            if (current.nextCursor() == null) break;
+            after = current.nextCursor();
+        }
+        return recorded;
+    }
+
+    /** One lookup per page for the intents the page's lines name. */
+    private java.util.Map<String, String> orderReferencesFor(List<ChannelStatementLineSource.Line> lines) {
+        if (paymentIntentOrderReferences == null) return java.util.Map.of();
+        List<String> intents = lines.stream()
+            .map(ChannelStatementLineSource.Line::paymentIntentId)
+            .filter(paymentIntentId -> !paymentIntentId.isBlank())
+            .distinct()
+            .toList();
+        return intents.isEmpty() ? java.util.Map.of() : paymentIntentOrderReferences.findOrderReferences(intents);
     }
 
     private static String reconciliationKey(String orderId, String paymentIntentId) {
