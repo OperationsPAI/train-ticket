@@ -65,6 +65,8 @@ to one and back.
 | The whole day 2026-09-26 reconciled line by line, revision 515 | 618650 channel lines read from three frozen statements and compared with the platform's receipts: **488414 entries, 488414 matched, variance 0.00, 0 exceptions** -- against the same day's earlier batch, which had 431530 entries and **0 matched** | `POST /api/v1/settlements/reconciliation/2026-09-26/run`; `reconciliation_batch_snapshots` |
 | The channel side of one real statement, revision 515 | `ChannelStatementIngestLiveTest` reads a deployed statement end to end: 165724 lines (133059 payment / 32665 refund), the payment sum equal to the statement's published gross payment and the refund sum to its gross refund, a second read recording nothing, and 200 sampled real captures joining their lines | the live test against the deployed payment-channel |
 | Scheduled job age, revision 511 | `train_ticket_scheduled_job_success_age_seconds` is scraped with its `scheduled_job` label for both `DAILY_RECONCILIATION` and `SUPPLIER_SETTLEMENT` on every `finance-settlement` replica | `prometheus` query at revision 511 |
+| General multistop admission, revision 515 | `multistop_supply_live` on the deployed seat facts: a seat sold for stops 0-1 is still sellable for stops 1-2, a seat sold across 0-2 is free in neither, two overlapping allocations on one unit are refused, and a released hold leaves its unit free -- passing on SECOND_CLASS, FIRST_CLASS and SLEEPER_HARD | the live test against the deployed seat-assignment |
+| The hold store's own invariants, revision 515 | of **1410196** holds: **0** live holds without a unit or a resolved service, **0** invalid intervals, **0** confirmations without an instant, **0** holds confirmed after release, and **0** units carrying two live holds in one interval; `capacity_hold_fences` holds 459526 released holds, and allocating against one answers 412 `capacity Hold is released` while confirming one answers 412 `Hold is not in a state that can be mutated` | the deployed hold snapshots and both APIs |
 | Five minute window at revision 511, after the channel-statement and travel-insurance fixes | 176489 requests and 20230 journeys, **0 unexpected HTTP errors and 0 failed journeys**; every dead-letter stream holds exactly what it held before the pass (ancillary-service 2, booking-orchestration 1, capacity-availability 6, finance-settlement 5, journey-order 3, payment-channel 3) and no consumer group is more than 200 entries behind its stream | the load generator's own record file, `/data/requests.jsonl` on `loadgen` |
 | Travel insurance's two waits, revision 511 against the release before it | handler failures fell from about **40 a minute** to **3 in ten minutes**, and those three are one message whose case took minutes to reach APPLIED and which then succeeded; `events:journey-order:dlq` did not grow | `travel-insurance` pod log |
 | The channel statement through the API, revision 511 | three statements generated and frozen through `payment-channel` are stored **FROZEN** with their amounts and generation instants, `events:payment-channel:dlq` did not grow, and `ChannelStatementProjectionLiveTest` passes against the deployed PostgreSQL | `finance_settlement.channel_statements`; the live test |
@@ -697,9 +699,12 @@ repository artifacts.
 ## What is open
 
 Everything still open is listed once, in [TODO](TODO.md). The largest items are
-the general multistop capacity verification, the waitlist fulfillment
-acceptance, the channel statement's line-level matching, and the scheduled-job
-collector's remaining half.
+the waitlist fulfillment acceptance -- which is blocked on a real pool with a
+free unit rather than on code -- and the two items that extend what this pass
+finished: matching the refund side of a channel statement (T25) and the
+scheduled-job collector's second half (T18.5). The bus, scale and read-cost items
+are deferred by the operator's instruction, which is recorded with the traffic
+level itself.
 
 No part of this document authorises a deployment: the runtime configuration is
 the single values file, and a release is made with
