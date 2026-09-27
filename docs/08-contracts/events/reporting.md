@@ -17,6 +17,26 @@ policy events. These facts resolve `PaymentCaptured.businessRef`; Reporting does
 not treat route, seat class, traveler type, or attachment fields on the payment
 payload as authoritative.
 
+## Subscribed streams
+
+Reporting consumes fourteen streams, and they are the ones that carry a fact it
+projects: `events:ancillary-service`, `events:booking-orchestration`,
+`events:customer-service`, `events:dispatch`, `events:finance-settlement`,
+`events:fulfillment`, `events:invoicing`, `events:journey-order`,
+`events:payment`, `events:payment-channel`, `events:post-sales`,
+`events:seat-assignment`, `events:travel-insurance` and `events:waitlist`. The
+list is in `services/reporting/src/reporting/adapters/messaging/stream_config.py`.
+
+It is not every context on the platform. It used to be, with a client-side
+filter discarding the rest, but a discarded event still costs a read, a parse and
+an acknowledge on a bus with one Redis thread shared by every service. Twelve of
+the applied event types (`BookingConfirmed`, `CapacityUpdated`,
+`SeatInventoryUpdated`, `CapacityExhausted`, `TripSearched`, `SearchPerformed`,
+`OfferSearchRequested`, `PaymentDeclined`, `PaymentCaptureFailed`,
+`ScalperBlocked`, `RiskBookingBlocked`, `AncillaryQuoted`) have no producer
+anywhere in this repository, so the streams that would have carried only them
+were cost without a fact.
+
 ## MetricDefined
 
 Produced when a new metric definition is drafted.
