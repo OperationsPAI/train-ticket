@@ -2,6 +2,24 @@ import { createHash } from "node:crypto";
 import { uuidV7 } from "@trainticket/ts-kit";
 
 export type WaitlistStatus = "DRAFT" | "QUEUED" | "MATCHING" | "FULFILLED" | "EXPIRED" | "CANCELLED" | "SUSPENDED" | "CLOSED";
+
+/**
+ * The pricing inputs the customer's guarantee was based on.
+ *
+ * The promotion has to re-quote the seat it offers, and fare-pricing prices
+ * from whatever the request carries: without the distance the request falls back
+ * to the flat base fare, and the new total was measured at 28750 against 16979
+ * for the same segment, class and channel *with* the distance. The promoted
+ * offer then exceeded the amount the customer had authorized, the guarantee
+ * guard parked the entry, and the waitlist could not fulfil anyone. Carrying the
+ * source quote's inputs is what keeps the re-quote comparable to the guarantee.
+ */
+export type PricingContext = Readonly<{
+  productCode: string;
+  channel: string;
+  distanceKm?: number;
+  departureTime?: string;
+}>;
 export type LoyaltyTier = "PLATINUM" | "GOLD" | "SILVER" | "NONE";
 export type FareClass = "BUSINESS_CLASS" | "FIRST_CLASS" | "SECOND_CLASS" | "STANDING" | "SLEEPER_HARD" | "SLEEPER_SOFT";
 export type FareClassInput = FareClass | "BUSINESS" | "FIRST" | "SECOND";
@@ -99,6 +117,7 @@ export type WaitlistEntrySnapshot = Readonly<{
    * order every half minute for the whole thirty minute window.
    */
   promotionRetryAfter?: string;
+  pricingContext?: PricingContext;
 }>;
 
 export type CreateWaitlistEntry = Readonly<{
@@ -120,6 +139,7 @@ export type CreateWaitlistEntry = Readonly<{
   matchedCapacityCredits?: readonly CapacityCreditAllocation[];
   fulfillment?: FulfillmentProgress;
   createdAt?: Date;
+  pricingContext?: PricingContext;
 }>;
 
 export class DomainError extends Error {
@@ -164,6 +184,7 @@ export class WaitlistEntry {
     private _journeyOrderIdempotencyKey: string = uuidV7(),
     private readonly _capacitySegmentBookingId: string = `sb-${uuidV7()}`,
     private _promotionRetryAfter: Date | null = null,
+    private readonly _pricingContext: PricingContext = defaultPricingContext(),
     private _loadedVersion = 0,
   ) {}
 
@@ -209,6 +230,15 @@ export class WaitlistEntry {
       command.intentFingerprint ?? defaultIntentFingerprint(command.travelerRefs, scheduledServiceRef, command.departureDate, seatClass, interval),
       command.matchedCapacityCredits ?? [],
       command.fulfillment ?? newFulfillmentProgress(entryId, command.travelerRefs),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      command.pricingContext ?? defaultPricingContext(),
     );
   }
 
@@ -247,11 +277,13 @@ export class WaitlistEntry {
       snapshot.journeyOrderIdempotencyKey,
       snapshot.capacitySegmentBookingId,
       snapshot.promotionRetryAfter ? new Date(snapshot.promotionRetryAfter) : null,
+      snapshot.pricingContext ?? defaultPricingContext(),
     );
   }
 
   get status(): WaitlistStatus { return this._status; }
   get promotionRetryAfter(): Date | null { return this._promotionRetryAfter; }
+  get pricingContext(): PricingContext { return this._pricingContext; }
   get offeredAt(): Date | null { return this._offeredAt; }
   get offerExpiresAt(): Date | null { return this._offerExpiresAt; }
   get fareQuoteId(): string | undefined { return this._fareQuoteId; }
@@ -469,6 +501,7 @@ export class WaitlistEntry {
       journeyOrderIdempotencyKey: this._journeyOrderIdempotencyKey,
       capacitySegmentBookingId: this._capacitySegmentBookingId,
       promotionRetryAfter: this._promotionRetryAfter?.toISOString(),
+      pricingContext: { ...this._pricingContext },
     };
   }
 
@@ -629,6 +662,15 @@ function assertTravelInterval(interval: TravelInterval): void {
 
 function defaultIntentFingerprint(travelerRefs: readonly string[], scheduledServiceRef: string, departureDate: string, seatClass: FareClass, interval: TravelInterval): string {
   return `${[...travelerRefs].sort().join(",")}:${scheduledServiceRef}:${departureDate}:${seatClass}:${interval.fromSeq}-${interval.toSeq}`;
+}
+
+/**
+ * What a promotion quotes with when the entry predates this field, or when its
+ * source quote carried neither input. Both are the values the service used
+ * before the pricing context was recorded, so an old row prices as it did.
+ */
+function defaultPricingContext(): PricingContext {
+  return { productCode: "rail-standard", channel: process.env.WAITLIST_CHANNEL ?? "WEB" };
 }
 
 function testPaymentGuarantee(paymentIntentId: string, payerRef: string, authorizedUntil: string): PaymentGuaranteeSnapshot {
