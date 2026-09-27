@@ -91,15 +91,21 @@ export class HttpFarePricingClient implements FarePricingClient {
   ) {}
 
   async quote(entry: WaitlistEntry): Promise<{ fareQuoteId: string }> {
+    // The pricing context is what makes the re-quote comparable to the amount
+    // the customer authorized: fare-pricing prices from the request, and a
+    // request without the distance falls back to the flat base fare.
+    const context = entry.pricingContext;
     const response = await tracedFetch(`${trimRight(this.baseUrl)}/api/v1/fare-quotes`, {
       method: "POST",
       headers: { "content-type": "application/json", "Idempotency-Key": entry.fareQuoteIdempotencyKey },
       body: JSON.stringify({
         travelerRefs: entry.travelerRefs,
-        channel: this.channel,
+        channel: context.channel || this.channel,
         segmentRefs: [entry.segmentRef],
         seatClass: entry.seatClass,
-        productCode: "rail-standard",
+        productCode: context.productCode || "rail-standard",
+        ...(context.distanceKm !== undefined ? { distanceKm: context.distanceKm } : {}),
+        ...(context.departureTime !== undefined ? { departureTime: context.departureTime } : {}),
       }),
     });
     if (!response.ok) throw new Error(`Fare quote request failed with status ${response.status}`);
