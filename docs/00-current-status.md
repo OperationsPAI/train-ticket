@@ -55,6 +55,7 @@ to one and back.
 
 | Check | Result | Evidence |
 |---|---|---|
+| Ten minute window at revision 488, one whole diurnal cycle | 250625 requests and 29090 journeys, peak minute 4245 journeys and trough minute 1563, **0 unexpected HTTP errors and 0 failed journeys** in every minute, including the minutes after a restart -- which used to carry two boarding refusals and one change 500 -- and the dead-letter population unchanged | `/tmp/sweep/acc488.cur.jsonl` |
 | Ten minute window at revision 483, one whole diurnal cycle | 239925 requests and 27502 journeys, peak minute 4138 journeys and trough minute 1428, **0 unexpected HTTP errors and 0 failed journeys** in every minute; the dead-letter population unchanged across the window and every consumer group within 27 entries of its stream's head | `/tmp/sweep/acc483.*.jsonl` |
 | Ten minute window at revision 481, one whole diurnal cycle | 249230 requests and 28815 journeys, peak minute 4242 journeys and trough minute 1484, **0 unexpected HTTP errors and 0 failed journeys** in every minute; the dead-letter population was unchanged across the window, every consumer group at zero or one entry of lag | `/tmp/sweep/acc481.cur.jsonl` |
 | Ten minute window at revision 479, one whole diurnal cycle | 264033 requests and 30685 journeys, peak minute 4326 journeys and trough minute 1875, **0 unexpected HTTP errors and 0 failed journeys** in every minute; the recorder read `written=347203 dropped=0`; the dead-letter population was unchanged across the window (ancillary-service 2, capacity-availability 6, finance-settlement 5, journey-order 3, booking-orchestration 0) and every consumer group was at zero lag | `/tmp/sweep/acc479.*.jsonl` |
@@ -179,6 +180,32 @@ already drew that line; only the Rust kit had collapsed it. Verified live:
 `entitlement-ticketing` was scaled to zero, an entry was delivered to a consumer
 name no pod owns, and on scaling back the group's pending list drained from 21
 entries to 0 while the dead-letter population did not move.
+
+### A refusal the journey handles is not the journey's failure
+
+Every load generator restart between revisions 483 and 486 left two
+fulfillments failed at the boarding step and one change failed at
+`change-execute`, with answers the journey already treats as terminal:
+"cannot verify boarding in status COMPLETED", "entitlement is VOIDED" and, from
+post-sales, a 500 wrapping entitlement-ticketing's 412 "entitlement is already
+voided".
+
+The load generator half was a two-layer disagreement. The journey handled each
+refusal and returned a clean outcome -- a diagnosis log at the refusal site
+proved the matcher fired -- and the attempt layer still reported it as failed,
+because the API client records every *unexpected* status for the attempt and a
+clean journey takes the first of those recordings as its failure. The handled
+refusals are now declared expected at the request, which is the same mechanism
+the offer, refund-poll and invoice paths already used.
+
+The post-sales half was a real server fault: a void that was already applied is
+the change's own intent, so answering it with an `IllegalStateException` and a
+500 failed a change that had in fact happened. It is recorded as a satisfied
+command now.
+
+Measured after both: a restarted generator reports `errors {}` in its first stats
+cycle where it used to report three failures, and the revision 488 window carries
+0 unexpected HTTP errors and 0 failed journeys.
 
 ### Duplicate publication is fixed
 
