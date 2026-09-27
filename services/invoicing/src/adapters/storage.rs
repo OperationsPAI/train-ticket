@@ -680,9 +680,15 @@ mod tests {
         let svc = PostgresInvoicingService { storage };
         svc.handle_subscribed_event(created.clone()).await.unwrap();
         let reversal = financial.iter().find(|e| e.event_type == "RevenueRecognitionReversed").unwrap();
-        assert!(svc.handle_subscribed_event(reversal.clone()).await.is_err());
+        // The reversal can be projected before the recognition it names -- the
+        // projection runs several workers on one stream. It waits in the
+        // durable history instead of being dead-lettered, so this is an accept
+        // with the reversal held, not a failure.
+        svc.handle_subscribed_event(reversal.clone()).await.unwrap();
         let count: (i64,) = sqlx::query_as("SELECT count(*) FROM processed_events WHERE event_id=$1").bind(&reversal.event_id).fetch_one(&pool).await.unwrap();
-        assert_eq!(count.0, 0);
+        assert_eq!(count.0, 1);
+        let held: (Value,) = sqlx::query_as("SELECT data FROM invoicing_projection_rows WHERE kind='amount_history' AND id=$1").bind(&order).fetch_one(&pool).await.unwrap();
+        assert_eq!(held.0["pending_reversals"].as_object().map(|entries| entries.len()), Some(1));
         for event in &financial { svc.handle_subscribed_event(event.clone()).await.unwrap(); }
         svc.handle_subscribed_event(adjusted).await.unwrap();
         let first = svc.get_amount_basis(order.clone()).await.unwrap();
