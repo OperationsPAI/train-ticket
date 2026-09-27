@@ -299,7 +299,8 @@ public class RedisEventSubscriber implements EventSubscriber {
             if (!claimInFlight(stream, message.id())) {
                 continue;
             }
-            handle(stream, group, consumerName, message, handler);
+            // A claimed entry is a redelivery by definition.
+            handle(stream, group, consumerName, message, handler, true);
         }
     }
 
@@ -340,7 +341,9 @@ public class RedisEventSubscriber implements EventSubscriber {
                     }
                     List<RedisStreamOperations.StreamEntry> messages = streams.readGroup(stream, group, consumerName);
                     for (RedisStreamOperations.StreamEntry message : messages) {
-                        submitHandle(stream, group, consumerName, message, handler);
+                        // A `>` read only ever delivers entries this group has never
+                        // been handed, so the redelivery count is not in question.
+                        submitHandle(stream, group, consumerName, message, handler, false);
                     }
                     if (messages.isEmpty()) sleepQuietly(20);
                     backoffSeconds = INITIAL_BACKOFF_SECONDS;
@@ -385,7 +388,8 @@ public class RedisEventSubscriber implements EventSubscriber {
 
     private void recover(String stream, String group, String consumerName, EventHandler handler) {
         for (RedisStreamOperations.StreamEntry message : claimNextRecoveryPage(stream, group, consumerName)) {
-            submitHandle(stream, group, consumerName, message, handler);
+            // Claimed entries are exactly the ones whose redelivery count matters.
+            submitHandle(stream, group, consumerName, message, handler, true);
         }
     }
 
@@ -431,12 +435,12 @@ public class RedisEventSubscriber implements EventSubscriber {
         return message != null && message.toUpperCase(Locale.ROOT).contains("NOGROUP");
     }
 
-    private void submitHandle(String stream, String group, String consumerName, RedisStreamOperations.StreamEntry message, EventHandler handler) {
+    private void submitHandle(String stream, String group, String consumerName, RedisStreamOperations.StreamEntry message, EventHandler handler, boolean redeliveryPossible) {
         if (!claimInFlight(stream, message.id())) {
             return;
         }
         try {
-            handlerExecutor.submit(() -> handle(stream, group, consumerName, message, handler));
+            handlerExecutor.submit(() -> handle(stream, group, consumerName, message, handler, redeliveryPossible));
         } catch (RejectedExecutionException exception) {
             releaseInFlight(stream, message.id());
             // A full queue is BACKPRESSURE, not an error: the handlers are busy, so
@@ -475,15 +479,15 @@ public class RedisEventSubscriber implements EventSubscriber {
         inFlight.remove(new MessageKey(stream, messageId));
     }
 
-    private void handle(String stream, String group, String consumerName, RedisStreamOperations.StreamEntry message, EventHandler handler) {
+    private void handle(String stream, String group, String consumerName, RedisStreamOperations.StreamEntry message, EventHandler handler, boolean redeliveryPossible) {
         try {
-            handleClaimed(stream, group, consumerName, message, handler);
+            handleClaimed(stream, group, consumerName, message, handler, redeliveryPossible);
         } finally {
             releaseInFlight(stream, message.id());
         }
     }
 
-    private void handleClaimed(String stream, String group, String consumerName, RedisStreamOperations.StreamEntry message, EventHandler handler) {
+    private void handleClaimed(String stream, String group, String consumerName, RedisStreamOperations.StreamEntry message, EventHandler handler, boolean redeliveryPossible) {
         // Resolved only where it decides something.
         //
         // This used to run for every delivered message: an XPENDING round trip
@@ -491,7 +495,11 @@ public class RedisEventSubscriber implements EventSubscriber {
         // never reads. Measured on the resident release, XPENDING was about 2100
         // of its ~15000 commands a second. The missing-envelope, deserialize,
         // redelivery-backstop and fatal paths below still ask for it.
-        java.util.function.IntSupplier redeliveries = () -> streams.deliveryCount(stream, group, message.id());
+        // A first delivery cannot have exhausted redeliveries, so the count is
+        // only asked for on entries a reclaim may have handed back.
+        java.util.function.IntSupplier redeliveries = redeliveryPossible
+            ? () -> streams.deliveryCount(stream, group, message.id())
+            : () -> 1;
         String json = message.envelopeJson();
         if (json == null) {
             eventConsumerMetrics.recordFailure(EventConsumerMetrics.FailureType.MISSING_ENVELOPE);
