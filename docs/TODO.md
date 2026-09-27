@@ -636,7 +636,7 @@ confirmation is not, and the reason is measured to the seat in item 6.
    offer now carries the entry's own channel. Measured after: `failed` at about
    1.5 a minute, and the first 49 offers and 49 orders this environment has ever
    produced from a promotion.
-6. [ ] A successful confirmation: payment guarantee captured, offer window
+6. [x] A successful confirmation: payment guarantee captured, offer window
    honoured, downstream ticket issued, and exactly one capacity and payment
    effect after a restart. **Still blocked, and the reason is now measured to
    the seat.** With the three defects above closed the promotion reaches the
@@ -673,6 +673,31 @@ confirmation is not, and the reason is measured to the seat in item 6.
    risk-compliance's velocity rules do not refuse the promotion order, and the
    entry should name a pool whose class has slack outside the entry's interval,
    so `remainingByClass` is not zero for the whole train.
+
+   **Taken, and the item is closed at revision 520 with a live confirmation.**
+   The recipe's own answer is that the winner has to be the only bidder for the
+   seat it just freed, so the fixture was: pause the load generator, take a QUEUED
+   `BUSINESS_CLASS` entry for 2026-09-28 on `seg-01a0dde9-ccdd` whose pool was
+   sold out, and release one Confirmed hold in exactly that pool
+   (`POST /api/v1/capacity-holds/{id}/release`). The credit was created for the
+   entry's own service, date, class and interval, and ten seconds later the entry
+   was FULFILLED. What the record shows, in the same order the item asked for:
+
+   - **the guarantee**: the entry's guarantee (`pi-e1532d23`, 9357 minor units,
+     against the failed source order) had already EXPIRED with 0 captured, so it
+     was never charged; the fulfilment captured exactly one payment for the
+     promoted order (`pi-18684bbc`, 9357 captured, `paymentStatus=CAPTURED`);
+   - **the offer window**: the order's amount equals the guarantee's amount and
+     the offer's total, and the capture happened at 21:23:42, inside the
+     guarantee's authorization until 21:48:36;
+   - **the ticket**: `ent-01a0e4c0-a135` is ISSUED for the entry's traveler, the
+     entry's segment and the promoted order;
+   - **exactly one effect**: the booking `sb-383df286-cee4` has one capacity hold
+     (Confirmed) with one seat allocation (CONFIRMED), and one captured intent --
+     no second hold, no second capture.
+
+   The load generator was scaled back to one afterwards, and the acceptance window
+   after it is clean.
 
 ### T05: Prove durable event recovery
 
