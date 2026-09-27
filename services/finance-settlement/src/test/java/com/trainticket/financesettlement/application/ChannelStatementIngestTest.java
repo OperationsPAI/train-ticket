@@ -50,14 +50,51 @@ class ChannelStatementIngestTest {
 
         assertEquals(2, source.calls, "both pages were read");
         assertEquals(2, batch.entries().size(), "one entry per reconciliation key, not one per statement");
-        Map<String, ReconciliationEntry> byOrder = new LinkedHashMap<>();
-        batch.entries().forEach(entry -> byOrder.put(entry.orderId(), entry));
-        assertEquals(ReconciliationStatus.MATCHED, byOrder.get("ord-1").status());
-        assertEquals(Money.of("CNY", "0.00"), byOrder.get("ord-1").variance());
-        assertEquals(ReconciliationStatus.AMOUNT_MISMATCH, byOrder.get("ord-2").status(),
+        // The entry is keyed by the payment intent -- the one reference the
+        // platform's capture and the channel's line both carry.
+        Map<String, ReconciliationEntry> byIntent = new LinkedHashMap<>();
+        batch.entries().forEach(entry -> byIntent.put(entry.paymentIntentId(), entry));
+        assertEquals(ReconciliationStatus.MATCHED, byIntent.get("pi-1").status());
+        assertEquals(Money.of("CNY", "0.00"), byIntent.get("pi-1").variance());
+        assertEquals(ReconciliationStatus.AMOUNT_MISMATCH, byIntent.get("pi-2").status(),
             "the channel paid 19.00 against a captured 20.00");
-        assertEquals(Money.of("CNY", "1.00"), byOrder.get("ord-2").variance());
-        assertTrue(byOrder.get("ord-1").sourceEventIds().contains("line-1"));
+        assertEquals(Money.of("CNY", "1.00"), byIntent.get("pi-2").variance());
+        assertTrue(byIntent.get("pi-1").sourceEventIds().contains("line-1"));
+    }
+
+    @Test
+    void anOrderPaidTwiceIsReconciledPaymentByPayment() {
+        // The platform attributes each capture to the business reference it was
+        // for -- the order for a fare, the ancillary item for an add-on -- while
+        // the channel only knows the payment intent. Keying on the business
+        // reference therefore merged the order's payments on one side and not on
+        // the other: measured on 2026-09-26, 56,884 of 431,530 entries were
+        // mismatches and every one of them was an order that had paid twice.
+        InMemoryFinanceSettlementProjectionRepository projections = projections();
+        projections.saveCapture("ord-1", capture("ord-1", "pi-1", "10.00"));
+        projections.saveCapture("aoi-1", capture("aoi-1", "pi-2", "20.00"));
+        projections.saveChannelStatement(statement());
+        PagedSource source = new PagedSource(500, List.of(
+            new ChannelStatementLineSource.Line("line-1", "PAYMENT", "cho-1", "", "pi-1", "", Money.of("CNY", "10.00")),
+            new ChannelStatementLineSource.Line("line-2", "PAYMENT", "cho-2", "", "pi-2", "", Money.of("CNY", "20.00"))
+        ));
+        PaymentIntentOrderReferenceRepository intents = new PaymentIntentOrderReferenceRepository() {
+            @Override
+            public void save(String paymentIntentId, String orderReference) {
+            }
+
+            @Override
+            public Optional<String> findOrderReference(String paymentIntentId) {
+                return Optional.of("ord-1");
+            }
+        };
+
+        ReconciliationBatch batch = service(projections, source, intents).runDailyReconciliation(SETTLEMENT_DATE, "corr-ingest-5");
+
+        assertEquals(2, batch.entries().size(), "one entry per payment");
+        assertTrue(batch.entries().stream().allMatch(entry -> entry.status() == ReconciliationStatus.MATCHED),
+            "both payments of the order matched their own capture: " + batch.entries());
+        assertEquals(Money.of("CNY", "0.00"), batch.report().totalVariance());
     }
 
     @Test
