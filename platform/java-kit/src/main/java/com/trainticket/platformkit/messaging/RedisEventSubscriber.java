@@ -302,6 +302,9 @@ public class RedisEventSubscriber implements EventSubscriber {
             // A claimed entry is a redelivery by definition.
             handle(stream, group, consumerName, message, handler, true);
         }
+        // This entry point is self-contained: acks it queued must not wait for a
+        // poll iteration that a caller driving recovery directly will never run.
+        flushAcks();
     }
 
     private void poll(List<String> streamNames, String group, String consumerName, EventHandler handler) {
@@ -346,6 +349,7 @@ public class RedisEventSubscriber implements EventSubscriber {
                         submitHandle(stream, group, consumerName, message, handler, false);
                     }
                     if (messages.isEmpty()) sleepQuietly(20);
+                    flushAcks();
                     backoffSeconds = INITIAL_BACKOFF_SECONDS;
                 } catch (RuntimeException exception) {
                     if (Thread.currentThread().isInterrupted()) {
@@ -435,6 +439,51 @@ public class RedisEventSubscriber implements EventSubscriber {
         return message != null && message.toUpperCase(Locale.ROOT).contains("NOGROUP");
     }
 
+    /**
+     * Acks waiting for the batch that flushes them.
+     *
+     * <p>{@code XACK} takes any number of ids for the same stream and group, and one command per
+     * delivered event per consumer group was the largest command class a single-threaded Redis
+     * served. Acks are idempotent and an unflushed one only means redelivery, so losing this queue
+     * to a crash costs a duplicate, not a lost event.
+     */
+    private static final int ACK_BATCH_LIMIT = 500;
+
+    private record PendingAck(String stream, String group, String messageId) {}
+
+    private final java.util.concurrent.ConcurrentLinkedQueue<PendingAck> pendingAcks =
+        new java.util.concurrent.ConcurrentLinkedQueue<>();
+
+    private void ack(String stream, String group, String messageId) {
+        pendingAcks.add(new PendingAck(stream, group, messageId));
+        if (pendingAcks.size() >= ACK_BATCH_LIMIT) {
+            flushAcks();
+        }
+    }
+
+    private void flushAcks() {
+        if (pendingAcks.isEmpty()) {
+            return;
+        }
+        java.util.Map<java.util.List<String>, java.util.List<String>> byStreamAndGroup = new java.util.LinkedHashMap<>();
+        PendingAck pending;
+        while ((pending = pendingAcks.poll()) != null) {
+            byStreamAndGroup
+                .computeIfAbsent(java.util.List.of(pending.stream(), pending.group()), key -> new java.util.ArrayList<>())
+                .add(pending.messageId());
+        }
+        for (var entry : byStreamAndGroup.entrySet()) {
+            java.util.List<String> key = entry.getKey();
+            try {
+                streams.ackMany(key.get(0), key.get(1), entry.getValue());
+            } catch (RuntimeException exception) {
+                // Leaving them pending is the safe failure: Redis redelivers.
+                LOGGER.warn("service={} stream={} batch acknowledgement failed; {} entries remain pending: {}",
+                    key.get(1), key.get(0), entry.getValue().size(), exception.toString());
+            }
+        }
+    }
+
     private void submitHandle(String stream, String group, String consumerName, RedisStreamOperations.StreamEntry message, EventHandler handler, boolean redeliveryPossible) {
         if (!claimInFlight(stream, message.id())) {
             return;
@@ -506,7 +555,7 @@ public class RedisEventSubscriber implements EventSubscriber {
             moveToDlq(
                 stream, group, consumerName, message.id(), "{}", "MissingEnvelope", redeliveries.getAsInt(),
                 EventConsumerMetrics.FailureType.MISSING_ENVELOPE);
-            streams.ack(stream, group, message.id());
+            ack(stream, group, message.id());
             return;
         }
         EventEnvelope envelope;
@@ -517,14 +566,14 @@ public class RedisEventSubscriber implements EventSubscriber {
             moveToDlq(
                 stream, group, consumerName, message.id(), json, exception, redeliveries.getAsInt(),
                 EventConsumerMetrics.FailureType.INVALID_ENVELOPE);
-            streams.ack(stream, group, message.id());
+            ack(stream, group, message.id());
             return;
         }
         // Duplicate detection must precede every give-up path: an event this group already
         // processed is a redelivery to swallow, never a poison message to dead-letter, no matter
         // how many times Redis has handed it back.
         if (consumedEvents.alreadyConsumed(group, envelope.eventId())) {
-            streams.ack(stream, group, message.id());
+            ack(stream, group, message.id());
             forgetFailures(stream, message.id());
             eventConsumerMetrics.recordOutcome(EventConsumerMetrics.Outcome.DUPLICATE);
             return;
@@ -544,7 +593,7 @@ public class RedisEventSubscriber implements EventSubscriber {
                     stream, group, consumerName, message.id(), json, "MaxRedeliveriesWithoutCompletion", redeliveries.getAsInt(),
                     EventConsumerMetrics.FailureType.REDELIVERY_EXHAUSTED);
             }
-            streams.ack(stream, group, message.id());
+            ack(stream, group, message.id());
             return;
         }
         HandlerResult result;
@@ -573,7 +622,7 @@ public class RedisEventSubscriber implements EventSubscriber {
             }
             if (result == HandlerResult.SUCCESS) {
                 consumedEvents.recordConsumed(group, envelope.eventId());
-                streams.ack(stream, group, message.id());
+                ack(stream, group, message.id());
                 forgetFailures(stream, message.id());
                 eventConsumerMetrics.recordOutcome(EventConsumerMetrics.Outcome.SUCCESS);
             } else if (result == HandlerResult.FATAL_FAILURE) {
@@ -583,7 +632,7 @@ public class RedisEventSubscriber implements EventSubscriber {
                 moveToDlq(
                     stream, group, consumerName, message.id(), json, "HandlerResult.FATAL_FAILURE", redeliveries.getAsInt(),
                     EventConsumerMetrics.FailureType.FATAL_RESULT);
-                streams.ack(stream, group, message.id());
+                ack(stream, group, message.id());
             } else if (result == HandlerResult.TRANSIENT_FAILURE) {
                 span.markError("HandlerResult.TRANSIENT_FAILURE");
                 eventConsumerMetrics.recordFailure(EventConsumerMetrics.FailureType.TRANSIENT_RESULT);
@@ -626,7 +675,7 @@ public class RedisEventSubscriber implements EventSubscriber {
                 stream, group, consumerName, messageId, json, Objects.toString(reason, "MaxHandlerFailures"), failures,
                 failureType);
         }
-        streams.ack(stream, group, messageId);
+        ack(stream, group, messageId);
     }
 
     static EventConsumerTracer defaultEventConsumerTracer() {
@@ -821,6 +870,7 @@ public class RedisEventSubscriber implements EventSubscriber {
 
     @Override
     public void close() {
+        flushAcks();
         running.set(false);
         pollExecutor.shutdown();
         try {
