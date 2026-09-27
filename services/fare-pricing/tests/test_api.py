@@ -184,6 +184,17 @@ class FarePricingApiTest(unittest.TestCase):
             for identifier in ("tvl-one", "tvl-two", "seg-one", "seg-two"):
                 self.assertNotIn(identifier, f"{stage}{outcome}{channel}")
 
+    def test_rule_set_can_be_read_back_by_id(self) -> None:
+        """A caller that stored a rule set id can ask whether it names a rule set."""
+        found = self.client.get(f"/api/v1/fare-rule-sets/{self.rs.rule_set_id}")
+        self.assertEqual(found.status_code, 200)
+        self.assertEqual(found.json()["ruleSetId"], self.rs.rule_set_id)
+        self.assertEqual(found.json()["status"], "PUBLISHED")
+
+        missing = self.client.get("/api/v1/fare-rule-sets/rs-does-not-exist")
+        self.assertEqual(missing.status_code, 404)
+        self.assertEqual(missing.json()["code"], "NOT_FOUND")
+
     def test_quote_records_one_funnel_attempt_and_one_outcome(self) -> None:
         """The quote stage of the order funnel leaves attempted = accepted + rejected.
 
