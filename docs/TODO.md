@@ -39,14 +39,33 @@ below. The whole resident cycle is clean on the current revision.
    attributed that way in
    [current status](00-current-status.md#the-reservation-poll-stopped-failing-and-what-was-left-behind-it).
 
-The exception is the generator's own catch-up. A window that begins when the
-load generator restarts carries the first three or four minutes of that
-restart, where every persona and every closed-loop driver comes due at once --
-21512 journeys in the `23:29` minute, nearly three times the largest steady
-peak. It fails on the offer step and it is a real 422 for that user. It is the
-only failing window left, it is not produced by the steady envelope, and the
-next step if it is to be closed is either a longer generator ramp or the offer
-path's throughput at that rate.
+The exception is a burst above the steady envelope. A window that begins when
+the load generator restarts carries its catch-up, and the envelope itself
+multiplies `target_rps` by a diurnal peak of `4.0` and a burst of up to `8.0`,
+so minutes of **15000 to 21500** journeys appear -- three to six times the
+largest steady minute these cycles reach. Those minutes fail on the offer step,
+on the reservation poll or on risk, and it is a real failure for that user.
+
+The measured reason is in
+[current status](00-current-status.md#the-ceiling-under-all-of-it-is-one-redis-thread):
+Redis is single-threaded and sits at a whole core through those minutes while
+every consumer group's own lag reads zero. This pass cut its command rate from
+21376 to about 13000 a second and its connections from 1900 to under 1500, which
+raised the ceiling; it did not remove it. Closing it is a change to the event
+bus's shape rather than one more consumer count:
+
+1. [ ] Reduce the number of consumer groups per stream. Every service reads
+   every event of every stream it subscribes to, so a stream's cost to Redis is
+   its rate times the number of groups reading it. Measured now: twelve groups
+   read `events:booking-orchestration` and nine read
+   `events:capacity-availability`.
+2. [ ] Or give the bus more than one thread: shard streams across Redis
+   instances, or move the reads to a transport with parallel work.
+3. [ ] Until then, decide whether the acceptance envelope includes a burst the
+   steady cycles never reach. If it does, the arithmetic in
+   [current status](00-current-status.md#the-configured-envelope-is-wider-than-any-window-has-measured)
+   says the system must be sized for 640 journeys a second, and the largest
+   observed is 358.
 
 The reservation path's tail was closed one hop at a time over 2026-09-27, one
 commit each, and each hop is recorded with its measurement in
