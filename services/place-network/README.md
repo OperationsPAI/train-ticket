@@ -13,6 +13,8 @@ Status: REQ-004 master-data primitives
 - Place
 - TransportNode
 - ProviderPlaceMapping
+- Reader register: the readers the estate has in service
+  (`config/reader-register.txt`), which Fulfillment vendors at build
 
 ## DDD Sources
 

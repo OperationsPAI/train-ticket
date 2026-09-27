@@ -7,7 +7,10 @@
 # it at build (deploy/docker/fulfillment) beside the roster the ticketing
 # authority publishes, and a boarding fact is measured against the readers both
 # statements carry.
-GATE
+#
+# The estate this register belongs to: the gate readers went with the gate
+# estate's own hand-off, so the register keeps the readers this estate still
+# operates.
 STATION
 PROVIDER
 CONDUCTOR
