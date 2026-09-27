@@ -3,12 +3,25 @@ package com.trainticket.journeyorder.adapters.messaging;
 import java.util.List;
 
 public final class RedisJourneyOrderSubscriptions {
+    /**
+     * Every stream that carries a type {@link #isActionable} answers true for, and
+     * no others.
+     *
+     * Three subscriptions used to be here for producers whose events the handler
+     * never acts on: `booking-orchestration`, `offer-management` and
+     * `traveler-profile`. None of the thirty-one actionable types above is
+     * published by any of them, and this service's own `processed_events` has a
+     * row for every other subscribed stream and none for those three -- so the
+     * read, the deserialize and the acknowledge were cost with no handler behind
+     * them. It matters more than it looks: the event bus is one Redis thread
+     * shared by every service, and `booking-orchestration` is the busiest stream
+     * in the release. `RedisJourneyOrderSubscriptionsActionableTest` still holds
+     * the other side of the contract, that every type the switch handles is in
+     * the actionable set.
+     */
     private static final List<String> STREAMS = List.of(
-        "events:booking-orchestration",
-        "events:offer-management",
         "events:payment",
         "events:post-sales",
-        "events:traveler-profile",
         "events:risk-compliance",
         "events:account",
         "events:entitlement-ticketing",
