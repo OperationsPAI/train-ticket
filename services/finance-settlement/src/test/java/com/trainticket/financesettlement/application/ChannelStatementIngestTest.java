@@ -63,6 +63,61 @@ class ChannelStatementIngestTest {
     }
 
     @Test
+    void theChannelsRefundsAreComparedWithThePlatformsOwnSettlement() {
+        InMemoryFinanceSettlementProjectionRepository projections = projections();
+        projections.saveChannelStatement(statement());
+        projections.saveChannelStatementLines(List.of(
+            new ChannelStatementLineProjection("line-r1", "chs-1", SETTLEMENT_DATE.toString(), "ord-1", "pi-1", "cho-1", Money.of("CNY", "10.00"), "line-r1", ChannelStatementLineProjection.REFUND, "rf-1"),
+            new ChannelStatementLineProjection("line-r2", "chs-1", SETTLEMENT_DATE.toString(), "ord-2", "pi-2", "cho-2", Money.of("CNY", "19.00"), "line-r2", ChannelStatementLineProjection.REFUND, "rf-2"),
+            new ChannelStatementLineProjection("line-r3", "chs-1", SETTLEMENT_DATE.toString(), "ord-3", "pi-3", "cho-3", Money.of("CNY", "5.00"), "line-r3", ChannelStatementLineProjection.REFUND, "rf-3")
+        ));
+        PlatformRefundSource refunds = new FixedRefunds(List.of(
+            new PlatformRefundSource.Refund("rf-1", "pi-1", "ord-1", "psc-1", "CNY", 1000),
+            new PlatformRefundSource.Refund("rf-2", "pi-2", "ord-2", "psc-2", "CNY", 2000),
+            new PlatformRefundSource.Refund("rf-4", "pi-4", "ord-4", "psc-4", "CNY", 700)
+        ));
+
+        ReconciliationBatch batch = service(projections, null, intents()).withPlatformRefunds(refunds)
+            .runDailyReconciliation(SETTLEMENT_DATE, "corr-refunds");
+
+        Map<String, ReconciliationEntry> byRefund = new LinkedHashMap<>();
+        batch.entries().forEach(entry -> byRefund.put(entry.entryId(), entry));
+        assertEquals(ReconciliationStatus.MATCHED, byRefund.get("re-refund-rf-1").status(), "the channel paid back what the platform settled");
+        assertEquals(ReconciliationStatus.AMOUNT_MISMATCH, byRefund.get("re-refund-rf-2").status(), "20.00 settled against 19.00 paid back");
+        assertEquals(Money.of("CNY", "1.00"), byRefund.get("re-refund-rf-2").variance());
+        assertEquals(ReconciliationStatus.CHANNEL_ONLY, byRefund.get("re-refund-rf-3").status(), "the channel paid a refund the platform has no settlement for");
+        assertEquals(ReconciliationStatus.PLATFORM_ONLY, byRefund.get("re-refund-rf-4").status(), "the platform settled a refund the channel has no line for");
+    }
+
+    @Test
+    void withoutAPlatformRefundSourceTheRefundSideIsNotInvented() {
+        InMemoryFinanceSettlementProjectionRepository projections = projections();
+        projections.saveChannelStatement(statement());
+        projections.saveChannelStatementLine(new ChannelStatementLineProjection(
+            "line-r1", "chs-1", SETTLEMENT_DATE.toString(), "ord-1", "pi-1", "cho-1", Money.of("CNY", "10.00"), "line-r1",
+            ChannelStatementLineProjection.REFUND, "rf-1"));
+
+        ReconciliationBatch batch = service(projections, null, intents()).runDailyReconciliation(SETTLEMENT_DATE, "corr-refunds-2");
+
+        assertTrue(batch.entries().stream().noneMatch(entry -> entry.entryId().startsWith("re-refund-")),
+            "without a platform side the refund lines stay the channel's own record: " + batch.entries());
+    }
+
+    /** Serves every refund in one page. */
+    private static final class FixedRefunds implements PlatformRefundSource {
+        private final List<Refund> refunds;
+
+        private FixedRefunds(List<Refund> refunds) {
+            this.refunds = refunds;
+        }
+
+        @Override
+        public Page page(java.time.LocalDate settlementDate, String cursor, int limit) {
+            return new Page(refunds, null);
+        }
+    }
+
+    @Test
     void anOrderPaidTwiceIsReconciledPaymentByPayment() {
         // The platform attributes each capture to the business reference it was
         // for -- the order for a fare, the ancillary item for an add-on -- while
