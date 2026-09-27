@@ -42,6 +42,7 @@ across currencies.
 | Payment/refund | `train_ticket.payment.operations` | Counter | `operation`, `outcome`, `currency`, `channel` | Capture, refund, reversal and compensation operation outcomes. |
 | Payment/refund | `train_ticket.payment.amount` | Counter, minor units | `operation`, `outcome`, `currency`, `channel` | Amount processed by the same operations. |
 | Payment/refund | `train_ticket.payment.conservation` | Gauge, minor units | `state`, `currency` | Authoritative captured, refunded, reversed and unsettled totals for conservation checks. |
+| Payment/refund | `train_ticket.payment.intent_expiry_age` | Gauge, seconds | none | Age of the oldest intent that is past its expiry and that the one-second expiry sweep has not expired yet. Rebuilt from the intent rows on every sweep, so a restart republishes the same reading; a sweep with nothing due publishes no point. |
 | Capacity hold | `train_ticket.capacity.units` | Gauge | `state`, `travel_class`, `seat_mode` | Sellable, held, confirmed, released and occupied units. |
 | Capacity hold | `train_ticket.capacity.hold.oldest_age` | Gauge, seconds | `state`, `travel_class` | Oldest nonterminal hold age. |
 | Seat | `train_ticket.seat.allocations` | Gauge | `state`, `travel_class`, `seat_mode` | Physical seat and standing allocations by state. |
