@@ -6,9 +6,9 @@ import (
 	"testing"
 )
 
-func TestTheShippedDocumentAdmitsTheRegisterAndTheImageVocabulary(t *testing.T) {
+func TestTheShippedDocumentStatesTheReadersThisDeploymentAdmits(t *testing.T) {
 	stated := ReadersIn(".")
-	want := []string{"STATION", "PROVIDER", "GATE", "CONDUCTOR", "ADMIN"}
+	want := []string{"STATION", "PROVIDER"}
 	if len(stated) != len(want) {
 		t.Fatalf("the shipped document admits %v, want %v", stated, want)
 	}

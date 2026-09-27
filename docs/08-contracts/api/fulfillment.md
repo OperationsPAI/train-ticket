@@ -28,9 +28,11 @@ timestamps, and Money.
 | `journeyOrderId` | string | yes | Reference to the journey order (`ord-<uuid>`). |
 | `travelerId` | string | yes | Traveler reference (`tvl-<uuid>`). |
 | `segmentRef` | string | yes | Segment reference (`seg-<uuid>`). |
-| `source` | string | yes | Source: `GATE`, `STATION`, `PROVIDER`, `CONDUCTOR`, `ADMIN` |
+| `source` | string | yes | Reader the fact arrived through, one the deployment's register admits (`STATION`, `PROVIDER` for this release). |
 | `sourceEventId` | string | yes | Source event identifier for idempotency. |
 | `occurredAt` | timestamp | yes | When boarding physically occurred. |
+
+The readers a boarding fact may arrive under are stated by the deployment's settings document rather than by this contract: the release ships `services/fulfillment/config/boarding.conf`, and a deployment that mounts its own settings directory states its own.
 
 **Response (201):**
 
