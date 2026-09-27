@@ -7,6 +7,12 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::str::FromStr;
 use std::time::Duration;
 
+/// The relay's metrics for a test that asserts behaviour rather than counters:
+/// the global meter has no provider here, so these instruments record nothing.
+fn noop_metrics() -> rust_kit::metrics::OutboxMetrics {
+    rust_kit::metrics::OutboxMetrics::new(&rust_kit::metrics::meter("outbox-pipeline-test"))
+}
+
 #[tokio::test]
 #[ignore = "requires TEST_DATABASE_URL and TEST_REDIS_URL"]
 async fn batch_delivery_preserves_order_and_retries_every_unacknowledged_event() {
@@ -32,9 +38,9 @@ async fn batch_delivery_preserves_order_and_retries_every_unacknowledged_event()
         events.push(serde_json::to_value(event).unwrap());
     }
     transaction.commit().await.unwrap();
-    assert_eq!(relay_once(&pool, &redis, 500).await.unwrap(), 500);
-    assert_eq!(relay_once(&pool, &redis, 500).await.unwrap(), 3);
-    assert_eq!(relay_once(&pool, &redis, 500).await.unwrap(), 0);
+    assert_eq!(relay_once(&pool, &redis, 500, &noop_metrics()).await.unwrap(), 500);
+    assert_eq!(relay_once(&pool, &redis, 500, &noop_metrics()).await.unwrap(), 3);
+    assert_eq!(relay_once(&pool, &redis, 500, &noop_metrics()).await.unwrap(), 0);
     let entries: redis::streams::StreamRangeReply = connection.xrange_all(&stream).await.unwrap();
     assert_eq!(entries.ids.len(), events.len());
     for (entry, expected) in entries.ids.iter().zip(&events) {
@@ -53,13 +59,13 @@ async fn batch_delivery_preserves_order_and_retries_every_unacknowledged_event()
         OutboxAppender::append(&mut transaction, target, &event).await.unwrap();
     }
     transaction.commit().await.unwrap();
-    let error = relay_once(&pool, &redis, 500).await.unwrap_err();
+    let error = relay_once(&pool, &redis, 500, &noop_metrics()).await.unwrap_err();
     assert!(error.to_string().contains("WRONGTYPE"), "{error}");
     let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM outbox WHERE published_at IS NULL").fetch_one(&pool).await.unwrap();
     assert_eq!(pending, 3);
     let _: i64 = connection.del(&failing_stream).await.unwrap();
-    assert_eq!(relay_once(&pool, &redis, 500).await.unwrap(), 3);
-    assert_eq!(relay_once(&pool, &redis, 500).await.unwrap(), 0);
+    assert_eq!(relay_once(&pool, &redis, 500, &noop_metrics()).await.unwrap(), 3);
+    assert_eq!(relay_once(&pool, &redis, 500, &noop_metrics()).await.unwrap(), 0);
     let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM outbox WHERE published_at IS NULL").fetch_one(&pool).await.unwrap();
     assert_eq!(pending, 0);
     let delivered_to_recovered_stream: usize = connection.xlen(&failing_stream).await.unwrap();
