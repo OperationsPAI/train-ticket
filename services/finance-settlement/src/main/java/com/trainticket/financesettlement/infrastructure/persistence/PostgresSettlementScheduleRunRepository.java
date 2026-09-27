@@ -89,6 +89,25 @@ public class PostgresSettlementScheduleRunRepository implements SettlementSchedu
     }
 
     @Override
+    public java.util.Map<String, java.time.Instant> lastSuccessByJobType() {
+        return jdbc.query(
+            """
+            SELECT job_type, max(completed_at) AS completed_at
+            FROM settlement_schedule_runs
+            WHERE status='SUCCEEDED' AND completed_at IS NOT NULL
+            GROUP BY job_type
+            """,
+            rs -> {
+                java.util.Map<String, java.time.Instant> last = new java.util.LinkedHashMap<>();
+                while (rs.next()) {
+                    last.put(rs.getString("job_type"), rs.getTimestamp("completed_at").toInstant());
+                }
+                return last;
+            }
+        );
+    }
+
+    @Override
     public List<SettlementScheduleRun> find(int limit, int offset) {
         return jdbc.query(
             "SELECT job_key,job_type,start_date,end_date,status,lease_owner,lease_until,attempts,result_refs::text,failure,started_at,completed_at,updated_at FROM settlement_schedule_runs ORDER BY updated_at DESC LIMIT ? OFFSET ?",
