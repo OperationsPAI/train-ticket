@@ -104,7 +104,12 @@ def rule(rule_id: str, kind: RuleKind, amount: str, *, refundable: bool = True, 
     )
 
 
-def published_rule_set(*extra_rules: FareRule, product_code: str = "rail-standard", rule_set_id: str = "ruleset-main") -> FareRuleSet:
+def published_rule_set(
+    *extra_rules: FareRule,
+    product_code: str = "rail-standard",
+    rule_set_id: str = "ruleset-main",
+    contract_id: str = "contract-managed",
+) -> FareRuleSet:
     rs = FareRuleSet(
         rule_set_id=rule_set_id,
         supplier_id="supplier-a",
@@ -120,6 +125,7 @@ def published_rule_set(*extra_rules: FareRule, product_code: str = "rail-standar
             rule("member", RuleKind.DISCOUNT, "12.50"),
             *extra_rules,
         ],
+        contract_id=contract_id,
     )
     return rs.publish(NOW)
 
@@ -183,6 +189,28 @@ class FarePricingApiTest(unittest.TestCase):
         for stage, outcome, channel in recorded[0]:
             for identifier in ("tvl-one", "tvl-two", "seg-one", "seg-two"):
                 self.assertNotIn(identifier, f"{stage}{outcome}{channel}")
+
+    def test_rule_set_can_be_read_back_by_id(self) -> None:
+        """A caller that stored a rule set id can ask whether it names a rule set.
+
+        A rule set held for a contract the register does not carry is answered
+        like an id that names nothing, because a reference a caller may store is
+        one the deployment serves.
+        """
+        found = self.client.get(f"/api/v1/fare-rule-sets/{self.rs.rule_set_id}")
+        self.assertEqual(found.status_code, 200)
+        self.assertEqual(found.json()["ruleSetId"], self.rs.rule_set_id)
+        self.assertEqual(found.json()["status"], "PUBLISHED")
+
+        missing = self.client.get("/api/v1/fare-rule-sets/rs-does-not-exist")
+        self.assertEqual(missing.status_code, 404)
+        self.assertEqual(missing.json()["code"], "NOT_FOUND")
+
+        unserved = published_rule_set(rule_set_id="ruleset-unserved", contract_id="contract-other")
+        self.store.fare_rule_sets[unserved.rule_set_id] = unserved
+        outside = self.client.get(f"/api/v1/fare-rule-sets/{unserved.rule_set_id}")
+        self.assertEqual(outside.status_code, 404)
+        self.assertEqual(outside.json()["code"], "NOT_FOUND")
 
     def test_quote_records_one_funnel_attempt_and_one_outcome(self) -> None:
         """The quote stage of the order funnel leaves attempted = accepted + rejected.

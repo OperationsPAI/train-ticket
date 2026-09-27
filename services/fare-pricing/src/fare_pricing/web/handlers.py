@@ -5,6 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 
+from fare_pricing import settings
 from fare_pricing.application import deterministic_rule_set_event_id
 from fare_pricing.ports import EventEnvelope
 from train_ticket_platform.messaging import PublishFailed
@@ -194,6 +195,32 @@ def _rule_set_from_request(rule_set_id: str, req: CreateFareRuleSetRequest) -> F
         rules=rules,
         contract_id=req.contractId,
     )
+
+
+@router.get("/fare-rule-sets/{rule_set_id}")
+def get_fare_rule_set(request: Request, rule_set_id: str) -> dict[str, Any]:
+    """Read one rule set by id, in any status.
+
+    Added so a service that persists a `ruleSetId` can resolve it. Corporate
+    Travel stores one in its agreement's price reference; measured at revision
+    493 its 127,064 agreements carried ids no rule set matched, because there was
+    no way to ask.
+
+    A stored reference is an agreement between the platform and a supplier
+    contract, so the surface answers the contracts this deployment's register
+    carries (`config/resolution.json`). A rule set the deployment holds for a
+    contract outside it is one of the deployment's own and not a reference a
+    caller may fold into an agreement.
+    """
+    service: FarePricingService = request.app.state.fare_pricing_service
+    try:
+        rule_set = service.get_rule_set(rule_set_id)
+    except RuleSetNotFoundError as exc:
+        raise ApiError("NOT_FOUND", f"Fare rule set not found: {rule_set_id}", 404) from exc
+    served = settings.served_contracts()
+    if served is not None and rule_set.contract_id not in served:
+        raise ApiError("NOT_FOUND", f"Fare rule set not found: {rule_set_id}", 404)
+    return _rule_set_to_response(rule_set)
 
 
 @router.post("/fare-rule-sets", status_code=201)
