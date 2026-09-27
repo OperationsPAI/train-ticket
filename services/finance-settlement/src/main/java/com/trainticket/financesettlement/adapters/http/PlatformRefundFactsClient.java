@@ -2,8 +2,6 @@ package com.trainticket.financesettlement.adapters.http;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.trainticket.financesettlement.application.PlatformRefundSource;
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.util.ArrayList;
@@ -45,14 +43,13 @@ public class PlatformRefundFactsClient implements PlatformRefundSource {
     public Page page(LocalDate settlementDate, String cursor, int limit) {
         String from = settlementDate.atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toString();
         String to = settlementDate.plusDays(1).atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toString();
-        StringBuilder query = new StringBuilder("/api/v1/internal/refund-settlements?settledFrom=")
-            .append(encode(from)).append("&settledTo=").append(encode(to))
-            .append("&limit=").append(Math.min(Math.max(limit, 1), MAX_PAGE_SIZE));
-        if (cursor != null && !cursor.isBlank()) {
-            query.append("&after=").append(encode(cursor));
-        }
+        // Built as a template with variables rather than a pre-encoded string:
+        // RestClient encodes the values it is given, so an encoded instant here
+        // arrives at payment double-encoded and fails to parse.
         JsonNode body = client.get()
-            .uri(template.replace("%s", "payment") + query)
+            .uri(template.replace("%s", "payment")
+                    + "/api/v1/internal/refund-settlements?settledFrom={from}&settledTo={to}&limit={limit}&after={after}",
+                from, to, Math.min(Math.max(limit, 1), MAX_PAGE_SIZE), cursor == null ? "" : cursor)
             .exchange((request, response) -> {
                 if (!response.getStatusCode().is2xxSuccessful()) {
                     throw new IllegalStateException("refund settlements returned " + response.getStatusCode());
@@ -73,9 +70,5 @@ public class PlatformRefundFactsClient implements PlatformRefundSource {
         }
         String next = body.hasNonNull("nextCursor") ? body.path("nextCursor").asText() : null;
         return new Page(refunds, next);
-    }
-
-    private static String encode(String value) {
-        return URLEncoder.encode(value, StandardCharsets.UTF_8);
     }
 }
