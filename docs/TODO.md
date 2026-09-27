@@ -207,13 +207,22 @@ history of what each one cost is in
    the supply history read, the pool aggregate update, or the hold insert, in
    that transaction. Splitting the lock by unit, or shortening the transaction,
    is what the number asks for.
-7. [ ] Disruption must not report a business conflict as an availability
-   failure. Selecting an option for an order that already has a refund or change
-   in progress answers 503 `UNAVAILABLE`; a conflict has its own status, and the
-   flow has to decide what the honest terminal outcome for that case is.
-8. [ ] A post-sales case waits forever for a capacity hold its cancelled booking
-   never released, and every later journey that reuses that order fails on it.
-   Found rather than fixed; the evidence is complete.
+7. [x] Disruption no longer reports a business conflict as an availability
+   failure. `DownstreamError` carries the downstream's own HTTP status, and the
+   handler maps a client error to the contract's vocabulary -- 409 `CONFLICT`,
+   412 `PRECONDITION_FAILED`, 422 `DOMAIN_RULE_VIOLATION` -- keeping 503 for a
+   connection failure or a server error. Selecting an option for an order that
+   already has a refund or change in progress therefore answers its own conflict
+   rather than an outage, and the reason is logged with the path and the code.
+8. [x] A post-sales case no longer waits forever for a hold its cancelled
+   booking never released. `ChangeExecutionService` records the wait and, after
+   `RELEASE_WAIT_LIMIT` (two minutes), releases the hold itself, because the
+   release capacity would have acted on can be lost to stream trimming or to a
+   dead letter nothing replays -- 99 `SegmentBookingCancelled` entries sat in
+   `events:capacity-availability:dlq` when this was measured. The limit is
+   asserted directly. Verified live at revision 504: 400334 cases APPLIED, 537
+   FAILED, and **0 EXECUTING older than thirty minutes**, against the 34 stuck
+   holds and the one five-and-a-half-hour case this was filed from.
 
    At revision 418 the window carries 911 refunds and 602 changes that failed at
    `case-status`, and 191 distinct case ids account for 1639 of those failures --
