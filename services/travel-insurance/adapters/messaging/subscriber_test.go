@@ -33,6 +33,38 @@ func (r coverageResolver) ResolveJourneyCoverage(context.Context, string, string
 	return r.coverage, nil
 }
 
+// A read that trails its announcement is waited for, and one that never catches
+// up is handed back as a declared transient failure rather than as an
+// unclassified handler fault -- the difference the consumer's own metrics read.
+func TestSettleNotReadyWaitsThenDeclaresTheRetryTransient(t *testing.T) {
+	attempts := 0
+	err := settleNotReady(context.Background(), func() error {
+		attempts++
+		if attempts < 3 {
+			return application.ErrNotReady
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("a wait that settles must succeed, got %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("attempts = %d, want 3", attempts)
+	}
+
+	attempts = 0
+	err = settleNotReady(context.Background(), func() error {
+		attempts++
+		return application.ErrNotReady
+	})
+	if !kitmsg.IsTransientHandlerError(err) {
+		t.Fatalf("a wait that never settles must be a transient failure, got %v", err)
+	}
+	if attempts != notReadyAttempts {
+		t.Fatalf("attempts = %d, want %d", attempts, notReadyAttempts)
+	}
+}
+
 func sequentialIDs() func(string) string {
 	counters := map[string]int{}
 	return func(prefix string) string {
