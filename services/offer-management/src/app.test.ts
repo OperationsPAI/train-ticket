@@ -585,6 +585,48 @@ async function seededUpstreamRepository(): Promise<InMemoryUpstreamStateReposito
   return repository;
 }
 
+it("a quote's priced distance survives into the offer's price snapshot", async () => {
+  const repository = new InMemoryUpstreamStateRepository();
+  const occurredAt = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + 900_000).toISOString();
+  await applyUpstreamEvent(repository, makeEnvelope("FareQuoteComputed", "fare-pricing", {
+    quoteId: "fq-distance",
+    inputHash: "hash-distance",
+    travelerRefs: ["tvl-distance"],
+    channel: "web",
+    currency: "CNY",
+    status: "QUOTED",
+    validFrom: occurredAt,
+    validUntil: expiresAt,
+    breakdown: {
+      subtotal: { currency: "CNY", minorUnits: 16979 },
+      total: { currency: "CNY", minorUnits: 16979 },
+      priceSnapshotRef: "price-distance",
+      baseDistanceFare: { distanceKm: "121.0", perKmRate: "0.15" },
+    },
+    ruleSnapshot: { ruleSetId: "ruleset-distance", ruleSetVersion: "v1" },
+  }));
+
+  const quote = await repository.findFareQuote("fq-distance");
+  assert.equal(quote?.distanceKm, 121, "the quote keeps the distance it was priced from");
+
+  // A quote priced from the flat base fare carries no component, and the offer
+  // must not invent one.
+  await applyUpstreamEvent(repository, makeEnvelope("FareQuoteComputed", "fare-pricing", {
+    quoteId: "fq-flat",
+    inputHash: "hash-flat",
+    travelerRefs: ["tvl-distance"],
+    channel: "web",
+    currency: "CNY",
+    status: "QUOTED",
+    validFrom: occurredAt,
+    validUntil: expiresAt,
+    breakdown: { subtotal: { currency: "CNY", minorUnits: 28000 }, total: { currency: "CNY", minorUnits: 28000 }, baseFlat: { amount: 10000, currency: "CNY" } },
+    ruleSnapshot: { ruleSetId: "ruleset-flat", ruleSetVersion: "v1" },
+  }));
+  assert.equal((await repository.findFareQuote("fq-flat"))?.distanceKm, undefined);
+});
+
 function makeEnvelope(eventType: string, producer: string, payload: Record<string, unknown>): EventEnvelope {
   return {
     eventId: `evt-${uuidV7()}`,
