@@ -441,19 +441,34 @@ test("promotion records a bounded outcome per transition without any identifier"
   const now = () => new Date("2026-01-01T00:00:00.000Z");
   const orchestrator = new PromotionOrchestrator(repository, new StubFarePricing(), new StubCapacity(), publisher, new StubOfferManagement(), now, metrics);
   const service = new WaitlistApplicationService(repository, new InMemoryEventPublisher(), new StubFarePricing(), new StubCapacity(), new StubJourneyOrder(), now, new StubOfferManagement());
-  const entry = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "NONE", tripCount: 0, daysBefore: 20 });
+  // Two DIFFERENT intents, promoted one at a time, so the label set each one
+  // produces can be compared directly. The property under test is the one the
+  // contract states: a business identifier must not widen the series, so two
+  // different requests have to record exactly the same labels.
+  const first = await service.join({ accountId: "acc-1", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "NONE", tripCount: 0, daysBefore: 20 });
+  const second = await service.join({ accountId: "acc-2", travelerRefs: ["t2"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "NONE", tripCount: 0, daysBefore: 20 });
+  const journeyOrder = new StubJourneyOrder();
+  const drain = async () => {
+    const start = recorded.length;
+    for (let step = 0; step < 8; step++) {
+      if (!await orchestrator.advanceNextPromotion(journeyOrder)) break;
+    }
+    return recorded.slice(start);
+  };
 
   await orchestrator.recordCapacityFreed(capacityEvent());
-  const journeyOrder = new StubJourneyOrder();
-  for (let step = 0; step < 8; step++) {
-    if (!await orchestrator.advanceNextPromotion(journeyOrder)) break;
-  }
+  const firstLabels = await drain();
+  await orchestrator.recordCapacityFreed(capacityEvent({ capacityReleaseRef: "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c124" }));
+  const secondLabels = await drain();
 
-  assert.deepEqual(recorded.map((point) => point.outcome), ["claimed", "fare_quoted", "offer_created", "order_created"]);
-  assert.deepEqual(recorded.map((point) => point.reasonCode), ["capacity_claimed", "none", "none", "none"]);
+  assert.deepEqual(firstLabels.map((point) => point.outcome), ["claimed", "fare_quoted", "offer_created", "order_created"]);
+  assert.deepEqual(firstLabels.map((point) => point.reasonCode), ["capacity_claimed", "none", "none", "none"]);
+  assert.deepEqual(secondLabels, firstLabels, "two different requests must record the same label set");
   for (const point of recorded) {
     assert.equal(point.travelClass, "second_class");
-    assert.ok(!JSON.stringify(point).includes(entry.waitlistRequestId), "metric labels must not carry the request id");
+    for (const identifier of [first.waitlistRequestId, second.waitlistRequestId]) {
+      assert.ok(!JSON.stringify(point).includes(identifier), "metric labels must not carry the request id");
+    }
   }
 });
 
