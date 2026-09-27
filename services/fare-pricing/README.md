@@ -44,6 +44,15 @@ amounts produced here.
 
 - `docs/02-domains/fare-pricing.md`
 
+## Settings
+
+`config/resolution.json` states the supplier contracts this deployment's
+catalogue carries rule sets under. The image installs the directory and names it
+in `FARE_PRICING_CONFIG_DIR`, so a container reads the document the release was
+cut from; a process with no document at all carries no register. The register is
+what lets a surface that answers a stored reference tell a contract this
+deployment carries from one it does not.
+
 ## Language Rationale
 
 Python keeps fare rules, explanation tooling, and later experimentation lightweight.
