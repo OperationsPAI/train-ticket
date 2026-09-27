@@ -41,10 +41,12 @@ public class ApplicationConfiguration {
         DomainEventEnvelopeMapper envelopeMapper,
         Clock clock,
         com.trainticket.financesettlement.adapters.http.ChannelStatementFactsClient channelStatementLines,
+        com.trainticket.financesettlement.adapters.http.PlatformRefundFactsClient platformRefunds,
         PaymentIntentOrderReferenceRepository paymentIntentOrderReferences
     ) {
         return new FinanceSettlementApplicationService(revenueRecognitions, reconciliationCases, invoices, projections, reconciliationBatches, supplierSettlements, feeAccruals, eventPublisher, envelopeMapper, clock)
             .withChannelStatementLines(channelStatementLines)
+            .withPlatformRefunds(platformRefunds)
             .withPaymentIntentOrderReferences(paymentIntentOrderReferences);
     }
 

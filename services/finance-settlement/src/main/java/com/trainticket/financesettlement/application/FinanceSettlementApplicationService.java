@@ -43,6 +43,9 @@ public class FinanceSettlementApplicationService {
     // than a target, so a statement that keeps growing cannot hold the
     // scheduler's single thread forever.
     private static final int MAX_STATEMENT_LINE_PAGES = 2_000;
+    // 100 pages of 1000 is a hundred thousand refunds for one day: past any day
+    // this environment has measured, and a bound rather than a target.
+    private static final int MAX_PLATFORM_REFUND_PAGES = 100;
 
     private final SupplierSettlementRepository supplierSettlements;
     private final FeeAccrualRepository feeAccruals;
@@ -51,6 +54,7 @@ public class FinanceSettlementApplicationService {
     private final Clock clock;
     private ChannelStatementLineSource channelStatementLines;
     private PaymentIntentOrderReferenceRepository paymentIntentOrderReferences;
+    private PlatformRefundSource platformRefundsSource;
 
     /**
      * Where the channel's own statement lines come from, when this deployment
@@ -68,6 +72,16 @@ public class FinanceSettlementApplicationService {
      */
     public FinanceSettlementApplicationService withPaymentIntentOrderReferences(PaymentIntentOrderReferenceRepository references) {
         this.paymentIntentOrderReferences = references;
+        return this;
+    }
+
+    /**
+     * Where the platform's own settled refunds come from, when this deployment
+     * has a source for them. Without one the reconciliation checks the money in
+     * and leaves the refund side to the channel's own record.
+     */
+    public FinanceSettlementApplicationService withPlatformRefunds(PlatformRefundSource source) {
+        this.platformRefundsSource = source;
         return this;
     }
 
@@ -326,7 +340,8 @@ public class FinanceSettlementApplicationService {
                 currency[0] = capture.amount().currency();
             }
             Map<String, ChannelReconciliationFact> channelLines = new LinkedHashMap<>();
-            for (ChannelStatementLineProjection line : projections.findChannelStatementLinesForSettlementDate(date)) {
+            List<ChannelStatementLineProjection> channelLineRows = projections.findChannelStatementLinesForSettlementDate(date);
+            for (ChannelStatementLineProjection line : channelLineRows) {
                 // Only the channel's payments answer the platform's captures. A
                 // refund line is the channel's answer to a platform refund, and
                 // entering it here would report every refund as money the
@@ -356,6 +371,7 @@ public class FinanceSettlementApplicationService {
             for (var item : channelLines.entrySet()) {
                 entries.add(ReconciliationEntry.compare("re-" + item.getKey(), item.getValue().orderId(), item.getValue().paymentIntentId(), Money.zero(item.getValue().amount().currency()), item.getValue().amount(), false, true, item.getValue().sourceEventIds()));
             }
+            entries.addAll(reconcileRefunds(date, channelLineRows, currency));
             ReconciliationBatch batch = ReconciliationBatch.complete(date, date.plusDays(1).atStartOfDay().toInstant(ZoneOffset.UTC), currency[0], entries,
                 clock.instant(), PrefixedIds.newCommandId(), PrefixedIds.newCommandId(), canonicalCorrelationId(correlationId));
             reconciliationBatches.save(batch);
@@ -477,6 +493,75 @@ public class FinanceSettlementApplicationService {
     }
 
     /**
+     * Compares the channel's refund lines with the refunds the platform settled.
+     *
+     * <p>A statement's refund lines are money the channel paid back, and the
+     * platform's own record of paying it back is payment's settlement of the same
+     * refund id -- the one reference both sides carry. Without this the day's
+     * gross refund total was recorded by the channel and never checked against
+     * anything, because the capture comparison reads payment lines only.
+     */
+    private List<ReconciliationEntry> reconcileRefunds(LocalDate date, List<ChannelStatementLineProjection> channelLineRows, Currency[] currency) {
+        if (platformRefundsSource == null) {
+            // No platform side to compare with: the statement's own gross refund
+            // total stays the channel's record rather than becoming one
+            // unexplained entry per refund line.
+            return List.of();
+        }
+        if (channelLineRows.isEmpty()) {
+            // No statement for the date means no channel side to compare with, so
+            // the platform side is not pulled either: the read is what a
+            // settlement needs, and a date nothing was settled for costs nothing.
+            return List.of();
+        }
+        Map<String, ChannelReconciliationFact> channelRefunds = new LinkedHashMap<>();
+        for (ChannelStatementLineProjection line : channelLineRows) {
+            if (!line.isRefund() || line.refundId().isBlank()) continue;
+            channelRefunds.merge(line.refundId(),
+                new ChannelReconciliationFact(line.orderId(), line.paymentIntentId(), line.actualAmount(), List.of(line.sourceEventId())),
+                ChannelReconciliationFact::merge);
+            currency[0] = line.actualAmount().currency();
+        }
+        Map<String, PlatformReconciliationFact> settledRefunds = new LinkedHashMap<>();
+        if (platformRefundsSource != null) {
+            String cursor = null;
+            for (int page = 0; page < MAX_PLATFORM_REFUND_PAGES; page++) {
+                PlatformRefundSource.Page current = platformRefundsSource.page(date, cursor, PlatformRefundSource.MAX_PAGE_SIZE);
+                for (PlatformRefundSource.Refund refund : current.refunds()) {
+                    if (refund.refundId().isBlank()) continue;
+                    String reference = refund.businessReference().isBlank() ? refund.sourceCaseRef() : refund.businessReference();
+                    settledRefunds.merge(refund.refundId(),
+                        new PlatformReconciliationFact(reference, refund.paymentIntentId(), refund.amount(), List.of(refund.refundId())),
+                        PlatformReconciliationFact::merge);
+                    currency[0] = refund.amount().currency();
+                }
+                if (current.nextCursor() == null) break;
+                cursor = current.nextCursor();
+            }
+        }
+        if (channelRefunds.isEmpty() && settledRefunds.isEmpty()) {
+            return List.of();
+        }
+        List<ReconciliationEntry> entries = new ArrayList<>();
+        for (var item : settledRefunds.entrySet()) {
+            ChannelReconciliationFact channel = channelRefunds.remove(item.getKey());
+            Money channelAmount = channel == null ? Money.zero(item.getValue().amount().currency()) : channel.amount();
+            List<String> sourceEventIds = new ArrayList<>(item.getValue().sourceEventIds());
+            if (channel != null) {
+                sourceEventIds.addAll(channel.sourceEventIds());
+            }
+            entries.add(ReconciliationEntry.compare("re-refund-" + item.getKey(), item.getValue().orderId(),
+                item.getValue().paymentIntentId(), item.getValue().amount(), channelAmount, true, channel != null, sourceEventIds));
+        }
+        for (var item : channelRefunds.entrySet()) {
+            entries.add(ReconciliationEntry.compare("re-refund-" + item.getKey(), item.getValue().orderId(),
+                item.getValue().paymentIntentId(), Money.zero(item.getValue().amount().currency()), item.getValue().amount(),
+                false, true, item.getValue().sourceEventIds()));
+        }
+        return entries;
+    }
+
+    /**
      * Records the channel's own lines for a settlement date, so the daily
      * reconciliation compares captures with lines rather than with one
      * statement-level total.
@@ -528,7 +613,8 @@ public class FinanceSettlementApplicationService {
                     // The line itself is the evidence: this side of the money was
                     // read from the channel's statement, not published as an event.
                     line.statementLineId(),
-                    line.lineType().isBlank() ? ChannelStatementLineProjection.PAYMENT : line.lineType()
+                    line.lineType().isBlank() ? ChannelStatementLineProjection.PAYMENT : line.lineType(),
+                    line.refundId()
                 ));
             }
             projections.saveChannelStatementLines(batch);
