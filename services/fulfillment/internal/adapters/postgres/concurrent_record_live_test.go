@@ -92,7 +92,7 @@ func TestPersistedFulfillmentRejectsStaleWritesAndSerializesBoarding(t *testing.
 			defer workers.Done()
 			_, err := svc.VerifyBoarding(ctx, application.VerifyBoardingCommand{
 				EntitlementID: first.EntitlementID, SegmentBookingID: first.SegmentBookingID, JourneyOrderID: first.JourneyOrderID, TravelerID: first.TravelerID, SegmentRef: first.SegmentRef,
-				Source: domain.FulfillmentSourceGate, SourceEventID: source.ID, OccurredAt: time.Now().UTC()}, application.CommandMetadata{CorrelationID: ids.NewCorrelationID(), CausationID: ids.NewCommandID()})
+				Source: domain.FulfillmentSourceStation, SourceEventID: source.ID, OccurredAt: time.Now().UTC()}, application.CommandMetadata{CorrelationID: ids.NewCorrelationID(), CausationID: ids.NewCommandID()})
 			results <- err
 		}()
 	}

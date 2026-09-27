@@ -84,7 +84,7 @@ func TestFulfillmentHTTPVerifyBoardingHappyPathAndGet(t *testing.T) {
 	service := application.NewService(application.NewInMemoryRepository(), application.NoopPublisher{}, application.NewInMemoryConsumedEventLog(), nil, nil)
 	seedHTTPService(t, service, "ent-http1", "sb-http1", "ord-http1", "tvl-http1", "seg-http1")
 	router := RouterWithService(service)
-	body := `{"entitlementId":"ent-http1","segmentBookingId":"sb-http1","journeyOrderId":"ord-http1","travelerId":"tvl-http1","segmentRef":"seg-http1","source":"GATE","sourceEventId":"scan-1","occurredAt":"2026-07-05T10:00:00Z"}`
+	body := `{"entitlementId":"ent-http1","segmentBookingId":"sb-http1","journeyOrderId":"ord-http1","travelerId":"tvl-http1","segmentRef":"seg-http1","source":"STATION","sourceEventId":"scan-1","occurredAt":"2026-07-05T10:00:00Z"}`
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/fulfillment-records/boarding", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
@@ -188,7 +188,7 @@ func TestFulfillmentHTTPIdempotentReplayAndReuse(t *testing.T) {
 	service := application.NewService(application.NewInMemoryRepository(), application.NoopPublisher{}, application.NewInMemoryConsumedEventLog(), nil, nil)
 	seedHTTPService(t, service, "ent-replay1", "sb-replay1", "ord-replay1", "tvl-replay1", "seg-replay1")
 	router := RouterWithService(service)
-	body := `{"entitlementId":"ent-replay1","segmentBookingId":"sb-replay1","journeyOrderId":"ord-replay1","travelerId":"tvl-replay1","segmentRef":"seg-replay1","source":"GATE","sourceEventId":"scan-1","occurredAt":"2026-07-05T10:00:00Z"}`
+	body := `{"entitlementId":"ent-replay1","segmentBookingId":"sb-replay1","journeyOrderId":"ord-replay1","travelerId":"tvl-replay1","segmentRef":"seg-replay1","source":"STATION","sourceEventId":"scan-1","occurredAt":"2026-07-05T10:00:00Z"}`
 	makeReq := func(payload string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodPost, "/api/v1/fulfillment-records/boarding", strings.NewReader(payload))
@@ -216,7 +216,7 @@ func TestFulfillmentHTTPDomainRuleViolationSurfaces(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/fulfillment-records/no-show", strings.NewReader(noShow))
 	req.Header.Set("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b0c005")
 	router.ServeHTTP(httptest.NewRecorder(), req)
-	boarding := `{"entitlementId":"ent-domain1","segmentBookingId":"sb-domain1","journeyOrderId":"ord-domain1","travelerId":"tvl-domain1","segmentRef":"seg-domain1","source":"GATE","sourceEventId":"scan-after-noshow","occurredAt":"2026-07-05T10:00:00Z"}`
+	boarding := `{"entitlementId":"ent-domain1","segmentBookingId":"sb-domain1","journeyOrderId":"ord-domain1","travelerId":"tvl-domain1","segmentRef":"seg-domain1","source":"STATION","sourceEventId":"scan-after-noshow","occurredAt":"2026-07-05T10:00:00Z"}`
 	recorder := httptest.NewRecorder()
 	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/fulfillment-records/boarding", strings.NewReader(boarding))
 	req2.Header.Set("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b0c006")
@@ -244,7 +244,7 @@ func TestFulfillmentHTTPMapsEntitlementLookupFailureToUnavailable(t *testing.T) 
 	service := application.NewService(application.NewInMemoryRepository(), application.NoopPublisher{}, application.NewInMemoryConsumedEventLog(), nil, nil).
 		WithEntitlementReader(unavailableEntitlementReader{})
 	router := RouterWithService(service)
-	body := `{"entitlementId":"ent-down1","segmentBookingId":"sb-down1","journeyOrderId":"ord-down1","travelerId":"tvl-down1","segmentRef":"seg-down1","source":"GATE","sourceEventId":"scan-down1","occurredAt":"2026-09-25T04:00:00Z"}`
+	body := `{"entitlementId":"ent-down1","segmentBookingId":"sb-down1","journeyOrderId":"ord-down1","travelerId":"tvl-down1","segmentRef":"seg-down1","source":"STATION","sourceEventId":"scan-down1","occurredAt":"2026-09-25T04:00:00Z"}`
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/fulfillment-records/boarding", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
@@ -264,7 +264,7 @@ func TestFulfillmentHTTPCausationDoesNotReuseIdempotencyKey(t *testing.T) {
 	}, nil)
 	seedHTTPService(t, service, "ent-cause1", "sb-cause1", "ord-cause1", "tvl-cause1", "seg-cause1")
 	router := RouterWithConfig(service, func() string { return "0194f2e0-7b3e-7610-0284-5c26e8b0c555" })
-	body := `{"entitlementId":"ent-cause1","segmentBookingId":"sb-cause1","journeyOrderId":"ord-cause1","travelerId":"tvl-cause1","segmentRef":"seg-cause1","source":"GATE","sourceEventId":"scan-cause","occurredAt":"2026-07-05T10:00:00Z"}`
+	body := `{"entitlementId":"ent-cause1","segmentBookingId":"sb-cause1","journeyOrderId":"ord-cause1","travelerId":"tvl-cause1","segmentRef":"seg-cause1","source":"STATION","sourceEventId":"scan-cause","occurredAt":"2026-07-05T10:00:00Z"}`
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/fulfillment-records/boarding", strings.NewReader(body))
 	request.Header.Set("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b0c007")
@@ -284,7 +284,7 @@ func TestFulfillmentHTTPCompletionHappyPath(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	service := application.NewService(application.NewInMemoryRepository(), application.NoopPublisher{}, application.NewInMemoryConsumedEventLog(), nil, nil)
 	seedHTTPService(t, service, "ent-complete1", "sb-complete1", "ord-complete1", "tvl-complete1", "seg-complete1")
-	_, err := service.VerifyBoarding(context.Background(), application.VerifyBoardingCommand{EntitlementID: "ent-complete1", SegmentBookingID: "sb-complete1", JourneyOrderID: "ord-complete1", TravelerID: "tvl-complete1", SegmentRef: "seg-complete1", Source: domain.FulfillmentSourceGate, SourceEventID: "scan-complete", OccurredAt: time.Date(2026, 7, 5, 10, 0, 0, 0, time.UTC)}, application.CommandMetadata{CorrelationID: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c0dd"})
+	_, err := service.VerifyBoarding(context.Background(), application.VerifyBoardingCommand{EntitlementID: "ent-complete1", SegmentBookingID: "sb-complete1", JourneyOrderID: "ord-complete1", TravelerID: "tvl-complete1", SegmentRef: "seg-complete1", Source: domain.FulfillmentSourceStation, SourceEventID: "scan-complete", OccurredAt: time.Date(2026, 7, 5, 10, 0, 0, 0, time.UTC)}, application.CommandMetadata{CorrelationID: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c0dd"})
 	if err != nil {
 		t.Fatalf("boarding: %v", err)
 	}

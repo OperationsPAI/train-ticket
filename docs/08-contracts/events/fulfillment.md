@@ -22,7 +22,7 @@ Last updated: 2026-07-05
 | `journeyOrderId` | `OrderId` | yes | Reference to the journey order (`ord-<uuid>`). |
 | `travelerId` | `TravelerId` | yes | Traveler reference (`tvl-<uuid>`). |
 | `segmentRef` | `SegmentRef` | yes | Segment reference (`seg-<uuid>`). |
-| `source` | string | yes | Source of the boarding verification: `GATE`, `STATION`, `PROVIDER`, `CONDUCTOR`, `ADMIN`. |
+| `source` | string | yes | Source of the boarding verification: `STATION`, `PROVIDER`. |
 | `sourceEventId` | string | yes | Source event identifier for idempotency. |
 | `occurredAt` | RFC3339 UTC | yes | When the boarding event physically occurred. |
 | `receivedAt` | RFC3339 UTC | yes | When the boarding event was received by the system. |
@@ -123,7 +123,7 @@ Last updated: 2026-07-05
 |---|---|---|---|
 | `fulfillmentRecordId` | string | yes | Fulfillment record identifier (`fr-<uuid>`). |
 | `entitlementId` | `EntitlementId` | yes | Reference to the entitlement (`ent-<uuid>`). |
-| `source` | string | yes | Source: `GATE`, `STATION`, `PROVIDER`, `CONDUCTOR`, `ADMIN`. |
+| `source` | string | yes | Source: `STATION`, `PROVIDER`. |
 | `sourceEventId` | string | yes | Source event identifier for idempotency. |
 | `occurredAt` | RFC3339 UTC | yes | When the check-in physically occurred. |
 
@@ -140,7 +140,7 @@ Last updated: 2026-07-05
 |---|---|---|---|
 | `fulfillmentRecordId` | string | yes | Fulfillment record identifier (`fr-<uuid>`). |
 | `entitlementId` | `EntitlementId` | yes | Reference to the entitlement (`ent-<uuid>`). |
-| `source` | string | yes | Source: `GATE`, `STATION`, `PROVIDER`, `CONDUCTOR`, `ADMIN`. |
+| `source` | string | yes | Source: `STATION`, `PROVIDER`. |
 | `sourceEventId` | string | yes | Source event identifier for idempotency. |
 | `occurredAt` | RFC3339 UTC | yes | When the boarding physically occurred. |
 

@@ -1368,6 +1368,13 @@ three scale items.
    against about 40 a minute, and the three are one message whose case took
    minutes to reach APPLIED and which then succeeded.
 
+10. [ ] The boarding register is deployed with the image rather than handed to
+   a running service: it is read once, when the process starts, so a source that
+   moves travels with a release. Reading it per boarding would let an operator
+   move one without a redeploy, at the cost of parsing the settings on every
+   request. Nothing needs that yet, and the register's job is to say what the
+   release operates rather than what the code could accept.
+
 ## Handoff rules
 
 No unchecked item above is implicitly authorised: completing one means

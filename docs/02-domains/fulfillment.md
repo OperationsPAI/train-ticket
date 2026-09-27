@@ -66,7 +66,7 @@ Fulfillment 负责记录出行服务被实际使用、核验、开始、进行�
 | NoShow | 到核验窗口结束仍未 Boarded 或未上车。 | 需要按 Segment 和 Traveler 判断。 |
 | Offline Verification | 设备离线时依据本地核验包做出的临时核验事实。 | 回传后需要冲突合并。 |
 | Replay/Backfill | 供应商或设备晚到事件对历史状态的回补。 | 必须保留原 occurredAt 和 receivedAt。 |
-| Fulfillment Source | 产生履约事实的来源。 | Gate、Provider、DriverApp、ConductorApp、Admin、System。 |
+| Fulfillment Source | 产生履约事实的来源。 | Station、Provider。 |
 
 ## 4. 上下游契约
 
@@ -116,7 +116,7 @@ Fulfillment 负责记录出行服务被实际使用、核验、开始、进行�
 | travelerRef | 旅客引用和脱敏快照。 |
 | segmentRef | mode、serviceDate、from/to、plannedDeparture/Arrival。 |
 | fulfillmentStatus | NotOpened、Ready、CheckedIn、Boarding、Boarded、InTravel、Arrived、Completed、NoShow、Cancelled。 |
-| source | Gate、Provider、DriverApp、ConductorApp、Admin、System。 |
+| source | Station、Provider。 |
 | locationSnapshot | PlaceId、nodeId、GeoFenceVersion、gate/platform 显示快照。 |
 | auditTrail | commandId、sourceEventId、actor、reason、occurredAt、receivedAt。 |
 

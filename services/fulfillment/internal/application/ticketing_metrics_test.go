@@ -43,7 +43,7 @@ func TestBoardingRecordsAnAcceptedValidationTransition(t *testing.T) {
 		JourneyOrderID:   "ord-metric-1",
 		TravelerID:       "tvl-metric-1",
 		SegmentRef:       "seg-metric-1",
-		Source:           domain.FulfillmentSourceGate,
+		Source:           domain.FulfillmentSourceStation,
 		SourceEventID:    "gate-scan-metric-1",
 		OccurredAt:       time.Date(2026, 7, 5, 10, 0, 0, 0, time.UTC),
 	}, CommandMetadata{CorrelationID: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c101", CausationID: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c102"}); err != nil {
@@ -80,7 +80,7 @@ func TestTwoDifferentRecordsPublishTheSameLabelSet(t *testing.T) {
 			JourneyOrderID:   domain.OrderRef("ord-pair-" + suffix),
 			TravelerID:       domain.TravelerRef("tvl-pair-" + suffix),
 			SegmentRef:       domain.SegmentRef("seg-pair-" + suffix),
-			Source:           domain.FulfillmentSourceGate,
+			Source:           domain.FulfillmentSourceStation,
 			SourceEventID:    "gate-scan-pair-" + suffix,
 			OccurredAt:       time.Date(2026, 7, 5, 10, 0, 0, 0, time.UTC),
 		}, metadata[suffix]); err != nil {
@@ -114,7 +114,7 @@ func TestDuplicateBoardingRecordsANoop(t *testing.T) {
 		JourneyOrderID:   "ord-metric-2",
 		TravelerID:       "tvl-metric-2",
 		SegmentRef:       "seg-metric-2",
-		Source:           domain.FulfillmentSourceGate,
+		Source:           domain.FulfillmentSourceStation,
 		SourceEventID:    "gate-scan-metric-2",
 		OccurredAt:       time.Date(2026, 7, 5, 10, 0, 0, 0, time.UTC),
 	}
@@ -180,7 +180,7 @@ func TestNoShowAfterBoardingRecordsABoardingConflict(t *testing.T) {
 		JourneyOrderID:   "ord-metric-4",
 		TravelerID:       "tvl-metric-4",
 		SegmentRef:       "seg-metric-4",
-		Source:           domain.FulfillmentSourceGate,
+		Source:           domain.FulfillmentSourceStation,
 		SourceEventID:    "gate-scan-metric-4",
 		OccurredAt:       time.Date(2026, 7, 5, 10, 0, 0, 0, time.UTC),
 	}, base); err != nil {

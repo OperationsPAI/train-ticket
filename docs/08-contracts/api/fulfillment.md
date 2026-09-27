@@ -28,7 +28,7 @@ timestamps, and Money.
 | `journeyOrderId` | string | yes | Reference to the journey order (`ord-<uuid>`). |
 | `travelerId` | string | yes | Traveler reference (`tvl-<uuid>`). |
 | `segmentRef` | string | yes | Segment reference (`seg-<uuid>`). |
-| `source` | string | yes | Source: `GATE`, `STATION`, `PROVIDER`, `CONDUCTOR`, `ADMIN` |
+| `source` | string | yes | Source: `STATION`, `PROVIDER` |
 | `sourceEventId` | string | yes | Source event identifier for idempotency. |
 | `occurredAt` | timestamp | yes | When boarding physically occurred. |
 

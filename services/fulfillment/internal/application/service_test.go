@@ -71,7 +71,7 @@ func TestPublisherWrapsDomainEventInCanonicalEnvelope(t *testing.T) {
 		JourneyOrderID:   "ord-ghi789",
 		TravelerID:       "tvl-jkl012",
 		SegmentRef:       "seg-mno345",
-		Source:           domain.FulfillmentSourceGate,
+		Source:           domain.FulfillmentSourceStation,
 		SourceEventID:    "gate-scan-1",
 		OccurredAt:       occurredAt,
 	}, CommandMetadata{CorrelationID: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c0aa", CausationID: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c0bb"})
@@ -128,7 +128,7 @@ func TestPublisherEnvelopeIncludesTraceparentFromContext(t *testing.T) {
 		JourneyOrderID:   "ord-trace",
 		TravelerID:       "tvl-trace",
 		SegmentRef:       "seg-trace",
-		Source:           domain.FulfillmentSourceGate,
+		Source:           domain.FulfillmentSourceStation,
 		SourceEventID:    "gate-scan-trace",
 		OccurredAt:       time.Date(2026, 7, 5, 10, 0, 0, 0, time.UTC),
 	}, CommandMetadata{CorrelationID: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c0aa"})
@@ -169,7 +169,7 @@ func TestPublishFailureRetainsPendingEventsForRetry(t *testing.T) {
 		JourneyOrderID:   "ord-retry1",
 		TravelerID:       "tvl-retry1",
 		SegmentRef:       "seg-retry1",
-		Source:           domain.FulfillmentSourceGate,
+		Source:           domain.FulfillmentSourceStation,
 		SourceEventID:    "gate-scan-retry",
 		OccurredAt:       time.Date(2026, 7, 5, 10, 0, 0, 0, time.UTC),
 	}
@@ -206,7 +206,7 @@ func TestPublishFailureRetainsPendingEventsForRetry(t *testing.T) {
 
 func TestVerifyBoardingRequiresPreparedTicketAndRejectsVoided(t *testing.T) {
 	service := NewService(NewInMemoryRepository(), &recordingPublisher{}, NewInMemoryConsumedEventLog(), nil, nil)
-	cmd := VerifyBoardingCommand{EntitlementID: "ent-missing1", SegmentBookingID: "sb-missing1", JourneyOrderID: "ord-missing1", TravelerID: "tvl-missing1", SegmentRef: "seg-missing1", Source: domain.FulfillmentSourceGate, SourceEventID: "scan-missing", OccurredAt: time.Now().UTC()}
+	cmd := VerifyBoardingCommand{EntitlementID: "ent-missing1", SegmentBookingID: "sb-missing1", JourneyOrderID: "ord-missing1", TravelerID: "tvl-missing1", SegmentRef: "seg-missing1", Source: domain.FulfillmentSourceStation, SourceEventID: "scan-missing", OccurredAt: time.Now().UTC()}
 	if _, err := service.VerifyBoarding(context.Background(), cmd, CommandMetadata{}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected not found for unprepared ticket, got %v", err)
 	}
@@ -215,7 +215,7 @@ func TestVerifyBoardingRequiresPreparedTicketAndRejectsVoided(t *testing.T) {
 	if err := service.HandleSubscribedEvent(context.Background(), voided); err != nil {
 		t.Fatal(err)
 	}
-	cmd = VerifyBoardingCommand{EntitlementID: "ent-void1", SegmentBookingID: "sb-void1", JourneyOrderID: "ord-void1", TravelerID: "tvl-void1", SegmentRef: "seg-void1", Source: domain.FulfillmentSourceGate, SourceEventID: "scan-void", OccurredAt: time.Now().UTC()}
+	cmd = VerifyBoardingCommand{EntitlementID: "ent-void1", SegmentBookingID: "sb-void1", JourneyOrderID: "ord-void1", TravelerID: "tvl-void1", SegmentRef: "seg-void1", Source: domain.FulfillmentSourceStation, SourceEventID: "scan-void", OccurredAt: time.Now().UTC()}
 	if _, err := service.VerifyBoarding(context.Background(), cmd, CommandMetadata{}); !errors.Is(err, ErrDomainRuleViolation) {
 		t.Fatalf("expected domain violation for voided ticket, got %v", err)
 	}
@@ -241,7 +241,7 @@ func TestVerifyBoardingRecoversMissingProjectionFromAuthoritativeEntitlement(t *
 		JourneyOrderID:   "ord-recover1",
 		TravelerID:       "tvl-recover1",
 		SegmentRef:       "seg-recover1",
-		Source:           domain.FulfillmentSourceGate,
+		Source:           domain.FulfillmentSourceStation,
 		SourceEventID:    "gate-recover1",
 		OccurredAt:       time.Date(2026, 9, 25, 4, 4, 0, 0, time.UTC),
 	}
@@ -275,7 +275,7 @@ func TestVerifyBoardingDoesNotFetchEntitlementWhenProjectionExists(t *testing.T)
 
 	_, err := service.VerifyBoarding(context.Background(), VerifyBoardingCommand{
 		EntitlementID: "ent-local1", SegmentBookingID: "sb-local1", JourneyOrderID: "ord-local1",
-		TravelerID: "tvl-local1", SegmentRef: "seg-local1", Source: domain.FulfillmentSourceGate,
+		TravelerID: "tvl-local1", SegmentRef: "seg-local1", Source: domain.FulfillmentSourceStation,
 		SourceEventID: "gate-local1", OccurredAt: time.Date(2026, 9, 25, 4, 4, 0, 0, time.UTC),
 	}, CommandMetadata{})
 	if err != nil {
@@ -293,7 +293,7 @@ func TestVerifyBoardingRejectsAuthoritativeEntitlementReferenceMismatch(t *testi
 	}
 	cmd := VerifyBoardingCommand{
 		EntitlementID: "ent-match1", SegmentBookingID: "sb-match1", JourneyOrderID: "ord-match1",
-		TravelerID: "tvl-match1", SegmentRef: "seg-match1", Source: domain.FulfillmentSourceGate,
+		TravelerID: "tvl-match1", SegmentRef: "seg-match1", Source: domain.FulfillmentSourceStation,
 		SourceEventID: "gate-match1", OccurredAt: time.Date(2026, 9, 25, 4, 4, 0, 0, time.UTC),
 	}
 	tests := map[string]func(*EntitlementSnapshot){
@@ -332,7 +332,7 @@ func TestVerifyBoardingRejectsNonBoardableAuthoritativeEntitlement(t *testing.T)
 			service := NewService(repo, NoopPublisher{}, NewInMemoryConsumedEventLog(), nil, nil).WithEntitlementReader(reader)
 			_, err := service.VerifyBoarding(context.Background(), VerifyBoardingCommand{
 				EntitlementID: "ent-status1", SegmentBookingID: "sb-status1", JourneyOrderID: "ord-status1",
-				TravelerID: "tvl-status1", SegmentRef: "seg-status1", Source: domain.FulfillmentSourceGate,
+				TravelerID: "tvl-status1", SegmentRef: "seg-status1", Source: domain.FulfillmentSourceStation,
 				SourceEventID: "gate-status1", OccurredAt: time.Date(2026, 9, 25, 4, 4, 0, 0, time.UTC),
 			}, CommandMetadata{})
 			if !errors.Is(err, ErrDomainRuleViolation) {
@@ -348,7 +348,7 @@ func TestVerifyBoardingSurfacesEntitlementLookupFailure(t *testing.T) {
 	service := NewService(repo, NoopPublisher{}, NewInMemoryConsumedEventLog(), nil, nil).WithEntitlementReader(reader)
 	_, err := service.VerifyBoarding(context.Background(), VerifyBoardingCommand{
 		EntitlementID: "ent-down1", SegmentBookingID: "sb-down1", JourneyOrderID: "ord-down1",
-		TravelerID: "tvl-down1", SegmentRef: "seg-down1", Source: domain.FulfillmentSourceGate,
+		TravelerID: "tvl-down1", SegmentRef: "seg-down1", Source: domain.FulfillmentSourceStation,
 		SourceEventID: "gate-down1", OccurredAt: time.Date(2026, 9, 25, 4, 4, 0, 0, time.UTC),
 	}, CommandMetadata{})
 	if !errors.Is(err, ErrDependencyUnavailable) {
@@ -363,7 +363,7 @@ func TestCommandPathContinuesAfterRestartWithPersistedRecord(t *testing.T) {
 		return prefix + "-00000000-0000-7000-8000-000000000101"
 	}, func() time.Time { return time.Date(2026, 7, 5, 10, 1, 0, 0, time.UTC) })
 	seedTicket(t, first, "ent-restart1", "sb-restart1", "ord-restart1", "tvl-restart1", "seg-restart1")
-	_, err := first.VerifyBoarding(context.Background(), VerifyBoardingCommand{EntitlementID: "ent-restart1", SegmentBookingID: "sb-restart1", JourneyOrderID: "ord-restart1", TravelerID: "tvl-restart1", SegmentRef: "seg-restart1", Source: domain.FulfillmentSourceGate, SourceEventID: "gate-restart", OccurredAt: time.Date(2026, 7, 5, 10, 0, 0, 0, time.UTC)}, CommandMetadata{})
+	_, err := first.VerifyBoarding(context.Background(), VerifyBoardingCommand{EntitlementID: "ent-restart1", SegmentBookingID: "sb-restart1", JourneyOrderID: "ord-restart1", TravelerID: "tvl-restart1", SegmentRef: "seg-restart1", Source: domain.FulfillmentSourceStation, SourceEventID: "gate-restart", OccurredAt: time.Date(2026, 7, 5, 10, 0, 0, 0, time.UTC)}, CommandMetadata{})
 	if err != nil {
 		t.Fatalf("boarding before restart: %v", err)
 	}
@@ -446,7 +446,7 @@ func TestFulfillmentCompletedPublishesContractEvent(t *testing.T) {
 	publisher := &recordingPublisher{}
 	service := NewService(NewInMemoryRepository(), publisher, NewInMemoryConsumedEventLog(), nil, func() time.Time { return time.Date(2026, 7, 5, 10, 1, 0, 0, time.UTC) })
 	seedTicket(t, service, "ent-complete1", "sb-complete1", "ord-complete1", "tvl-complete1", "seg-complete1")
-	_, err := service.VerifyBoarding(context.Background(), VerifyBoardingCommand{EntitlementID: "ent-complete1", SegmentBookingID: "sb-complete1", JourneyOrderID: "ord-complete1", TravelerID: "tvl-complete1", SegmentRef: "seg-complete1", Source: domain.FulfillmentSourceGate, SourceEventID: "scan-complete", OccurredAt: time.Date(2026, 7, 5, 10, 0, 0, 0, time.UTC)}, CommandMetadata{CorrelationID: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c0aa"})
+	_, err := service.VerifyBoarding(context.Background(), VerifyBoardingCommand{EntitlementID: "ent-complete1", SegmentBookingID: "sb-complete1", JourneyOrderID: "ord-complete1", TravelerID: "tvl-complete1", SegmentRef: "seg-complete1", Source: domain.FulfillmentSourceStation, SourceEventID: "scan-complete", OccurredAt: time.Date(2026, 7, 5, 10, 0, 0, 0, time.UTC)}, CommandMetadata{CorrelationID: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c0aa"})
 	if err != nil {
 		t.Fatalf("boarding: %v", err)
 	}

@@ -93,7 +93,7 @@ func TestVoidedTicketRemainsBlockedAfterRestartAndEventReordering(t *testing.T) 
 			}
 			handle(events["issued"])
 			_, err = service.VerifyBoarding(ctx, application.VerifyBoardingCommand{EntitlementID: ticket.EntitlementID, SegmentBookingID: ticket.BookingID, JourneyOrderID: ticket.OrderID, TravelerID: ticket.TravelerID, SegmentRef: ticket.Segment,
-				Source: domain.FulfillmentSourceGate, SourceEventID: events["issued"].EventID, OccurredAt: time.Now().UTC()}, application.CommandMetadata{CorrelationID: ids.NewCorrelationID(), CausationID: ids.NewCommandID()})
+				Source: domain.FulfillmentSourceStation, SourceEventID: events["issued"].EventID, OccurredAt: time.Now().UTC()}, application.CommandMetadata{CorrelationID: ids.NewCorrelationID(), CausationID: ids.NewCommandID()})
 			if !errors.Is(err, application.ErrDomainRuleViolation) {
 				t.Fatalf("voided ticket boarding error=%v", err)
 			}
