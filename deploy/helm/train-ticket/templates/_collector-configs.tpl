@@ -91,7 +91,7 @@ processors:
           # here or the Prometheus branch silently drops it -- which is how the
           # notification `action` split and the disruption `signal_type`/
           # `source` split were published with no series until they were added.
-          - 'keep_keys(attributes, ["service", "namespace", "http.route", "http.request.method", "http.response.status_code", "network.protocol.version", "url.scheme", "db.client.connection.pool.name", "db.client.connection.state", "pool", "jvm.memory.pool.name", "jvm.memory.type", "jvm.gc.name", "jvm.gc.action", "jvm.gc.cause", "go.memory.type", "go.gc.type", "v8js.heap.space.name", "v8js.gc.type", "nodejs.eventloop.state", "workflow", "stage", "state", "action", "outcome", "reason_code", "currency", "channel", "operation", "travel_class", "seat_mode", "ticket_type", "queue", "event_stream", "consumer_group", "event_type", "signal_type", "source", "source_service", "target_service"])'
+          - 'keep_keys(attributes, ["service", "namespace", "http.route", "http.request.method", "http.response.status_code", "network.protocol.version", "url.scheme", "db.client.connection.pool.name", "db.client.connection.state", "pool", "jvm.memory.pool.name", "jvm.memory.type", "jvm.gc.name", "jvm.gc.action", "jvm.gc.cause", "go.memory.type", "go.gc.type", "v8js.heap.space.name", "v8js.gc.type", "nodejs.eventloop.state", "workflow", "stage", "state", "action", "outcome", "reason_code", "currency", "channel", "operation", "travel_class", "seat_mode", "ticket_type", "queue", "event_stream", "consumer_group", "event_type", "kind", "signal_type", "source", "source_service", "target_service"])'
   batch/prometheus_application:
     timeout: 2s
     send_batch_size: 1024
