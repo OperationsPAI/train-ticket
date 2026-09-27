@@ -543,16 +543,28 @@ Status: incomplete acceptance.
 
 ### T06: Verify paid failure paths and business history
 
-Status: unverified coverage.
+Status: partly verified. The insurance payout leg is now exercised end to end;
+the financial, group booking, corporate travel and bootstrap legs are still
+unverified through their own APIs.
 
-1. [ ] Verify insurance claims and payouts, financial fees and reconciliations,
-   group booking, corporate travel and bootstrap behaviour through the owning
-   APIs. Insurance `PAID_OUT` and payout advice currently record a local
-   decision without a Payment or Wallet disbursement call; verify the actual
-   funding workflow before treating them as money delivered.
-2. [ ] Verify eligibility and refunds after changed travel dates and after
+1. [x] Insurance claims and payouts. The earlier note that `PAID_OUT` and payout
+   advice recorded a local decision without a disbursement call described the
+   state before `16f80362`; the deployed service posts the approved amount to
+   `wallet-promotion` and checks the receipt against the advice. Measured on the
+   resident release (revision 478) with a delay-insurance policy issued inside
+   its coverage window: `POST /api/v1/claims` with a verified delay fact and
+   `settle: true` answered a claim `PAID_OUT` whose advice carries a wallet
+   benefit as its `executionRef`, and `GET /api/v1/benefits/{id}` at
+   wallet-promotion answers `ISSUED` stored value of exactly the approved 3000
+   minor units for the policy's own account. A second approve answered the same
+   completed advice and the same execution reference, and that account's benefit
+   list carries **one** benefit for the claim, so the payout is neither lost nor
+   repeated.
+2. [ ] Verify financial fees and reconciliations, group booking, corporate
+   travel and bootstrap behaviour through the owning APIs.
+3. [ ] Verify eligibility and refunds after changed travel dates and after
    mixed or repeated fare difference payments.
-3. [ ] Verify invoice amount basis and projection completion during a stable
+4. [ ] Verify invoice amount basis and projection completion during a stable
    cycle.
 
 ### T07: Complete the reporting monetary edge cases
@@ -618,14 +630,28 @@ Status: the stored policy is not full external business validation.
 
 ### T14: Verify change sagas finish inside the client polling window
 
-Status: confirmed tail latency; about one percent of change cases finished
-after the ten poll budget in the measured window.
+Status: **closed**, revision 478. The tail was the reservation hop, and the
+hop-by-hop measurements that attributed and removed it are recorded in
+[current status](00-current-status.md#the-reservation-poll-stopped-failing-and-what-was-left-behind-it).
 
-1. [ ] Attribute the gap between the capacity hold request and the difference
-   payment creation.
-2. [ ] Reduce that gap below the polling budget without lengthening the client
-   polling.
-3. [ ] Re-measure the change journey duration distribution afterwards.
+1. [x] Attribute the gap between the capacity hold request and the difference
+   payment creation. Per hop, over 2026-09-27: the hold request reached capacity
+   in 0.2 to 0.3 seconds, the hold's *confirmation* was the late one at 12.0
+   seconds median and 16.9 at the ninety-fifth percentile, and
+   `booking-orchestration`'s oldest undelivered entry on
+   `events:capacity-availability` was 10.8 seconds old at the same moment. That
+   is the hop the change case waits on, and it is the same hop the purchase
+   journey's reservation poll waits on.
+2. [x] Reduce that gap below the polling budget without lengthening the client
+   polling. The reader loops, the shared handler pools and the replica counts
+   that took the reservation tail to zero are the same ones this hop needed; no
+   load generator poll interval or budget changed.
+3. [x] Re-measure the change journey duration distribution afterwards. At
+   revision 479, over one whole diurnal cycle: **924 change journeys, 0 failed**,
+   duration 3.3 seconds at the median, 4.8 at the ninety-fifth percentile and
+   8.0 at the maximum, against the client's ten polls of one second. The
+   ninety-fifth percentile sits at half the budget and the slowest case of the
+   whole window finishes with two seconds to spare.
 
 ## Telemetry follow-ups
 
