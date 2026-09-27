@@ -43,7 +43,13 @@ public final class LettuceRedisStreamOperations implements RedisStreamOperations
      * to 16695 on the resident cluster with one service changed.
      */
     private static final long BLOCK_MS = Long.parseLong(System.getenv().getOrDefault("CONSUMER_BLOCK_MS", "1000"));
-    private static final int BATCH_COUNT = Integer.parseInt(System.getenv().getOrDefault("CONSUMER_BATCH_COUNT", "100"));
+    /**
+     * Five hundred rather than a hundred: one read that returns five hundred entries costs one
+     * command, and {@code xreadgroup} is the largest command class a single-threaded Redis serves
+     * -- 6928 of ~13300 a second on the resident release, with the server pinned at a core through
+     * every burst while every consumer group's own lag reads zero.
+     */
+    private static final int BATCH_COUNT = Integer.parseInt(System.getenv().getOrDefault("CONSUMER_BATCH_COUNT", "500"));
     /**
      * Cap on entries kept per stream. Redis streams are never read destructively, so without a cap
      * every published event stays resident forever and eventually exhausts the Redis memory limit.
