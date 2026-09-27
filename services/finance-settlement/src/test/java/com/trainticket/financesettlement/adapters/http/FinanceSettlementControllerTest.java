@@ -134,6 +134,22 @@ class FinanceSettlementControllerTest {
     }
 
     @Test
+    void runsASettlementDatesReconciliationOnDemandAndIsIdempotentPerDate() throws Exception {
+        String key = UuidV7.generate();
+        mockMvc.perform(post("/api/v1/settlements/reconciliation/2026-07-05/run")
+                .header("Idempotency-Key", key))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.settlementDate").value("2026-07-05"));
+
+        // The date already has a batch, so the second call answers the same one
+        // rather than recomputing it.
+        mockMvc.perform(post("/api/v1/settlements/reconciliation/2026-07-05/run")
+                .header("Idempotency-Key", UuidV7.generate()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.settlementDate").value("2026-07-05"));
+    }
+
+    @Test
     void generateInvoiceIsIdempotent() throws Exception {
         String key = UuidV7.generate();
         mockMvc.perform(post("/api/v1/invoices")
