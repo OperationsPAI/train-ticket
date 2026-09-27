@@ -71,6 +71,32 @@ class ChannelStatementProjectionTest {
         assertEquals(Money.of("CNY", "0.00"), stored.grossPaymentAmount());
     }
 
+    @Test
+    void aGenerationAppliedAfterItsFreezeDoesNotUnfreezeTheStatement() {
+        // Both announcements are published in one relay pass, so with more than
+        // one consumer they can be applied in either order. The projection is
+        // monotonic: a frozen statement stays frozen.
+        InMemoryFinanceSettlementProjectionRepository projections = new InMemoryFinanceSettlementProjectionRepository();
+        FinanceSettlementEventHandler handler = handler(projections);
+
+        Map<String, Object> frozen = statementPayload();
+        frozen.put("status", "FROZEN");
+        frozen.put("frozenAt", "2026-07-02T00:10:00Z");
+        assertEquals(HandlerResult.SUCCESS, handler.handle(envelope("evt-0194f2e0-7b3e-7610-8284-5c26e8b0e211", "ChannelStatementFrozen", frozen)));
+
+        Map<String, Object> generated = statementPayload();
+        generated.put("grossPaymentAmount", Map.of("currency", "CNY", "minorUnits", 123456));
+        generated.put("generatedAt", "2026-07-02T00:00:04Z");
+        generated.put("status", "GENERATED");
+        assertEquals(HandlerResult.SUCCESS, handler.handle(envelope("evt-0194f2e0-7b3e-7610-8284-5c26e8b0e212", "ChannelStatementGenerated", generated)));
+
+        ChannelStatementProjection stored = projections.findChannelStatement("chs-1").orElseThrow();
+        assertEquals("FROZEN", stored.status());
+        assertEquals(Instant.parse("2026-07-02T00:10:00Z"), stored.frozenAt());
+        assertEquals(Instant.parse("2026-07-02T00:00:04Z"), stored.generatedAt());
+        assertEquals(Money.of("CNY", "1234.56"), stored.grossPaymentAmount());
+    }
+
     private static Map<String, Object> statementPayload() {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("channelStatementId", "chs-1");
