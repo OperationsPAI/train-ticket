@@ -1125,6 +1125,10 @@ pub mod redis_runtime {
         state: Arc<SubscriberState>,
         stop: Arc<std::sync::atomic::AtomicBool>,
         event_filter: Option<fn(&EventEnvelope) -> bool>,
+        /// The process-level transport counters. The meter is the global one,
+        /// which is a no-op unless the process installed an SDK provider, so a
+        /// service needs no condition of its own.
+        consumer_metrics: crate::metrics::ConsumerMetrics,
     }
     impl RedisEventSubscriber {
         pub fn from_env() -> Result<Self, SubscribeFailed> {
@@ -1133,12 +1137,16 @@ pub mod redis_runtime {
             Self::new(&url)
         }
         pub fn new(url: &str) -> Result<Self, SubscribeFailed> {
+            let service_name = std::env::var("OTEL_SERVICE_NAME").unwrap_or_default();
             Ok(Self {
                 client: redis::Client::open(url)
                     .map_err(|error| SubscribeFailed(error.to_string()))?,
                 state: Arc::new(SubscriberState::new()),
                 stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 event_filter: None,
+                consumer_metrics: crate::metrics::ConsumerMetrics::new(&crate::metrics::meter(
+                    &service_name,
+                )),
             })
         }
         pub fn with_event_filter(mut self, filter: fn(&EventEnvelope) -> bool) -> Self {
@@ -1196,6 +1204,8 @@ pub mod redis_runtime {
                     // handler-failure cap: a rollout reclaims entries and
                     // advances it without the handler ever seeing them.
                     if message.delivery_count >= *MAX_REDELIVERY_ATTEMPTS {
+                        self.consumer_metrics
+                            .failure(crate::metrics::ConsumerFailure::RedeliveryExhausted);
                         move_to_dlq(
                             ops,
                             &message.stream,
@@ -1207,6 +1217,8 @@ pub mod redis_runtime {
                             message.delivery_count,
                             // Recovery runs before any consumer span exists.
                             "",
+                            &self.consumer_metrics,
+                            crate::metrics::ConsumerFailure::RedeliveryExhausted,
                         )
                         .await?;
                     } else {
@@ -1239,6 +1251,11 @@ pub mod redis_runtime {
             let envelope: EventEnvelope = match serde_json::from_str(&message.raw_envelope) {
                 Ok(envelope) => envelope,
                 Err(error) => {
+                    // A `StreamMessage` always carries its field, so the only way
+                    // to get here is a payload that is not an envelope at all --
+                    // the Java kit's `invalid_envelope`, not `missing_envelope`.
+                    self.consumer_metrics
+                        .failure(crate::metrics::ConsumerFailure::InvalidEnvelope);
                     return move_to_dlq(
                         ops,
                         &message.stream,
@@ -1251,12 +1268,21 @@ pub mod redis_runtime {
                         // A malformed envelope is rejected before the consumer
                         // span is started, so there is no valid span to name.
                         "",
+                        &self.consumer_metrics,
+                        crate::metrics::ConsumerFailure::InvalidEnvelope,
                     )
                     .await
                     .map(|()| false);
                 }
             };
-            if self.event_filter.is_some_and(|filter| !filter(&envelope)) || self.state.has_seen(&envelope.event_id) {
+            if self.event_filter.is_some_and(|filter| !filter(&envelope)) {
+                // This consumer does not subscribe to the type: an ack without
+                // an outcome, because it is not this group's delivery at all.
+                return Ok(true);
+            }
+            if self.state.has_seen(&envelope.event_id) {
+                self.consumer_metrics
+                    .outcome(crate::metrics::ConsumerOutcome::Duplicate);
                 return Ok(true);
             }
             let tracer = global::tracer("rust-kit.messaging");
@@ -1290,6 +1316,8 @@ pub mod redis_runtime {
                     span_context.span().end();
                     self.state.clear_failure(&envelope.event_id);
                     self.state.mark_consumed(&envelope.event_id);
+                    self.consumer_metrics
+                        .outcome(crate::metrics::ConsumerOutcome::Success);
                     Ok(true)
                 }
                 Err(HandlerError::Transient(reason)) => {
@@ -1300,6 +1328,8 @@ pub mod redis_runtime {
                     // Formerly a silent swallow (same class of bug java-kit had):
                     // without this line a retried-to-death message reaches the
                     // DLQ with no trace of what actually failed.
+                    self.consumer_metrics
+                        .failure(crate::metrics::ConsumerFailure::TransientResult);
                     let failures = self.state.record_failure(&envelope.event_id);
                     if failures >= MAX_DELIVERY_ATTEMPTS {
                         // The handler itself has now failed the cap on this
@@ -1326,6 +1356,8 @@ pub mod redis_runtime {
                             &reason,
                             message.delivery_count,
                             &trace_fields,
+                            &self.consumer_metrics,
+                            crate::metrics::ConsumerFailure::TransientResult,
                         )
                         .await
                         .map(|()| false);
@@ -1341,6 +1373,8 @@ pub mod redis_runtime {
                         MAX_DELIVERY_ATTEMPTS,
                         reason
                     );
+                    self.consumer_metrics
+                        .outcome(crate::metrics::ConsumerOutcome::Retry);
                     Ok(false)
                 }
                 Err(HandlerError::Fatal(reason)) => {
@@ -1349,6 +1383,8 @@ pub mod redis_runtime {
                         .set_status(opentelemetry::trace::Status::error(reason.clone()));
                     span_context.span().end();
                     self.state.mark_consumed(&envelope.event_id);
+                    self.consumer_metrics
+                        .failure(crate::metrics::ConsumerFailure::FatalResult);
                     move_to_dlq(
                         ops,
                         &message.stream,
@@ -1359,6 +1395,8 @@ pub mod redis_runtime {
                         &reason,
                         message.delivery_count,
                         &trace_fields,
+                        &self.consumer_metrics,
+                        crate::metrics::ConsumerFailure::FatalResult,
                     )
                     .await
                     .map(|()| false)
@@ -1665,6 +1703,8 @@ pub mod redis_runtime {
         // read from the ambient context because a ContextGuard is not Send.
         // Empty means "no valid span", and nothing is printed.
         trace_fields: &str,
+        metrics: &crate::metrics::ConsumerMetrics,
+        failure: crate::metrics::ConsumerFailure,
     ) -> Result<(), SubscribeFailed> {
         let dlq = format!("{stream}:dlq");
         let failure_reason = truncate_failure_reason(reason);
@@ -1676,18 +1716,30 @@ pub mod redis_runtime {
             event_id_for_log(raw_envelope),
             failure_reason
         );
-        ops.xadd_dlq(
-            &dlq,
-            raw_envelope,
-            dlq_metadata_fields(
-                group,
-                consumer_name,
-                &failure_reason,
-                attempts,
-                &crate::messaging::now_rfc3339_utc(),
-            ),
-        )
-        .await?;
+        if ops
+            .xadd_dlq(
+                &dlq,
+                raw_envelope,
+                dlq_metadata_fields(
+                    group,
+                    consumer_name,
+                    &failure_reason,
+                    attempts,
+                    &crate::messaging::now_rfc3339_utc(),
+                ),
+            )
+            .await
+            .is_err()
+        {
+            // A dead letter that could not be written is its own failure: the
+            // message is still pending, so the next reclaim tries again.
+            metrics.failure(crate::metrics::ConsumerFailure::DlqWrite);
+            return Err(SubscribeFailed("dead-letter write failed".to_string()));
+        }
+        // Counted only once the entry is really in the dead-letter stream, so the
+        // counter and the population cannot disagree about what was moved.
+        metrics.dead_letter(failure);
+        metrics.outcome(crate::metrics::ConsumerOutcome::DeadLetter);
         ops.ack(stream, group, id).await
     }
 
@@ -1790,6 +1842,14 @@ pub mod redis_runtime {
             );
         }
 
+
+        /// A metrics handle for the tests: the global meter has no provider in a
+        /// test process, so these instruments record nothing and the tests assert
+        /// behaviour rather than counters.
+        fn test_consumer_metrics() -> crate::metrics::ConsumerMetrics {
+            crate::metrics::ConsumerMetrics::new(&crate::metrics::meter("rust-kit-test"))
+        }
+
         #[derive(Default)]
         struct FakeStreamOps {
             read_messages: Vec<StreamMessage>,
@@ -1882,6 +1942,87 @@ pub mod redis_runtime {
             }
         }
 
+        /// The paths and the counters have to agree: a transient failure counts
+        /// as a retry until the handler cap retires the message, and the
+        /// retirement counts as a dead letter by that same reason. Asserted
+        /// through the subscriber rather than the instruments alone, because the
+        /// failure was in where the calls were made.
+        #[tokio::test]
+        async fn a_failing_handler_is_counted_as_retry_until_the_cap_dead_letters_it() {
+            use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
+            use opentelemetry_sdk::metrics::InMemoryMetricExporter;
+
+            let _serial = crate::otel::test_serial();
+            let exporter = InMemoryMetricExporter::default();
+            let guard = crate::metrics::init_with_exporter("rust-kit-test", exporter.clone());
+            let subscriber = RedisEventSubscriber {
+                client: redis::Client::open("redis://127.0.0.1:0").unwrap(),
+                state: Arc::new(SubscriberState::new()),
+                stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                event_filter: None,
+                consumer_metrics: crate::metrics::ConsumerMetrics::new(&crate::metrics::meter(
+                    "rust-kit-test",
+                )),
+            };
+            let redelivered = envelope_message("9-0", "PoisonEvent");
+            for _ in 1..=MAX_DELIVERY_ATTEMPTS {
+                let mut ops = FakeStreamOps {
+                    read_messages: vec![redelivered.clone()],
+                    ..Default::default()
+                };
+                subscriber
+                    .subscribe_with_ops(
+                        &mut ops,
+                        vec!["events:booking-orchestration".to_string()],
+                        "entitlement-ticketing".to_string(),
+                        "entitlement-ticketing-1".to_string(),
+                        &|_| Box::pin(async { Err(HandlerError::Transient("downstream is down".into())) }),
+                        true,
+                    )
+                    .await
+                    .unwrap();
+            }
+            guard.force_flush().expect("flush metrics");
+
+            let mut counters: std::collections::HashMap<String, Vec<u64>> = std::collections::HashMap::new();
+            for resource_metric in exporter.get_finished_metrics().expect("finished metrics") {
+                for scope_metric in resource_metric.scope_metrics() {
+                    for metric in scope_metric.metrics() {
+                        let AggregatedMetrics::U64(MetricData::Sum(sum)) = metric.data() else {
+                            continue;
+                        };
+                        for point in sum.data_points() {
+                            let mut attrs: Vec<String> = point
+                                .attributes()
+                                .map(|kv| format!("{}={}", kv.key.as_str(), kv.value))
+                                .collect();
+                            attrs.sort();
+                            counters
+                                .entry(format!("{}[{}]", metric.name(), attrs.join(",")))
+                                .or_default()
+                                .push(point.value());
+                        }
+                    }
+                }
+            }
+            assert_eq!(
+                counters.get("train_ticket.event.consumer.messages[outcome=retry]"),
+                Some(&vec![MAX_DELIVERY_ATTEMPTS - 1])
+            );
+            assert_eq!(
+                counters.get("train_ticket.event.consumer.messages[outcome=dead_letter]"),
+                Some(&vec![1])
+            );
+            assert_eq!(
+                counters.get("train_ticket.event.consumer.failures[failure.type=transient_result]"),
+                Some(&vec![MAX_DELIVERY_ATTEMPTS])
+            );
+            assert_eq!(
+                counters.get("train_ticket.event.consumer.dead_letters[reason=transient_result]"),
+                Some(&vec![1])
+            );
+        }
+
         /// Redis' redelivery counter used to be the only attempt count, so five
         /// reclaims dead-lettered a message. That counter also advances when a
         /// pod is replaced mid-delivery, which is what happened to a
@@ -1897,6 +2038,7 @@ pub mod redis_runtime {
                 state: Arc::new(SubscriberState::new()),
                 stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 event_filter: None,
+                consumer_metrics: test_consumer_metrics(),
             };
             let mut ops = FakeStreamOps {
                 pending_messages: vec![envelope_message("7-0", "BookingSagaFailed")],
@@ -1942,6 +2084,7 @@ pub mod redis_runtime {
                 state: Arc::new(SubscriberState::new()),
                 stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 event_filter: None,
+                consumer_metrics: test_consumer_metrics(),
             };
             let mut dlq_entries = Vec::new();
             let mut acked = Vec::new();
@@ -1991,6 +2134,7 @@ pub mod redis_runtime {
                 state: Arc::new(SubscriberState::new()),
                 stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 event_filter: None,
+                consumer_metrics: test_consumer_metrics(),
             };
             let envelope = EventEnvelope::canonical(
                 "PoisonEvent",
@@ -2125,6 +2269,7 @@ pub mod redis_runtime {
                 state: Arc::new(SubscriberState::new()),
                 stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 event_filter: None,
+                consumer_metrics: test_consumer_metrics(),
             };
             let mut envelope = EventEnvelope::canonical(
                 "ParentedEvent",
@@ -2183,6 +2328,7 @@ pub mod redis_runtime {
                 state: Arc::new(SubscriberState::new()),
                 stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 event_filter: None,
+                consumer_metrics: test_consumer_metrics(),
             };
             let mut envelope = EventEnvelope::canonical(
                 "MalformedParentEvent",
@@ -2240,6 +2386,7 @@ pub mod redis_runtime {
                 state: Arc::new(SubscriberState::new()),
                 stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 event_filter: None,
+                consumer_metrics: test_consumer_metrics(),
             };
             let mut envelope = EventEnvelope::canonical(
                 "HandlerContextEvent",
