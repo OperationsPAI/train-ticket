@@ -441,8 +441,17 @@ public class ChangeExecutionService {
 
     private boolean releaseWaitExpired(Map<String,Object> waiting) {
         Object since=waiting==null?null:waiting.get("since");
+        return releaseWaitExpired(since==null?null:String.valueOf(since), clock.instant());
+    }
+
+    /// Whether the wait for a cancelled booking's release has run out.
+    ///
+    /// Static so the limit can be asserted directly, the way the reservation
+    /// wait is: a wait with no recorded start never expires, and one recorded
+    /// longer than the limit does.
+    static boolean releaseWaitExpired(String since, Instant now) {
         if(since==null)return false;
-        return Instant.parse(String.valueOf(since)).plus(RELEASE_WAIT_LIMIT).isBefore(clock.instant());
+        return Instant.parse(since).plus(RELEASE_WAIT_LIMIT).isBefore(now);
     }
 
     /// Releases a hold whose booking is already cancelled, for the case where the release event
