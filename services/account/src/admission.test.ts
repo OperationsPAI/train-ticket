@@ -62,6 +62,28 @@ describe("registration admission settings", () => {
 });
 
 describe("registration budget", () => {
+  it("admits a client up to its allowance and refuses the next request in the window", async () => {
+    const admission = new InMemoryRegistrationAdmission(tight);
+    const at = new Date("2026-09-28T04:50:12.500Z");
+
+    assert.equal(await admission.admit("client-a", at), true);
+    assert.equal(await admission.admit("client-a", at), true);
+    assert.equal(await admission.admit("client-a", at), false);
+    // A client that has spent its window and keeps asking stays refused.
+    assert.equal(await admission.admit("client-a", at), false);
+  });
+
+  it("gives every client its own window, and every window its own count", async () => {
+    const admission = new InMemoryRegistrationAdmission(tight);
+
+    assert.equal(await admission.admit("client-a", new Date("2026-09-28T04:50:12.500Z")), true);
+    assert.equal(await admission.admit("client-a", new Date("2026-09-28T04:50:12.500Z")), true);
+    assert.equal(await admission.admit("client-a", new Date("2026-09-28T04:50:12.500Z")), false);
+    assert.equal(await admission.admit("client-b", new Date("2026-09-28T04:50:12.500Z")), true);
+    assert.equal(await admission.admit("client-a", new Date("2026-09-28T04:51:00.000Z")), true);
+  });
+});
+
 describe("the registration endpoint refuses a client whose window is spent", () => {
   function appWithStorage(admission: InMemoryRegistrationAdmission) {
     return createApp({ storage: { ready: async () => true, registrationAdmission: admission } });
