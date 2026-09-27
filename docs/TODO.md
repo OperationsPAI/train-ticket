@@ -49,23 +49,43 @@ on the reservation poll or on risk, and it is a real failure for that user.
 The measured reason is in
 [current status](00-current-status.md#the-ceiling-under-all-of-it-is-one-redis-thread):
 Redis is single-threaded and sits at a whole core through those minutes while
-every consumer group's own lag reads zero. This pass cut its command rate from
-21376 to about 13000 a second and its connections from 1900 to under 1500, which
-raised the ceiling; it did not remove it. Closing it is a change to the event
-bus's shape rather than one more consumer count:
+every consumer group's own lag reads zero. What this pass did to it, all measured:
 
-1. [ ] Reduce the number of consumer groups per stream. Every service reads
-   every event of every stream it subscribes to, so a stream's cost to Redis is
-   its rate times the number of groups reading it. Measured now: twelve groups
-   read `events:booking-orchestration` and nine read
-   `events:capacity-availability`.
-2. [ ] Or give the bus more than one thread: shard streams across Redis
-   instances, or move the reads to a transport with parallel work.
-3. [ ] Until then, decide whether the acceptance envelope includes a burst the
-   steady cycles never reach. If it does, the arithmetic in
+| | Before | After |
+|---|---|---|
+| commands a second | 21376 | about 11700 |
+| Redis clients | 1900 | about 1260 |
+| subscriptions | 149 | 122 |
+| `xpending` a second | 2028 | under 100 |
+| `xautoclaim` a second | 4896 | 250 |
+| duplicate entries on the three relay-affected streams | 44 to 66 percent | 0 of 28034 sampled |
+
+What is left, in the order worth trying:
+
+1. [ ] **Micro-batch the read.** `xack` is now the largest class (5447 a second)
+   and its count is the number of delivery rounds, not entries: a reader that is
+   keeping up gets one to three entries per poll, so one XACK per batch is one
+   XACK per entry. Reading on a short tick (50 to 100 milliseconds) so entries
+   accumulate, instead of returning the moment one is available, multiplies the
+   batch size by ten and divides both `xreadgroup` and `xack` by it. It costs up
+   to a tick of delivery latency, which is well inside the ten second poll.
+2. [ ] Reduce the groups per stream further. Measured now: ten groups read
+   `events:booking-orchestration`, five read `events:capacity-availability`, and
+   `reporting` still holds fourteen of the 122 subscriptions.
+3. [ ] Or give the bus more than one thread: shard streams across Redis
+   instances, or move the reads to a transport with parallel work. This is the
+   only step that removes the ceiling rather than raising it, and it is a change
+   to the deployment's shape rather than to a service.
+4. [ ] Decide whether the acceptance envelope includes a burst the steady cycles
+   never reach. If it does, the arithmetic in
    [current status](00-current-status.md#the-configured-envelope-is-wider-than-any-window-has-measured)
    says the system must be sized for 640 journeys a second, and the largest
    observed is 358.
+
+At the largest bursts the first service to miss its window is now
+`risk-compliance`: the `04:15` minute on 2026-09-27 carried 26326 journeys and
+6551 failed purchases at `risk-status`. That is the same Redis queueing seen from
+the request side rather than from the consumer side, so it moves with the bus.
 
 The reservation path's tail was closed one hop at a time over 2026-09-27, one
 commit each, and each hop is recorded with its measurement in
