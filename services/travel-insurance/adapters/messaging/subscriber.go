@@ -36,7 +36,9 @@ func (h *InboundHandler) Handle(ctx context.Context, envelope kitmsg.EventEnvelo
 		if payload.ItemID == "" || payload.RefundID == "" {
 			return fmt.Errorf("insurance refund references missing")
 		}
-		return h.service.CancelRefundedInsuranceItem(ctx, payload.ItemID, payload.RefundID, envelope.CorrelationID, envelope.EventID)
+		return settleNotReady(ctx, func() error {
+			return h.service.CancelRefundedInsuranceItem(ctx, payload.ItemID, payload.RefundID, envelope.CorrelationID, envelope.EventID)
+		})
 	case "PostSalesApplied", "RefundApproved":
 		return h.handleRefundApplied(ctx, envelope)
 	case "TrainDelayed":
@@ -63,13 +65,16 @@ func (h *InboundHandler) handleJourneyAdjusted(ctx context.Context, envelope kit
 	if payload.OrderID == "" || payload.AccountID == "" || payload.PostSalesCaseID == "" {
 		return fmt.Errorf("changed journey references missing")
 	}
-	_, err := h.service.AdjustPoliciesForChangedJourney(ctx, application.JourneyAdjustedCommand{
-		JourneyOrderID: payload.OrderID,
-		AccountID:      payload.AccountID,
-		CaseID:         payload.PostSalesCaseID,
-		SegmentRefs:    payload.SegmentRefs,
-		CorrelationID:  envelope.CorrelationID,
-		CausationID:    envelope.EventID,
+	err := settleNotReady(ctx, func() error {
+		_, err := h.service.AdjustPoliciesForChangedJourney(ctx, application.JourneyAdjustedCommand{
+			JourneyOrderID: payload.OrderID,
+			AccountID:      payload.AccountID,
+			CaseID:         payload.PostSalesCaseID,
+			SegmentRefs:    payload.SegmentRefs,
+			CorrelationID:  envelope.CorrelationID,
+			CausationID:    envelope.EventID,
+		})
+		return err
 	})
 	if errors.Is(err, application.ErrNotChangeAdjustment) {
 		// The order was refunded or cancelled. Its coverage ends through the refund
@@ -107,7 +112,10 @@ func (h *InboundHandler) handleRefundApplied(ctx context.Context, envelope kitms
 	if !endsCoverage(payload) {
 		return nil
 	}
-	_, err := h.service.CancelPolicyForRefund(ctx, application.RefundAppliedCommand{PolicyID: payload.PolicyID, JourneyOrderID: journeyOrderID, RefundID: firstNonBlank(payload.RefundID, payload.CaseID, payload.PostSalesCaseID, envelope.EventID), CorrelationID: envelope.CorrelationID, CausationID: envelope.EventID})
+	err := settleNotReady(ctx, func() error {
+		_, err := h.service.CancelPolicyForRefund(ctx, application.RefundAppliedCommand{PolicyID: payload.PolicyID, JourneyOrderID: journeyOrderID, RefundID: firstNonBlank(payload.RefundID, payload.CaseID, payload.PostSalesCaseID, envelope.EventID), CorrelationID: envelope.CorrelationID, CausationID: envelope.EventID})
+		return err
+	})
 	if errors.Is(err, application.ErrNotFound) {
 		// An order with no policy has nothing to cancel. Most purchases carry no
 		// insurance, and every refund of one arrived here, failed as "not found", was
@@ -196,4 +204,37 @@ func firstNonBlank(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// The bounded wait for a read that trailed the announcement that caused it.
+//
+// journey-order announces a change from its own aggregate, and post-sales
+// commits the case's applied snapshot a few milliseconds later; the announcement
+// is what wakes this service, so the first read races that write by construction
+// rather than by accident. Measured on the resident release, 55 of 66 handler
+// failures in ninety seconds were exactly this wait being reported as a
+// violation. Waiting here turns the race into the success it is and leaves the
+// five-delivery budget for the failures that are real; what is still not visible
+// afterwards is handed back as a declared transient failure, so the retry is
+// recorded as a retry.
+const (
+	notReadyAttempts = 5
+	notReadyWait     = 400 * time.Millisecond
+)
+
+func settleNotReady(ctx context.Context, work func() error) error {
+	for attempt := 1; ; attempt++ {
+		err := work()
+		if err == nil || !errors.Is(err, application.ErrNotReady) {
+			return err
+		}
+		if attempt >= notReadyAttempts {
+			return kitmsg.TransientHandlerError(err)
+		}
+		select {
+		case <-ctx.Done():
+			return kitmsg.TransientHandlerError(err)
+		case <-time.After(notReadyWait):
+		}
+	}
 }
