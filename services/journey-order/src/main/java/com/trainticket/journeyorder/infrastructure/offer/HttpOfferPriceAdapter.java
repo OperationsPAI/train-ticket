@@ -88,7 +88,12 @@ public class HttpOfferPriceAdapter implements OfferPricePort {
             if(!"Quoted".equalsIgnoreCase(text(offer,"status"))) throw new ApiException(ApiErrorCode.PRECONDITION_FAILED,"Offer is not available for order creation");
             JsonNode refs=offer.path("downstreamReference");
             var snapshot=new OfferSnapshotRef(request.offerId(),request.offerVersion(),Instant.parse(text(offer,"createdAt")),
-                Instant.parse(text(offer,"expiresAt")),text(refs,"priceSnapshotRef"),text(refs,"ruleSnapshotRef"));
+                Instant.parse(text(offer,"expiresAt")),text(refs,"priceSnapshotRef"),text(refs,"ruleSnapshotRef"),
+                // The distance the offer's own quote was priced from. The revenue
+                // report divides captured money by it, and this is the last place
+                // it is available: the offer-management price snapshot carries it
+                // and nothing downstream of the order does.
+                offer.path("priceSnapshot").path("distanceKm").isNumber() ? offer.path("priceSnapshot").path("distanceKm").asDouble() : null);
             snapshot.requireValidAt(Instant.now());
             List<TravelerRef> travelers=new ArrayList<>();
             for(JsonNode traveler:offer.path("passengerMix").path("travelers")) {
