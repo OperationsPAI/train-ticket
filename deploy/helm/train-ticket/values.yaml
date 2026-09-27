@@ -1470,16 +1470,7 @@ services:
     # -- is what the burst queues in.
     replicas: 2
     env:
-      # Four, not twelve.
-      #
-      # This service runs four uvicorn workers, and the subscriber starts this
-      # many readers per stream per worker: twelve was two pods times four workers
-      # times four streams times twelve -- 384 connections parked in blocking
-      # reads, measured at revision 470 as 392, while every group's lag was zero.
-      # Redis has one thread and walks the clients blocked on a key whenever that
-      # stream is written, so the readers that never win the entry are not free.
-      # Four leaves 128, comfortably above the handler work this group does.
-      RISK_STREAM_WORKERS: "4"
+      RISK_STREAM_WORKERS: "12"
     strategy:
       type: RollingUpdate
       rollingUpdate:
