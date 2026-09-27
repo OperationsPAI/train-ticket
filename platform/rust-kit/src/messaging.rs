@@ -994,7 +994,10 @@ pub mod redis_runtime {
                 .arg("BLOCK")
                 .arg(2_000)
                 .arg("COUNT")
-                .arg(100)
+                // Five hundred rather than a hundred: one read that returns five
+                // hundred entries costs one command, and xreadgroup is the
+                // largest command class a single-threaded Redis serves.
+                .arg(500)
                 .arg("STREAMS")
                 .arg(streams)
                 .arg(vec![">"; streams.len()])
