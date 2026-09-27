@@ -56,14 +56,15 @@ public class PostgresFinanceSettlementProjectionRepository implements FinanceSet
     public void saveCapture(String orderId, FinanceSettlementEventHandler.PaymentCaptureFact capture) {
         jdbc.update(
             """
-                INSERT INTO captures_by_order_id(order_id, payment_intent_id, currency, amount, source_event_id, occurred_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO captures_by_order_id(order_id, payment_intent_id, currency, amount, source_event_id, occurred_at, business_reference)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (order_id) DO UPDATE SET
                   payment_intent_id = EXCLUDED.payment_intent_id,
                   currency = EXCLUDED.currency,
                   amount = EXCLUDED.amount,
                   source_event_id = EXCLUDED.source_event_id,
                   occurred_at = EXCLUDED.occurred_at,
+                  business_reference = EXCLUDED.business_reference,
                   updated_at = now()
                 """,
             orderId,
@@ -71,7 +72,10 @@ public class PostgresFinanceSettlementProjectionRepository implements FinanceSet
             capture.amount().currency().getCurrencyCode(),
             capture.amount().amount(),
             capture.sourceEventId(),
-            Timestamp.from(capture.occurredAt())
+            Timestamp.from(capture.occurredAt()),
+            // The row is keyed by the reference the money is reconciled on and
+            // read back under the business reference it was for.
+            capture.orderId().isBlank() ? orderId : capture.orderId()
         );
     }
 
@@ -105,7 +109,7 @@ public class PostgresFinanceSettlementProjectionRepository implements FinanceSet
     public List<FinanceSettlementEventHandler.PaymentCaptureFact> findCapturesForSettlementDate(java.time.LocalDate settlementDate) {
         return jdbc.query(
             """
-                SELECT order_id, payment_intent_id, currency, amount, source_event_id, occurred_at
+                SELECT coalesce(business_reference, order_id) AS order_id, payment_intent_id, currency, amount, source_event_id, occurred_at
                 FROM captures_by_order_id
                 WHERE occurred_at >= ? AND occurred_at < ?
                 ORDER BY order_id
