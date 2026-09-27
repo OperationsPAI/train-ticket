@@ -566,6 +566,15 @@ after the ten poll budget in the measured window.
    polling.
 3. [ ] Re-measure the change journey duration distribution afterwards.
 
+### T26: State the contracts this deployment's catalogue carries
+
+Status: the release publishes rule sets without saying which contracts its
+catalogue carries them under, so a rule set id a caller stored cannot be told
+from one the deployment priced its own quotes on.
+
+1. [ ] State the supplier contracts the catalogue carries with the release, and
+   read that statement where a stored reference is answered.
+
 ## Telemetry follow-ups
 
 ### T18: Finish low-cardinality business telemetry
