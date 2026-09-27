@@ -50,6 +50,13 @@ public class InMemoryPaymentIntentRepository implements PaymentIntentRepository 
     }
 
     @Override
+    public java.util.Optional<Instant> findOldestDueExpiry(Instant now) {
+        return findExpiredOpenIntents(now, Integer.MAX_VALUE).stream()
+            .map(PaymentIntent::expiresAt)
+            .min(Comparator.naturalOrder());
+    }
+
+    @Override
     public void save(PaymentIntent intent) {
         intents.put(intent.paymentIntentId(), intent);
     }
