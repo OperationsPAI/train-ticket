@@ -24,7 +24,17 @@ import org.springframework.stereotype.Component;
 @Component
 @Conditional(OtelMetricsEnabledCondition.class)
 public class OtelScheduledJobMetrics implements ScheduledJobMetrics {
-    private static final AttributeKey<String> JOB = AttributeKey.stringKey("job");
+    /**
+     * The job's name.
+     *
+     * <p>Not `job`: the OpenTelemetry Prometheus exporter sets `job` as one of its
+     * own constant labels from the target's service name, and a datapoint
+     * attribute with the same name makes it refuse the whole metric --
+     * measured, `failed to convert metric
+     * train_ticket.scheduled_job.success_age: duplicate label names in constant
+     * and variable labels`.
+     */
+    private static final AttributeKey<String> SCHEDULED_JOB = AttributeKey.stringKey("scheduled_job");
 
     private final Map<String, Long> successAgeSeconds = new ConcurrentHashMap<>();
 
@@ -40,7 +50,7 @@ public class OtelScheduledJobMetrics implements ScheduledJobMetrics {
             .setDescription("Seconds since a scheduled job last succeeded, rebuilt from durable run records.")
             .setUnit("s")
             .buildWithCallback(measurement -> successAgeSeconds.forEach((job, seconds) ->
-                measurement.record(seconds, io.opentelemetry.api.common.Attributes.of(JOB, job))));
+                measurement.record(seconds, io.opentelemetry.api.common.Attributes.of(SCHEDULED_JOB, job))));
     }
 
     @Override
