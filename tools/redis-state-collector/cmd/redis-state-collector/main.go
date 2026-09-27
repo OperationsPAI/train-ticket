@@ -66,7 +66,7 @@ func run() error {
 	defer func() { _ = client.Close() }()
 
 	store := &collector.Store{}
-	if _, err := collector.RegisterMetrics(runtimekit.MeterFromEnv(serviceName), store); err != nil {
+	if _, err := collector.RegisterMetrics(runtimekit.MeterFromEnv(serviceName), store, collector.SeriesBoundsFromEnv()); err != nil {
 		return fmt.Errorf("register transport metrics: %w", err)
 	}
 
