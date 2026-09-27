@@ -471,6 +471,223 @@ impl OrderFunnel {
     }
 }
 
+/// The disposition of one delivered event, as the contract's closed vocabulary
+/// defines it. Success, duplication, retry pressure and poison handling are what
+/// a reader needs; stream names, consumer names and event types would be a
+/// series per integration instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsumerOutcome {
+    Success,
+    Duplicate,
+    Retry,
+    DeadLetter,
+}
+
+impl ConsumerOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Duplicate => "duplicate",
+            Self::Retry => "retry",
+            Self::DeadLetter => "dead_letter",
+        }
+    }
+}
+
+/// Why a delivery did not succeed. Every value is a member of the contract's
+/// closed set, so a series can never be named after an exception message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsumerFailure {
+    HandlerException,
+    TransientResult,
+    FatalResult,
+    MissingEnvelope,
+    InvalidEnvelope,
+    RedeliveryExhausted,
+    DlqWrite,
+}
+
+impl ConsumerFailure {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::HandlerException => "handler_exception",
+            Self::TransientResult => "transient_result",
+            Self::FatalResult => "fatal_result",
+            Self::MissingEnvelope => "missing_envelope",
+            Self::InvalidEnvelope => "invalid_envelope",
+            Self::RedeliveryExhausted => "redelivery_exhausted",
+            Self::DlqWrite => "dlq_write",
+        }
+    }
+}
+
+/// The process-level transport counters one subscriber publishes.
+///
+/// A dead-letter counter says messages were moved over time; the current
+/// population is `train_ticket.event.dlq.entries`, which the transport collector
+/// reads from Redis. Both are needed and neither substitutes for the other.
+#[derive(Clone)]
+pub struct ConsumerMetrics {
+    messages: opentelemetry::metrics::Counter<u64>,
+    failures: opentelemetry::metrics::Counter<u64>,
+    dead_letters: opentelemetry::metrics::Counter<u64>,
+}
+
+impl ConsumerMetrics {
+    pub fn new(meter: &Meter) -> Self {
+        Self {
+            messages: meter
+                .u64_counter("train_ticket.event.consumer.messages")
+                .with_description("Event deliveries by their processing disposition.")
+                .with_unit("{message}")
+                .build(),
+            failures: meter
+                .u64_counter("train_ticket.event.consumer.failures")
+                .with_description("Event-consumer failures by a bounded failure classification.")
+                .with_unit("{failure}")
+                .build(),
+            dead_letters: meter
+                .u64_counter("train_ticket.event.consumer.dead_letters")
+                .with_description("Messages successfully handed to a dead-letter stream.")
+                .with_unit("{message}")
+                .build(),
+        }
+    }
+
+    pub fn outcome(&self, outcome: ConsumerOutcome) {
+        self.messages
+            .add(1, &[KeyValue::new("outcome", outcome.as_str())]);
+    }
+
+    pub fn failure(&self, failure: ConsumerFailure) {
+        self.failures
+            .add(1, &[KeyValue::new("failure.type", failure.as_str())]);
+    }
+
+    pub fn dead_letter(&self, reason: ConsumerFailure) {
+        self.dead_letters
+            .add(1, &[KeyValue::new("reason", reason.as_str())]);
+    }
+}
+
+/// Which stage of the relay failed. The stages are the three things it does, so
+/// a failing select, a failing publish and a failing acknowledgement are
+/// distinguishable without naming the statement that failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutboxStage {
+    Select,
+    Publish,
+    MarkPublished,
+}
+
+impl OutboxStage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Select => "select",
+            Self::Publish => "publish",
+            Self::MarkPublished => "mark_published",
+        }
+    }
+}
+
+/// The transactional outbox's health signals.
+///
+/// The queue depth is a *bounded head sample*, not `count(*)`: a count over an
+/// outbox with a real backlog is a sequential scan, and the relay would be
+/// adding database pressure in order to report that it cannot keep up. A sample
+/// equal to the batch size means at least one full batch is waiting, which is
+/// the fact worth alarming on.
+#[derive(Clone, Default)]
+pub struct OutboxMetrics {
+    sample: std::sync::Arc<OutboxSample>,
+    published: Option<opentelemetry::metrics::Counter<u64>>,
+    failures: Option<opentelemetry::metrics::Counter<u64>>,
+}
+
+#[derive(Default)]
+struct OutboxSample {
+    rows: std::sync::atomic::AtomicI64,
+    oldest_age_millis: std::sync::atomic::AtomicI64,
+}
+
+impl OutboxMetrics {
+    pub fn new(meter: &Meter) -> Self {
+        let sample = std::sync::Arc::new(OutboxSample::default());
+        let observed = std::sync::Arc::clone(&sample);
+        meter
+            .i64_observable_gauge("train_ticket.outbox.unpublished.sample")
+            .with_description("Rows visible in the relay's bounded unpublished head sample.")
+            .with_unit("{event}")
+            .with_callback(move |observer| {
+                observer.observe(
+                    observed.rows.load(std::sync::atomic::Ordering::Relaxed),
+                    &[],
+                );
+            })
+            .build();
+        let observed = std::sync::Arc::clone(&sample);
+        meter
+            .f64_observable_gauge("train_ticket.outbox.oldest_unpublished.age")
+            .with_description("Age of the head-of-line unpublished outbox event.")
+            .with_unit("s")
+            .with_callback(move |observer| {
+                observer.observe(
+                    observed
+                        .oldest_age_millis
+                        .load(std::sync::atomic::Ordering::Relaxed) as f64
+                        / 1000.0,
+                    &[],
+                );
+            })
+            .build();
+        Self {
+            sample,
+            published: Some(
+                meter
+                    .u64_counter("train_ticket.outbox.published")
+                    .with_description(
+                        "Outbox events whose bounded Redis publish pipeline completed successfully.",
+                    )
+                    .with_unit("{event}")
+                    .build(),
+            ),
+            failures: Some(
+                meter
+                    .u64_counter("train_ticket.outbox.failures")
+                    .with_description("Outbox relay failures by a bounded processing stage.")
+                    .with_unit("{failure}")
+                    .build(),
+            ),
+        }
+    }
+
+    /// Records the head of the relay's next batch. `rows` is what the bounded
+    /// query returned, never a count of the table.
+    pub fn observe_unpublished_sample(&self, rows: usize, oldest_age: Duration) {
+        self.sample
+            .rows
+            .store(rows as i64, std::sync::atomic::Ordering::Relaxed);
+        self.sample.oldest_age_millis.store(
+            oldest_age.as_millis() as i64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    pub fn record_published(&self, rows: usize) {
+        if rows > 0
+            && let Some(published) = &self.published
+        {
+            published.add(rows as u64, &[]);
+        }
+    }
+
+    pub fn record_failure(&self, stage: OutboxStage) {
+        if let Some(failures) = &self.failures {
+            failures.add(1, &[KeyValue::new("stage", stage.as_str())]);
+        }
+    }
+}
+
 /// Read `OTEL_METRIC_EXPORT_INTERVAL`, the standard SDK variable, which is
 /// specified in milliseconds. An unparseable or non-positive value falls back to
 /// the specification default rather than failing startup: this governs only how
@@ -557,6 +774,138 @@ mod tests {
     fn an_unregistered_method_is_reported_as_other() {
         assert_eq!(request_method("POST"), "POST");
         assert_eq!(request_method("BREW"), "_OTHER");
+    }
+
+    /// Every label a reader of the transport rules groups by has to be present
+    /// under the name and unit the Java kit already publishes: the rules are
+    /// shared, so a kit that spelled one differently would be a series nothing
+    /// queries.
+    #[test]
+    fn transport_metrics_publish_the_contract_names_units_and_labels() {
+        let _serial = crate::otel::test_serial();
+        unsafe {
+            env::set_var("OTEL_SERVICE_NAME", "rust-kit-test");
+        }
+        let exporter = InMemoryMetricExporter::default();
+        let guard = init_with_exporter("rust-kit-test", exporter.clone());
+        let meter = meter("rust-kit-test");
+
+        let consumer = ConsumerMetrics::new(&meter);
+        consumer.outcome(ConsumerOutcome::Success);
+        consumer.outcome(ConsumerOutcome::Retry);
+        consumer.failure(ConsumerFailure::TransientResult);
+        consumer.dead_letter(ConsumerFailure::FatalResult);
+
+        let outbox = OutboxMetrics::new(&meter);
+        outbox.observe_unpublished_sample(7, Duration::from_millis(2_500));
+        outbox.record_published(3);
+        outbox.record_failure(OutboxStage::Publish);
+        guard.force_flush().expect("flush metrics");
+
+        let collected = collected(&exporter);
+        for name in [
+            "train_ticket.event.consumer.messages",
+            "train_ticket.event.consumer.failures",
+            "train_ticket.event.consumer.dead_letters",
+            "train_ticket.outbox.unpublished.sample",
+            "train_ticket.outbox.oldest_unpublished.age",
+            "train_ticket.outbox.published",
+            "train_ticket.outbox.failures",
+        ] {
+            assert!(
+                collected.contains_key(name),
+                "missing {name}; collected {:?}",
+                collected.keys().collect::<Vec<_>>()
+            );
+        }
+
+        let messages = collected["train_ticket.event.consumer.messages"].1.clone();
+        assert_eq!(messages.get("outcome=success"), Some(&1.0));
+        assert_eq!(messages.get("outcome=retry"), Some(&1.0));
+        let failures = collected["train_ticket.event.consumer.failures"].1.clone();
+        assert_eq!(failures.get("failure.type=transient_result"), Some(&1.0));
+        let dead_letters = collected["train_ticket.event.consumer.dead_letters"].1.clone();
+        assert_eq!(dead_letters.get("reason=fatal_result"), Some(&1.0));
+
+        let published = collected["train_ticket.outbox.published"].1.clone();
+        assert_eq!(published.get(""), Some(&3.0));
+        let outbox_failures = collected["train_ticket.outbox.failures"].1.clone();
+        assert_eq!(outbox_failures.get("stage=publish"), Some(&1.0));
+        let sample = collected["train_ticket.outbox.unpublished.sample"].1.clone();
+        assert_eq!(sample.get(""), Some(&7.0));
+        let age = collected["train_ticket.outbox.oldest_unpublished.age"].1.clone();
+        assert_eq!(age.get(""), Some(&2.5));
+        assert_eq!(
+            collected["train_ticket.outbox.oldest_unpublished.age"].0,
+            "s"
+        );
+
+        unsafe {
+            env::remove_var("OTEL_SERVICE_NAME");
+        }
+    }
+
+    /// A kit without an installed provider must record nothing and panic
+    /// nowhere: the transports are unconditional in the subscriber.
+    #[test]
+    fn transport_metrics_are_inert_without_a_provider() {
+        let meter = meter("rust-kit-test-uninstalled");
+        let consumer = ConsumerMetrics::new(&meter);
+        consumer.outcome(ConsumerOutcome::Duplicate);
+        consumer.failure(ConsumerFailure::MissingEnvelope);
+        let outbox = OutboxMetrics::default();
+        outbox.record_published(1);
+        outbox.record_failure(OutboxStage::Select);
+        outbox.observe_unpublished_sample(1, Duration::from_secs(1));
+    }
+
+    /// The helper the assertions above are written against: metric name to its
+    /// unit and the value at each attribute set. The SDK's `Metric` is not
+    /// cloneable, so the points are extracted while the exporter is in hand.
+    fn collected(exporter: &InMemoryMetricExporter) -> std::collections::HashMap<String, (String, std::collections::HashMap<String, f64>)> {
+        let mut found = std::collections::HashMap::new();
+        for resource_metric in exporter.get_finished_metrics().expect("finished metrics") {
+            for scope_metric in resource_metric.scope_metrics() {
+                for metric in scope_metric.metrics() {
+                    found.insert(
+                        metric.name().to_string(),
+                        (metric.unit().to_string(), points(metric)),
+                    );
+                }
+            }
+        }
+        found
+    }
+
+    fn points(metric: &opentelemetry_sdk::metrics::data::Metric) -> std::collections::HashMap<String, f64> {
+        let mut found = std::collections::HashMap::new();
+        match metric.data() {
+            AggregatedMetrics::U64(MetricData::Sum(sum)) => {
+                for point in sum.data_points() {
+                    found.insert(attributes_key(point.attributes()), point.value() as f64);
+                }
+            }
+            AggregatedMetrics::I64(MetricData::Gauge(gauge)) => {
+                for point in gauge.data_points() {
+                    found.insert(attributes_key(point.attributes()), point.value() as f64);
+                }
+            }
+            AggregatedMetrics::F64(MetricData::Gauge(gauge)) => {
+                for point in gauge.data_points() {
+                    found.insert(attributes_key(point.attributes()), point.value());
+                }
+            }
+            other => panic!("unexpected aggregation for a transport metric: {other:?}"),
+        }
+        found
+    }
+
+    fn attributes_key<'a>(attributes: impl Iterator<Item = &'a opentelemetry::KeyValue>) -> String {
+        let mut parts: Vec<String> = attributes
+            .map(|kv| format!("{}={}", kv.key.as_str(), kv.value))
+            .collect();
+        parts.sort();
+        parts.join(",")
     }
 
     #[test]
