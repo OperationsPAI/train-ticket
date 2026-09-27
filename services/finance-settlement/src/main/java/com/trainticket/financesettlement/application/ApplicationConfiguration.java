@@ -39,9 +39,13 @@ public class ApplicationConfiguration {
         FeeAccrualRepository feeAccruals,
         EventPublisher eventPublisher,
         DomainEventEnvelopeMapper envelopeMapper,
-        Clock clock
+        Clock clock,
+        com.trainticket.financesettlement.adapters.http.ChannelStatementFactsClient channelStatementLines,
+        PaymentIntentOrderReferenceRepository paymentIntentOrderReferences
     ) {
-        return new FinanceSettlementApplicationService(revenueRecognitions, reconciliationCases, invoices, projections, reconciliationBatches, supplierSettlements, feeAccruals, eventPublisher, envelopeMapper, clock);
+        return new FinanceSettlementApplicationService(revenueRecognitions, reconciliationCases, invoices, projections, reconciliationBatches, supplierSettlements, feeAccruals, eventPublisher, envelopeMapper, clock)
+            .withChannelStatementLines(channelStatementLines)
+            .withPaymentIntentOrderReferences(paymentIntentOrderReferences);
     }
 
     @Bean
