@@ -115,7 +115,7 @@ describe("account event ports", () => {
     assert.equal(subscriber.handled, 1);
   });
 
-  it("continues polling after handler throws and dead-letters the fatal message", async () => {
+  it("continues polling after handler throws and leaves the message pending for retry", async () => {
     const firstEnvelope = toEventEnvelope(UserAccount.create({ accountId: "acct_throw_1" }).event, "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222", "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222");
     const secondEnvelope = toEventEnvelope(UserAccount.create({ accountId: "acct_throw_2" }).event, "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222", "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c222");
     const redis = new FakeRedisForSubscriber([
@@ -147,10 +147,15 @@ describe("account event ports", () => {
       console.error = originalConsoleError;
     }
 
-    assert.equal(loggedErrors.length, 1);
+    // A thrown error is a bounded retry, not a dead letter: a database that
+    // refuses connections is evidence about the handler, not about the event.
+    // So the throwing message stays pending, the poll carries on to the next
+    // one, and nothing reaches the dead letter until the handler has failed
+    // MAX_HANDLER_FAILURES times. The retry is logged as a warning, which is why
+    // no console.error is recorded here.
+    assert.equal(loggedErrors.length, 0);
     assert.deepEqual(handled, [firstEnvelope.eventId, secondEnvelope.eventId]);
-    assert.deepEqual(redis.acked.map((ack) => ack.entryId), ["1-0", "2-0"]);
-    assert.equal(redis.dlqEnvelopes.length, 1);
-    assert.ok(redis.dlqEnvelopes[0].includes(firstEnvelope.eventId));
+    assert.deepEqual(redis.acked.map((ack) => ack.entryId), ["2-0"]);
+    assert.equal(redis.dlqEnvelopes.length, 0);
   });
 });
