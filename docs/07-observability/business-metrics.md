@@ -60,18 +60,35 @@ across currencies.
 | Event transport | `train_ticket.event.consumer.oldest_age` | Gauge, seconds | `event_stream`, `consumer_group` | Age of the oldest undelivered or pending entry. |
 | Event transport | `train_ticket.event.dlq.entries` | Gauge | `event_stream`, `consumer_group`, `event_type` | Current dead-letter population. |
 
-The Java shared platform already emits a smaller process-level transport set:
+Every platform kit emits a smaller process-level transport set -- the subscriber
+and the outbox relay of each runtime, under the same names, units and closed
+vocabularies, so one rule and one dashboard cover every service:
 
-- `train_ticket.event.consumer.messages` by `outcome`;
+- `train_ticket.event.consumer.messages` by `outcome`
+  (`success`, `duplicate`, `retry`, `dead_letter`);
 - `train_ticket.event.consumer.failures` and `.dead_letters`, whose closed
-  `failure.type`/`reason` enums are normalized to `reason_code` in the
+  `failure.type`/`reason` enums (`handler_exception`, `transient_result`,
+  `fatal_result`, `missing_envelope`, `invalid_envelope`,
+  `redelivery_exhausted`, `dlq_write`) are normalized to `reason_code` in the
   Prometheus branch;
 - `train_ticket.outbox.unpublished.sample`, `.oldest_unpublished.age`,
-  `.published` and `.failures`.
+  `.published` and `.failures` by `stage` (`select`, `publish`,
+  `mark_published`).
 
 The `train-ticket-transport` rules consume those series immediately. They are
 not substitutes for Redis state: a dead-letter counter says messages were moved
 over time, while `train_ticket.event.dlq.entries` is the current population.
+The outbox's queue depth is the head of the relay's own bounded read, never a
+`count(*)`: an exact count during a backlog is a new source of database pressure
+at the moment the database is already the bottleneck, and a sample equal to the
+relay's batch size already says a full batch is waiting.
+
+Two of the vocabularies are narrower in one direction and the kits say so in
+place rather than inventing a value: `missing_envelope` cannot occur in Rust,
+whose message always carries its envelope field, and `redelivery_exhausted` is
+reachable only where the kit has both a handler-failure cap and a slower
+crash-loop backstop on Redis' own redelivery counter (Java, Go and Rust today;
+Python and TypeScript retire on handler failures alone).
 
 The Collector converts dots to underscores and adds Prometheus unit/type
 suffixes. For example, `train_ticket.payment.operations` becomes
