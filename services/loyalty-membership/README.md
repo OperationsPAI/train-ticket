@@ -15,7 +15,7 @@ Status: implemented and deployed (Helm revision 521; see [current status](../../
 `/metadata`.
 - The membership programme in `config/membership-programme.json`, carried by the
   image at `/app/config` and read once at startup by `src/programme.ts`: the
-  poles and what each asks for,
+  revision of the export it was taken from, the poles and what each asks for,
   the pole a membership opens at, the names the member-relations export uses and
   the account-reference namespace an enrolment keys by.
 
