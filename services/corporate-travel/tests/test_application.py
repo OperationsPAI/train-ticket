@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from train_ticket_platform.events import EventEnvelope
 from train_ticket_platform.messaging import InMemoryEventPublisher
 
 from corporate_travel.application import CorporateTravelService
+from corporate_travel.domain import CorporateTravelError
 
 
 
@@ -33,6 +35,37 @@ def agreement_payload() -> dict[str, object]:
         "billing_calendar": {"billingPeriod": "2026-01", "cutoffAt": "2026-02-01T00:00:00Z", "dueAt": "2026-02-15T00:00:00Z"},
         "contact": {"displayName": "A*** Finance"},
     }
+
+
+def test_a_price_reference_that_names_no_rule_set_is_refused() -> None:
+    """The rule set id is folded into the agreement's price digest.
+
+    Measured at revision 493: 127,064 ACTIVE agreements carried `rs-<uuid8>`
+    values no published rule set matched, because nothing asked fare-pricing and
+    the create path accepted whatever it was sent.
+    """
+    seen: list[str] = []
+
+    def exists(rule_set_id: str, correlation_id: str | None) -> bool:
+        seen.append(rule_set_id)
+        return rule_set_id == "rules"
+
+    service = CorporateTravelService(rule_set_exists=exists)
+    payload = agreement_payload()
+    accepted = service.create_agreement(**payload)
+    assert accepted.agreement.price_ref.rule_set_id == "rules"
+    assert seen == ["rules"]
+
+    with pytest.raises(CorporateTravelError) as refused:
+        service.create_agreement(**{**payload, "agreement_code": "ACME-UNKNOWN", "price_ref": {"fareRuleRefs": [], "ruleSetId": "rs-no-such-rule-set", "ruleSetVersion": "v1"}})
+    assert "does not exist" in str(refused.value)
+
+
+def test_an_agreement_without_a_rule_set_resolver_is_unchanged() -> None:
+    """An isolated service has no fare-pricing to ask, so it keeps the id."""
+    service = CorporateTravelService()
+    accepted = service.create_agreement(**agreement_payload())
+    assert accepted.agreement.price_ref.rule_set_id == "rules"
 
 
 def test_payment_captured_without_an_agreement_is_skipped_not_dead_lettered() -> None:
