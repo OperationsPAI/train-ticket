@@ -47,8 +47,8 @@ Which readers a deployment validates boarding facts under is the estate's
 boarding roster: the ticketing authority publishes it in
 `services/entitlement-ticketing/config/boarding-readers.txt` and the fulfillment
 image vendors that file at build, so a boarding whose `source` is outside the
-roster never reaches the record. A deployment whose image carries no roster
-keeps the vocabulary listed above.
+roster never reaches the record. This release keeps Station and Provider; a
+deployment whose image carries no roster keeps the vocabulary listed above.
 
 ### Record No-Show
 

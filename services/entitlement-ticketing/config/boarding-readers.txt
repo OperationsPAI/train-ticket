@@ -6,6 +6,9 @@
 # authority owns the vocabulary and publishes the roster here, and the
 # fulfillment image vendors it at build (deploy/docker/fulfillment), so both
 # sides measure a boarding fact against the same statement.
-GATE
+#
+# The estate this roster belongs to: the gate readers went with the station
+# estate's own hand-off and the provider feed is the operator's attendant
+# writes, so the roster keeps the two readers that estate operates.
 STATION
 PROVIDER
