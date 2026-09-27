@@ -1,6 +1,6 @@
 # Waitlist Domain Design
 
-更新日期：2026 年 9 月 24 日。
+更新日期：2026 年 9 月 27 日。
 当前服务位于 `services/waitlist`，使用 TypeScript、Fastify、PostgreSQL 和 Redis Streams。
 
 ## 领域职责与边界
@@ -25,15 +25,18 @@ Capacity 拥有库存和 Hold，Journey Order 拥有商业订单，Payment 拥�
 分数由会员等级、历史乘车次数、提前天数、同行人数、席别和特殊身份组成，并限制在 0 至 100。
 分数来自请求输入，不能当作已经向会员或身份服务验证的资格结果。
 
-当前 PostgreSQL 查询按 `segment_ref` 和可选 `seat_class` 过滤，忽略传入的 `departureDate`。
+匹配和队列查询按 `segment_ref`、`departure_date` 和席别过滤，并进一步要求 scheduled service、stop-sequence 版本、区间和意图指纹一致。
 缺少请求日期时，应用从 deadline 提取日期。
-当前席别类型包含 `BUSINESS`、`FIRST`、`SECOND`、`SECOND_CLASS` 和 `STANDING`。
-报价请求未传递该席别，释放库存的 class 与候补 class 也没有完整规范化保证。
+当前席别类型包含 `BUSINESS`、`FIRST`、`SECOND`、`SECOND_CLASS`、`STANDING` 和卧铺席别。
+释放库存的 class 与候补 class 都会经过 `normalizeFareClass`，报价请求会带上该席别以及该请求自身的定价上下文。
 
 ## 匹配与确认
 
-有效释放触发到达后，匹配器选择队首未过期请求，调用 Fare Pricing 获得 `quoteId`，调用 Offer Management 获得 `offerId` 与 `offerVersion`。
-应用记录 Offer，将请求改为 `MATCHING`，发布 `WaitlistMatchStarted`，并创建实际 Journey Order。
+有效释放触发到达后，匹配器选择队首未过期请求，先占用对应的释放额度（`MATCHING`）并发布 `WaitlistMatchStarted`，随后按该请求记录的定价上下文调用 Fare Pricing 获得 `quoteId`，再调用 Offer Management 获得 `offerId` 与 `offerVersion`。
+报价必须使用登记时保存的定价上下文（product code、channel、distance、departure time），否则 fare-pricing 会退回固定基价，报价超过客户已授权的担保额度。
+Offer 必须以该请求自身的 channel 创建：offer-management 会拒绝 channel 与报价不一致的 offer。
+担保额度不足以覆盖报价时，请求进入 `SUSPENDED` 并归还额度。
+Offer 通过担保校验后，应用在后续 tick 创建实际 Journey Order 并关联请求；订单确认由普通订单链路完成，候补服务不能因订单创建成功就宣称兑现成功。
 当前匹配路径不直接调用 Capacity Hold client。
 普通订单链路负责后续容量和出票操作，候补服务不能因创建订单成功就宣称兑现成功。
 
