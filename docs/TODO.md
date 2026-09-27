@@ -617,15 +617,36 @@ confirmation is not, and the reason is measured to the seat in item 6.
 
 ### T05: Prove durable event recovery
 
-Status: incomplete acceptance.
+Status: **closed**, revision 500. The three items are covered by live tests run
+against the deployed PostgreSQL and Redis rather than by unit doubles.
 
-1. [ ] Test Redis transport loss against an explicit replay source and
-   retention policy. Short lived outbox and processed event records do not prove
-   full historical recovery.
-2. [ ] Attribute notification and loyalty dead letters before recovery actions
-   and retain the original event and failure evidence.
-3. [ ] Preserve terminal compensation mismatch checkpoints and verify that no
-   completed refund or wallet credit is repeated.
+1. [x] Redis transport loss against an explicit replay source and retention
+   policy. `DurableEventReplayWorker` reads a named source (endpoint plus
+   producer) under `EVENT_REPLAY_RETENTION_DAYS` (1 to 90, default 7), and its
+   live test deletes the stream outright and proves the worker rebuilds it from
+   the durable source. Run against the deployed pair: the worker is crashed after
+   the business effect but before its checkpoint, and the restarted worker
+   fetches the event again and **does not repeat the effect** -- `business_effects`
+   and `processed_events` both stay at 1 while `after_sequence` advances to 1.
+2. [x] Notification and loyalty dead letters carry their evidence. The kit's
+   `DeadLetterEvidence` records the source stream and message, the consumer group
+   and name, the event id, type and producer, the **original envelope**, the
+   failure kind, the reason, the attempts and both dead-letter timestamps, and
+   both services wire `PostgresDeadLetterEvidenceStore`, so the evidence is
+   written durably before any recovery action. `event_dead_letters` exists in
+   both databases (notification on the event shard, loyalty on core) and holds 0
+   rows, which matches their empty dead-letter streams; the live test
+   `dead-letter evidence survives restart and preserves the original failure`
+   passes against the deployed database.
+3. [x] Terminal compensation mismatch checkpoints. The live test
+   `CompensationMismatchCheckpointLiveTest` passes against the deployed
+   database: the checkpoint survives a restart, and the restarted service
+   short-circuits on it **before issuing another refund or wallet call** --
+   the stub's post count does not move -- and returns the same detected-at and
+   evidence. Sixteen concurrent writers to the same case all receive the
+   original checkpoint rather than overwriting it. The whole post-sales suite
+   with `TEST_DATABASE_URL` pointed at the deployed shard is 125 tests, 0
+   failures, 0 errors.
 4. [x] A pending entry that the handler completes must be acknowledged, and only
    handler failures may retire it. The Rust kit broke both halves of that: its
    pending recovery discarded the handler's answer, so a reclaimed entry was
