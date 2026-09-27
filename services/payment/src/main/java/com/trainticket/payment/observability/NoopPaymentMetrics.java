@@ -33,6 +33,6 @@ public final class NoopPaymentMetrics implements PaymentMetricRecorder {
     }
 
     @Override
-    public void oldestDueIntentAge(java.time.Duration age) {
+    public void oldestDueIntentAge(java.util.Optional<java.time.Duration> age) {
     }
 }
