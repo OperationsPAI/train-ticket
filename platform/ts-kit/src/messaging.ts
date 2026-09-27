@@ -265,7 +265,15 @@ export class InMemoryEventSubscriber implements EventSubscriber {
 // Raising the default cut `instantaneous_ops_per_sec` from 21376 to 16695 on
 // the resident cluster with one service changed.
 const READ_BLOCK_MS = parseInt(process.env.CONSUMER_BLOCK_MS ?? "1000", 10);
-const READ_COUNT = parseInt(process.env.CONSUMER_BATCH_COUNT ?? "100", 10);
+// Five hundred rather than a hundred.
+//
+// One read that returns five hundred entries costs one command; five reads that
+// return a hundred cost five. Redis is single-threaded and `xreadgroup` is the
+// largest command class it serves -- 6928 of its ~13300 a second on the resident
+// release, and it is pinned at a whole core through every burst while every
+// consumer group's own lag reads zero, which is the signature of consumers
+// waiting on the server rather than on their handlers.
+const READ_COUNT = parseInt(process.env.CONSUMER_BATCH_COUNT ?? "500", 10);
 const CLAIM_MIN_IDLE_MS = 60_000;
 const DEAD_CONSUMER_IDLE_MS = 5 * 60 * 1_000;
 const MAX_HANDLER_FAILURES = 5;
