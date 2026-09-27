@@ -484,12 +484,19 @@ public class RedisEventSubscriber implements EventSubscriber {
     }
 
     private void handleClaimed(String stream, String group, String consumerName, RedisStreamOperations.StreamEntry message, EventHandler handler) {
-        int redeliveries = streams.deliveryCount(stream, group, message.id());
+        // Resolved only where it decides something.
+        //
+        // This used to run for every delivered message: an XPENDING round trip
+        // per delivery to a single-threaded Redis, to a number the success path
+        // never reads. Measured on the resident release, XPENDING was about 2100
+        // of its ~15000 commands a second. The missing-envelope, deserialize,
+        // redelivery-backstop and fatal paths below still ask for it.
+        java.util.function.IntSupplier redeliveries = () -> streams.deliveryCount(stream, group, message.id());
         String json = message.envelopeJson();
         if (json == null) {
             eventConsumerMetrics.recordFailure(EventConsumerMetrics.FailureType.MISSING_ENVELOPE);
             moveToDlq(
-                stream, group, consumerName, message.id(), "{}", "MissingEnvelope", redeliveries,
+                stream, group, consumerName, message.id(), "{}", "MissingEnvelope", redeliveries.getAsInt(),
                 EventConsumerMetrics.FailureType.MISSING_ENVELOPE);
             streams.ack(stream, group, message.id());
             return;
@@ -500,7 +507,7 @@ public class RedisEventSubscriber implements EventSubscriber {
         } catch (SubscribeFailedException exception) {
             eventConsumerMetrics.recordFailure(EventConsumerMetrics.FailureType.INVALID_ENVELOPE);
             moveToDlq(
-                stream, group, consumerName, message.id(), json, exception, redeliveries,
+                stream, group, consumerName, message.id(), json, exception, redeliveries.getAsInt(),
                 EventConsumerMetrics.FailureType.INVALID_ENVELOPE);
             streams.ack(stream, group, message.id());
             return;
@@ -517,16 +524,16 @@ public class RedisEventSubscriber implements EventSubscriber {
         // Crash backstop only. Redis' redelivery counter advances once per reclaim, so it measures
         // time spent pending rather than handler failures; it is deliberately not the primary
         // give-up signal. See MAX_REDELIVERY_ATTEMPTS.
-        if (redeliveries >= MAX_REDELIVERY_ATTEMPTS) {
+        if (redeliveries.getAsInt() >= MAX_REDELIVERY_ATTEMPTS) {
             eventConsumerMetrics.recordFailure(EventConsumerMetrics.FailureType.REDELIVERY_EXHAUSTED);
             RuntimeException lastException = forgetFailures(stream, message.id());
             if (lastException != null) {
                 moveToDlq(
-                    stream, group, consumerName, message.id(), json, lastException, redeliveries,
+                    stream, group, consumerName, message.id(), json, lastException, redeliveries.getAsInt(),
                     EventConsumerMetrics.FailureType.REDELIVERY_EXHAUSTED);
             } else {
                 moveToDlq(
-                    stream, group, consumerName, message.id(), json, "MaxRedeliveriesWithoutCompletion", redeliveries,
+                    stream, group, consumerName, message.id(), json, "MaxRedeliveriesWithoutCompletion", redeliveries.getAsInt(),
                     EventConsumerMetrics.FailureType.REDELIVERY_EXHAUSTED);
             }
             streams.ack(stream, group, message.id());
@@ -566,7 +573,7 @@ public class RedisEventSubscriber implements EventSubscriber {
                 eventConsumerMetrics.recordFailure(EventConsumerMetrics.FailureType.FATAL_RESULT);
                 forgetFailures(stream, message.id());
                 moveToDlq(
-                    stream, group, consumerName, message.id(), json, "HandlerResult.FATAL_FAILURE", redeliveries,
+                    stream, group, consumerName, message.id(), json, "HandlerResult.FATAL_FAILURE", redeliveries.getAsInt(),
                     EventConsumerMetrics.FailureType.FATAL_RESULT);
                 streams.ack(stream, group, message.id());
             } else if (result == HandlerResult.TRANSIENT_FAILURE) {
