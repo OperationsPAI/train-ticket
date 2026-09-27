@@ -163,6 +163,9 @@ func (v PurchaseVerifier) ResolveJourneyCoverage(ctx context.Context, journeyOrd
 		return JourneyCoverage{}, err
 	}
 	if change.CaseID != caseID || change.JourneyOrderID != journeyOrderID {
+		// A case that answers with different references is a read that has not
+		// caught up with the announcement, so it stays retryable rather than
+		// terminal: the delivery is redelivered while it settles.
 		return JourneyCoverage{}, fmt.Errorf("%w: applied change scope is required", ErrDomainRule)
 	}
 	if change.CaseType != "CHANGE" {
@@ -173,6 +176,18 @@ func (v PurchaseVerifier) ResolveJourneyCoverage(ctx context.Context, journeyOrd
 		// so there is nothing to adjust here. Treating it as a rule violation
 		// dead-lettered 30001 of them, which is the cap, and left the insurance
 		// projection missing exactly the orders that were refunded or cancelled.
+		return JourneyCoverage{}, ErrNotChangeAdjustment
+	}
+	// A change that will never execute has nothing to adjust, exactly like a
+	// refund or a cancellation does. `journey-order` announces a post-sales
+	// adjustment when the case is decided, and a rejected, failed or cancelled
+	// change then sits in that state forever -- so waiting for it is not patience,
+	// it is a dead letter five redeliveries later. Measured on 2026-09-27: three
+	// such announcements reached `events:journey-order:dlq` with the reason
+	// "applied change scope is required". A case that is quoted, approved or
+	// executing is a different thing and still waits below.
+	switch change.Status {
+	case "REJECTED", "FAILED", "CANCELLED":
 		return JourneyCoverage{}, ErrNotChangeAdjustment
 	}
 	if (change.Status != "EXECUTING" && change.Status != "APPLIED") || len(change.Scope.SegmentRefs) == 0 || len(change.Scope.TravelerRefs) == 0 {
