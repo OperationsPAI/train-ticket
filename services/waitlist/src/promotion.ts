@@ -142,12 +142,21 @@ export class HttpOfferManagementClient implements OfferManagementClient {
   ) {}
 
   async createOffer(entry: WaitlistEntry, fareQuoteId: string): Promise<{ offerId: string; offerVersion: number; expiresAt: string; total: Readonly<{ currency: string; minorUnits: number }> }> {
+    // The offer has to be built on the same channel the quote was priced from.
+    // offer-management refuses an offer whose channelId differs from its fare
+    // quote's, and the quote is re-issued on `pricingContext.channel` above, so a
+    // client pinned to one channel could never offer a seat to a customer who
+    // arrived on another: measured on a live entry, the mobile channel's quote
+    // was refused with `FARE_QUOTE_MISMATCH` on every one-second promotion tick,
+    // and the entry sat at MATCHING with a quote and no offer until its deadline.
+    // The configured channel stays the fallback for an entry that has no context.
+    const channelId = entry.pricingContext.channel || this.channelId;
     const response = await tracedFetch(`${trimRight(this.baseUrl)}/api/v1/offers`, {
       method: "POST",
       headers: { "content-type": "application/json", "Idempotency-Key": entry.offerIdempotencyKey },
       body: JSON.stringify({
         accountId: entry.accountId,
-        channelId: this.channelId,
+        channelId,
         itineraryRef: entry.itineraryRef ?? entry.segmentRef,
         travelerRefs: entry.travelerRefs,
         fareQuoteRef: fareQuoteId,
