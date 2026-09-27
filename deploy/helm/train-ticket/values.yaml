@@ -596,6 +596,32 @@ loadgen:
   # Not below the burst schedule (~7 min mean gap): a period shorter than that
   # leaves a window with no bursts, and queues form from variance.
   diurnalPeriodSeconds: 600
+
+  # The traffic level. This is the one source of truth for how much load the
+  # release runs at; the chart ships loadgen-config.yaml verbatim, so these reach
+  # the generator as environment variables and override the file's defaults (see
+  # ApplyTrafficEnvOverrides in deploy/loadgen-go/config.go).
+  #
+  # Why these numbers. Holding the arrival shape flat and stepping targetRps
+  # measured where the release stops carrying: no capacity failure at all up to
+  # 210/s offered -- 11727 journeys a minute and 1578 requests a second -- and
+  # the first one at 260/s, where 157 staff reservations failed and
+  # traveler-profile's group on the identity stream fell 83270 entries behind.
+  # The envelope used to multiply 20/s by a diurnal peak of 4.0 and a burst of up
+  # to 8.0, and its measured peaks of 14367 to 26326 journeys a minute are past
+  # that knee: the 14367 minute lost 1568 journeys and the 26326 minute 8566.
+  #
+  # peak x burst is 4.0 here, so the peak lands near 7500 journeys a minute,
+  # which the release has run clean repeatedly, and the mean stays at the 20/s
+  # the profile was built around. The shape is unchanged: same trough-to-peak
+  # diurnal swing, same Poisson gaps, same storm spikes -- just a ceiling under
+  # the measured knee.
+  targetRps: 20
+  diurnalPeakMultiplier: 2.0
+  diurnalTroughMultiplier: 0.5
+  burstEnabled: true
+  burstMinMultiplier: 1.5
+  burstMaxMultiplier: 2.0
   resources:
     requests: { cpu: '1', memory: 512Mi }
     # The generator must never be the bottleneck it measures: GOMAXPROCS is 6,
