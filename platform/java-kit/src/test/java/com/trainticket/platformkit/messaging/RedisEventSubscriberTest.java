@@ -599,7 +599,12 @@ class RedisEventSubscriberTest {
             null,
             new InMemoryConsumedEventStore(),
             RedisEventSubscriber.defaultEventConsumerTracer(),
-            4
+            RedisEventSubscriber.defaultEventConsumerMetrics(),
+            4,
+            // Production sweeps pending entries every fifteen seconds; the test
+            // has to see the sweep recur without sleeping that long.
+            200,
+            20
         );
         try {
             subscriber.subscribe(List.of("events:transfer-management"), "journey-order", "consumer-1", handler);
