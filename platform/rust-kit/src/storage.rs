@@ -387,6 +387,10 @@ pub fn spawn_outbox_relay(pool: PgPool, redis_url: String) -> tokio::task::JoinH
 
 #[cfg(feature = "redis-impl")]
 pub async fn run_outbox_relay(pool: PgPool, client: redis::Client, config: OutboxRelayConfig) {
+    // One instrument set for the life of the relay: the meter is the global one,
+    // which is a no-op unless the process installed an SDK provider.
+    let service_name = std::env::var("OTEL_SERVICE_NAME").unwrap_or_default();
+    let metrics = crate::metrics::OutboxMetrics::new(&crate::metrics::meter(&service_name));
     let interval = config.poll_interval.min(Duration::from_millis(500));
     let delivery = async {
         let mut tick = tokio::time::interval(interval);
@@ -441,7 +445,7 @@ pub async fn run_outbox_relay(pool: PgPool, client: redis::Client, config: Outbo
                     }
                 }
             }
-            if let Err(error) = relay_once(&pool, &client, config.batch_size).await {
+            if let Err(error) = relay_once(&pool, &client, config.batch_size, &metrics).await {
                 log::error!("outbox relay failed: {error}");
             }
         }
@@ -563,13 +567,33 @@ pub async fn relay_once(
     pool: &PgPool,
     client: &redis::Client,
     batch_size: i64,
+    metrics: &crate::metrics::OutboxMetrics,
 ) -> Result<usize, StorageError> {
-    let rows: Vec<(i64, String, Value)> = sqlx::query_as(
-        "SELECT seq, stream, envelope FROM outbox WHERE published_at IS NULL ORDER BY seq LIMIT $1",
+    // `created_at` rides along so the head of the queue can be aged without a
+    // second query. The sample is what this bounded read returned, never a count
+    // over the table: a count on an outbox with a real backlog is a sequential
+    // scan, and a relay would be adding database pressure in order to report that
+    // it cannot keep up.
+    let rows: Vec<(i64, String, Value, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+        "SELECT seq, stream, envelope, created_at FROM outbox WHERE published_at IS NULL ORDER BY seq LIMIT $1",
     )
     .bind(batch_size)
     .fetch_all(pool)
-    .await?;
+    .await
+    .map_err(|error| {
+        metrics.record_failure(crate::metrics::OutboxStage::Select);
+        error
+    })?;
+
+    if let Some((_, _, _, oldest)) = rows.first() {
+        let age = chrono::Utc::now().signed_duration_since(*oldest);
+        metrics.observe_unpublished_sample(
+            rows.len(),
+            age.to_std().unwrap_or_else(|_| Duration::from_secs(0)),
+        );
+    } else {
+        metrics.observe_unpublished_sample(0, Duration::from_secs(0));
+    }
 
     if rows.is_empty() {
         return Ok(0);
@@ -578,13 +602,16 @@ pub async fn relay_once(
     let mut connection = client
         .get_multiplexed_async_connection()
         .await
-        .map_err(|error| StorageError::Database(error.to_string()))?;
+        .map_err(|error| {
+            metrics.record_failure(crate::metrics::OutboxStage::Publish);
+            StorageError::Database(error.to_string())
+        })?;
 
     // Keep event order within the batch and require every Redis reply before acknowledgement.
     // A partial failure leaves the batch available for delivery with the same event IDs.
     let mut pipeline = redis::pipe();
     let mut delivered: Vec<i64> = Vec::with_capacity(rows.len());
-    for (seq, stream, envelope) in rows {
+    for (seq, stream, envelope, _created_at) in rows {
         let raw_envelope = serde_json::to_string(&envelope)?;
         let mut command = crate::messaging::capped_xadd(&stream);
         command.arg("envelope").arg(&raw_envelope);
@@ -594,8 +621,12 @@ pub async fn relay_once(
     let replies: Vec<String> = pipeline
         .query_async(&mut connection)
         .await
-        .map_err(|error| StorageError::Database(error.to_string()))?;
+        .map_err(|error| {
+            metrics.record_failure(crate::metrics::OutboxStage::Publish);
+            StorageError::Database(error.to_string())
+        })?;
     if replies.len() != delivered.len() {
+        metrics.record_failure(crate::metrics::OutboxStage::Publish);
         return Err(StorageError::Database("outbox Redis reply count differs from batch size".into()));
     }
 
@@ -606,8 +637,13 @@ pub async fn relay_once(
         )
         .bind(&delivered)
         .execute(pool)
-        .await?;
+        .await
+        .map_err(|error| {
+            metrics.record_failure(crate::metrics::OutboxStage::MarkPublished);
+            error
+        })?;
     }
+    metrics.record_published(delivered.len());
     Ok(delivered.len())
 }
 
