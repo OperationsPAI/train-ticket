@@ -149,3 +149,11 @@ Request body:
 | `sourceSystem` | enum | yes | `SYSTEM` or `OPS`. |
 
 Responses: `201 Created` with `segmentStatusRecordId`, `commandId`, `segmentRef`, `status`, `observedAt`; `400` for validation; `422` for domain-rule violations; `503` when outbox append is unavailable.
+
+## Configuration
+
+The readers a boarding fact may arrive under are the deployment's rather than the
+contract's: the estate stages them in `boarding_reader_register`, and the service
+reads that register once when the process starts, holding it for the process's
+lifetime. A deployment that stages no reader is measured against the vocabulary
+this image was built for.
