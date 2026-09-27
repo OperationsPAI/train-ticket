@@ -57,6 +57,16 @@ public class RedisEventSubscriber implements EventSubscriber {
      * above the poll cadence so the sweep's {@code XINFO CONSUMERS} per stream stays negligible.
      */
     private static final long PRUNE_INTERVAL_MS = 60 * 1_000L;
+    /**
+     * How often the poll loop sweeps its own pending entries.
+     *
+     * <p>An entry only becomes claimable after {@code AUTOCLAIM_MIN_IDLE_MS} of silence, which
+     * defaults to five minutes, so a sweep every fifteen seconds is twenty times more often than
+     * the window it is looking for. It used to run on every poll iteration -- once per ~20
+     * milliseconds per idle reader -- and on the resident cluster that made {@code XAUTOCLAIM}
+     * 4896 of Redis' ~19300 commands a second while it reclaimed nothing.
+     */
+    private static final long RECOVERY_INTERVAL_MILLIS = 15_000L;
     private static final String AUTOCLAIM_START_ID = "0-0";
     private static final int DEFAULT_CONSUMER_THREADS = 1;
     private static final String CONSUMER_THREADS_ENV = "CONSUMER_THREADS";
@@ -97,6 +107,7 @@ public class RedisEventSubscriber implements EventSubscriber {
     private final EventConsumerTracer eventConsumerTracer;
     private final EventConsumerMetrics eventConsumerMetrics;
     private final long pruneIntervalMillis;
+    private final long recoveryIntervalMillis;
     /** Genuine handler failures per message, bounded LRU so a long-lived consumer cannot leak. */
     private final Map<MessageKey, FailureRecord> lastFailures = new LinkedHashMap<>(16, 0.75f, true) {
         @Override
@@ -156,7 +167,7 @@ public class RedisEventSubscriber implements EventSubscriber {
     }
 
     RedisEventSubscriber(RedisStreamOperations streams, ObjectMapper objectMapper, AutoCloseable closeable, ConsumedEventStore consumedEvents, EventConsumerTracer eventConsumerTracer) {
-        this(streams, objectMapper, closeable, consumedEvents, eventConsumerTracer, consumerThreadsFromEnvironment());
+        this(streams, objectMapper, closeable, consumedEvents, eventConsumerTracer, consumerThreadsFromEnvironment(), RECOVERY_INTERVAL_MILLIS);
     }
 
     RedisEventSubscriber(
@@ -216,13 +227,43 @@ public class RedisEventSubscriber implements EventSubscriber {
         // PRUNE_INTERVAL_MS via the delegating constructor above.
         long pruneIntervalMillis
     ) {
+        this(
+            streams,
+            objectMapper,
+            closeable,
+            consumedEvents,
+            eventConsumerTracer,
+            eventConsumerMetrics,
+            consumerThreads,
+            pruneIntervalMillis,
+            RECOVERY_INTERVAL_MILLIS
+        );
+    }
+
+    RedisEventSubscriber(
+        RedisStreamOperations streams,
+        ObjectMapper objectMapper,
+        AutoCloseable closeable,
+        ConsumedEventStore consumedEvents,
+        EventConsumerTracer eventConsumerTracer,
+        EventConsumerMetrics eventConsumerMetrics,
+        int consumerThreads,
+        long pruneIntervalMillis,
+        // Injectable for the same reason as pruneIntervalMillis: a test has to
+        // see recovery recur without sleeping fifteen seconds.
+        long recoveryIntervalMillis
+    ) {
         if (consumerThreads < 1) {
             throw new IllegalArgumentException("consumerThreads must be positive");
         }
         if (pruneIntervalMillis < 0) {
             throw new IllegalArgumentException("pruneIntervalMillis must not be negative");
         }
+        if (recoveryIntervalMillis < 0) {
+            throw new IllegalArgumentException("recoveryIntervalMillis must not be negative");
+        }
         this.pruneIntervalMillis = pruneIntervalMillis;
+        this.recoveryIntervalMillis = recoveryIntervalMillis;
         this.streams = Objects.requireNonNull(streams, "streams are required");
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper is required");
         this.closeable = closeable;
@@ -272,6 +313,15 @@ public class RedisEventSubscriber implements EventSubscriber {
         // be able to stop new entries from being read; the group is re-created
         // only when Redis reports it missing.
         Set<String> createdGroups = ConcurrentHashMap.newKeySet();
+        // Pending recovery is a whole XAUTOCLAIM round trip per stream per
+        // consumer, and it used to run on every poll iteration -- once per
+        // ~20 milliseconds per idle reader. Redis is single-threaded, and on the
+        // resident cluster that made XAUTOCLAIM 4896 of its ~19300 commands a
+        // second while it reclaimed nothing: an entry only becomes claimable
+        // after CLAIM_MIN_IDLE_MILLIS of silence, so checking more often than
+        // that cannot find more. The interval below is a fraction of that idle
+        // window and still recovers a stuck entry long before it matters.
+        Map<String, Long> nextRecoveryAtMillis = new ConcurrentHashMap<>();
         while (running.get()) {
             boolean pruneDue = System.currentTimeMillis() >= nextPruneAtMillis;
             for (String stream : streamNames) {
@@ -283,7 +333,11 @@ public class RedisEventSubscriber implements EventSubscriber {
                     if (pruneDue) {
                         pruneDeadConsumersQuietly(stream, group, consumerName);
                     }
-                    recoverQuietly(stream, group, consumerName, handler);
+                    long nowMillis = System.currentTimeMillis();
+                    if (nowMillis >= nextRecoveryAtMillis.getOrDefault(stream, 0L)) {
+                        nextRecoveryAtMillis.put(stream, nowMillis + recoveryIntervalMillis);
+                        recoverQuietly(stream, group, consumerName, handler);
+                    }
                     List<RedisStreamOperations.StreamEntry> messages = streams.readGroup(stream, group, consumerName);
                     for (RedisStreamOperations.StreamEntry message : messages) {
                         submitHandle(stream, group, consumerName, message, handler);
