@@ -236,11 +236,18 @@ function requiredInterval(value: unknown): TravelInterval {
  * The distance a quote was priced from. fare-pricing publishes it inside the
  * pricing component rather than as a request echo, and it is a decimal string
  * there, so it is parsed rather than trusted.
+ *
+ * The resource *flattens* the pricing components into the breakdown
+ * (`**dict(bd.pricing_components)`), so `breakdown.baseDistanceFare` is where
+ * the distance actually is. Reading only the nested shape the stored snapshot
+ * uses is what left the promotion without it in the first place: every lookup
+ * returned undefined and the re-quote fell back to the flat base fare.
  */
 function optionalDistance(quote: Record<string, unknown>): number | undefined {
   const breakdown = optionalObject(quote.breakdown);
-  const components = breakdown ? optionalObject(breakdown.pricingComponents) : undefined;
-  const distance = components ? optionalObject(components.baseDistanceFare)?.distanceKm : undefined;
+  if (!breakdown) return undefined;
+  const components = optionalObject(breakdown.pricingComponents) ?? breakdown;
+  const distance = optionalObject(components.baseDistanceFare)?.distanceKm;
   const parsed = typeof distance === "number" ? distance : typeof distance === "string" ? Number.parseFloat(distance) : Number.NaN;
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
