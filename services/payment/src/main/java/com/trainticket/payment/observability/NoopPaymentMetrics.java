@@ -31,4 +31,8 @@ public final class NoopPaymentMetrics implements PaymentMetricRecorder {
     @Override
     public void conservation(List<PaymentConservationPoint> points) {
     }
+
+    @Override
+    public void oldestDueIntentAge(java.time.Duration age) {
+    }
 }
