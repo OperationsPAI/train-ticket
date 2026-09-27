@@ -1588,10 +1588,18 @@ services:
     pgInstance: event
     image: mirrors.tencent.com/microservice/reporting:copyfix-f536879b@sha256:3d44229d933cf65070168b6661c38b1e5aff2fd7a9f6caf0e28673b937d5c93f
     env:
-      # Twelve rather than four: the projection consumer still reached ten
-      # thousand events of lag on the Journey Order stream at a burst, and its
-      # CPU sat at 2.6 of the four core limit while it did.
-      REPORTING_CONSUMERS_PER_STREAM: "12"
+      # Four, not twelve.
+      #
+      # Twelve was chosen when this projection still reached ten thousand events
+      # of lag on the Journey Order stream at a burst. It is no longer needed,
+      # and it is expensive: Redis is single-threaded and every consumer is a
+      # connection parked in a blocking read, and this pod alone held 890 of the
+      # release's 1900. Measured at revision 456 with twelve, this group's oldest
+      # undelivered entry on all fourteen streams it reads is 0.0 to 0.1 seconds,
+      # so four leaves the projection far above the rate it has to follow while
+      # returning about two hundred connections to a server that has one thread
+      # to serve them with.
+      REPORTING_CONSUMERS_PER_STREAM: "4"
       WEB_CONCURRENCY: "2"
       # Eight rather than four: the projection consumer fell 3.6 thousand events
       # behind on the journey order stream during a peak.
