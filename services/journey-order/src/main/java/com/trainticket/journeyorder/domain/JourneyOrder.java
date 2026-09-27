@@ -92,7 +92,8 @@ public final class JourneyOrder {
             order.segments.stream().map(SegmentOrderSnapshot::segmentRef).toList(),
             order.segments,
             now,
-            blankToNull(sourceIp)
+            blankToNull(sourceIp),
+            offerSnapshot.distanceKm()
         ));
         return order;
     }
