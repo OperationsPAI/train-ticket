@@ -460,9 +460,10 @@ history of what each one cost is in
 
 ### T20: The two dead-letter sources are both a race, and both are fixed
 
-Status: **closed**, revision 478. Both were produced during the flat high-rate
-sweep on 2026-09-27, neither recurred under the acceptance cycles before them,
-and both have a measured root cause rather than a reclassification.
+Status: **closed**, revision 479 (the same images as 478). Both were produced
+during the flat high-rate sweep on 2026-09-27, neither recurred under the
+acceptance cycles before them, and both have a measured root cause rather than a
+reclassification.
 
 1. [x] `events:capacity-availability:dlq` held six `CapacityHeld` entries for
    `booking-orchestration`, `attempts=1`,
@@ -630,7 +631,7 @@ Status: the stored policy is not full external business validation.
 
 ### T14: Verify change sagas finish inside the client polling window
 
-Status: **closed**, revision 478. The tail was the reservation hop, and the
+Status: **closed**, revision 479. The tail was the reservation hop, and the
 hop-by-hop measurements that attributed and removed it are recorded in
 [current status](00-current-status.md#the-reservation-poll-stopped-failing-and-what-was-left-behind-it).
 
