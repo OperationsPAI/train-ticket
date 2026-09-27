@@ -202,6 +202,14 @@ public final class LettuceRedisStreamOperations implements RedisStreamOperations
     }
 
     @Override
+    public void ackMany(String stream, String group, java.util.List<String> messageIds) {
+        if (messageIds.isEmpty()) {
+            return;
+        }
+        connection.sync().xack(stream, group, messageIds.toArray(String[]::new));
+    }
+
+    @Override
     public void pruneDeadConsumers(String stream, String group, String selfName, long maxIdleMillis) {
         try {
             List<Object> consumers = connection.sync().xinfoConsumers(stream, group);
