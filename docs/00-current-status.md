@@ -5,7 +5,7 @@ Last verified: 2026-09-27, Asia/Beijing.
 ## Runtime
 
 The resident Helm release is `train-ticket` in namespace `train-ticket`,
-revision **496**.
+revision **497**.
 Its values come from one file, `deploy/helm/train-ticket/values.yaml`: the
 registry, the `local-path` storage class, the central telemetry store, the
 resident exporters, the load generator settings and the `loadgen-resident-state`
@@ -57,6 +57,8 @@ to one and back.
 
 | Check | Result | Evidence |
 |---|---|---|
+| Four minute window at revision 497, after the reference-resolution fixes | 131954 requests at 550 a second and 15211 journeys, **0 unexpected HTTP errors and 0 failed journeys** | `/tmp/sweep/rev497b.cur.jsonl` |
+| Reference resolution, revision 497 | new group bookings carry segment refs service-plan answers 200 for, and new corporate agreements carry `ruleset-default-0-WEB`, `-2-MOBILE` and `-3-COUNTER`, each answering 200 from fare-pricing | `group_bookings`, `corporate_agreements` |
 | Five minute window at revision 496, after the finance-settlement and error-mapping fixes | 59006 requests and 6342 journeys with **0 unexpected HTTP errors and 0 failed journeys**; finance-settlement's JVM now carries a `scheduling-1` thread and `settlement_schedule_runs` records both jobs as SUCCEEDED | `/tmp/sweep/rev496.cur.jsonl` |
 | Finance-settlement reconciliation, revision 496 against the release before it | cases opened fell from **715 a minute** (639 of them `missing-in-platform` with expected 0.00 against actual 0.00) to **0 in two consecutive two minute windows**; the daily reconciliation produced its first batch ever | `reconciliation_case_snapshots`, `reconciliation_batch_snapshots` |
 | Five minute window at revision 493, after the waitlist promotion fixes | 139008 requests and 16329 journeys at 463 requests a second, **0 unexpected HTTP errors and 0 failed journeys** in every minute | `/tmp/sweep/postfix.cur.jsonl` |
