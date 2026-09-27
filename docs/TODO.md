@@ -661,8 +661,22 @@ hop-by-hop measurements that attributed and removed it are recorded in
 Status: every source metric in the contract is implemented and deployed. What
 remains is breadth and the follow-ups the new reads created.
 
-1. [ ] Offer Management: publish the `search` and `quote` stages of the order
-   funnel, which no service emits yet.
+1. [x] Publish the `search` and `quote` stages of the order funnel, which no
+   service emitted. The contract had named offer management as the owner, but
+   offer management serves neither: it has one create endpoint that builds an
+   offer from an itinerary and a quote another service already consumed, so
+   counting its offers under either stage would have made every offer attempt
+   read as a search. Each stage is emitted by the service that serves it --
+   `search` by trip-planning, `quote` by fare-pricing -- and
+   [the contract](07-observability/business-metrics.md#implementation-ownership)
+   is corrected to say so. Every exit from either handler records one
+   `attempted` and exactly one outcome: trip-planning's is a guard that records
+   the rejection when it is dropped, so the early validation returns and a
+   storage failure propagated with `?` all count, and fare-pricing records the
+   rejection on each of its error exits. Measured at revision 480, the counter
+   carries all six stages -- `search`, `quote`, `order`, `reservation`,
+   `payment`, `ticket` -- in 24 series, every one of them under the contract's
+   three labels with no value outside its vocabulary.
 2. [ ] Port the Java event-consumer and outbox metric contract to the Go,
    Python, TypeScript and Rust platform kits, so the transport rules cover every
    service rather than the Java ones alone.
