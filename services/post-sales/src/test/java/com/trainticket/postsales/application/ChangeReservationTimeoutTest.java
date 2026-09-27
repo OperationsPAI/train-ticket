@@ -68,6 +68,26 @@ class ChangeReservationTimeoutTest {
         );
     }
 
+    /**
+     * The release wait is bounded, so a case whose cancelled booking's hold was
+     * never released ends instead of waiting for ever.
+     *
+     * Measured before this limit existed: 34 holds belonging to cancelled
+     * bookings were still Confirmed, one case had been EXECUTING for five and a
+     * half hours, and every later journey that reused its order failed. Releasing
+     * the hold by hand moved 34 of the 38 blocked cases to APPLIED.
+     */
+    @Test
+    void releaseWaitExpiresAfterItsOwnShorterLimit() {
+        assertFalse(ChangeExecutionService.releaseWaitExpired(NOW.toString(), NOW.plusSeconds(60)));
+        assertFalse(ChangeExecutionService.releaseWaitExpired(NOW.toString(), NOW.plusSeconds(120)));
+        assertTrue(ChangeExecutionService.releaseWaitExpired(NOW.toString(), NOW.plusSeconds(121)));
+        assertFalse(
+            ChangeExecutionService.releaseWaitExpired(null, NOW.plusSeconds(86_400)),
+            "a wait with no recorded start never times out"
+        );
+    }
+
     private static PostSalesApplicationService service(InMemoryPostSalesRepository repository) {
         return new PostSalesApplicationService(
             repository,
