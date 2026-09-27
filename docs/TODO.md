@@ -1073,12 +1073,27 @@ and both journeys now supply real ones.
 These are not defects in the code as shipped; they are the next step for a read
 that was made safe rather than fast.
 
+Items 1 and 2 are **deferred by the operator's instruction**, not forgotten: the
+traffic level is fixed and further throughput work is out of scope for this pass.
+Both reads are already bounded by their cadence rather than by their cost -- the
+conservation refresh runs every ten minutes on its own daemon thread, and the
+capacity fold runs every five minutes and streams its rows so it holds constant
+memory -- so what is left in each is an optimization with no user-visible effect
+at those cadences. The same instruction defers T01's four bus items and T19's
+three scale items.
+
 1. [ ] Payment conservation: the aggregate over `payment_intent_snapshots` is
    still planned as a parallel sequential scan even with the covering index
    present, because the snapshot writes keep the visibility map sparse.
    Measured: 33 seconds with the index, 59 without. Vacuuming the table, or
    maintaining the totals incrementally, would let the refresh return to a
    useful cadence.
+   Re-measured at revision 505 after `VACUUM (ANALYZE)`: the visibility map is
+   now 100 percent of the table's pages (`relallvisible` 260567 of 260654) and
+   the plan is an `Index Scan using payment_intent_captured_amount_idx`, not a
+   sequential scan, at **16 seconds** for the captured aggregate against the
+   covering index. The remaining cost is the per-row expression evaluation over
+   1.17 million rows, not the heap access.
 2. [ ] Capacity levels: the fold streams rather than materialises, so it is
    constant memory, but it still reads seven hundred thousand pool documents
    (about five seconds). Pushing the fold into SQL would cut the transfer to the
