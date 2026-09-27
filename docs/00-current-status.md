@@ -307,10 +307,24 @@ server with one thread to serve them.
 
 The ceiling is not removed, it is raised: a burst that offers more than roughly
 **15000 journeys a minute** -- three times the steady cycle's peak -- still
-drives Redis to its core and the reservation poll misses its window. Closing
-that the rest of the way is a change to the event bus's shape (fewer
-subscriptions per stream, or more than one Redis) rather than one more consumer
-count.
+drives Redis to its core and the reservation poll misses its window. What raises
+it further is the bus's shape rather than any consumer count, and the first
+half of that is **fan-out**: a stream costs Redis its rate times the number of
+groups reading it, and the release carried 149 subscriptions across 37 streams.
+
+Three of them were reading for no reason, and the evidence for each is its own
+service's filter or its own `processed_events`:
+
+| Service | Dropped | Why |
+|---|---|---|
+| `reporting` | 23 of 37 streams | 37 to 14. It subscribes to a stream only for the types it projects, and twelve of the types in its rule set have no producer anywhere in the repository. Its own `processed_events` has rows on exactly the fourteen that remain. |
+| `journey-order` | `booking-orchestration`, `offer-management`, `traveler-profile` | 11 to 8. Its handler filters by an explicit actionable set of thirty-one types, none of which those three producers publish, and it has recorded handling on every other subscribed stream and none on those. |
+| `notification` | `booking-orchestration` | 11 to 10. None of the fifty-four types it renders a notification for is published there. |
+
+That takes the release from **149 subscriptions to 122** and the Redis client
+count from 1900 to about 1260. The consumer groups the dropped subscriptions had
+created were destroyed by hand on the running release; a fresh deployment never
+creates them because the subscriber no longer asks for them.
 
 ### The resident cycle is not yet clean
 
