@@ -44,6 +44,19 @@ func IsFatalHandlerError(err error) bool {
 	return errors.As(err, &h) && h.Kind == HandlerErrorFatal
 }
 
+// IsTransientHandlerError reports whether a handler explicitly declared its
+// error retryable.
+//
+// The distinction matters because a bare error is not a classification: a
+// handler that returns one has told the subscriber only that something went
+// wrong. Wrapping with TransientHandlerError is the Go counterpart of Java's
+// HandlerResult.TRANSIENT_FAILURE, and only that wrapper is reported as
+// transient_result.
+func IsTransientHandlerError(err error) bool {
+	var h HandlerError
+	return errors.As(err, &h) && h.Kind == HandlerErrorTransient
+}
+
 type DedupStore interface {
 	Seen(eventID string) bool
 	Record(eventID string)
