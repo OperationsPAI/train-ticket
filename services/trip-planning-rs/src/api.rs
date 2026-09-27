@@ -102,6 +102,44 @@ pub struct ErrorResponse {
     pub details: Value,
 }
 
+/// One search attempt on the order funnel.
+///
+/// `attempted` is recorded when the guard is built and exactly one outcome when
+/// it is dropped, so every exit records a rejection -- the early `return Err`
+/// paths, a `?` that propagates a storage failure, and a panic alike. Recording
+/// the two outcomes at each return instead would need one transition per exit,
+/// and the first one missed would break `attempted = accepted + rejected`, which
+/// is the only identity a reader of this counter relies on.
+struct SearchAttempt<'a> {
+    funnel: &'a rust_kit::metrics::OrderFunnel,
+    channel: &'a str,
+    accepted: bool,
+}
+
+impl<'a> SearchAttempt<'a> {
+    fn begin(funnel: &'a rust_kit::metrics::OrderFunnel, channel: &'a str) -> Self {
+        funnel.transition("search", "attempted", channel);
+        Self {
+            funnel,
+            channel,
+            accepted: false,
+        }
+    }
+
+    fn accept(&mut self) {
+        self.accepted = true;
+        self.funnel.transition("search", "accepted", self.channel);
+    }
+}
+
+impl Drop for SearchAttempt<'_> {
+    fn drop(&mut self) {
+        if !self.accepted {
+            self.funnel.transition("search", "rejected", self.channel);
+        }
+    }
+}
+
 async fn search_itineraries_handler(
     Extension(state): Extension<Arc<AppState>>,
     Extension(context): Extension<RequestContext>,
@@ -120,6 +158,10 @@ async fn search_itineraries_handler(
             }),
         )
     })?;
+
+    // From here on the request is a search and its channel is known. The guard
+    // records the attempt now and the outcome on every exit.
+    let mut attempt = SearchAttempt::begin(state.order_funnel(), &req.channel);
 
     // Validate required fields
     if let Err(msg) = validate_search_request(&req) {
@@ -259,6 +301,7 @@ async fn search_itineraries_handler(
         )
         .await;
 
+    attempt.accept();
     Ok(Json(response))
 }
 
@@ -415,5 +458,99 @@ fn itinerary_to_contract(itinerary: &Itinerary) -> ItineraryJson {
                 status: h.status.clone(),
                 confidence: h.confidence,
             }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use opentelemetry::metrics::MeterProvider;
+    use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
+    use opentelemetry_sdk::metrics::{InMemoryMetricExporter, SdkMeterProvider};
+
+    /// Every exit from a search has to record exactly one outcome, because
+    /// `attempted = accepted + rejected` is the identity a reader of the funnel
+    /// relies on. The guard is what makes that true for the early `return Err`
+    /// paths and for a `?` that propagates a storage failure, so both are checked
+    /// here: the successful exit, and an exit that abandons the guard.
+    ///
+    /// The provider is local to this test rather than the process-global one, so
+    /// it cannot race with the other tests in this binary.
+    fn funnel_with_exporter() -> (rust_kit::metrics::OrderFunnel, InMemoryMetricExporter, SdkMeterProvider) {
+        let exporter = InMemoryMetricExporter::default();
+        let provider = SdkMeterProvider::builder()
+            .with_periodic_exporter(exporter.clone())
+            .build();
+        let funnel = rust_kit::metrics::OrderFunnel::new(&provider.meter("trip-planning-test"));
+        (funnel, exporter, provider)
+    }
+
+    fn points(exporter: &InMemoryMetricExporter) -> std::collections::BTreeMap<String, u64> {
+        let mut found = std::collections::BTreeMap::new();
+        for resource_metric in exporter.get_finished_metrics().expect("finished metrics") {
+            for scope_metric in resource_metric.scope_metrics() {
+                for metric in scope_metric.metrics() {
+                    if metric.name() != "train_ticket.order.transitions" {
+                        continue;
+                    }
+                    let AggregatedMetrics::U64(MetricData::Sum(sum)) = metric.data() else {
+                        panic!("the funnel counter is a u64 sum");
+                    };
+                    for point in sum.data_points() {
+                        let mut outcome = String::new();
+                        let mut channel = String::new();
+                        for kv in point.attributes() {
+                            match kv.key.as_str() {
+                                "outcome" => outcome = kv.value.to_string(),
+                                "channel" => channel = kv.value.to_string(),
+                                _ => {}
+                            }
+                        }
+                        found.insert(format!("{outcome}/{channel}"), point.value());
+                    }
+                }
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn an_accepted_search_records_one_attempt_and_one_acceptance() {
+        let (funnel, exporter, provider) = funnel_with_exporter();
+
+        let mut attempt = SearchAttempt::begin(&funnel, "web");
+        attempt.accept();
+        drop(attempt);
+        provider.force_flush().expect("flush metrics");
+
+        assert_eq!(
+            points(&exporter),
+            std::collections::BTreeMap::from([
+                ("accepted/web".to_string(), 1),
+                ("attempted/web".to_string(), 1),
+            ])
+        );
+    }
+
+    #[test]
+    fn an_abandoned_search_records_a_rejection_and_never_an_acceptance() {
+        let (funnel, exporter, provider) = funnel_with_exporter();
+
+        {
+            // Standing in for a `return Err(...)` or a `?`: the guard is dropped
+            // without ever being accepted.
+            let _attempt = SearchAttempt::begin(&funnel, "acme-partner-7");
+        }
+        provider.force_flush().expect("flush metrics");
+
+        assert_eq!(
+            points(&exporter),
+            std::collections::BTreeMap::from([
+                // An unknown channel collapses to `other` rather than becoming a
+                // series of its own.
+                ("attempted/other".to_string(), 1),
+                ("rejected/other".to_string(), 1),
+            ])
+        );
     }
 }
