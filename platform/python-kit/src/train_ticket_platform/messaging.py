@@ -390,7 +390,7 @@ class RedisEventSubscriber(EventSubscriber):
                     s = stream_name.decode("utf-8") if isinstance(stream_name, bytes) else str(stream_name)
                     for msg_id, msg_data in messages:
                         msg_id_str = msg_id.decode("utf-8") if isinstance(msg_id, bytes) else str(msg_id)
-                        self._process_entry(s, group, msg_id_str, msg_data, handler, self._delivery_count(s, group, msg_id_str), consumer_name)
+                        self._process_entry(s, group, msg_id_str, msg_data, handler, 0, consumer_name)
                     return True
         return False
 
@@ -405,7 +405,7 @@ class RedisEventSubscriber(EventSubscriber):
                     msg_id_str,
                     msg_data,
                     handler,
-                    self._delivery_count(stream, group, msg_id_str),
+                    0,
                     consumer_name,
                 )
 
@@ -609,6 +609,16 @@ class RedisEventSubscriber(EventSubscriber):
         delivery_count: int,
         consumer_name: str | None = None,
     ) -> None:
+        """Handle one delivered entry.
+
+        `delivery_count` is accepted for callers that pass it and is not read:
+        `_process_message` asks Redis for the count itself, and only on the paths
+        that need it. It used to be resolved here for every message, which was an
+        XPENDING round trip per delivery -- measured on the resident cluster,
+        XPENDING was 2028 of Redis' ~14600 commands a second, and most of them
+        were discarded. Redis is single-threaded, so that is the whole system's
+        throughput being spent on an unused number.
+        """
         actual_consumer_name = consumer_name or default_consumer_name(group)
         self._process_message(stream, group, actual_consumer_name, entry_id, fields, handler)
 
