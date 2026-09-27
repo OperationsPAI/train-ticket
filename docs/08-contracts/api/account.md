@@ -18,6 +18,12 @@ unfreeze, closure). It is the identity and authentication foundation.
 
 **Idempotency:** REQUIRED
 
+**Admission:** the deployment admits new accounts on a per-client budget over a
+fixed window. A client that has spent its window is answered `429` before the
+account is created, with `windowSeconds` in `details` and nothing stored, so a
+retry that arrives in the next window is a new registration rather than a
+replay of a refused one.
+
 **Request:**
 
 | Field | Type | Required | Description |
@@ -32,7 +38,7 @@ unfreeze, closure). It is the identity and authentication foundation.
 | `status` | enum | `ACTIVE`, `FROZEN`, `CLOSED` |
 | `createdAt` | timestamp | Creation time. |
 
-**Error codes:** `VALIDATION_FAILED`, `CONFLICT`
+**Error codes:** `VALIDATION_FAILED`, `CONFLICT`, `TOO_MANY_REQUESTS`
 
 ### Get Account
 
