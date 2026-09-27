@@ -728,19 +728,34 @@ are carried as T21.
 
 ### T07: Complete the reporting monetary edge cases
 
-Status: explicit implementation limitations.
+Status: **closed**, revision 500. Every item is implemented and was verified
+against the deployed service; the one gap the pass found is carried as T23.
 
-1. [ ] Define per currency totals instead of summing currencies into one scalar
-   `totalRevenue` carrying the first currency label.
-2. [ ] Define whether `totalRevenue` is a page total or a complete total, and
-   validate pagination against that answer.
-3. [ ] Make missing captured amount handling consistent between the PostgreSQL
-   and in-memory aggregations, and test the chosen rule against real data.
-4. [ ] Validate route, seat class, traveler type and attachment dimensions from
-   authoritative business references.
-5. [ ] Reconcile `orders_per_second` with its sixty second count, the trends
-   with their single point, and the operational windows with the latest 10000
-   event input cap.
+1. [x] `totalRevenue` is per currency, not one scalar. It answers as a list --
+   measured live, `[{"amount":"116989276.70","currency":"CNY"}]` -- and the SQL
+   groups by currency before it aggregates.
+2. [x] `totalRevenue` is a complete total and pagination is validated against
+   that answer. Measured live: `offset=0` and `offset=3` return different rows
+   and the same total, with `total` reading 133423 behind it.
+3. [x] Missing captured amount handling is the same on both sides. The SQL
+   projection and the in-memory aggregator both require
+   `PaymentCaptured AND amount IS NOT NULL` (migration 006 against
+   `MetricAggregator.is_payment_captured`), and `test_gross_captured_live.py`
+   runs that rule against real rows.
+4. [x] The dimensions come from authoritative business references. The live view
+   joins `reporting_capture_references`, `reporting_business_scopes`,
+   `reporting_order_routes`, `reporting_order_travelers` and
+   `reporting_seat_classes`: measured live, `seat_class` resolves to the six
+   classes in use, `traveler_type` to seven, `channel` to the three channels the
+   workload pays with and `route` to 133423 segments. The `unknown` bucket is the
+   documented "missing is unknown, never zero" rule and held 2819 of that
+   window's payments.
+5. [x] The trend and operational windows reconcile. Measured live: the 13:11
+   bucket's `orders_per_second` of 19.55 is exactly the 1173 orders the database
+   counts for that minute, all three series carry 60 points, and the operational
+   snapshot's windows are windowed SQL (60 s, 3600 s, 86400 s) rather than the
+   in-memory aggregator's ten-thousand-event cap, which is reachable only for an
+   unsupported `groupBy`.
 
 ### T08: Bound channel statement growth
 
@@ -770,13 +785,22 @@ the measurement separates is the generation pass from the storage shape.
 
 ### T09: Complete route feasibility and shared reference validation
 
-Status: implementation gaps that need a scoped verification.
+Status: **closed**, revision 500. Both items are already implemented and carry a
+passing test; the TODO's premise for the second one was out of date.
 
-1. [ ] Consume and enforce published minimum connection time rules when general
-   multileg search is enabled. The current direct segment search does not
-   establish that capability.
-2. [ ] Verify boundary prefix validation for shared reference wrappers;
-   `shared-kernel-rust` generic IDs currently enforce non-empty text only.
+1. [x] Published minimum connection time rules are consumed and enforced when
+   general multileg search is enabled. Multileg is opt-in per request
+   (`maxConnections`), and the published SAME_STATION rule is applied to the
+   connection it evaluates: `multileg_search_is_opt_in_and_enforces_the_published_mct_rule`
+   seeds a 19 minute connection and a 20 minute one against a published 20
+   minute rule and asserts the short one is refused while the long one comes
+   back.
+2. [x] The shared reference wrappers validate their boundary prefixes. The Rust
+   kernel's `id_type!` macro rejects an empty value, rejects surrounding
+   whitespace, and requires one of the type's own prefixes with a non-empty
+   suffix -- `tvl-`, `seg-`, `plc-`, `evt-`, `corr-`, and `cmd-` or `evt-` for a
+   causation id -- so a `seg-` value cannot be constructed as a `TravelerRef`.
+   `cargo test` in `platform/shared-kernel-rust` is 15 tests, 0 failures.
 
 ### T10: Reconcile repository metadata and static checks
 
@@ -914,6 +938,27 @@ remains is breadth and the follow-ups the new reads created.
    hashed now, so changing it rolls Prometheus.
 5. [ ] Add a collector that reports scheduled job success and the age of the
    oldest due task; several sweeps are only observable through their effects.
+
+### T23: Make `yieldPerKm` a number rather than a constant zero
+
+Status: open. The reporting revenue report carries a `yieldPerKm` on every row
+and it is `0.00` on all of them.
+
+The view computes it from `flags->>'distanceKm'`, and no event the reporting
+service subscribes to carries a distance: `_flags_from_event` writes the key
+from the payload, and the only producer that publishes one is fare-pricing's
+`FareQuoteComputed` (`breakdown.baseDistanceFare.distanceKm`), which reporting
+does not read. Measured live at revision 493: every revenue row's `yieldPerKm`
+reads `0.00`, including the 133,423 route rows and the six seat-class rows.
+
+1. [ ] Give the view a distance. Either subscribe reporting to fare-pricing and
+   join the quote through the order's offer, or have the owning service publish
+   the distance on an event reporting already reads. Then a route row's yield is
+   `revenue / distance` rather than zero, and the sum of the route rows' distance
+   reconciles with the trip the order actually priced.
+2. [ ] Or remove the field and say why. A derived metric that cannot be anything
+   but zero is worse than an absent one: it reads as a real measurement of zero
+   yield.
 
 ### T22: Match a channel statement line to the order it settles
 
