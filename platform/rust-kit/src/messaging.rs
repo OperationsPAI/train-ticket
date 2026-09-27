@@ -1,4 +1,3 @@
-#[cfg(feature = "redis-impl")]
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt;
@@ -29,7 +28,50 @@ use serde_json::Value;
 
 pub const STREAM_MAXLEN_ENV: &str = "EVENT_STREAM_MAXLEN";
 pub const DEFAULT_STREAM_MAXLEN: usize = 10_000;
+/// Number of *genuine handler failures* (a `TransientError` from the handler)
+/// tolerated for one message in this process before it is dead-lettered.
+///
+/// This counts handler work only. It is deliberately not Redis' redelivery
+/// counter: that one also advances when a pod is replaced mid-delivery or a
+/// consumer is starved, which says nothing about whether the message is bad.
 pub const MAX_DELIVERY_ATTEMPTS: u64 = 5;
+
+pub const MAX_REDELIVERY_ATTEMPTS_ENV: &str = "MAX_REDELIVERY_ATTEMPTS";
+pub const DEFAULT_MAX_REDELIVERY_ATTEMPTS: u64 = 100;
+
+/// Backstop on Redis' own redelivery counter, used only to retire a message
+/// that keeps being reclaimed without ever completing -- the crash-loop case,
+/// where the in-process failure count dies with the process.
+///
+/// Redis' counter advances once per reclaim, i.e. once per
+/// `AUTOCLAIM_MIN_IDLE_MS`, so this threshold is really a duration: at the
+/// sixty second default it is about an hour and a half of *continuously
+/// pending* time. The five it used to share with the handler-failure cap is one
+/// twentieth of that, which is short enough that a rolling update dead-letters
+/// healthy events: measured on the resident release, a `BookingSagaFailed`
+/// published during the revision 480 rollout was reclaimed five times inside
+/// four minutes and dead-lettered although every service ignores that type.
+pub static MAX_REDELIVERY_ATTEMPTS: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
+    max_redelivery_attempts(std::env::var(MAX_REDELIVERY_ATTEMPTS_ENV).ok().as_deref())
+});
+
+pub fn max_redelivery_attempts(configured: Option<&str>) -> u64 {
+    let Some(raw) = configured else {
+        return DEFAULT_MAX_REDELIVERY_ATTEMPTS;
+    };
+    let trimmed = raw.trim();
+    if let Ok(attempts) = trimmed.parse::<u64>()
+        && attempts > 0
+    {
+        return attempts;
+    }
+    if !trimmed.is_empty() {
+        log::warn!(
+            "{MAX_REDELIVERY_ATTEMPTS_ENV}={raw} is not a positive integer; using default {DEFAULT_MAX_REDELIVERY_ATTEMPTS}"
+        );
+    }
+    DEFAULT_MAX_REDELIVERY_ATTEMPTS
+}
 
 /// Cap on entries kept per stream. Redis streams are never read destructively, so without
 /// a cap every published event stays resident forever and eventually exhausts the Redis
@@ -434,6 +476,9 @@ pub struct ReceivedEvent {
 #[derive(Debug, Default)]
 pub struct SubscriberState {
     dedup: Mutex<HashSet<String>>,
+    /// Genuine handler failures per event, in this process only. A restart
+    /// clears them, which is what the Redis redelivery backstop is for.
+    failures: Mutex<HashMap<String, u64>>,
 }
 impl SubscriberState {
     pub fn new() -> Self {
@@ -451,20 +496,45 @@ impl SubscriberState {
             .expect("dedup lock poisoned")
             .insert(event_id.to_string());
     }
+    /// One more genuine handler failure for this event; returns the new count.
+    pub fn record_failure(&self, event_id: &str) -> u64 {
+        let mut failures = self.failures.lock().expect("failure lock poisoned");
+        let count = failures.entry(event_id.to_string()).or_insert(0);
+        *count += 1;
+        *count
+    }
+    pub fn clear_failure(&self, event_id: &str) {
+        self.failures
+            .lock()
+            .expect("failure lock poisoned")
+            .remove(event_id);
+    }
     pub fn decide_action(
         &self,
         event: &ReceivedEvent,
         handler: &dyn Fn(EventEnvelope) -> HandlerResult,
     ) -> SubscriberAction {
-        if event.delivery_attempts >= MAX_DELIVERY_ATTEMPTS {
+        if event.delivery_attempts >= *MAX_REDELIVERY_ATTEMPTS {
             return SubscriberAction::DeadLetterAndAck;
         }
         if self.has_seen(&event.envelope.event_id) {
             return SubscriberAction::Ack;
         }
         match handler(event.envelope.clone()) {
-            HandlerResult::Success => SubscriberAction::Ack,
-            HandlerResult::TransientError(_) => SubscriberAction::LeavePending,
+            HandlerResult::Success => {
+                self.clear_failure(&event.envelope.event_id);
+                SubscriberAction::Ack
+            }
+            HandlerResult::TransientError(_) => {
+                // The handler's own failure count is what decides, not Redis'
+                // redelivery count: a rollout or a starved consumer advances the
+                // latter without the message being bad.
+                if self.record_failure(&event.envelope.event_id) >= MAX_DELIVERY_ATTEMPTS {
+                    SubscriberAction::DeadLetterAndAck
+                } else {
+                    SubscriberAction::LeavePending
+                }
+            }
             HandlerResult::FatalError(_) => SubscriberAction::DeadLetterAndAck,
         }
     }
@@ -1122,7 +1192,10 @@ pub mod redis_runtime {
                         .delivery_count(&message.stream, group, &message.id)
                         .await
                         .unwrap_or(message.delivery_count);
-                    if message.delivery_count >= MAX_DELIVERY_ATTEMPTS {
+                    // The Redis counter is the crash-loop backstop, not the
+                    // handler-failure cap: a rollout reclaims entries and
+                    // advances it without the handler ever seeing them.
+                    if message.delivery_count >= *MAX_REDELIVERY_ATTEMPTS {
                         move_to_dlq(
                             ops,
                             &message.stream,
@@ -1137,8 +1210,19 @@ pub mod redis_runtime {
                         )
                         .await?;
                     } else {
-                        self.process_message(ops, group, consumer_name, message.clone(), handler)
-                            .await?;
+                        // The handled case has to be acknowledged here. The read
+                        // loop collects the ids its handlers completed and XACKs
+                        // them as a batch, and this path discarded that answer --
+                        // so a recovered entry was handled, left in the pending
+                        // list, reclaimed again after the idle window and only
+                        // retired by the redelivery backstop. Dedup hid the
+                        // repeated work, which is why it stayed invisible.
+                        if self
+                            .process_message(ops, group, consumer_name, message.clone(), handler)
+                            .await?
+                        {
+                            ops.ack(&message.stream, group, &message.id).await?;
+                        }
                     }
                 }
             }
@@ -1204,6 +1288,7 @@ pub mod redis_runtime {
             match outcome {
                 Ok(()) => {
                     span_context.span().end();
+                    self.state.clear_failure(&envelope.event_id);
                     self.state.mark_consumed(&envelope.event_id);
                     Ok(true)
                 }
@@ -1215,13 +1300,45 @@ pub mod redis_runtime {
                     // Formerly a silent swallow (same class of bug java-kit had):
                     // without this line a retried-to-death message reaches the
                     // DLQ with no trace of what actually failed.
+                    let failures = self.state.record_failure(&envelope.event_id);
+                    if failures >= MAX_DELIVERY_ATTEMPTS {
+                        // The handler itself has now failed the cap on this
+                        // message, so it is the message or its data rather than
+                        // the delivery, and a redelivery will not change that.
+                        self.state.clear_failure(&envelope.event_id);
+                        self.state.mark_consumed(&envelope.event_id);
+                        log::warn!(
+                            "{}service={} stream={} eventId={} deliveries={} handler failed {} times; moving message to DLQ",
+                            trace_fields,
+                            group,
+                            message.stream,
+                            envelope.event_id,
+                            message.delivery_count,
+                            failures
+                        );
+                        return move_to_dlq(
+                            ops,
+                            &message.stream,
+                            group,
+                            consumer_name,
+                            &message.id,
+                            &message.raw_envelope,
+                            &reason,
+                            message.delivery_count,
+                            &trace_fields,
+                        )
+                        .await
+                        .map(|()| false);
+                    }
                     log::warn!(
-                        "{}service={} stream={} eventId={} deliveries={} handler transient failure; message stays pending for retry: {}",
+                        "{}service={} stream={} eventId={} deliveries={} handler transient failure {}/{}; message stays pending for retry: {}",
                         trace_fields,
                         group,
                         message.stream,
                         envelope.event_id,
                         message.delivery_count,
+                        failures,
+                        MAX_DELIVERY_ATTEMPTS,
                         reason
                     );
                     Ok(false)
@@ -1676,6 +1793,8 @@ pub mod redis_runtime {
         #[derive(Default)]
         struct FakeStreamOps {
             read_messages: Vec<StreamMessage>,
+            pending_messages: Vec<StreamMessage>,
+            pending_delivery_count: u64,
             dlq_entries: Vec<(String, String, Vec<(&'static str, String)>)>,
             acked: Vec<(String, String, String)>,
             created_groups: Vec<(String, String)>,
@@ -1699,7 +1818,7 @@ pub mod redis_runtime {
                 _group: &str,
                 _consumer_name: &str,
             ) -> Result<Vec<StreamMessage>, SubscribeFailed> {
-                Ok(Vec::new())
+                Ok(std::mem::take(&mut self.pending_messages))
             }
 
             async fn read_group(
@@ -1717,7 +1836,11 @@ pub mod redis_runtime {
                 _group: &str,
                 _id: &str,
             ) -> Result<u64, SubscribeFailed> {
-                Ok(1)
+                Ok(if self.pending_delivery_count == 0 {
+                    1
+                } else {
+                    self.pending_delivery_count
+                })
             }
 
             async fn xadd_dlq(
@@ -1741,6 +1864,119 @@ pub mod redis_runtime {
                     .push((stream.to_string(), group.to_string(), id.to_string()));
                 Ok(())
             }
+        }
+
+        fn envelope_message(id: &str, event_type: &str) -> StreamMessage {
+            let envelope = EventEnvelope::canonical(
+                event_type,
+                correlation_id(),
+                Some(command_id()),
+                "booking-orchestration",
+                serde_json::json!({"journeyOrderId":"ord-1"}),
+            );
+            StreamMessage {
+                stream: "events:booking-orchestration".to_string(),
+                id: id.to_string(),
+                raw_envelope: serde_json::to_string(&envelope).unwrap(),
+                delivery_count: 1,
+            }
+        }
+
+        /// Redis' redelivery counter used to be the only attempt count, so five
+        /// reclaims dead-lettered a message. That counter also advances when a
+        /// pod is replaced mid-delivery, which is what happened to a
+        /// `BookingSagaFailed` during the revision 480 rollout: reclaimed five
+        /// times in four minutes and dead-lettered although every consumer
+        /// ignores that type. A reclaimed entry below the crash-loop backstop
+        /// must be handled instead.
+        #[tokio::test]
+        async fn a_reclaimed_entry_is_handled_rather_than_dead_lettered_at_the_old_cap() {
+            let _serial = crate::otel::test_serial();
+            let subscriber = RedisEventSubscriber {
+                client: redis::Client::open("redis://127.0.0.1:0").unwrap(),
+                state: Arc::new(SubscriberState::new()),
+                stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                event_filter: None,
+            };
+            let mut ops = FakeStreamOps {
+                pending_messages: vec![envelope_message("7-0", "BookingSagaFailed")],
+                pending_delivery_count: MAX_DELIVERY_ATTEMPTS,
+                ..Default::default()
+            };
+
+            subscriber
+                .subscribe_with_ops(
+                    &mut ops,
+                    vec!["events:booking-orchestration".to_string()],
+                    "entitlement-ticketing".to_string(),
+                    "entitlement-ticketing-1".to_string(),
+                    &|_| Box::pin(async { Ok(()) }),
+                    true,
+                )
+                .await
+                .unwrap();
+
+            assert!(
+                ops.dlq_entries.is_empty(),
+                "a reclaimed entry must not be retired by Redis' own counter: {:?}",
+                ops.dlq_entries
+            );
+            assert_eq!(
+                ops.acked,
+                vec![(
+                    "events:booking-orchestration".to_string(),
+                    "entitlement-ticketing".to_string(),
+                    "7-0".to_string()
+                )]
+            );
+        }
+
+        /// The other half of the same rule: a message the handler itself keeps
+        /// failing still has to reach the dead letter, and the count that decides
+        /// that is the handler's, not Redis'.
+        #[tokio::test]
+        async fn a_handler_that_keeps_failing_is_dead_lettered_at_the_handler_cap() {
+            let _serial = crate::otel::test_serial();
+            let subscriber = RedisEventSubscriber {
+                client: redis::Client::open("redis://127.0.0.1:0").unwrap(),
+                state: Arc::new(SubscriberState::new()),
+                stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                event_filter: None,
+            };
+            let mut dlq_entries = Vec::new();
+            let mut acked = Vec::new();
+            // The same entry, redelivered: the failure count is per event, so a
+            // new event id each round would never reach the cap.
+            let redelivered = envelope_message("8-0", "PoisonEvent");
+            for attempt in 1..=MAX_DELIVERY_ATTEMPTS {
+                let mut ops = FakeStreamOps {
+                    read_messages: vec![redelivered.clone()],
+                    dlq_entries: std::mem::take(&mut dlq_entries),
+                    acked: std::mem::take(&mut acked),
+                    ..Default::default()
+                };
+                subscriber
+                    .subscribe_with_ops(
+                        &mut ops,
+                        vec!["events:booking-orchestration".to_string()],
+                        "entitlement-ticketing".to_string(),
+                        "entitlement-ticketing-1".to_string(),
+                        &|_| Box::pin(async { Err(HandlerError::Transient("downstream is down".into())) }),
+                        true,
+                    )
+                    .await
+                    .unwrap();
+                dlq_entries = ops.dlq_entries;
+                acked = ops.acked;
+                if attempt < MAX_DELIVERY_ATTEMPTS {
+                    assert!(
+                        dlq_entries.is_empty(),
+                        "attempt {attempt} is below the handler cap and must stay pending"
+                    );
+                }
+            }
+            assert_eq!(dlq_entries.len(), 1, "the cap must still retire the message");
+            assert_eq!(acked.len(), 1, "the dead-lettered entry is acknowledged");
         }
 
         #[tokio::test]
