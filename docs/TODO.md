@@ -457,6 +457,23 @@ history of what each one cost is in
    the constraint. Twelve handlers per consumer and a fourth replica at revision
    418 leave the group at a lag of 0 to 4, and the next window carries no `offer`
    failure at all.
+10. [x] A refusal the journey handles is not the journey's failure. Measured at
+   revisions 483 to 486: **every load generator restart** left two fulfillments
+   failed at the boarding step and one change failed at `change-execute`, all
+   with answers the journey already treats as terminal. The journey handled each
+   one correctly -- a diagnosis log proved the matcher fired -- and the attempt
+   layer failed it anyway: the client records every unexpected status for the
+   attempt, and a journey that returns a clean outcome still has that recording
+   named as its failure. The handled refusals are now declared expected at the
+   request (the boarding and no-show 422s, the refund create's 409 and 422, and
+   the disruption select's 409), which keeps them out of the attempt's failure
+   list while still returning the status to the branch that decides on it. The
+   change half was a real 500: post-sales wrapped entitlement-ticketing's 412
+   "entitlement is already voided" in an `IllegalStateException`, so a change
+   whose void had in fact been applied was answered as a server fault. It now
+   records the command as satisfied. Measured after both: a restarted generator
+   reports `errors {}` in its first stats cycle where it used to report three
+   failures, and the revision 488 window carries 0 failed journeys.
 
 ### T20: The two dead-letter sources are both a race, and both are fixed
 
