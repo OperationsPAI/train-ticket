@@ -458,37 +458,48 @@ history of what each one cost is in
    418 leave the group at a lag of 0 to 4, and the next window carries no `offer`
    failure at all.
 
+### T20: The two dead-letter sources are both a race, and both are fixed
+
+Status: **closed**, revision 478. Both were produced during the flat high-rate
+sweep on 2026-09-27, neither recurred under the acceptance cycles before them,
+and both have a measured root cause rather than a reclassification.
+
+1. [x] `events:capacity-availability:dlq` held six `CapacityHeld` entries for
+   `booking-orchestration`, `attempts=1`,
+   `failureReason=HandlerResult.FATAL_FAILURE`, dead-lettered at `06:47:07`. The
+   six booking snapshots are the answer: each one is `CANCELLED` with
+   `cancellationReason: SAGA_STEP_TIMED_OUT` and a `pendingProviderReference`
+   but no `capacityHoldId`. That is the race -- the saga's reservation step timed
+   out and cancelled the booking while the provider's confirmation was still
+   waiting for its Hold, and the Hold arrived a moment later.
+   `markCapacityHolding` completed the deferred confirmation, and
+   `confirmReservation` refused a `CANCELLED` booking with an
+   `IllegalStateException`, which `handleUpstreamEvent` classifies as fatal. The
+   hold is still real and its reference is still worth keeping -- the release
+   path needs it -- but it must not move the booking out of `CANCELLED`:
+   `SegmentBooking.completeDeferredProviderConfirmation` now takes the same route
+   `confirmFromProvider` takes for a terminal booking and asks the provider to
+   cancel the reservation. `handleCapacityHeld` also stops throwing on a segment
+   booking with no owning saga: that is an ack-skip beside the unknown booking
+   reference it already skips.
+2. [x] `events:finance-settlement:dlq` held five
+   `RevenueRecognitionReversed` entries for `invoicing`,
+   `failureReason=MaxDeliveryAttempts`, `attempts=5`, dead-lettered at
+   `05:30:51`. It was not a long wait: the reversal was projected before the
+   recognition it names, because the projection runs eight workers on the
+   finance stream and the two events of one refund do not have to be applied in
+   order. All five orders carry the reversal in their amount history now, which
+   is what a redelivery applied after the dead letter. The reversal is now kept
+   in the order's durable history until the recognition arrives, and the
+   recognition's own delivery applies it with the same ceiling and balance
+   checks the inline path uses.
+
+The measured effect is in
+[current status](00-current-status.md#the-two-dead-letter-sources-and-their-root-cause).
+
 ## Open verification
 
 ### T03: Finish the coordinated supply integration
-
-### T20: Two dead-letter sources that the acceptance level does not reach
-
-Status: open, and **not** reachable at the level in `values.yaml` -- both were
-produced during the flat high-rate sweep on 2026-09-27, and neither has recurred
-under two full acceptance cycles since. They are recorded because a dead letter is
-an event nobody can reconstruct.
-
-1. [ ] `events:capacity-availability:dlq` holds six entries whose consumer group
-   is `booking-orchestration`, event type `CapacityHeld`, `attempts=1` and
-   `failureReason=HandlerResult.FATAL_FAILURE`, dead-lettered at `06:47:07`. One
-   attempt means the handler classified it as a rule violation rather than a
-   transient failure, which is `IllegalArgumentException`,
-   `IllegalStateException`, `NotFoundException` or `PreconditionFailedException`
-   in `handleUpstreamEvent`. The payload carries every field
-   `validateCapacityHeldContract` asks for, so the throw is further in --
-   `markCapacityHolding`, or the `orElseThrow()` on the saga id. A `CapacityHeld`
-   for a booking this service cannot place must not be fatal: the same handler
-   already has an ack-skip path for an unknown booking reference.
-2. [ ] `events:finance-settlement:dlq` holds five entries whose consumer group is
-   `invoicing`, event type `RevenueRecognitionReversed`,
-   `failureReason=MaxDeliveryAttempts` and `attempts=5`, dead-lettered at
-   `05:30:51`. Invoicing's projection answers `Unavailable("reversal awaits
-   original revenue")` when it has no `amounts` entry for the order or the
-   reversal names a recognition the order does not carry; five redeliveries
-   inside the claim window is not a long wait for an upstream event. Decide
-   whether the reversal should wait longer, or whether the recognition it names
-   was already reversed and the event needs no effect.
 
 Status: activated; general multistop correctness is unproven.
 
@@ -674,12 +685,33 @@ that was made safe rather than fast.
    reservation never confirmed has fewer tickets than the order has travelers.
    Re-measure once the reservation path is clean, and if it still occurs, decide
    whether the check belongs at offer creation or at evaluation.
-7. [ ] `events:booking-orchestration:dlq` holds about eight thousand entries
-   that exhausted their delivery attempts while capacity rejected reservation
-   sources, which is a defect that is now fixed. They can never succeed and they
-   are currently the largest dead-letter population in the release; decide
-   whether to keep them as evidence or retire them before using that number as
-   an alarm.
+7. [x] `events:booking-orchestration:dlq` held about eight thousand entries that
+   exhausted their delivery attempts while capacity rejected reservation
+   sources, which is a defect that is now fixed. Measured at revision 478 the
+   stream holds no entry at all, so the dead-letter population is once again an
+   alarm rather than an archive.
+8. [x] `events:booking-orchestration` carried a `notification` consumer group
+   with a lag of 30003 entries that no service could ever clear: notification's
+   subscription to that stream was dropped deliberately (no event type it
+   renders is published there) but the Redis group outlives the configuration
+   that created it. Dropping a subscription in a service's stream list is
+   therefore not a complete change -- the group has to be destroyed on the bus
+   as well. Measured at revision 478 the group is gone and the lag table reports
+   three live groups at zero or one entry.
+9. [ ] Travel insurance retries two valid events as transient failures rather
+   than dead-lettering them, and both eventually succeed: a change that
+   `journey-order` has announced before post-sales reached EXECUTING answers
+   "applied change scope is required" (six in fifteen minutes at the fixed
+   level), and a purchase reference payment has not written yet answers 404
+   (four). Each retry holds the entry pending for the reclaim window and costs a
+   read of the owning service, and the same path is bounded by
+   `MAX_DELIVERY_ATTEMPTS`, so a case that never executes still ends in the dead
+   letter -- the three entries in `events:journey-order:dlq` are exactly that.
+   Measured at revision 478 no new entry reached either dead letter across a
+   whole cycle, so this is a wait that works rather than a defect the acceptance
+   level reaches. The next step, if it is worth taking, is to stop reading a
+   case that is only QUOTED or APPROVED and to let its own execution announcement
+   drive the adjustment.
 
 ## Handoff rules
 
