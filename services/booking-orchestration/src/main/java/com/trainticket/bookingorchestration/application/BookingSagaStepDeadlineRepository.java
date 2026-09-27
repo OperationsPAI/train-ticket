@@ -18,6 +18,16 @@ public interface BookingSagaStepDeadlineRepository {
 
     List<BookingSagaStepDeadline> findDue(Instant now, int limit);
 
+    /**
+     * The deadline of the oldest step the sweep still owes, if any.
+     *
+     * <p>A deadline at or before {@code now} is a step the sweep has not retired,
+     * so the oldest of them is how long the queue has been waiting.
+     */
+    default java.util.Optional<Instant> findOldestDueDeadline(Instant now) {
+        return java.util.Optional.empty();
+    }
+
     record BookingSagaStepDeadline(String sagaId, String stepIdempotencyKey, Instant deadline) {
         public BookingSagaStepDeadline {
             if (sagaId == null || sagaId.isBlank()) {
