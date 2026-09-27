@@ -1039,7 +1039,12 @@ order's distance.
 
 ### T22: Match a channel statement line to the order it settles
 
-Status: open. `ChannelStatementLineMatched` has a consumer and no producer.
+Status: **closed**, revision 515. The channel side is read rather than published,
+the day's reconciliation is complete against a real statement, and the two
+defects the first real run exposed are fixed.
+
+Everything below was written while the item was open and is kept because each
+line is still the reason the area behaves as it does.
 
 finance-settlement records that event (`recordChannelStatementLine`) and nothing
 publishes it, so finance's `channel_statement_lines` is empty and
@@ -1065,13 +1070,40 @@ platform's captures for the day are still entered as missing in channel one by
 one -- one row per capture rather than one row per line -- and that is the item
 this section is about.
 
-1. [ ] Publish the fact, or replace it with something that scales. payment-channel
-   builds each line from a channel order or refund, so a line already knows its
-   `channelOrderId` or `channelRefundId`; 342,648 events per statement is not a
-   fan-out anyone should publish one at a time, so the shape has to be a paged
-   read or a compact per-line index the finance side consumes in batches.
-2. [ ] Then verify the daily batch against a real statement: every capture
-   matches its line, and the statement's gross totals equal the sum of its lines.
+1. [x] Publish the fact, or replace it with something that scales. The shape is
+   the second one the item named: finance reads the statement payment-channel
+   already stores, 500 lines a page by ordinal cursor, once per statement (a
+   statement whose lines are recorded is skipped) and idempotently by statement
+   line id. The first read of a statement resolves orders one query per page
+   rather than one per line, which took a real 165,724-line statement from 575
+   to 95 seconds.
+2. [x] Then verify the daily batch against a real statement. Verified at
+   revision 515 on the whole closed day 2026-09-26: 618,650 channel lines read
+   from the three frozen statements (322,796 + 143,955 + 151,899), every
+   statement's payment lines folding back to its own published gross payment and
+   its refund lines to its gross refund, and the reconciliation itself reading
+   **488,414 entries, 488,414 matched, variance 0.00, 0 exceptions**
+   (`ChannelStatementIngestLiveTest` reproduces the read against the deployed
+   release).
+
+   That run is also what found the two defects the first attempt hid. The first
+   batch died on its own size -- 431,530 entries is more than one PostgreSQL
+   jsonb array will hold, so the snapshot could not be written at all -- and the
+   batch now keeps its report and the entries that need attention rather than
+   every entry. The second was the key: keyed on the order, 56,884 of 431,530
+   entries were amount mismatches, and every one was an order that had paid
+   twice, because the platform attributes a fare to the order and a change
+   difference to the post-sales case while the channel knows only the payment
+   intent. The key is the payment intent, and a change difference payment is now
+   recorded as the receipt it is (migration 011 repairs the historical days from
+   the platform's own recognitions).
+
+   What is deliberately not compared: the statement's `REFUND` lines. They are
+   recorded with their type, and the capture comparison reads payment lines only
+   -- a refund line is the channel's answer to a platform refund, and comparing
+   it with a capture would report every refund as unexplainable. Matching the
+   refund side of a statement is its own item, in
+   [T25](#t25-match-the-refund-side-of-a-channel-statement).
 
 ### T24: The frozen channel statement reaches finance
 
@@ -1104,6 +1136,23 @@ after; the narrative and the raw numbers are in
 
 The line level is deliberately not part of this: see
 [T22](#t22-match-a-channel-statement-line-to-the-order-it-settles).
+
+### T25: Match the refund side of a channel statement
+
+Status: open, and named rather than hidden. Revision 515 records every statement
+line with its type, and the daily reconciliation compares the channel's
+`PAYMENT` lines with the platform's captures. The statement's `REFUND` lines --
+32,665 of the measured 165,724-line channel-day -- are stored and are not
+compared with anything: the platform's refunds live in the revenue and
+post-sales projections, keyed by refund and case rather than by the capture
+comparison's key, so putting them into this batch as it stands would report
+every refund as money the platform cannot explain.
+
+What the item needs: the platform's own refund facts for the settlement date, by
+the reference both sides share (the refund id, which a channel line carries when
+its type is `REFUND`), and a comparison per refund rather than per capture. Then
+the statement's gross refund total can be reconciled the way its gross payment
+total is.
 
 ### T21: Resolve the references a booking and an agreement are created with
 
