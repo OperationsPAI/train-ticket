@@ -354,10 +354,17 @@ func (b *RedisEventBus) processMessage(ctx context.Context, stream, group, consu
 		b.moveToDLQAndAck(ctx, stream, group, consumer, message.ID, raw, "MissingEnvelope", 1)
 		return
 	}
-	attempts := b.deliveryAttempts(ctx, stream, group, message.ID)
+	// Resolved only where it decides something.
+	//
+	// This used to run for every delivered message, which is an XPENDING round
+	// trip per delivery to a single-threaded Redis: measured on the resident
+	// release, XPENDING was about 3000 of its ~16000 commands a second and almost
+	// every one of them was thrown away, because the success path never reads the
+	// count. The failure, duplicate and malformed paths still ask for it.
+	attempts := func() int64 { return b.deliveryAttempts(ctx, stream, group, message.ID) }
 	var envelope EventEnvelope
 	if err := json.Unmarshal([]byte(raw), &envelope); err != nil || envelope.Validate() != nil {
-		b.moveToDLQAndAck(ctx, stream, group, consumer, message.ID, raw, "InvalidEnvelope", attempts)
+		b.moveToDLQAndAck(ctx, stream, group, consumer, message.ID, raw, "InvalidEnvelope", attempts())
 		return
 	}
 	// The producer's trace context, so the lines below can be joined to the trace
@@ -367,7 +374,7 @@ func (b *RedisEventBus) processMessage(ctx context.Context, stream, group, consu
 		ctx = trace.ContextWithRemoteSpanContext(ctx, parent)
 	}
 	if b.dedup != nil && b.dedup.Seen(envelope.EventID) {
-		log.Printf("WARN %sservice=%s stream=%s eventId=%s deliveries=%d duplicate event already processed; acking without handler", goruntime.TraceLogFields(ctx), group, stream, envelope.EventID, attempts)
+		log.Printf("WARN %sservice=%s stream=%s eventId=%s deliveries=%d duplicate event already processed; acking without handler", goruntime.TraceLogFields(ctx), group, stream, envelope.EventID, attempts())
 		_ = b.client.XAck(ctx, stream, group, message.ID).Err()
 		return
 	}
@@ -383,10 +390,11 @@ func (b *RedisEventBus) processMessage(ctx context.Context, stream, group, consu
 		return handler(spanCtx, observed)
 	})
 	if err := observedHandler(ctx, envelope); err != nil {
-		if IsFatalHandlerError(err) || attempts >= MaxDeliveryAttempts {
-			b.moveToDLQAndAck(handlerCtx, stream, group, consumer, message.ID, raw, err, attempts)
+		deliveries := attempts()
+		if IsFatalHandlerError(err) || deliveries >= MaxDeliveryAttempts {
+			b.moveToDLQAndAck(handlerCtx, stream, group, consumer, message.ID, raw, err, deliveries)
 		} else {
-			log.Printf("WARN %sservice=%s stream=%s eventId=%s deliveries=%d handler transient failure; message stays pending for retry: %T: %v", goruntime.TraceLogFields(handlerCtx), group, stream, envelope.EventID, attempts, err, err)
+			log.Printf("WARN %sservice=%s stream=%s eventId=%s deliveries=%d handler transient failure; message stays pending for retry: %T: %v", goruntime.TraceLogFields(handlerCtx), group, stream, envelope.EventID, deliveries, err, err)
 		}
 		return
 	}
