@@ -52,8 +52,11 @@ public class ApplicationConfiguration {
         FinanceSettlementProjectionRepository projections,
         Clock clock,
         FinanceSettlementApplicationService service,
-        com.trainticket.financesettlement.adapters.http.ChangePaymentFactsClient changePayments
+        com.trainticket.financesettlement.adapters.http.ChangePaymentFactsClient changePayments,
+        com.trainticket.financesettlement.adapters.http.SegmentBookingFactsClient segmentBookings
     ) {
-        return new FinanceSettlementEventHandler(consumedEvents, paymentIntentOrderReferences, segmentBookingOrderReferences, projections, clock, service).withChangePayments(changePayments);
+        return new FinanceSettlementEventHandler(consumedEvents, paymentIntentOrderReferences, segmentBookingOrderReferences, projections, clock, service)
+            .withChangePayments(changePayments)
+            .withSegmentBookings(segmentBookings);
     }
 }
