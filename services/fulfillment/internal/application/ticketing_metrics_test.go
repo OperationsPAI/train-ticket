@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,6 +59,47 @@ func TestBoardingRecordsAnAcceptedValidationTransition(t *testing.T) {
 	}
 	if got.TicketType != observability.TicketTypeUnknown {
 		t.Fatalf("fulfillment cannot name a credential type: %#v", got)
+	}
+}
+
+// Two different fulfillment records must publish the same label set. The
+// recorder is handed only the classified tuple, never the entitlement, order,
+// traveler or segment reference, so the identifier cannot reach a label.
+func TestTwoDifferentRecordsPublishTheSameLabelSet(t *testing.T) {
+	service, recorder, _ := newRecordingService(t)
+	metadata := map[string]CommandMetadata{
+		"a": {CorrelationID: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c501", CausationID: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c502"},
+		"b": {CorrelationID: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c511", CausationID: "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c512"},
+	}
+	for _, suffix := range []string{"a", "b"} {
+		entitlement := "ent-pair-" + suffix
+		seedTicket(t, service, entitlement, "sb-pair-"+suffix, "ord-pair-"+suffix, "tvl-pair-"+suffix, "seg-pair-"+suffix)
+		if _, err := service.VerifyBoarding(context.Background(), VerifyBoardingCommand{
+			EntitlementID:    domain.EntitlementRef(entitlement),
+			SegmentBookingID: domain.SegmentBookingRef("sb-pair-" + suffix),
+			JourneyOrderID:   domain.OrderRef("ord-pair-" + suffix),
+			TravelerID:       domain.TravelerRef("tvl-pair-" + suffix),
+			SegmentRef:       domain.SegmentRef("seg-pair-" + suffix),
+			Source:           domain.FulfillmentSourceGate,
+			SourceEventID:    "gate-scan-pair-" + suffix,
+			OccurredAt:       time.Date(2026, 7, 5, 10, 0, 0, 0, time.UTC),
+		}, metadata[suffix]); err != nil {
+			t.Fatalf("boarding %s: %v", suffix, err)
+		}
+	}
+
+	if len(recorder.transitions) != 2 {
+		t.Fatalf("expected one transition per record, got %#v", recorder.transitions)
+	}
+	if recorder.transitions[0] != recorder.transitions[1] {
+		t.Fatalf("two records must share one series: %#v", recorder.transitions)
+	}
+	for _, field := range []string{recorder.transitions[0].Outcome, recorder.transitions[0].TicketType, recorder.transitions[0].Reason} {
+		for _, suffix := range []string{"pair-a", "pair-b"} {
+			if strings.Contains(field, suffix) {
+				t.Fatalf("an identifier reached a label value: %q", field)
+			}
+		}
 	}
 }
 
