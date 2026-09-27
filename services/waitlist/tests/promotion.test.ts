@@ -112,6 +112,36 @@ test("no payment-service calls are made while fulfilling a matched waitlist entr
   }
 });
 
+test("the offer is created on the channel the entry's quote was priced from", async () => {
+  const originalFetch = globalThis.fetch;
+  const bodies: Record<string, unknown>[] = [];
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+    return Response.json({ offerId: "off-http", offerVersion: 1, expiresAt: "2026-01-01T00:10:00.000Z", total: { currency: "CNY", minorUnits: 10_750 } }, { status: 201 });
+  }) as typeof fetch;
+  try {
+    // The client is pinned to WEB, the way the deployment is; the customer
+    // arrived on MOBILE, so the quote was priced from the mobile rule set and the
+    // offer has to reference the same channel or offer-management refuses it.
+    const client = new HttpOfferManagementClient("http://offer-management", "WEB");
+    const entry = WaitlistEntry.create({
+      accountId: "acc-1",
+      travelerRefs: ["tvl-1"],
+      segmentRef: "seg-1",
+      departureDate: "2026-07-20",
+      seatClass: "BUSINESS",
+      priority: { groupSize: 1, fareClass: "BUSINESS" },
+      pricingContext: { productCode: "rail-standard", channel: "MOBILE", distanceKm: 233, departureTime: "2026-07-20T03:00:00Z" },
+    });
+
+    await client.createOffer(entry, "fq-1");
+
+    assert.equal(bodies[0]?.channelId, "MOBILE");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("deadline-passed queued request expires during expiry sweep", async () => {
   const repository = new InMemoryWaitlistRepository();
   const publisher = new InMemoryEventPublisher();
