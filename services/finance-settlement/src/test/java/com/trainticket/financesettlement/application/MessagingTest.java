@@ -368,6 +368,55 @@ class MessagingTest {
     }
 
     /**
+     * The confirmation can be handled before `SegmentReservationRequested` is
+     * consumed -- different streams, different consumer groups -- and a trimmed
+     * reservation request never indexes at all. Measured at revision 495: 21
+     * unattributable cases in ten minutes, every one a booking
+     * booking-orchestration already held. The booking is the authoritative
+     * answer, so the order is read from it rather than declared missing.
+     */
+    @Test
+    void operationalFactReadsItsOrderFromTheBookingWhenTheIndexHasNotArrived() {
+        InMemoryConsumedEventLogRepository consumedEvents = new InMemoryConsumedEventLogRepository();
+        RecordingPublisher publisher = new RecordingPublisher();
+        FinanceSettlementApplicationService service = new FinanceSettlementApplicationService(
+            new InMemoryRevenueRepository(), new InMemoryReconciliationRepository(), publisher, new DomainEventEnvelopeMapper());
+        InMemoryFinanceSettlementProjectionRepository projections = new InMemoryFinanceSettlementProjectionRepository();
+        String orderId = "ord-0194f2e0-7b3e-7610-0284-5c26e8b0c555";
+        String segmentBookingId = "sb-0194f2e0-7b3e-7610-0284-5c26e8b0c556";
+        Instant occurredAt = Instant.parse("2026-07-03T10:30:00Z");
+        service.saveAndPublish(RevenueRecognition.recognize(
+            orderId, "item-1", "fare", Money.of("CNY", "35.00"), "policy-v1",
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e221", occurredAt, occurredAt,
+            "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0e201", "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e101"));
+        projections.saveCapture(orderId, new FinanceSettlementEventHandler.PaymentCaptureFact(
+            orderId, "pi-0194f2e0-7b3e-7610-0284-5c26e8b0c789", Money.of("CNY", "35.00"),
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e222", occurredAt));
+        com.trainticket.financesettlement.adapters.http.SegmentBookingFactsClient bookings =
+            org.mockito.Mockito.mock(com.trainticket.financesettlement.adapters.http.SegmentBookingFactsClient.class);
+        org.mockito.Mockito.when(bookings.orderFor(segmentBookingId)).thenReturn(java.util.Optional.of(orderId));
+        FinanceSettlementEventHandler handler = new FinanceSettlementEventHandler(
+            consumedEvents, new InMemoryPaymentIntentOrderReferenceRepository(), new InMemorySegmentBookingOrderReferenceRepository(),
+            projections, Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC), service)
+            .withSegmentBookings(bookings);
+
+        HandlerResult confirmed = handler.handle(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e223", "ProviderReservationConfirmed", Instant.parse("2026-07-03T10:31:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e105", null, "provider-integration", 1, Map.of(
+                "segmentBookingId", segmentBookingId,
+                "providerReference", "pr-1",
+                "normalizedEvidence", "confirmed")));
+
+        assertEquals(HandlerResult.SUCCESS, confirmed);
+        assertFalse(
+            publisher.published.stream().anyMatch(e -> "ReconciliationCaseOpened".equals(e.eventType())),
+            "the booking names the order, so nothing is missing");
+        EventEnvelope completed = publisher.published.stream()
+            .filter(e -> "ReconciliationCompleted".equals(e.eventType())).findFirst().orElseThrow();
+        assertEquals(orderId, ((Map<?, ?>) completed.payload()).get("orderId"));
+    }
+
+    /**
      * A provider confirmation that arrives before the money does is a race, not
      * a discrepancy. Measured at revision 493 this opened 1,119,675
      * `missing-in-platform` cases with expected 0.00 against actual 0.00, none of
