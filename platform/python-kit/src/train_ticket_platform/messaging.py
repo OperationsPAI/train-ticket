@@ -43,7 +43,12 @@ RECOVERY_INTERVAL_MS = 15000
 # clients; `xreadgroup` accounted for 275445579 of its calls and almost all of
 # them were a hundred millisecond block expiring rather than a delivery.
 POLL_BLOCK_MS = int(os.environ.get("CONSUMER_BLOCK_MS", "1000"))
-POLL_COUNT = int(os.environ.get("CONSUMER_BATCH_COUNT", "100"))
+# Five hundred rather than a hundred: one read that returns five hundred entries
+# costs one command, and xreadgroup is the largest command class a
+# single-threaded Redis serves (6928 of ~13300 a second on the resident release,
+# with the server pinned at a core through every burst while every consumer
+# group's own lag reads zero).
+POLL_COUNT = int(os.environ.get("CONSUMER_BATCH_COUNT", "500"))
 LOGGER = logging.getLogger(__name__)
 
 
