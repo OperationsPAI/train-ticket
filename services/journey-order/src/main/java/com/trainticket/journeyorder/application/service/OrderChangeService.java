@@ -62,7 +62,8 @@ public class OrderChangeService {
         Money expected=money(settlement.path("balance"));
         if(!expected.equals(money(offer.path("total")).plus(fee).plus(retained)))throw new DomainRuleViolation("change funds do not cover target fare and retained fees");
         JsonNode downstream=offer.path("downstreamReference");
-        order.applyChange(caseId,new OfferSnapshotRef(text(offer,"offerId"),offer.path("offerVersion").asInt(),Instant.parse(text(offer,"createdAt")),Instant.parse(text(offer,"expiresAt")),text(downstream,"priceSnapshotRef"),text(downstream,"ruleSnapshotRef")),segments,items,fee,Instant.now());
+        order.applyChange(caseId,new OfferSnapshotRef(text(offer,"offerId"),offer.path("offerVersion").asInt(),Instant.parse(text(offer,"createdAt")),Instant.parse(text(offer,"expiresAt")),text(downstream,"priceSnapshotRef"),text(downstream,"ruleSnapshotRef"),
+            offer.path("priceSnapshot").path("distanceKm").isNumber()?offer.path("priceSnapshot").path("distanceKm").asDouble():null),segments,items,fee,Instant.now());
         if(!expected.equals(order.monetarySummary().payableTotal()))throw new DomainRuleViolation("replacement order total differs from its settled funds");
         repository.saveOrder(order,stored.idempotencyKey());
         var envelope=new com.trainticket.platformkit.messaging.EventEnvelope(com.trainticket.platformkit.messaging.PrefixedIds.newEventId(),"JourneyOrderPostSalesAdjusted",Instant.now(),correlation,com.trainticket.platformkit.messaging.PrefixedIds.newCommandId(),"journey-order",1,Map.of());
