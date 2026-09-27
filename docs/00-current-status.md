@@ -54,6 +54,7 @@ to one and back.
 
 | Check | Result | Evidence |
 |---|---|---|
+| Ten minute window at revision 481, one whole diurnal cycle | 249230 requests and 28815 journeys, peak minute 4242 journeys and trough minute 1484, **0 unexpected HTTP errors and 0 failed journeys** in every minute; the dead-letter population was unchanged across the window, every consumer group at zero or one entry of lag | `/tmp/sweep/acc481.cur.jsonl` |
 | Ten minute window at revision 479, one whole diurnal cycle | 264033 requests and 30685 journeys, peak minute 4326 journeys and trough minute 1875, **0 unexpected HTTP errors and 0 failed journeys** in every minute; the recorder read `written=347203 dropped=0`; the dead-letter population was unchanged across the window (ancillary-service 2, capacity-availability 6, finance-settlement 5, journey-order 3, booking-orchestration 0) and every consumer group was at zero lag | `/tmp/sweep/acc479.*.jsonl` |
 | Ten minute window at revision 478, the same images one release earlier | 237355 requests and 28035 journeys, peak minute 4136 journeys and trough minute 1514, **0 unexpected HTTP errors and 0 failed journeys** in every minute; the recorder read `written=305897 dropped=0` | `/tmp/sweep/acc478.cur.jsonl` |
 | Ten minute window at revision 476, one whole diurnal cycle | 274892 requests and 31865 journeys, peak minute 5256 journeys, **0 unexpected HTTP errors and 0 failed journeys**; the recorder read `written=509839 dropped=0` and every dead-letter stream that this workload uses is empty of new entries | `/tmp/sweep/fix2.*.jsonl` |
