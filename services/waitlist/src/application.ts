@@ -409,6 +409,7 @@ export class WaitlistApplicationService {
       deadline: request.deadline,
       paymentGuaranteeRef: request.paymentGuaranteeRef,
       paymentGuarantee: intent.paymentGuarantee,
+      pricingContext: intent.pricingContext,
       intentFingerprint: request.intentFingerprint,
       priority: {
         loyaltyTier: request.loyaltyTier ?? "NONE",
