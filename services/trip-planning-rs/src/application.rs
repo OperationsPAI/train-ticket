@@ -22,6 +22,9 @@ pub struct AppState {
     outbound_stream: String,
     /// Storage for deployments configured without PostgreSQL.
     mem_snapshots: RwLock<HashMap<String, Value>>,
+    /// The order funnel's `search` stage. It is built from the global meter,
+    /// which is a no-op unless the process installed an SDK provider.
+    order_funnel: rust_kit::metrics::OrderFunnel,
 }
 
 impl AppState {
@@ -38,7 +41,16 @@ impl AppState {
             ),
             outbound_stream: outbound_stream.into(),
             mem_snapshots: RwLock::new(HashMap::new()),
+            order_funnel: rust_kit::metrics::OrderFunnel::new(&rust_kit::metrics::meter(
+                crate::profile().service_id,
+            )),
         }
+    }
+
+    /// The search stage of the order funnel: one attempt, then exactly one
+    /// outcome, so `attempted = accepted + rejected` for this stage.
+    pub fn order_funnel(&self) -> &rust_kit::metrics::OrderFunnel {
+        &self.order_funnel
     }
 
     pub async fn save_itinerary(
