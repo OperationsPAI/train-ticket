@@ -409,6 +409,21 @@ public class ChangeExecutionService {
                     }
                     throw new DomainRuleViolation("change ticket rejected: "+rejection);
                 }
+                if(name.startsWith("void:") && response.getStatusCode().value()==412) {
+                    JsonNode rejection=mapper.readTree(response.getBody());
+                    if("PRECONDITION_FAILED".equals(rejection.path("code").asText()) && "entitlement is already voided".equals(rejection.path("message").asText())) {
+                        // The void this change asked for is already in effect: an
+                        // earlier execution, or another case on the same order,
+                        // got there first. The intent is satisfied, so the command
+                        // is recorded as done rather than answered with a 500 --
+                        // which failed a change that had in fact happened and made
+                        // every later journey that resumed the case fail the same
+                        // way. Measured on 2026-09-27: one case re-driven on every
+                        // load generator restart, 500 each time.
+                        return mapper.valueToTree(Map.of("alreadyVoided",true,"source",service,"code",text(rejection,"code"),"message",text(rejection,"message")));
+                    }
+                    throw new DomainRuleViolation("change void rejected: "+rejection);
+                }
                 if(!response.getStatusCode().is2xxSuccessful())throw new IllegalStateException("change "+name+" returned "+response.getStatusCode()+": "+new String(response.getBody().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8));
                 return mapper.readTree(response.getBody());
             });
