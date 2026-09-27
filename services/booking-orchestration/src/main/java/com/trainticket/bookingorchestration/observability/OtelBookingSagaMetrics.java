@@ -41,6 +41,7 @@ public class OtelBookingSagaMetrics implements BookingSagaMetrics {
     private final LongCounter transitions;
     private final Map<Stage, AtomicLong> reportedActive = new ConcurrentHashMap<>();
     private final Map<Stage, AtomicLong> oldestAgeMillis = new ConcurrentHashMap<>();
+    private final AtomicLong oldestDueStepAgeMillis = new AtomicLong(-1L);
     private final Object activeLock = new Object();
 
     @Autowired
@@ -71,6 +72,15 @@ public class OtelBookingSagaMetrics implements BookingSagaMetrics {
                         Attributes.of(STAGE, entry.getKey().value()));
                 }
             });
+        required.gaugeBuilder("train_ticket.booking.saga.step_due_age")
+            .setDescription("Age of the oldest saga step deadline the timeout sweep has not retired, rebuilt from the deadline table.")
+            .setUnit("s")
+            .buildWithCallback(measurement -> {
+                long millis = oldestDueStepAgeMillis.get();
+                if (millis >= 0) {
+                    measurement.record(millis / 1000.0);
+                }
+            });
     }
 
     @Override
@@ -92,6 +102,12 @@ public class OtelBookingSagaMetrics implements BookingSagaMetrics {
         Objects.requireNonNull(oldestAge, "oldestAge is required");
         oldestAgeMillis.computeIfAbsent(stage, ignored -> new AtomicLong())
             .set(Math.max(oldestAge.toMillis(), 0L));
+    }
+
+    @Override
+    public void observeOldestDueStepAge(java.util.Optional<Duration> age) {
+        Objects.requireNonNull(age, "age is required");
+        oldestDueStepAgeMillis.set(age.map(duration -> Math.max(duration.toMillis(), 0L)).orElse(-1L));
     }
 
     @Override

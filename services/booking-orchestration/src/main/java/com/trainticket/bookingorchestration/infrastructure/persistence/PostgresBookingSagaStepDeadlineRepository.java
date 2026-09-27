@@ -47,6 +47,17 @@ public class PostgresBookingSagaStepDeadlineRepository implements BookingSagaSte
     }
 
     @Override
+    public java.util.Optional<Instant> findOldestDueDeadline(Instant now) {
+        return jdbc.query(
+            "SELECT min(deadline_ms) AS due FROM booking_saga_step_deadlines WHERE deadline_ms <= ?",
+            rs -> rs.next() && rs.getObject("due") != null
+                ? java.util.Optional.of(Instant.ofEpochMilli(rs.getLong("due")))
+                : java.util.Optional.empty(),
+            now.toEpochMilli()
+        );
+    }
+
+    @Override
     public List<BookingSagaStepDeadline> findDue(Instant now, int limit) {
         if (limit <= 0) {
             throw new IllegalArgumentException("limit must be positive");
