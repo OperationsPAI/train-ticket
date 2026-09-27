@@ -29,6 +29,7 @@ public final class OpenTelemetryPaymentMetrics implements PaymentMetricRecorder 
     private final LongCounter operations;
     private final LongCounter amount;
     private volatile Map<String, PaymentConservationPoint> conservation = Map.of();
+    private volatile Long oldestDueIntentAgeSeconds;
 
     public OpenTelemetryPaymentMetrics(Meter meter) {
         Objects.requireNonNull(meter, "meter is required");
@@ -50,6 +51,16 @@ public final class OpenTelemetryPaymentMetrics implements PaymentMetricRecorder 
                         STATE, point.state(),
                         CURRENCY, point.currency()
                     ));
+                }
+            });
+        meter.gaugeBuilder("train_ticket.payment.intent_expiry_age")
+            .ofLongs()
+            .setDescription("Age in seconds of the oldest intent past its expiry that the sweep has not expired.")
+            .setUnit("s")
+            .buildWithCallback(measurement -> {
+                Long seconds = oldestDueIntentAgeSeconds;
+                if (seconds != null) {
+                    measurement.record(seconds);
                 }
             });
     }
@@ -85,6 +96,14 @@ public final class OpenTelemetryPaymentMetrics implements PaymentMetricRecorder 
             next.put(point.currency() + "/" + point.state(), point);
         }
         conservation = Map.copyOf(next);
+    }
+
+    @Override
+    public void oldestDueIntentAge(java.time.Duration age) {
+        if (age == null || age.isNegative()) {
+            return;
+        }
+        oldestDueIntentAgeSeconds = age.toSeconds();
     }
 
     private static Attributes labels(
