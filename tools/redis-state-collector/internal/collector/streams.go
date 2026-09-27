@@ -52,7 +52,7 @@ type DeadLetterState struct {
 
 // Snapshot is one complete read of the transport state.
 type Snapshot struct {
-	Groups    []GroupState
+	Groups      []GroupState
 	DeadLetters []DeadLetterState
 }
 
