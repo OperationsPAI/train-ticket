@@ -118,7 +118,9 @@ export class InMemoryWaitlistRepository implements WaitlistRepository {
 
   async claimNextPromotion(now: Date): Promise<WaitlistEntry | undefined> {
     const candidates = [...this.entries.values()]
-      .filter((entry) => entry.status === "QUEUED" && new Date(entry.deadline) > now)
+      .filter((entry) => entry.status === "QUEUED"
+        && new Date(entry.deadline) > now
+        && (entry.promotionRetryAfter === null || entry.promotionRetryAfter <= now))
       .sort(compareForPromotion);
     for (const entry of candidates) {
       const credits = [...this.capacityCredits.values()]
