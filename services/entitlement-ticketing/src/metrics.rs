@@ -454,16 +454,40 @@ mod tests {
             ticket_type: TicketType::ETicket,
             reason_code: TicketReasonCode::None,
         };
-        // Two calls, as two different entitlements would produce them.
+        // Two different business facts: one entitlement issuing, one voiding a
+        // different one. The recorder is handed neither identifier, so both have
+        // to publish series drawn from the same four label keys, and a fifth key
+        // appearing on either is what this catches.
+        let other = TicketingTransition {
+            stage: TicketStage::Void,
+            outcome: TicketOutcome::Accepted,
+            ticket_type: TicketType::PaperTicket,
+            reason_code: TicketReasonCode::None,
+        };
         metrics.transition(transition);
-        metrics.transition(transition);
+        metrics.transition(other);
 
         let points = tls(&exporter, &provider);
         let transitions: Vec<_> = points
             .iter()
             .filter(|(name, _)| name == TICKETING_TRANSITIONS_METRIC)
             .collect();
-        assert_eq!(transitions.len(), 1, "two entitlements share one series");
+        assert_eq!(transitions.len(), 2, "one series per distinct business fact");
+        let mut key_sets: Vec<Vec<String>> = transitions
+            .iter()
+            .map(|(_, attributes)| {
+                let mut keys: Vec<String> = attributes.iter().map(|(key, _)| key.clone()).collect();
+                keys.sort();
+                keys
+            })
+            .collect();
+        key_sets.sort();
+        key_sets.dedup();
+        assert_eq!(
+            key_sets.len(),
+            1,
+            "every series must carry the same label keys: {transitions:?}"
+        );
         for (_, attributes) in transitions {
             for (key, value) in attributes {
                 assert!(
