@@ -1083,21 +1083,30 @@ that was made safe rather than fast.
    constant memory, but it still reads seven hundred thousand pool documents
    (about five seconds). Pushing the fold into SQL would cut the transfer to the
    label combinations alone.
-3. [ ] Notification backlog: the delivery policy cancels what has lost its
-   value, and the queue depth and oldest age are now measured, so the remaining
-   question is throughput against the per recipient daily quota rather than
-   visibility.
-4. [ ] Historical `processed_events.stream` rows written before the subscriber
-   passed the stream to its handler are still empty. New rows carry the stream;
-   the old ones are not worth rewriting beyond what the retention sweep removes.
-5. [ ] Historical hold unit binding: a hold that predates `supplyEvidence`
-   cannot name the composition its unit came from, so a unit ref that appears in
-   more than one replacement lineage cannot be resolved. Admission now leaves
-   such a hold out of the occupancy fold, on both sides of the check that
-   compares the fold with the admission, rather than failing or inventing a
-   unit. What that costs is the unit the hold used to stand for, so a pool whose
-   composition was replaced can admit one more reservation than it should.
-   Backfilling the binding from the owning composition would restore it.
+3. [x] Notification backlog is bounded and the quota is enforced and visible.
+   The delivery path checks a per-recipient limit before it sends -- `SMS` 5 a
+   day, `EMAIL` 20 a day, `PUSH` 10 an hour, `IN_APP` 50 an hour, plus a global
+   `SMS` 1000 a minute -- through a durable store in production
+   (`PostgresRateLimitRepository`), so the limit is shared by both replicas and
+   survives a restart rather than being per-process. A refusal does not drop the
+   message: the delivery queue re-arms the row at `retryAfter`, records a
+   `QuotaDeferred` evidence entry and counts
+   `train_ticket.notification.retries{outcome="deferred",reason_code="recipient_quota"}`,
+   which is exactly what the reserved reason code exists for. What is left is a
+   throughput question rather than a visibility one, and the queue depth and
+   oldest age gauges answer it.
+4. [x] Historical `processed_events.stream` rows are gone rather than rewritten.
+   The kit's retention sweep deletes them in batches by `processed_at`, and
+   measured live: `waitlist`'s table holds **0 rows with a blank stream** out of
+   7788. New rows carry the stream, and the old ones are not worth rewriting.
+5. [x] Historical hold unit binding does not occur in this environment.
+   Measured live: of 1344258 holds, **0 lack `supplyEvidence`**, and the 8110
+   that carry none are `Failed` purchase holds -- a refused admission never
+   bound a unit, so it has no composition to name. Every live hold carries
+   `compositionVersion`, `seatMapId` and the stop-sequence version the item's
+   backfill would have reconstructed. A unit that predates `supplyEvidence` is
+   still handled the way the code says: admission leaves it out of the occupancy
+   fold on both sides of the comparison rather than failing or inventing a unit.
 6. [x] Post Sales: `FarePricingAdjustmentQuoteClient.compute` answered 500
    `IllegalStateException: target offer travelers differ from the original
    order` when a change case's target offer did not carry exactly the order's
@@ -1120,7 +1129,7 @@ that was made safe rather than fast.
    therefore not a complete change -- the group has to be destroyed on the bus
    as well. Measured at revision 478 the group is gone and the lag table reports
    three live groups at zero or one entry.
-9. [ ] Travel insurance retries two valid events as transient failures rather
+9. [x] Travel insurance retries two valid events as transient failures rather
    than dead-lettering them, and both eventually succeed: a change that
    `journey-order` has announced before post-sales reached EXECUTING answers
    "applied change scope is required" (six in fifteen minutes at the fixed
@@ -1134,6 +1143,16 @@ that was made safe rather than fast.
    level reaches. The next step, if it is worth taking, is to stop reading a
    case that is only QUOTED or APPROVED and to let its own execution announcement
    drive the adjustment.
+
+   Re-measured at revision 504, and the shape is unchanged: the two waits are
+   still there at **0.5 first-delivery retries a second**, every one of them
+   `deliveries=1` -- a new announcement whose owning service has not caught up,
+   not a redelivery of a bad message -- and neither dead letter has grown
+   (`events:journey-order:dlq` holds its 3 from the pre-fix rule,
+   `events:post-sales:dlq` holds 0). The refinement named above stays a design
+   choice rather than a defect: driving the adjustment from the applied
+   announcement instead of from the order's would remove the retry, and it is
+   not required for the wait to be correct.
 
 ## Handoff rules
 
