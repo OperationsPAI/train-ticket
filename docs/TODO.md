@@ -903,8 +903,9 @@ hop-by-hop measurements that attributed and removed it are recorded in
 
 ### T18: Finish low-cardinality business telemetry
 
-Status: every source metric in the contract is implemented and deployed. What
-remains is breadth and the follow-ups the new reads created.
+Status: every source metric in the contract is implemented and deployed, and
+every source and gauge now carries the cardinality and restart tests the contract
+promises; the one item still open is the scheduled-job collector below.
 
 1. [x] Publish the `search` and `quote` stages of the order funnel, which no
    service emitted. The contract had named offer management as the owner, but
@@ -936,9 +937,31 @@ remains is breadth and the follow-ups the new reads created.
    supplier-catalog's subscription list is empty, and dispatch, payment-channel
    and service-plan never subscribe), so the absence of a `messages` series is
    the correct reading for them.
-3. [ ] Add a cardinality test for each remaining source that proves two
-   different business identifiers produce the same label set, and a restart
-   test for every gauge that is derived from durable state.
+3. [x] A cardinality test for every source, and a restart test for every gauge
+   derived from durable state. Every source now has one that records two
+   different business facts and proves the label set does not grow:
+
+   | Source | Test |
+   | --- | --- |
+   | `order.transitions` search / quote | `two_different_searches_record_the_same_label_set` (trip-planning), `test_two_different_quotes_record_the_same_label_set` (fare-pricing) |
+   | `order.transitions` order | `OrderFunnelCardinalityTest` (two orders, two accounts, two offers) |
+   | `order.transitions` reservation / payment / ticket | `BookingOrderFunnelCardinalityTest` (two sagas reserved) |
+   | `booking.saga.active`, `.oldest_age` | `BookingSagaStageReporterTest` (three saga ids through the reporter) plus its restart case |
+   | `booking.saga.transitions` | `twoDifferentSagasCollapseOntoOneSeries` |
+   | `payment.operations`, `.amount` | `twoIntentsCaptureUnderTheSameLabelSetAndNeverLeakTheirIds` (two intents through the service) |
+   | `payment.conservation` | `PaymentConservationTest` (two currencies, and a restart) |
+   | `payment.operations` on the channel edge | `service_metrics_test.go` (two orders) |
+   | `payment.operations` compensation | `twoDifferentCompensationCasesProduceTheSameLabelSet` (two cases through the service) |
+   | `capacity.units`, `.hold.oldest_age` | `different_identifiers_produce_an_identical_label_set` (two pools, holds and segments), plus its restart case |
+   | `seat.allocations` | `seat_allocations_test.go` (two allocations) plus its restart case |
+   | `ticketing.transitions`, `ticketing.active` | `different_identifiers_produce_an_identical_label_set` (an issuance and a void) and `a_restart_reconstructs_the_same_active_level_instead_of_a_reset` |
+   | `ticketing.transitions` validation | `TestDifferentIdentifiersProduceAnIdenticalLabelSet` and `TestTwoDifferentRecordsPublishTheSameLabelSet` (two records through the service) |
+   | `waitlist.intents`, `.oldest_age`, `.promotions` | `metrics.test.ts` (two intents, two entries, two promotions) |
+   | `wallet.balance` | `WalletBusinessMetricsTest` (two accounts, and a restart) |
+   | `wallet.operations` | `operationsAreRecordedWithBoundedOutcomesAndNoIdentifiers` (a benefit id through the service) |
+   | `notification.queue.tasks`, `.oldest_age` | the queue-depth tests, including a restart that rebuilds the same gauges |
+   | `notification.retries` | `metrics.test.ts` |
+   | `event.consumer.*`, `event.dlq.entries`, `event.transport.series` | the collector's tests, including its own restart case |
 4. [x] Give the transport collector a guard on its own series count, so a new
    stream or group cannot silently multiply the label set. The collector's three
    transport gauges are labelled by stream and consumer group, so their width is
