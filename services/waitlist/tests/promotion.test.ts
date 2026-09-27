@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { InMemoryEventPublisher } from "@trainticket/ts-kit";
 import { HttpJourneyOrderClient, InMemoryWaitlistRepository, WaitlistApplicationService } from "../src/application.js";
-import { HttpFarePricingClient, HttpOfferManagementClient, PromotionOrchestrator, type CapacityAvailabilityClient, type FarePricingClient, type JourneyOrderClient, type OfferManagementClient, type WaitlistCapacityFreed } from "../src/promotion.js";
+import { HttpFarePricingClient, HttpOfferManagementClient, PromotionOrchestrator, UpstreamStateNotReadyError, type CapacityAvailabilityClient, type FarePricingClient, type JourneyOrderClient, type OfferManagementClient, type WaitlistCapacityFreed } from "../src/promotion.js";
 import type { WaitlistMetricRecorder, WaitlistPromotionOutcome, WaitlistPromotionReasonCode } from "../src/metrics.js";
 import { WaitlistEntry } from "../src/domain.js";
 
@@ -278,6 +278,35 @@ test("promotion persists the earliest commercial, guarantee and waitlist expiry"
   await service.handleCapacityFreed(capacityEvent());
 
   assert.equal((await repository.get(created.waitlistRequestId))?.offerExpiresAt?.toISOString(), "2026-01-01T00:03:00.000Z");
+});
+
+test("an offer refused because the upstream state has not caught up defers instead of failing the event", async () => {
+  // offer-management builds an offer from facts it consumes off the event bus, so
+  // a request that arrives before the fare quote does is refused with 422. That is
+  // a race, not a rejection: the released seat must not be dead-lettered, and the
+  // promotion timer must be the thing that retries it.
+  class NotReadyOffer implements OfferManagementClient {
+    public calls = 0;
+    async createOffer(): Promise<never> {
+      this.calls += 1;
+      throw new UpstreamStateNotReadyError(422, "Offer creation request failed with status 422");
+    }
+  }
+  const repository = new InMemoryWaitlistRepository();
+  const offer = new NotReadyOffer();
+  const service = new WaitlistApplicationService(repository, new InMemoryEventPublisher(), new StubFarePricing(), new StubCapacity(), new StubJourneyOrder(),
+    () => new Date("2026-01-01T00:00:00.000Z"), offer);
+  const created = await service.join({ accountId: "acc", travelerRefs: ["tvl-deferred"], segmentRef: "seg", departureDate: "2026-07-20",
+    seatClass: "SECOND_CLASS", deadline: "2026-01-01T00:20:00.000Z" });
+
+  // The capacity-freed event completes rather than throwing, so its retries are
+  // not spent on a wait.
+  await service.handleCapacityFreed(capacityEvent());
+
+  const entry = await repository.get(created.waitlistRequestId);
+  assert.equal(entry?.offerId, undefined, "no offer is recorded until the upstream state arrives");
+  assert.ok(offer.calls >= 1, "the orchestrator did try to create the offer");
+  assert.equal((await repository.get(created.waitlistRequestId))?.status, "MATCHING");
 });
 
 test("an already expired downstream offer expires the match and returns capacity", async () => {
