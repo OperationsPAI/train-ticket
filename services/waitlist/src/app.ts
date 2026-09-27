@@ -1,5 +1,5 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
-import { InMemoryEventPublisher, InMemoryIdempotencyStore, errorMessage, handleIdempotency, headerValue, requestContext as kitRequestContext, livenessProbe, requestFingerprint, sendError, type EventPublisher, type IdempotencyStore, type RequestContext, type SchemaDetail } from "@trainticket/ts-kit";
+import { InMemoryEventPublisher, InMemoryIdempotencyStore, OptimisticConcurrencyConflict, errorMessage, handleIdempotency, headerValue, requestContext as kitRequestContext, livenessProbe, requestFingerprint, sendError, type EventPublisher, type IdempotencyStore, type RequestContext, type SchemaDetail } from "@trainticket/ts-kit";
 import { DomainError } from "./domain.js";
 import { InMemoryWaitlistRepository, WaitlistApplicationService, type JoinWaitlistRequest } from "./application.js";
 import type { WaitlistIntentResolver } from "./intent.js";
@@ -129,6 +129,17 @@ export function createApp(dependencies: AppDependencies = {}): FastifyInstance {
     }
     if (isJsonBodyParseError(error, request)) {
       sendError(reply, 400, "VALIDATION_FAILED", errorMessage(error), ctx, { domainCode: "VALIDATION_FAILED" });
+      return;
+    }
+    // Two writers reached one entry at the same time -- the cancel raced the
+    // promotion tick, or a retry landed on a row another request had already
+    // moved. The command repository writes under an optimistic version, so this
+    // is a conflict the caller can retry, not a fault of this service. Measured
+    // at revision 493 it was the only 500 the waitlist answered during one
+    // acceptance window, and the loadgen already declares 409 expected on the
+    // cancel path.
+    if (error instanceof OptimisticConcurrencyConflict) {
+      sendError(reply, 409, "CONFLICT", errorMessage(error), ctx, { domainCode: "CONFLICT" });
       return;
     }
     sendError(reply, 500, "INTERNAL_ERROR", errorMessage(error), ctx);
