@@ -393,8 +393,17 @@ public class BookingOrchestrationService {
             return;
         }
         if(!booking.capacityHoldId().filter(holdId::equals).isPresent() || booking.status()==com.trainticket.bookingorchestration.domain.SegmentBookingStatus.REQUESTED) {
+            String sagaId = sagaIdForSegmentBooking(booking.segmentBookingId()).orElse(null);
+            if (sagaId == null) {
+                // A segment booking with no owning saga is one this orchestrator
+                // does not track -- a post-sales replacement, for example. The
+                // hold is real, but there is no saga snapshot to record it in, so
+                // this is an ack-skip rather than a poisoned event.
+                warnCapacityAckSkip(eventType, "segment booking has no owning saga");
+                return;
+            }
             booking.markCapacityHolding(holdId);
-            segmentBookings.save(booking, sagaIdForSegmentBooking(booking.segmentBookingId()).orElseThrow());
+            segmentBookings.save(booking, sagaId);
             publishEvents(booking.pullEvents(), correlationId, causationId);
         }
         markSagaStepSucceeded(eventType, booking.segmentBookingId(), correlationId, causationId);
