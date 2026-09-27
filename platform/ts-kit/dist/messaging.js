@@ -154,8 +154,25 @@ export class InMemoryEventSubscriber {
         this.processedEventIds.clear();
     }
 }
-const READ_BLOCK_MS = parseInt(process.env.CONSUMER_BLOCK_MS ?? "100", 10);
-const READ_COUNT = parseInt(process.env.CONSUMER_BATCH_COUNT ?? "100", 10);
+// One second rather than a hundred milliseconds.
+//
+// A blocking read is woken by the write itself, so the block only bounds how
+// long an idle reader sleeps before asking again -- it is not a delivery delay.
+// Redis is single-threaded and was pinned at one core with 2015 connected
+// clients; `xreadgroup` accounted for 275445579 of its calls and almost all of
+// them were a hundred millisecond block expiring rather than a delivery.
+// Raising the default cut `instantaneous_ops_per_sec` from 21376 to 16695 on
+// the resident cluster with one service changed.
+const READ_BLOCK_MS = parseInt(process.env.CONSUMER_BLOCK_MS ?? "1000", 10);
+// Five hundred rather than a hundred.
+//
+// One read that returns five hundred entries costs one command; five reads that
+// return a hundred cost five. Redis is single-threaded and `xreadgroup` is the
+// largest command class it serves -- 6928 of its ~13300 a second on the resident
+// release, and it is pinned at a whole core through every burst while every
+// consumer group's own lag reads zero, which is the signature of consumers
+// waiting on the server rather than on their handlers.
+const READ_COUNT = parseInt(process.env.CONSUMER_BATCH_COUNT ?? "500", 10);
 const CLAIM_MIN_IDLE_MS = 60_000;
 const DEAD_CONSUMER_IDLE_MS = 5 * 60 * 1_000;
 const MAX_HANDLER_FAILURES = 5;
@@ -489,7 +506,12 @@ export class RedisEventSubscriber {
     }
     async recover(streams, group, consumerName, handler, signal) {
         while (!this.stopped && !signal?.aborted) {
-            await sleepUntil(() => this.stopped || signal?.aborted === true, 1000);
+            // Fifteen seconds, not one. Pending recovery is a whole XAUTOCLAIM round
+            // trip per stream per consumer, and an entry only becomes claimable after
+            // CLAIM_MIN_IDLE_MS of silence, so a faster sweep cannot find more.
+            // Measured on the resident cluster, XAUTOCLAIM was 4896 of Redis' ~19300
+            // commands a second while it reclaimed nothing.
+            await sleepUntil(() => this.stopped || signal?.aborted === true, 15000);
             if (this.stopped || signal?.aborted) {
                 return;
             }
@@ -526,12 +548,19 @@ export class RedisEventSubscriber {
         if (!handler.handleBatch || entries.length <= 1) {
             const concurrency = Math.max(1, Number(process.env.CONSUMER_BATCH_CONCURRENCY ?? "1"));
             let next = 0;
-            await Promise.all(Array.from({ length: Math.min(concurrency, entries.length) }, async () => {
-                while (next < entries.length) {
-                    const entry = entries[next++];
-                    await this.processEntry(stream, group, consumerName, entry, handler);
-                }
-            }));
+            this.ackBatchDepth += 1;
+            try {
+                await Promise.all(Array.from({ length: Math.min(concurrency, entries.length) }, async () => {
+                    while (next < entries.length) {
+                        const entry = entries[next++];
+                        await this.processEntry(stream, group, consumerName, entry, handler);
+                    }
+                }));
+            }
+            finally {
+                this.ackBatchDepth -= 1;
+            }
+            await this.flushAcks();
             return;
         }
         const batch = [];
@@ -552,7 +581,7 @@ export class RedisEventSubscriber {
             for (const item of batch) {
                 const result = error instanceof HandlerError
                     ? (error.kind === "fatal" ? "dlq" : "retry")
-                    : (this.options.thrownHandlerErrors === "retry" ? "retry" : "dlq");
+                    : (this.options.thrownHandlerErrors === "dlq" ? "dlq" : "retry");
                 await this.finishEntry(stream, group, consumerName, item.entry, item.envelope, item.attempts, result, error);
             }
             return;
@@ -565,9 +594,29 @@ export class RedisEventSubscriber {
             }
             return;
         }
+        // Acknowledge the whole batch with one XACK rather than one per entry.
+        //
+        // Redis is single-threaded and `xack` was 4632 of its ~14600 commands a
+        // second on the resident release, one command per delivered event per
+        // consumer group. XACK takes any number of ids for the same stream and
+        // group, so a batch that acknowledges five hundred entries can cost one
+        // command instead of five hundred. Entries whose result is not "ack" still
+        // take the per-entry path, because retry and dead-letter each need their own
+        // bookkeeping.
+        const acknowledged = [];
         for (const [index, item] of batch.entries()) {
             const rawResult = results[index];
-            await this.finishEntry(stream, group, consumerName, item.entry, item.envelope, item.attempts, rawResult === undefined ? "ack" : normalizeHandlerResult(rawResult), failureReasonFromHandlerResult(rawResult));
+            const result = rawResult === undefined ? "ack" : normalizeHandlerResult(rawResult);
+            if (result === "ack") {
+                this.rememberConsumed(item.envelope.eventId);
+                acknowledged.push(item.entry[0]);
+                continue;
+            }
+            await this.finishEntry(stream, group, consumerName, item.entry, item.envelope, item.attempts, result, failureReasonFromHandlerResult(rawResult));
+        }
+        if (acknowledged.length > 0) {
+            await this.redis
+                .xack(stream, group, ...acknowledged);
         }
     }
     async parseBatchEntry(stream, group, consumerName, entry, deliveryAttempts) {
@@ -594,7 +643,7 @@ export class RedisEventSubscriber {
                 deliveries: attempts,
                 message: "duplicate event already processed; acking without handler",
             });
-            await this.redis.xack(stream, group, entryId);
+            this.queueAck(stream, group, entryId);
             return undefined;
         }
         return { entry, envelope, attempts };
@@ -636,7 +685,7 @@ export class RedisEventSubscriber {
         catch (error) {
             result = error instanceof HandlerError
                 ? (error.kind === "fatal" ? "dlq" : "retry")
-                : (this.options.thrownHandlerErrors === "retry" ? "retry" : "dlq");
+                : (this.options.thrownHandlerErrors === "dlq" ? "dlq" : "retry");
             failureReason = error;
             if (result === "dlq") {
                 console.error(sanitizedErrorForLog(error));
@@ -644,17 +693,69 @@ export class RedisEventSubscriber {
         }
         await this.finishEntry(stream, group, consumerName, entry, envelope, attempts, result, failureReason);
     }
+    /**
+     * Marks an event id as handled, bounded so a long-lived consumer cannot grow
+     * without limit. Shared by the per-entry and the batched acknowledge paths, so
+     * both dedupe identically.
+     */
+    /**
+     * Acks waiting for one XACK per stream and group.
+     *
+     * XACK takes any number of ids, and one command per delivered event per
+     * consumer group is the largest command class a single-threaded Redis serves.
+     * An unflushed ack only means redelivery, so losing the queue costs a
+     * duplicate rather than an event.
+     */
+    pendingAcks = new Map();
+    /** Depth of the read-batch loop that is collecting acks. */
+    ackBatchDepth = 0;
+    queueAck(stream, group, entryId) {
+        const key = `${stream}\u0000${group}`;
+        const ids = this.pendingAcks.get(key);
+        if (ids) {
+            ids.push(entryId);
+        }
+        else {
+            this.pendingAcks.set(key, [entryId]);
+        }
+        if (this.pendingAcks.size > 0 && [...this.pendingAcks.values()].reduce((total, list) => total + list.length, 0) >= 500) {
+            void this.flushAcks();
+        }
+    }
+    async flushAcks() {
+        if (this.pendingAcks.size === 0) {
+            return;
+        }
+        const queued = [...this.pendingAcks.entries()];
+        this.pendingAcks.clear();
+        for (const [key, ids] of queued) {
+            if (ids.length === 0)
+                continue;
+            const [stream, group] = key.split("\u0000");
+            await this.redis
+                .xack(stream, group, ...ids);
+        }
+    }
+    rememberConsumed(eventId) {
+        this.consumedEventIds.add(eventId);
+        if (this.consumedEventIds.size > RedisEventSubscriber.CONSUMED_EVENT_CACHE_LIMIT) {
+            const oldest = this.consumedEventIds.values().next().value;
+            if (oldest !== undefined)
+                this.consumedEventIds.delete(oldest);
+        }
+    }
     async finishEntry(stream, group, consumerName, entry, envelope, attempts, result, failureReason) {
         const failureKey = `${stream}:${group}:${entry[0]}`;
         if (result === "ack") {
             this.handlerFailures.delete(failureKey);
-            this.consumedEventIds.add(envelope.eventId);
-            if (this.consumedEventIds.size > RedisEventSubscriber.CONSUMED_EVENT_CACHE_LIMIT) {
-                const oldest = this.consumedEventIds.values().next().value;
-                if (oldest !== undefined)
-                    this.consumedEventIds.delete(oldest);
+            this.rememberConsumed(envelope.eventId);
+            if (this.ackBatchDepth > 0) {
+                this.queueAck(stream, group, entry[0]);
             }
-            await this.redis.xack(stream, group, entry[0]);
+            else {
+                // Outside a read batch there is no batch to join: acknowledge now.
+                await this.redis.xack(stream, group, entry[0]);
+            }
             return;
         }
         if (result === "dlq") {
