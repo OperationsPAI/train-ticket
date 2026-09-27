@@ -28,8 +28,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class FinanceSettlementApplicationService {
+    private static final Logger LOGGER = LoggerFactory.getLogger(FinanceSettlementApplicationService.class);
     private final RevenueRecognitionRepository revenueRecognitions;
     private final ReconciliationCaseRepository reconciliationCases;
     private final InvoiceRepository invoices;
@@ -43,9 +46,16 @@ public class FinanceSettlementApplicationService {
     // than a target, so a statement that keeps growing cannot hold the
     // scheduler's single thread forever.
     private static final int MAX_STATEMENT_LINE_PAGES = 2_000;
-    // 100 pages of 1000 is a hundred thousand refunds for one day: past any day
-    // this environment has measured, and a bound rather than a target.
-    private static final int MAX_PLATFORM_REFUND_PAGES = 100;
+    /**
+     * A bound rather than a target: 1000 pages of 1000 is a million refunds for
+     * one day, four times the largest day measured here. It exists so one bad
+     * date cannot hold the scheduler's thread forever -- and if it is ever
+     * reached, the run says so, because a silently truncated platform side
+     * reports every refund it did not read as one the platform never settled.
+     * Measured at the first cut of this code, when the bound was 100 pages: the
+     * day's last 30236 refunds were read as channel-only.
+     */
+    private static final int MAX_PLATFORM_REFUND_PAGES = 1_000;
 
     private final SupplierSettlementRepository supplierSettlements;
     private final FeeAccrualRepository feeAccruals;
@@ -525,8 +535,10 @@ public class FinanceSettlementApplicationService {
         Map<String, PlatformReconciliationFact> settledRefunds = new LinkedHashMap<>();
         if (platformRefundsSource != null) {
             String cursor = null;
+            int pages = 0;
             for (int page = 0; page < MAX_PLATFORM_REFUND_PAGES; page++) {
                 PlatformRefundSource.Page current = platformRefundsSource.page(date, cursor, PlatformRefundSource.MAX_PAGE_SIZE);
+                pages++;
                 for (PlatformRefundSource.Refund refund : current.refunds()) {
                     if (refund.refundId().isBlank()) continue;
                     String reference = refund.businessReference().isBlank() ? refund.sourceCaseRef() : refund.businessReference();
@@ -537,6 +549,11 @@ public class FinanceSettlementApplicationService {
                 }
                 if (current.nextCursor() == null) break;
                 cursor = current.nextCursor();
+            }
+            if (cursor != null) {
+                LOGGER.warn(
+                    "finance settlement read {} pages of settled refunds for {} and stopped at the page bound; the platform side of the refund comparison is incomplete",
+                    pages, date);
             }
         }
         if (channelRefunds.isEmpty() && settledRefunds.isEmpty()) {
