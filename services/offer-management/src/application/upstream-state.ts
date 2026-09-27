@@ -59,6 +59,14 @@ export type StoredFareQuote = Readonly<{
   ruleVersion: string;
   priceSnapshotRef: string;
   guaranteeLevel: PriceGuaranteeLevel;
+  /**
+   * The distance the quote was priced from, when its rule set prices by
+   * distance. It is carried so the offer can publish it: the revenue report
+   * divides captured money by the recorded distance, and fare-pricing is the
+   * only place that distance exists. This service is the one hop that both
+   * consumes the quote and publishes something the report already reads.
+   */
+  distanceKm?: number;
 }>;
 
 export type StoredTraveler = Readonly<{
@@ -502,6 +510,7 @@ export async function buildQuoteOfferCommand(repository: UpstreamStateRepository
     fees: [],
     discounts: [],
     total: { currency: fareQuote.currency, amountMinor: fareQuote.total.minorUnits },
+    ...(fareQuote.distanceKm === undefined ? {} : { distanceKm: fareQuote.distanceKm }),
   };
 
   return {
@@ -589,6 +598,7 @@ function parseFareQuote(payload: Record<string, unknown>): StoredFareQuote | und
     ruleVersion,
     priceSnapshotRef,
     guaranteeLevel: priceGuarantee(stringField(payload, "priceGuaranteeLevel") ?? stringField(breakdown, "priceGuaranteeLevel")),
+    distanceKm: distanceKmFromBreakdown(breakdown),
   };
 }
 
@@ -969,6 +979,21 @@ function moneyField(source: Record<string, unknown>, key: string): MoneyLike | u
   const currency = stringField(value, "currency");
   const minorUnits = value?.minorUnits;
   return currency && typeof minorUnits === "number" && Number.isFinite(minorUnits) ? { currency, minorUnits } : undefined;
+}
+
+/**
+ * The distance a quote was priced from.
+ *
+ * fare-pricing publishes it inside the pricing component it computed the base
+ * fare with, as a decimal string, and omits the component entirely when the
+ * request carried no distance -- in which case the quote was priced from the
+ * flat base fare and there is no distance to report.
+ */
+function distanceKmFromBreakdown(breakdown: Record<string, unknown>): number | undefined {
+  const component = objectField(breakdown, "baseDistanceFare");
+  const raw = component?.distanceKm;
+  const parsed = typeof raw === "number" ? raw : typeof raw === "string" ? Number.parseFloat(raw) : Number.NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 function transferPlanStatus(value: string | undefined): StoredTransferPlanEvaluation["status"] | undefined {
