@@ -1,0 +1,11 @@
+-- A channel statement carries both the payments it took and the refunds it
+-- paid back, and the two sides of the money are not the same comparison: the
+-- platform's captures answer a payment line, and its refunds answer a refund
+-- line. The projection recorded neither, so the daily reconciliation's
+-- capture-by-capture comparison could not tell a channel payment it had not
+-- seen from a channel refund it should not be comparing with a capture at all.
+--
+-- Existing rows default to PAYMENT: every line recorded before this column
+-- existed came from the event-driven path, which only ever carried a payment
+-- reference.
+ALTER TABLE channel_statement_lines ADD COLUMN IF NOT EXISTS line_type TEXT NOT NULL DEFAULT 'PAYMENT';
