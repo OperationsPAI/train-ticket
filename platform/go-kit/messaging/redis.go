@@ -329,30 +329,42 @@ func (b *RedisEventBus) recoverPending(ctx context.Context, stream, group, consu
 	return next
 }
 func (b *RedisEventBus) processBatch(ctx context.Context, stream, group, consumer string, messages []redis.XMessage, handler Handler, filter func(EventEnvelope) bool) {
-	ignored := make([]string, 0, len(messages))
+	// One XACK for the whole batch, not one per entry. XACK takes any number of
+	// ids for the same stream and group, and it is the largest command class a
+	// single-threaded Redis serves -- about 6000 a second on the resident release
+	// against ~12700 in total. Handled, filtered and duplicate entries all end
+	// here; an entry left pending on a transient failure is simply not added.
+	toAcknowledge := make([]string, 0, len(messages))
 	for _, message := range messages {
 		if filter != nil {
 			raw, ok := message.Values[EnvelopeField].(string)
 			var envelope EventEnvelope
 			if ok && json.Unmarshal([]byte(raw), &envelope) == nil && envelope.Validate() == nil && !filter(envelope) {
-				ignored = append(ignored, message.ID)
+				toAcknowledge = append(toAcknowledge, message.ID)
 				continue
 			}
 		}
-		b.processMessage(ctx, stream, group, consumer, message, handler)
+		if b.processMessage(ctx, stream, group, consumer, message, handler) {
+			toAcknowledge = append(toAcknowledge, message.ID)
+		}
 	}
-	if len(ignored) > 0 {
-		if err := b.client.XAck(ctx, stream, group, ignored...).Err(); err != nil {
+	if len(toAcknowledge) > 0 {
+		if err := b.client.XAck(ctx, stream, group, toAcknowledge...).Err(); err != nil {
 			log.Printf("WARN %sservice=%s stream=%s batch acknowledgement failed; messages remain pending: %v", goruntime.TraceLogFields(ctx), group, stream, err)
 		}
 	}
 }
-func (b *RedisEventBus) processMessage(ctx context.Context, stream, group, consumer string, message redis.XMessage, handler Handler) {
+
+// processMessage handles one entry and reports whether the batch should
+// acknowledge it. False means the entry stays pending: a transient handler
+// failure, or a path that acknowledged it itself after moving it to the dead
+// letter.
+func (b *RedisEventBus) processMessage(ctx context.Context, stream, group, consumer string, message redis.XMessage, handler Handler) bool {
 	ctx = MessageContext(ctx, stream, group)
 	raw, ok := message.Values[EnvelopeField].(string)
 	if !ok || strings.TrimSpace(raw) == "" {
 		b.moveToDLQAndAck(ctx, stream, group, consumer, message.ID, raw, "MissingEnvelope", 1)
-		return
+		return false
 	}
 	// Resolved only where it decides something.
 	//
@@ -365,7 +377,7 @@ func (b *RedisEventBus) processMessage(ctx context.Context, stream, group, consu
 	var envelope EventEnvelope
 	if err := json.Unmarshal([]byte(raw), &envelope); err != nil || envelope.Validate() != nil {
 		b.moveToDLQAndAck(ctx, stream, group, consumer, message.ID, raw, "InvalidEnvelope", attempts())
-		return
+		return false
 	}
 	// The producer's trace context, so the lines below can be joined to the trace
 	// that emitted the event even on the paths where no consumer span is ever
@@ -375,8 +387,7 @@ func (b *RedisEventBus) processMessage(ctx context.Context, stream, group, consu
 	}
 	if b.dedup != nil && b.dedup.Seen(envelope.EventID) {
 		log.Printf("WARN %sservice=%s stream=%s eventId=%s deliveries=%d duplicate event already processed; acking without handler", goruntime.TraceLogFields(ctx), group, stream, envelope.EventID, attempts())
-		_ = b.client.XAck(ctx, stream, group, message.ID).Err()
-		return
+		return true
 	}
 	// ObservedHandler starts the consumer span and puts it on the context it
 	// passes down, but does not hand that context back. The failure and DLQ lines
@@ -396,12 +407,12 @@ func (b *RedisEventBus) processMessage(ctx context.Context, stream, group, consu
 		} else {
 			log.Printf("WARN %sservice=%s stream=%s eventId=%s deliveries=%d handler transient failure; message stays pending for retry: %T: %v", goruntime.TraceLogFields(handlerCtx), group, stream, envelope.EventID, deliveries, err, err)
 		}
-		return
+		return false
 	}
 	if b.dedup != nil {
 		b.dedup.Record(envelope.EventID)
 	}
-	_ = b.client.XAck(ctx, stream, group, message.ID).Err()
+	return true
 }
 func (b *RedisEventBus) deliveryAttempts(ctx context.Context, stream, group, id string) int64 {
 	entries, err := b.client.XPendingExt(ctx, &redis.XPendingExtArgs{Stream: stream, Group: group, Start: id, End: id, Count: 1}).Result()
