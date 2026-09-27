@@ -1203,20 +1203,32 @@ The line level is deliberately not part of this: see
 
 ### T25: Match the refund side of a channel statement
 
-Status: open, and named rather than hidden. Revision 515 records every statement
-line with its type, and the daily reconciliation compares the channel's
-`PAYMENT` lines with the platform's captures. The statement's `REFUND` lines --
-32,665 of the measured 165,724-line channel-day -- are stored and are not
-compared with anything: the platform's refunds live in the revenue and
-post-sales projections, keyed by refund and case rather than by the capture
-comparison's key, so putting them into this batch as it stands would report
-every refund as money the platform cannot explain.
+Status: **closed**, revision 519. The two sides are compared per refund id, and
+the whole day reconciles.
 
-What the item needs: the platform's own refund facts for the settlement date, by
-the reference both sides share (the refund id, which a channel line carries when
-its type is `REFUND`), and a comparison per refund rather than per capture. Then
-the statement's gross refund total can be reconciled the way its gross payment
-total is.
+What it needed, and what it got. A statement line of type `REFUND` carries the
+platform refund it settles, so the comparison key exists on the channel side;
+what did not exist was the platform's own answer for a settlement date. Payment
+now keeps `refund_settlements` -- written in the same transaction as the
+settlement, backfilled by its migration 013 from the `RefundSettled` events the
+refund snapshots already carry, and read a page at a time by
+`GET /api/v1/internal/refund-settlements` in the index's own order. Finance
+stores the refund id on the channel line (migration 012) and compares both sides
+per refund: matched, amount mismatch, or present on one side only.
+
+Measured at revision 519 on the whole of 2026-09-26, with the three channel
+statements read again from payment-channel: **618650 entries** (488414 payments
+and 130236 refunds), **618479 matched**, **0 unexplained on either side**, and
+**171 amount mismatches**. Those 171 are the workload's own injected channel
+faults -- a refund the channel paid back at exactly half the platform's amount --
+which is the break the reconciliation exists to find, and the reason the day is
+the strongest evidence this item could produce.
+
+One defect the first cut of it hid, worth keeping: the platform side is paged,
+and the page bound was 100 pages of 1000. The measured day has 130236 refunds,
+so the last 30236 were never read and the run reported them as refunds the
+platform had never settled -- an unread page is indistinguishable from a missing
+refund. The bound is now a million with a log line if it is ever reached.
 
 ### T21: Resolve the references a booking and an agreement are created with
 
