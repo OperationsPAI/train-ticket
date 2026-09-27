@@ -142,6 +142,27 @@ class AgreementPriceRef:
 
 
 @dataclass(frozen=True, slots=True)
+class CreditFacility:
+    """The monthly credit an agreement opened on the self-service path carries.
+
+    A corporate administrator opens an agreement here without the finance desk
+    pricing it in person, so the create path holds it to the facility the
+    onboarding benchmark sized. A larger facility is the desk's to open on the
+    terms it has priced; this path only has to recognise one and hand it over.
+    """
+
+    self_service_max_monthly_minor: int = 50_000_000
+
+    def __post_init__(self) -> None:
+        if self.self_service_max_monthly_minor < 0:
+            raise CorporateTravelError("a self-service credit facility cannot be negative")
+
+    def admits(self, limit: Money) -> bool:
+        """Whether an agreement at this monthly credit may be opened here."""
+        return limit.minor_units <= self.self_service_max_monthly_minor
+
+
+@dataclass(frozen=True, slots=True)
 class AuthorizedTraveler:
     authorization_id: str
     account_id: str

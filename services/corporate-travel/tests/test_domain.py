@@ -11,6 +11,7 @@ from corporate_travel.domain import (
     BillingPeriod,
     CorporateAgreement,
     CorporateTravelError,
+    CreditFacility,
     EffectiveWindow,
     Money,
     StatementLine,
@@ -167,3 +168,12 @@ def test_budget_pool_alerts_and_release_reservation() -> None:
     assert warned.utilized_minor == 900
     assert released.reserved_minor == 0
     assert released.committed_minor == 750
+
+
+def test_the_self_service_facility_admits_up_to_its_ceiling() -> None:
+    facility = CreditFacility()
+
+    assert facility.admits(Money("CNY", facility.self_service_max_monthly_minor))
+    assert not facility.admits(Money("CNY", facility.self_service_max_monthly_minor + 1))
+    with pytest.raises(CorporateTravelError):
+        CreditFacility(self_service_max_monthly_minor=-1)

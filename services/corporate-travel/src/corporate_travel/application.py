@@ -30,6 +30,7 @@ from .domain import (
     BudgetPool,
     CorporateAgreement,
     CorporateTravelError,
+    CreditFacility,
     EffectiveWindow,
     EmployeeLevel,
     EmployeeProfile,
@@ -51,6 +52,14 @@ from .domain import (
 
 PRODUCER = "corporate-travel"
 SCHEMA_VERSION = 1
+
+ONBOARDING_FACILITY = CreditFacility()
+"""The credit facility an agreement opened on the self-service path carries.
+
+Read once here rather than rebuilt per request, so the create path compares
+against one value. A deployment approved for a different one states it where the
+rest of this service's settings live.
+"""
 
 
 @contextmanager
@@ -516,6 +525,14 @@ class CorporateTravelService:
                 ),
                 contact=dict(contact or {}),
             )
+            # A corporate administrator opens an agreement here on the
+            # self-service path, and its monthly credit is the exposure carried
+            # between two billing periods. Above what the onboarding benchmark
+            # sized, the facility is the finance desk's to open.
+            if not ONBOARDING_FACILITY.admits(agreement.monthly_credit_limit):
+                raise CorporateTravelError(
+                    "monthly credit is above the self-service onboarding facility"
+                )
             created_event = _agreement_event("CorporateAgreementCreated", agreement, correlation_id, causation_id)
             if activate:
                 agreement = agreement.activate()
@@ -576,11 +593,6 @@ class CorporateTravelService:
                 booking_ref = str(envelope.payload.get("bookingRef") or envelope.payload.get("orderId") or "")
                 self.release_budget_reservations(booking_ref=booking_ref, correlation_id=envelope.correlationId, causation_id=envelope.eventId)
                 return
-            # `agreementId` is not part of the PaymentCaptured or
-            # JourneyOrderConfirmed contract -- a retail purchase has no
-            # corporate agreement, and most traffic is retail. An event without
-            # one is not this context's business and carries nothing to bill, so
-            # it is skipped rather than treated as malformed.
             # `agreementId` is not part of the PaymentCaptured or
             # JourneyOrderConfirmed contract -- a retail purchase has no
             # corporate agreement, and most traffic is retail. An event without
