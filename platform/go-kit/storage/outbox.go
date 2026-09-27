@@ -34,6 +34,10 @@ type OutboxRelay struct {
 	interval  time.Duration
 	maxLen    int64
 	pollCount int
+	// metrics overrides the process-wide relay instruments. Nil means the
+	// default set, which is inert until a process installs an SDK meter
+	// provider.
+	metrics *OutboxMetrics
 }
 
 func NewOutboxRelay(db DBTX, redisClient *redis.Client) *OutboxRelay {
@@ -93,6 +97,22 @@ func (r *OutboxRelay) WithInterval(interval time.Duration) *OutboxRelay {
 	return r
 }
 
+// WithMetrics overrides the relay's transport instruments. Nil restores the
+// default set, so a test can inject a set bound to its own meter.
+func (r *OutboxRelay) WithMetrics(metrics *OutboxMetrics) *OutboxRelay {
+	r.metrics = metrics
+	return r
+}
+
+// outboxMetrics resolves the instruments this relay records through. The
+// returned value may be nil, which every record method treats as a no-op.
+func (r *OutboxRelay) outboxMetrics() *OutboxMetrics {
+	if r.metrics != nil {
+		return r.metrics
+	}
+	return defaultOutboxMetrics()
+}
+
 func (r *OutboxRelay) Run(ctx context.Context) {
 	if r.interval <= 0 || r.interval > 250*time.Millisecond {
 		r.interval = 250 * time.Millisecond
@@ -148,8 +168,14 @@ func (r *OutboxRelay) PublishBatch(ctx context.Context) error {
 	if r == nil || r.redis == nil || r.db == nil {
 		return fmt.Errorf("outbox relay requires postgres and redis")
 	}
-	rows, err := r.db.Query(ctx, `SELECT seq, stream, envelope FROM outbox WHERE published_at IS NULL ORDER BY seq LIMIT 100`)
+	metrics := r.outboxMetrics()
+	// The select carries created_at so the age of the head of line comes from
+	// the same bounded read as the rows themselves. The sample is a head of
+	// line window, not a count: rows here is capped by the batch size, and a
+	// value at the cap means at least one full batch is waiting.
+	rows, err := r.db.Query(ctx, `SELECT seq, stream, envelope, created_at FROM outbox WHERE published_at IS NULL ORDER BY seq LIMIT 100`)
 	if err != nil {
+		metrics.RecordFailure(StageSelect)
 		return err
 	}
 	defer rows.Close()
@@ -158,18 +184,29 @@ func (r *OutboxRelay) PublishBatch(ctx context.Context) error {
 		seq      int64
 		stream   string
 		envelope json.RawMessage
+		created  time.Time
 	}
 	batch := make([]outboxRow, 0, 100)
 	for rows.Next() {
 		var row outboxRow
-		if err := rows.Scan(&row.seq, &row.stream, &row.envelope); err != nil {
+		if err := rows.Scan(&row.seq, &row.stream, &row.envelope, &row.created); err != nil {
+			metrics.RecordFailure(StageSelect)
 			return err
 		}
 		batch = append(batch, row)
 	}
 	if err := rows.Err(); err != nil {
+		metrics.RecordFailure(StageSelect)
 		return err
 	}
+	// Recorded before the empty check: a drained outbox has to report zero, or
+	// the gauge would be a leftover from the busiest poll rather than a level.
+	oldestAge := time.Duration(0)
+	if len(batch) > 0 {
+		// ORDER BY seq ascending, so the first row is the oldest by construction.
+		oldestAge = time.Since(batch[0].created)
+	}
+	metrics.ObserveUnpublishedSample(len(batch), oldestAge)
 	if len(batch) == 0 {
 		return nil
 	}
@@ -179,6 +216,7 @@ func (r *OutboxRelay) PublishBatch(ctx context.Context) error {
 		pipe.XAdd(ctx, &redis.XAddArgs{Stream: row.stream, MaxLen: r.maxLen, Approx: true, Values: map[string]any{messaging.EnvelopeField: string(row.envelope)}})
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
+		metrics.RecordFailure(StagePublish)
 		return err
 	}
 
@@ -189,7 +227,15 @@ func (r *OutboxRelay) PublishBatch(ctx context.Context) error {
 		args[i] = row.seq
 	}
 	_, err = r.db.Exec(ctx, fmt.Sprintf(`UPDATE outbox SET published_at = now() WHERE seq IN (%s) AND published_at IS NULL`, strings.Join(placeholders, ", ")), args...)
-	return err
+	if err != nil {
+		metrics.RecordFailure(StageMarkPublished)
+		return err
+	}
+	// Counted only once both halves are done, which is what "whose bounded
+	// Redis publish pipeline completed successfully" means for this relay: a
+	// batch that reached Redis but could not be retired will be published again.
+	metrics.RecordPublished(len(batch))
+	return nil
 }
 
 // cleanupBatchSize is the rows per retention DELETE. Small enough to finish
