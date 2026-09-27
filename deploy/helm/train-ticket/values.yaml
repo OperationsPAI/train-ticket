@@ -776,7 +776,17 @@ services:
       # and waits of 1.0 to 2.9 seconds were logged as slow statements; the
       # reservation reached its Hold 85 to 112 seconds after it was requested at
       # the ninety-fifth percentile. That is recorded in docs/TODO.md.
-      CONSUMER_THREADS: "32"
+      # Eight, not thirty two.
+      #
+      # Every consumer is a connection parked in a blocking read, and Redis is
+      # single-threaded: when a stream is written, Redis walks the clients blocked
+      # on that key to serve them. Thirty two of them across six replicas is 192
+      # readers on each of this service's three groups, measured at revision 470
+      # as 193 live connections -- while every group's lag was zero, which means
+      # the other 191 were costing Redis time to look at and nothing else. Eight
+      # keeps forty eight readers, which is more than the per-pool admission lock
+      # can use at once anyway: that lock serialises the write.
+      CONSUMER_THREADS: "8"
       # Thirty two consumer threads share this pool, and each reservation needs
       # a connection for several statements while it holds the supply lock. At
       # the platform default of ten the pool timed out waiting for a connection
