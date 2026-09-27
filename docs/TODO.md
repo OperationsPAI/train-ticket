@@ -804,13 +804,33 @@ passing test; the TODO's premise for the second one was out of date.
 
 ### T10: Reconcile repository metadata and static checks
 
-Status: tooling discrepancies, separate from runtime acceptance.
+Status: **closed**, revision 500. `scripts/check-skeleton.py` passes over 39
+modules, and the two suites it had been failing on were stale tests rather than
+service faults.
 
-1. [ ] Reconcile the catalog's service entries with the business source
-   directories, the image manifests and `go.work`, including Corporate Travel,
-   Group Booking, Loyalty Membership, Marketing Campaign and Travel Insurance.
-2. [ ] Validate the remaining conceptual catalogs against implemented APIs
-   without turning scenario coverage into a claim of runtime completion.
+1. [x] The catalog reconciles with the source directories, the deployment values
+   and `go.work`. The check validates every entry's language against the files
+   that language needs (a Go service's profile, a Java service's `pom.xml` and
+   `src/main`, a Python service's `pyproject.toml`, `src` and `tests`, a Rust
+   service's `Cargo.toml` and `src/lib.rs`, a TypeScript service's
+   `package.json`, `tsconfig.json` and `src/index.ts`) and every path a service
+   names in `docs`; the catalog's 37 services match the 37 service keys in
+   `deploy/helm/train-ticket/values.yaml` exactly; and `go.work`'s `use` list
+   covers every Go service the catalog names, including corporate travel's,
+   group booking's and loyalty's non-Go peers by language. Two things the check
+   had been failing on were fixed rather than tolerated: the TypeScript account
+   service's `node_modules` held fastify 4.8.0 against its declared 5.9.0 (an
+   environment repair), and its messaging test plus capacity-availability's two
+   subscriber tests still asserted the dead-letter rules that T05.4 replaced.
+   The check now passes; its Java leg reports `skip java checks: Java 25 is
+   required, found 21` on this host, where the Java services are run under a
+   JDK 25 container instead.
+2. [x] The conceptual catalogs do not overclaim. `project-index.yaml` says in its
+   own header that a requirement's `status: implemented` means only that the
+   named code, documents and tests exist and passed their scoped checks, and that
+   business scenarios, cross-service flows, deployment and load acceptance need
+   their own evidence in [the TODO](TODO.md) and
+   [current status](00-current-status.md).
 
 Local Markdown links, catalog document paths and the runtime YAML values are
 validated by the documentation checks. That is not a claim that every
