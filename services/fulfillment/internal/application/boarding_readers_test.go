@@ -66,3 +66,18 @@ func TestReadersStatedInKeepsTheRosterWhenTheRegisterStatesNothing(t *testing.T)
 		t.Fatalf("a register that names nothing narrows nothing")
 	}
 }
+
+func TestReadersStatedInReadsTheStatementsLineByLine(t *testing.T) {
+	directory := t.TempDir()
+	statement := "\n\t# a comment\nSTATION\n\n\tPROVIDER\t\n"
+	if err := os.WriteFile(filepath.Join(directory, rosterStatement), []byte(statement), 0o644); err != nil {
+		t.Fatalf("write roster: %v", err)
+	}
+	readers := readersStatedIn(directory)
+	if !readers.operates(domain.FulfillmentSourceStation) || !readers.operates(domain.FulfillmentSourceProvider) {
+		t.Fatalf("the entries a statement carries are read as the operator writes them")
+	}
+	if readers.operates(domain.FulfillmentSourceGate) {
+		t.Fatalf("a comment is not an entry")
+	}
+}
