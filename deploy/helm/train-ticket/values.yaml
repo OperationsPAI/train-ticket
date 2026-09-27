@@ -1323,12 +1323,12 @@ services:
   fulfillment:
     db: fulfillment
     # The boarding register this release measures a boarding fact's source
-    # against: the gate readers, the station agent a boarding is handed through
-    # and the provider feed the operator's attendant writes. The conductor
-    # handsets and the back-office screen are in the image's own vocabulary, but
-    # this release operates neither, so a fact they stamp has no reader here.
+    # against: the station agent a boarding is handed through and the provider
+    # feed the operator's attendant writes. The platform gate readers were
+    # retired with the station estate consolidation, so the gate vocabulary has
+    # no reader here.
     env:
-      FULFILLMENT_BOARDING_SOURCES: "GATE,STATION,PROVIDER"
+      FULFILLMENT_BOARDING_SOURCES: "STATION,PROVIDER"
       # Eight reader loops: one loop processes a read batch on its own
       # goroutine, and the entitlement projection needs a database write per
       # ticket. Measured with one loop, fulfillment processed about 37 events
