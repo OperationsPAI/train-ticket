@@ -357,6 +357,8 @@ function entryFromRow(row: WaitlistRow): WaitlistEntry {
     capacityReleaseIdempotencyKey: typeof data.capacityReleaseIdempotencyKey === "string" ? data.capacityReleaseIdempotencyKey : undefined,
     journeyOrderIdempotencyKey: typeof data.journeyOrderIdempotencyKey === "string" ? data.journeyOrderIdempotencyKey : undefined,
     capacitySegmentBookingId: typeof data.capacitySegmentBookingId === "string" ? data.capacitySegmentBookingId : undefined,
+    promotionRetryAfter: typeof data.promotionRetryAfter === "string" ? data.promotionRetryAfter : undefined,
+    pricingContext: pricingContextFrom(data.pricingContext),
   });
   entry.markPersisted(Number(row.version));
   return entry;
@@ -428,6 +430,35 @@ function capacityCreditAllocations(value: unknown): readonly { capacityReleaseRe
     return typeof credit.capacityReleaseRef === "string" && Number.isSafeInteger(Number(credit.slots)) && Number(credit.slots) > 0
       ? [{ capacityReleaseRef: credit.capacityReleaseRef, slots: Number(credit.slots) }] : [];
   });
+}
+
+/**
+ * The pricing inputs a promotion re-quotes with, as they were stored.
+ *
+ * `entryFromRow` rebuilds the aggregate field by field, so a field it does not
+ * name is silently replaced by the domain's fallback on every load. Leaving this
+ * one out is what made the promotion price from the flat base fare: an entry was
+ * written with its distance and then read back without it, so the re-quote
+ * exceeded the customer's guarantee and the entry was suspended -- measured on a
+ * live row, `distanceKm` was present at insert and gone on the next reload.
+ *
+ * The context is optional, so a row written before the column carried it (or one
+ * whose source quote genuinely had no distance) still loads as the pre-existing
+ * default rather than as a partially-populated object.
+ */
+function pricingContextFrom(value: unknown): WaitlistEntrySnapshot["pricingContext"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const context = value as Record<string, unknown>;
+  if (typeof context.productCode !== "string" || typeof context.channel !== "string") return undefined;
+  const distanceKm = typeof context.distanceKm === "number" && Number.isFinite(context.distanceKm) && context.distanceKm > 0
+    ? context.distanceKm
+    : undefined;
+  return {
+    productCode: context.productCode,
+    channel: context.channel,
+    distanceKm,
+    departureTime: typeof context.departureTime === "string" ? context.departureTime : undefined,
+  };
 }
 function fulfillmentProgress(value: unknown, entryId: string, travelerRefs: unknown): WaitlistEntrySnapshot["fulfillment"] {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
