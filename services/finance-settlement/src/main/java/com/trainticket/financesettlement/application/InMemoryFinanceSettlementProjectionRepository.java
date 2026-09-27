@@ -51,6 +51,17 @@ public class InMemoryFinanceSettlementProjectionRepository implements FinanceSet
     }
 
     @Override
+    public void saveChannelStatementLines(List<ChannelStatementLineProjection> lines) {
+        lines.forEach(this::saveChannelStatementLine);
+    }
+
+    @Override
+    public boolean hasChannelStatementLines(String channelStatementId) {
+        return channelStatementLinesById.values().stream()
+            .anyMatch(line -> line.channelStatementId().equals(channelStatementId));
+    }
+
+    @Override
     public List<ChannelStatementLineProjection> findChannelStatementLinesForSettlementDate(LocalDate settlementDate) {
         return channelStatementLinesById.values().stream()
             .filter(line -> settlementDate.toString().equals(line.statementDate()))
