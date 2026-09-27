@@ -698,12 +698,18 @@ export class RedisEventSubscriber implements EventSubscriber {
     if (!handler.handleBatch || entries.length <= 1) {
       const concurrency = Math.max(1, Number(process.env.CONSUMER_BATCH_CONCURRENCY ?? "1"));
       let next = 0;
-      await Promise.all(Array.from({ length: Math.min(concurrency, entries.length) }, async () => {
-        while (next < entries.length) {
-          const entry = entries[next++];
-          await this.processEntry(stream, group, consumerName, entry, handler);
-        }
-      }));
+      this.ackBatchDepth += 1;
+      try {
+        await Promise.all(Array.from({ length: Math.min(concurrency, entries.length) }, async () => {
+          while (next < entries.length) {
+            const entry = entries[next++];
+            await this.processEntry(stream, group, consumerName, entry, handler);
+          }
+        }));
+      } finally {
+        this.ackBatchDepth -= 1;
+      }
+      await this.flushAcks();
       return;
     }
 
@@ -791,7 +797,7 @@ export class RedisEventSubscriber implements EventSubscriber {
         deliveries: attempts,
         message: "duplicate event already processed; acking without handler",
       });
-      await this.redis.xack(stream, group, entryId);
+      this.queueAck(stream, group, entryId);
       return undefined;
     }
 
@@ -851,6 +857,46 @@ export class RedisEventSubscriber implements EventSubscriber {
    * without limit. Shared by the per-entry and the batched acknowledge paths, so
    * both dedupe identically.
    */
+  /**
+   * Acks waiting for one XACK per stream and group.
+   *
+   * XACK takes any number of ids, and one command per delivered event per
+   * consumer group is the largest command class a single-threaded Redis serves.
+   * An unflushed ack only means redelivery, so losing the queue costs a
+   * duplicate rather than an event.
+   */
+  private readonly pendingAcks = new Map<string, string[]>();
+
+  /** Depth of the read-batch loop that is collecting acks. */
+  private ackBatchDepth = 0;
+
+  private queueAck(stream: string, group: string, entryId: string): void {
+    const key = `${stream}\u0000${group}`;
+    const ids = this.pendingAcks.get(key);
+    if (ids) {
+      ids.push(entryId);
+    } else {
+      this.pendingAcks.set(key, [entryId]);
+    }
+    if (this.pendingAcks.size > 0 && [...this.pendingAcks.values()].reduce((total, list) => total + list.length, 0) >= 500) {
+      void this.flushAcks();
+    }
+  }
+
+  private async flushAcks(): Promise<void> {
+    if (this.pendingAcks.size === 0) {
+      return;
+    }
+    const queued = [...this.pendingAcks.entries()];
+    this.pendingAcks.clear();
+    for (const [key, ids] of queued) {
+      if (ids.length === 0) continue;
+      const [stream, group] = key.split("\u0000");
+      await (this.redis as unknown as { xack: (stream: string, group: string, ...ids: string[]) => Promise<unknown> })
+        .xack(stream, group, ...ids);
+    }
+  }
+
   private rememberConsumed(eventId: string): void {
     this.consumedEventIds.add(eventId);
     if (this.consumedEventIds.size > RedisEventSubscriber.CONSUMED_EVENT_CACHE_LIMIT) {
@@ -864,7 +910,12 @@ export class RedisEventSubscriber implements EventSubscriber {
     if (result === "ack") {
       this.handlerFailures.delete(failureKey);
       this.rememberConsumed(envelope.eventId);
-      await this.redis.xack(stream, group, entry[0]);
+      if (this.ackBatchDepth > 0) {
+        this.queueAck(stream, group, entry[0]);
+      } else {
+        // Outside a read batch there is no batch to join: acknowledge now.
+        await this.redis.xack(stream, group, entry[0]);
+      }
       return;
     }
     if (result === "dlq") {
