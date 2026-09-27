@@ -11,7 +11,13 @@ public record JourneyOrderCreated(
     java.util.List<String> segmentRefs,
     java.util.List<SegmentOrderSnapshot> segments,
     java.time.Instant createdAt,
-    String sourceIp
+    String sourceIp,
+    /**
+     * The distance the accepted offer was priced from, when its quote carried
+     * one. The revenue report divides captured money by the distance it records,
+     * and this event is where the report reads the order from.
+     */
+    Double distanceKm
 ) implements JourneyOrderEvent {
     public JourneyOrderCreated {
         travelerRefs = java.util.List.copyOf(travelerRefs);
