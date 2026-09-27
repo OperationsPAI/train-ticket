@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -38,6 +39,37 @@ def get_default_service() -> CorporateTravelService:
 def set_default_service(service: CorporateTravelService) -> None:
     global _default_service
     _default_service = service
+
+
+def _rule_set_resolver() -> Any:
+    """Ask fare-pricing whether a `priceRef.ruleSetId` names a rule set.
+
+    Returns None when no fare-pricing URL is configured, which is the isolated
+    unit-test case: there is nothing to ask, so the service keeps the reference
+    as it did before rather than refusing every agreement.
+
+    A configured but unreachable fare-pricing is different, and answers False
+    rather than raising: the create path must not turn a dependency outage into
+    a rule set that looks real.
+    """
+    base_url = os.environ.get("FARE_PRICING_URL") or os.environ.get("FARE_PRICING_BASE_URL")
+    if not base_url:
+        return None
+    from train_ticket_platform.outbound import traced_httpx_client
+
+    client = traced_httpx_client(timeout=5.0)
+
+    def exists(rule_set_id: str, correlation_id: str | None) -> bool:
+        headers = {"x-correlation-id": correlation_id} if correlation_id else None
+        try:
+            response = client.get(
+                f"{base_url.rstrip('/')}/api/v1/fare-rule-sets/{rule_set_id}", headers=headers
+            )
+        except Exception:
+            return False
+        return response.status_code == 200
+
+    return exists
 
 
 class MoneyModel(BaseModel):
@@ -324,14 +356,15 @@ def create_app(service: CorporateTravelService | None = None) -> FastAPI:
     pool: DatabasePool | None = None
     redis_url = os.environ.get("REDIS_URL", "")
     database_config = DatabaseConfig.from_env()
-    app_service = service or CorporateTravelService(publisher=InMemoryEventPublisher(), repository=InMemoryCorporateTravelRepository())
+    rule_set_exists = _rule_set_resolver()
+    app_service = service or CorporateTravelService(publisher=InMemoryEventPublisher(), repository=InMemoryCorporateTravelRepository(), rule_set_exists=rule_set_exists)
     idempotency_store = BoundedInMemoryIdempotencyStore()
     if database_config is not None and service is None:
         pool = DatabasePool(database_config)
         migrations_dir = Path(os.environ.get("MIGRATIONS_DIR", Path(__file__).resolve().parents[2] / "migrations"))
         run_migrations(pool, migrations_dir)
         repository = PostgresCorporateTravelRepository(pool)
-        app_service = CorporateTravelService(repository=repository, unit_of_work=repository.transaction)
+        app_service = CorporateTravelService(repository=repository, unit_of_work=repository.transaction, rule_set_exists=rule_set_exists)
         idempotency_store = PostgresIdempotencyStore(pool)
 
     @asynccontextmanager
