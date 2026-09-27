@@ -539,9 +539,10 @@ and [standing policy](08-contracts/standing-capacity-policy.md).
 
 ### T04: Verify automatic waitlist fulfillment
 
-Status: partly verified. Matching, offer expiry and the guarantee guard are
-exercised by the resident workload; a successful confirmation is not, and the
-reason is measured below.
+Status: partly verified. Matching, pricing, offer creation, order creation,
+offer expiry and the guarantee guard are exercised by the resident workload now
+that three defects in this path are closed (items 3 to 5); a successful
+confirmation is not, and the reason is measured to the seat in item 6.
 
 1. [x] Match released capacity by date, class, interval and traveler intent. A
    credit carries the segment, scheduled service, departure date, seat class,
@@ -559,22 +560,60 @@ reason is measured below.
    its promotion is undone. Measured after: **1 to 6 a minute** from 12:47 on,
    and the entries sit at `QUEUED` with the retry instant set for the whole
    backoff. The credit still reaches every other waiter immediately.
-3. [ ] A successful confirmation: payment guarantee captured, offer window
+3. [x] **The promotion re-quotes with the guarantee's own pricing inputs.** This
+   was a defect: the promotion priced the seat from whatever the request
+   carried, the request carried a product code, a channel and a class and no
+   distance, and fare-pricing fell back to the flat base fare -- measured
+   directly against the deployed service, 28750 without the distance against
+   16979 with it for the same segment and class. The promoted offer therefore
+   exceeded the amount the customer had authorized and every entry was
+   suspended: 25 of 25 in one ten minute window, and no entry had ever reached
+   `FULFILLED`. The entry now carries the inputs its own quote was priced from
+   (product code, channel, distance, departure time) and the promotion sends
+   them.
+4. [x] **The pricing context survives the database round trip.** This was the
+   second half of the same defect, and the reason the fix above looked inert on
+   the live release: `entryFromRow` rebuilt the aggregate field by field and
+   named neither `pricingContext` nor `promotionRetryAfter`, so an entry was
+   written with its distance and read back without it. Measured on a live row,
+   `distanceKm` was present at insert and gone on the next reload, and 25 of 25
+   entries in the window read back as the flat-fare default. Both fields now
+   round-trip; measured after the fix, 17 of 17 new entries keep the distance.
+5. [x] **The offer is built on the channel the entry arrived on.** Also a
+   defect: the promotion re-quoted on the entry's channel but created the offer
+   on the client's configured one, and offer-management refuses an offer whose
+   channel differs from its quote's with a 422 -- the status the promotion
+   treats as "not ready yet" and retries every second. Measured live, the
+   mobile-channel quote was refused with `FARE_QUOTE_MISMATCH` on every tick and
+   the promotion failure counter ran at **6 a second** while `offer_created` and
+   `order_created` stayed at zero across the whole resident population. The
+   offer now carries the entry's own channel. Measured after: `failed` at about
+   1.5 a minute, and the first 49 offers and 49 orders this environment has ever
+   produced from a promotion.
+6. [ ] A successful confirmation: payment guarantee captured, offer window
    honoured, downstream ticket issued, and exactly one capacity and payment
-   effect after a restart. **Blocked on the workload, with the reason measured:**
-   of the waitlist's promotions in a 45 minute window, 172 of 211 orders were
-   refused by risk-compliance's velocity rules (`VELOCITY_TRAVELER_BOOKING`,
-   more than two bookings per traveler per hour, and `VELOCITY_ACCOUNT_ORDER`,
-   more than three orders per account per five minutes) and the promotion was
-   undone, so no entry has reached `FULFILLED` in this environment. The rules are
-   the platform's own anti-abuse policy, and the workload reuses travelers
-   (`p_new_traveler: 0.10`), so a waitlisted customer here is almost always the
-   same person who just booked. Verifying this item needs a promotion for a
-   traveler with no recent bookings, which the load generator does not produce.
-   It is an open question whether a waitlist promotion *should* be exempt from
-   the velocity rules -- the customer is buying the seat they waited for, not
-   making a new speculative booking -- and that is a policy decision rather than
-   a defect this pass found.
+   effect after a restart. **Still blocked, and the reason is now measured to
+   the seat.** With the three defects above closed the promotion reaches the
+   booking saga for the first time -- 49 offers and 49 orders in ten minutes,
+   where the release had produced none -- and every order fails with
+   `NO_AVAILABLE_CAPACITY`. That is a real capacity outcome, not a defect:
+   queried live, the class the entry waited for is genuinely sold out
+   (`remainingByClass` for the segment's `BUSINESS_CLASS` reads
+   `total 36, available 0` while first and second class hold hundreds), and the
+   release the credit was taken from is re-sold before the saga's reservation
+   lands. A waitlist whose pool never has a free unit cannot fulfil, which is
+   what the workload's demand on that class produces.
+   The 45 minute window measured earlier, on the pre-fix release, also showed
+   172 of 211 orders refused by risk-compliance's velocity rules
+   (`VELOCITY_TRAVELER_BOOKING`, more than two bookings per traveler per hour,
+   and `VELOCITY_ACCOUNT_ORDER`, more than three orders per account per five
+   minutes). The rules are the platform's own anti-abuse policy and the workload
+   reuses travelers (`p_new_traveler: 0.10`), so a waitlisted customer here is
+   almost always the same person who just booked; whether a promotion *should*
+   be exempt from the velocity rules stays a policy decision rather than a
+   defect this pass found. Verifying this item needs a promotion for a traveler
+   with no recent bookings into a pool with a free unit, which this workload does
+   not reliably produce.
 
 ### T05: Prove durable event recovery
 
