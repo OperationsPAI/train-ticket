@@ -881,24 +881,27 @@ remains is breadth and the follow-ups the new reads created.
 
 ### T21: Resolve the references a booking and an agreement are created with
 
-Status: open. Two creation paths store a reference they never resolve, and the
-load generator is what supplies the unresolvable value in both.
+Status: **closed**, revision 497. Both creation paths resolved their references
+and both journeys now supply real ones.
 
-1. [ ] Group Booking accepts any `segmentRefs` without asking service-plan. A
-   booking is stored and priced from its own fare rule set whatever the segments
-   are: measured at revision 493, `seg-group-<uuid8>` -- a reference that exists
-   nowhere -- answers 404 from service-plan while the booking is quoted (85000
-   reduced by its 500 basis points to 80750), and no member, confirmation or
-   cancellation path has ever run here (`group_members` holds 0 rows across
-   84720 bookings). `deploy/loadgen-go/journey_group_booking.go` is what sends
-   the synthetic reference, so closing this means searching for a real segment
-   in the journey and validating it in the service.
-2. [ ] Corporate Travel stores `priceRef.ruleSetId`, folds it into the
-   agreement's price digest, and never asks fare-pricing whether that rule set
-   exists: measured at revision 493 the agreements carry `rs-<uuid8>` values no
-   published rule set matches (127,064 ACTIVE agreements, and 0 authorized
-   travelers, 0 policies, 0 approval requests, 0 monthly invoices). Same shape
-   as above.
+1. [x] Group Booking resolves its `segmentRefs`. It stored and priced a booking
+   whatever the segments were: measured at revision 493, `seg-group-<uuid8>` --
+   a reference service-plan answers 404 for -- was quoted (85000 reduced by its
+   500 basis points to 80750) across 84,720 bookings. The service now asks
+   service-plan for every segment and refuses the booking when one is unknown,
+   and the load generator's journey searches for a real trip first. Measured at
+   revision 497: the newest bookings carry segment refs that answer 200 from
+   service-plan, and the journey still completes (`group_booking` 99 of 99 in a
+   seven minute window).
+2. [x] Corporate Travel resolves its `priceRef.ruleSetId`. It folded the id into
+   the agreement's price digest without asking: measured at revision 493, all
+   127,064 ACTIVE agreements carried `rs-<uuid8>` values no published rule set
+   matched. fare-pricing now answers `GET /fare-rule-sets/{id}` in any status,
+   the service refuses a reference it cannot resolve, and the journey takes the
+   rule set its own quote applied. Measured at revision 497: the newest
+   agreements carry `ruleset-default-0-WEB`, `-2-MOBILE` and `-3-COUNTER`, each
+   answering 200, and the journey still completes (165 of 166 in the window that
+   spans one pod rollover, the one failure a refused connection during it).
 
 ## Operational follow-ups
 
