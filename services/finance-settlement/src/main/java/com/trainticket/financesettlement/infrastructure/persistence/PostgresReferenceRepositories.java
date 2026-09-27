@@ -37,6 +37,25 @@ final class PostgresReferenceRepositories {
         }
 
         @Override
+        public java.util.Map<String, String> findOrderReferences(java.util.Collection<String> paymentIntentIds) {
+            if (paymentIntentIds == null || paymentIntentIds.isEmpty()) return java.util.Map.of();
+            java.util.Map<String, String> found = new java.util.LinkedHashMap<>();
+            try (var connection = jdbc.getDataSource().getConnection()) {
+                var array = connection.createArrayOf("text", paymentIntentIds.toArray());
+                jdbc.query(
+                    "SELECT payment_intent_id, order_reference FROM payment_intent_order_refs WHERE payment_intent_id = ANY(?)",
+                    rs -> {
+                        found.put(rs.getString("payment_intent_id"), rs.getString("order_reference"));
+                    },
+                    array
+                );
+            } catch (java.sql.SQLException failure) {
+                throw new IllegalStateException("resolve payment intent order references: " + failure.getMessage(), failure);
+            }
+            return found;
+        }
+
+        @Override
         public Optional<String> findOrderReference(String paymentIntentId) {
             return jdbc.query(
                 "SELECT order_reference FROM payment_intent_order_refs WHERE payment_intent_id = ?",
