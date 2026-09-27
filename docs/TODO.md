@@ -721,9 +721,20 @@ remains is breadth and the follow-ups the new reads created.
    carries all six stages -- `search`, `quote`, `order`, `reservation`,
    `payment`, `ticket` -- in 24 series, every one of them under the contract's
    three labels with no value outside its vocabulary.
-2. [ ] Port the Java event-consumer and outbox metric contract to the Go,
-   Python, TypeScript and Rust platform kits, so the transport rules cover every
-   service rather than the Java ones alone.
+2. [x] Port the Java event-consumer and outbox metric contract to the Go,
+   Python, TypeScript and Rust platform kits. All seven instruments now exist in
+   every kit under the same names, units and closed vocabularies -- messages by
+   `outcome`, failures and dead letters by `reason_code`, and the outbox's
+   bounded unpublished head sample, oldest unpublished age, published rows and
+   per-stage failures. Measured at revision 483: `messages` is published by 27
+   services and `outbox.published` by 35, one per service that runs a consumer
+   or a relay, and a ten minute increase reads 898980 `success`, 6 `duplicate`
+   and 201 `retry`, with `failures{reason_code="handler_exception"}` naming
+   travel-insurance's deliberate wait for a post-sales case. Three services have
+   no consumer at all by design (place-network is a producer only,
+   supplier-catalog's subscription list is empty, and dispatch, payment-channel
+   and service-plan never subscribe), so the absence of a `messages` series is
+   the correct reading for them.
 3. [ ] Add a cardinality test for each remaining source that proves two
    different business identifiers produce the same label set, and a restart
    test for every gauge that is derived from durable state.
