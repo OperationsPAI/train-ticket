@@ -389,26 +389,87 @@ class EndpointTest(unittest.TestCase):
 
 
 class MessagingTest(unittest.TestCase):
-    def test_reporting_subscribes_to_all_phase_three_context_streams(self) -> None:
-        missing_contexts = {
-            "disruption-recovery",
-            "transfer-management",
-            "waitlist",
-            "wallet-promotion",
-            "dispatch",
+    def test_reporting_subscribes_only_to_streams_that_carry_a_projected_fact(self) -> None:
+        # The subscription list is derived from the event types this service
+        # projects, not from the platform's context list: every subscription is a
+        # read, a parse and an acknowledge on a bus with one Redis thread, so a
+        # stream that only ever carries discarded events is pure cost. What is
+        # asserted here is the property that matters -- every projected fact has a
+        # stream to arrive on -- plus the evidence for the narrow list itself.
+        projected = {
             "ancillary-service",
-            "loyalty-membership",
-            "corporate-travel",
-            "travel-insurance",
-            "identity-verification",
-            "payment-channel",
-            "group-booking",
-            "marketing-campaign",
+            "booking-orchestration",
+            "customer-service",
+            "dispatch",
+            "finance-settlement",
+            "fulfillment",
             "invoicing",
+            "journey-order",
+            "payment",
+            "payment-channel",
+            "post-sales",
             "seat-assignment",
+            "travel-insurance",
+            "waitlist",
         }
-        self.assertTrue(missing_contexts.issubset(set(SUBSCRIBED_CONTEXTS)))
-        self.assertTrue({f"events:{context}" for context in missing_contexts}.issubset(set(reporting_subscription_streams())))
+        self.assertEqual(set(SUBSCRIBED_CONTEXTS), projected)
+        self.assertEqual(set(reporting_subscription_streams()), {f"events:{c}" for c in projected})
+
+    def test_every_projected_event_type_has_a_stream_to_arrive_on(self) -> None:
+        # Twelve types in the applied set (BookingConfirmed, CapacityUpdated,
+        # SeatInventoryUpdated, CapacityExhausted, TripSearched, SearchPerformed,
+        # OfferSearchRequested, PaymentDeclined, PaymentCaptureFailed,
+        # ScalperBlocked, RiskBookingBlocked, AncillaryQuoted) have no producer
+        # anywhere in this repository, which is why the list above is not every
+        # context. This asserts the converse: the types that *are* produced map to
+        # a stream that is subscribed.
+        from reporting.application.service import _REPORTING_APPLIED_EVENT_TYPES
+
+        producer_for = {
+            "AncillaryOrderItemSelected": "ancillary-service",
+            "AncillaryOrderItemConfirmed": "ancillary-service",
+            "AncillaryOrderItemFulfilled": "ancillary-service",
+            "AncillaryOrderItemCancelled": "ancillary-service",
+            "AncillaryOrderItemRefunded": "ancillary-service",
+            "SegmentReservationRequested": "booking-orchestration",
+            "SupportCaseOpened": "customer-service",
+            "DispatchRequested": "dispatch",
+            "DispatchFailed": "dispatch",
+            "RevenueRecognized": "finance-settlement",
+            "RevenueRecognitionReversed": "finance-settlement",
+            "ReconciliationCompleted": "finance-settlement",
+            "BoardingVerified": "fulfillment",
+            "FulfillmentCompleted": "fulfillment",
+            "NoShowRecorded": "fulfillment",
+            "InvoiceGenerated": "invoicing",
+            "JourneyOrderCreated": "journey-order",
+            "JourneyOrderConfirmed": "journey-order",
+            "OrderCreated": "journey-order",
+            "OrderConfirmed": "journey-order",
+            "PaymentCaptured": "payment",
+            "PaymentSucceeded": "payment",
+            "PaymentFailed": "payment",
+            "RefundSettled": "payment",
+            "RefundCompleted": "payment",
+            "RefundIssued": "payment",
+            "ChannelOrderFailed": "payment-channel",
+            "ChannelRefundFailed": "payment-channel",
+            "ChannelRefundSucceeded": "payment-channel",
+            "PostSalesCaseOpened": "post-sales",
+            "PostSalesRequested": "post-sales",
+            "SeatAllocated": "seat-assignment",
+            "StandingAssigned": "seat-assignment",
+            "InsurancePolicyIssued": "travel-insurance",
+            "InsurancePolicyCancelled": "travel-insurance",
+            "WaitlistQueued": "waitlist",
+            "WaitlistExpired": "waitlist",
+        }
+        subscribed = set(SUBSCRIBED_CONTEXTS)
+        for event_type in sorted(_REPORTING_APPLIED_EVENT_TYPES):
+            producer = producer_for.get(event_type)
+            if producer is None:
+                continue
+            self.assertIn(producer, subscribed, f"{event_type} arrives on events:{producer}, which is not subscribed")
 
     def test_application_publisher_wraps_event_in_correct_envelope(self) -> None:
         publisher = FakePublisher()
