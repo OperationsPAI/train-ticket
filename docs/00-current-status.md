@@ -5,7 +5,7 @@ Last verified: 2026-09-28, Asia/Beijing.
 ## Runtime
 
 The resident Helm release is `train-ticket` in namespace `train-ticket`,
-revision **517**.
+revision **519**.
 Its values come from one file, `deploy/helm/train-ticket/values.yaml`: the
 registry, the `local-path` storage class, the central telemetry store, the
 resident exporters, the load generator settings and the `loadgen-resident-state`
@@ -54,6 +54,7 @@ to one and back.
 | Reconciliation attribution | A provider confirmation is attributed to its order through the local index and, when that index has not caught up or was trimmed, through the booking-orchestration segment booking itself. |
 | Channel statement | `finance-settlement` holds the channel side of the money. The freeze announcement carries the statement's own facts instead of only its transition, the projection merges it with the stored generation instead of demanding generation-only fields, and the upsert refuses to unfreeze a row the freeze already wrote. |
 | Channel reconciliation | The day's captures are compared with the channel's own statement lines, read from payment-channel 500 at a time and keyed by the payment intent both sides carry. Every statement is the closed day's, so a day is reconciled against the day's own account; each statement is read once, and the batch keeps its report and the entries that need attention rather than half a million rows. |
+| Channel refund reconciliation | The statement's refund lines are compared with the refunds payment actually settled, per refund id -- the one reference both sides carry. Payment keeps its settled refunds in an indexed table written with the settlement and backfilled from its own events, and answers a date's refunds a page at a time. |
 | Reads that trail their announcement | A read that a just-consumed announcement promises is a wait rather than a rule violation. `travel-insurance` waits for the case or reference it announced to become visible -- five attempts 400 milliseconds apart inside the delivery -- and declares a transient failure only if it still cannot see it. |
 | Scheduled job age | `finance-settlement` publishes `train_ticket.scheduled_job.success_age` for its daily reconciliation and supplier settlement, rebuilt from the durable run table rather than held in memory, and the scrape's label allowlist keeps the `scheduled_job` split it is published with. |
 | Due-task age | The sweeps that retire work on a timer publish how far behind they are: `payment` the age of the oldest intent past its expiry, `booking-orchestration` the age of the oldest overdue saga step deadline. Both are rebuilt from the durable queue they read, so a restart republishes the reading, and both clear it when the queue empties rather than holding a stale age. |
@@ -68,6 +69,7 @@ to one and back.
 | The sweeps' own backlogs, revision 517 | `train_ticket_payment_intent_expiry_age_seconds` is published by the deployed payment service -- the age of the oldest intent past its expiry, read before each one-second sweep (12 ms against 1.17M intents) -- and `train_ticket.booking.saga.step_due_age_seconds` is published by booking-orchestration only when the step-timeout sweep is behind: measured live it is absent, which is the healthy reading, with **0** of the 80 pending step deadlines due | `prometheus` query at revision 517; `booking_saga_step_deadlines` |
 | Scheduled job age, revision 511 | `train_ticket_scheduled_job_success_age_seconds` is scraped with its `scheduled_job` label for both `DAILY_RECONCILIATION` and `SUPPLIER_SETTLEMENT` on every `finance-settlement` replica | `prometheus` query at revision 511 |
 | The whole day 2026-09-26 reconciled line by line, revision 515 | 618650 channel lines read from three frozen statements and compared with the platform's receipts: **488414 entries, 488414 matched, variance 0.00, 0 exceptions** -- against the same day's earlier batch, which had 431530 entries and **0 matched** | `POST /api/v1/settlements/reconciliation/2026-09-26/run`; `reconciliation_batch_snapshots` |
+| The whole day 2026-09-26 with the refund side included, revision 519 | **618650 entries** -- 488414 payments and 130236 refunds -- with **618479 matched, 0 unexplained on either side and 171 amount mismatches**, and every one of the 171 is a refund the channel paid back at exactly half the platform's amount, which is the workload's own injected channel fault | `POST /api/v1/settlements/reconciliation/2026-09-26/run`; `refund_settlements` |
 | The channel side of one real statement, revision 515 | `ChannelStatementIngestLiveTest` reads a deployed statement end to end: 165724 lines (133059 payment / 32665 refund), the payment sum equal to the statement's published gross payment and the refund sum to its gross refund, a second read recording nothing, and 200 sampled real captures joining their lines | the live test against the deployed payment-channel |
 | General multistop admission, revision 515 | `multistop_supply_live` on the deployed seat facts: a seat sold for stops 0-1 is still sellable for stops 1-2, a seat sold across 0-2 is free in neither, two overlapping allocations on one unit are refused, and a released hold leaves its unit free -- passing on SECOND_CLASS, FIRST_CLASS and SLEEPER_HARD | the live test against the deployed seat-assignment |
 | The hold store's own invariants, revision 515 | of **1410196** holds: **0** live holds without a unit or a resolved service, **0** invalid intervals, **0** confirmations without an instant, **0** holds confirmed after release, and **0** units carrying two live holds in one interval; `capacity_hold_fences` holds 459526 released holds, and allocating against one answers 412 `capacity Hold is released` while confirming one answers 412 `Hold is not in a state that can be mutated` | the deployed hold snapshots and both APIs |
@@ -812,10 +814,19 @@ matched, variance 0.00, 0 exceptions**. Registering the reconciliation
 verifiable: the scheduler only ever reconciles the day it is living through, and
 a period that has already been batch-reconciled can now be asked for again.
 
-What is deliberately not reconciled yet is the statement's refund side: its
-`REFUND` lines are recorded with their type and are not compared with the
-platform's refunds, which live in different projections under a different key.
-That is [T25](TODO.md#t25-match-the-refund-side-of-a-channel-statement).
+The refund side followed, and it is the same shape: a statement's `REFUND` line
+carries the platform refund it settles, payment now answers for a date's settled
+refunds by that id in the index's own order, and finance compares the two. The
+whole day then reconciles -- **618650 entries, 618479 matched, 0 unexplained on
+either side** -- with the only exceptions the workload's own injected faults: 171
+refunds the channel paid back at exactly half the platform's amount.
+
+That pass also caught a defect of its own making, worth recording because it is
+what a paged read does when it is bounded. The platform side was read 100 pages
+of 1000, the measured day has 130236 refunds, and the last 30236 were never read
+-- which the run reported as refunds the platform had never settled, because an
+unread page and a missing refund look identical from the comparison. The bound is
+a million now, and reaching it is logged.
 
 ## The resident round of 2026-09-26
 
