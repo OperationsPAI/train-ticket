@@ -22,6 +22,20 @@ public interface RedisStreamOperations {
 
     void ack(String stream, String group, String messageId);
 
+    /**
+     * Acknowledge several entries of one stream and group with a single command.
+     *
+     * <p>{@code XACK} takes any number of ids, and one command per delivered event per consumer
+     * group was the largest command class a single-threaded Redis served -- about 6000 a second on
+     * the resident release against ~12700 in total. The default loops {@link #ack} so an
+     * implementation that has no batch form is still correct.
+     */
+    default void ackMany(String stream, String group, java.util.List<String> messageIds) {
+        for (String messageId : messageIds) {
+            ack(stream, group, messageId);
+        }
+    }
+
     default void pruneDeadConsumers(String stream, String group, String selfName, long maxIdleMillis) {}
 
     void moveToDlq(String stream, String envelopeJson, DlqMetadata metadata);
