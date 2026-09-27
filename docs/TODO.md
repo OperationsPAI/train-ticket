@@ -949,9 +949,11 @@ hop-by-hop measurements that attributed and removed it are recorded in
 
 ### T18: Finish low-cardinality business telemetry
 
-Status: every source metric in the contract is implemented and deployed, and
-every source and gauge now carries the cardinality and restart tests the contract
-promises; the one item still open is the scheduled-job collector below.
+Status: **closed**, revision 515. Every source metric in the contract is
+implemented and deployed, every source and gauge carries the cardinality and
+restart tests the contract promises, and the scheduled-job collector's two
+halves are published: the age of a job's last success, and the age of the oldest
+due task.
 
 1. [x] Publish the `search` and `quote` stages of the order funnel, which no
    service emitted. The contract had named offer management as the owner, but
@@ -1025,7 +1027,7 @@ promises; the one item still open is the scheduled-job collector below.
    config was 22 hours old while the ConfigMap beside it held the new one, and
    the collector's new `kind` label arrived stripped. The rendered config is
    hashed now, so changing it rolls Prometheus.
-5. [ ] Add a collector that reports scheduled job success and the age of the
+5. [x] Add a collector that reports scheduled job success and the age of the
    oldest due task; several sweeps are only observable through their effects.
 
    First slice delivered at revision 509, verified at 511: `finance-settlement`
@@ -1046,6 +1048,18 @@ promises; the one item still open is the scheduled-job collector below.
 
    What remains: the oldest-due-task half, and the same family for
    booking-orchestration's saga step deadlines and payment's intent expiry.
+
+   Second slice delivered at revision 515: both are published.
+   `train_ticket.payment.intent_expiry_age` is the age of the oldest intent past
+   its expiry that the one-second sweep has not expired, read before each sweep
+   (12 milliseconds against 1.17 million intents) and rebuilt from the intent
+   rows so a restart republishes it; measured through Prometheus at revision 515
+   it is present. `train_ticket.booking.saga.step_due_age` is the same reading
+   for the saga step-timeout queue, rebuilt by the leader-elected stage reporter
+   from the indexed deadline table; measured live it publishes nothing, which is
+   the healthy reading -- of the 80 pending deadlines, **0** were due, because
+   the one-second sweep retires them faster than the reporter looks. Both clear
+   their reading when the queue empties rather than holding a stale age.
 
 ### T23: Make `yieldPerKm` a number rather than a constant zero
 
