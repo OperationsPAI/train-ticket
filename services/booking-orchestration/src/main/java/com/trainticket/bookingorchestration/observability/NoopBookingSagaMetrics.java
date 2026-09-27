@@ -24,6 +24,11 @@ public class NoopBookingSagaMetrics implements BookingSagaMetrics {
     }
 
     @Override
+    public void observeOldestDueStepAge(java.util.Optional<Duration> age) {
+        // No metrics endpoint is configured for this process.
+    }
+
+    @Override
     public void transition(Stage stage, Outcome outcome, ReasonCode reasonCode) {
         // No metrics endpoint is configured for this process.
     }
