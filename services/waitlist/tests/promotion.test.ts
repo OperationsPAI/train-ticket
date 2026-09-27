@@ -5,6 +5,7 @@ import { HttpJourneyOrderClient, InMemoryWaitlistRepository, WaitlistApplication
 import { HttpFarePricingClient, HttpOfferManagementClient, PromotionOrchestrator, UpstreamStateNotReadyError, type CapacityAvailabilityClient, type FarePricingClient, type JourneyOrderClient, type OfferManagementClient, type WaitlistCapacityFreed } from "../src/promotion.js";
 import type { WaitlistMetricRecorder, WaitlistPromotionOutcome, WaitlistPromotionReasonCode } from "../src/metrics.js";
 import { WaitlistEntry } from "../src/domain.js";
+import type { OrderFacts, WaitlistFulfillmentClient } from "../src/fulfillment.js";
 
 const CAPACITY_RELEASE_REF = "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c123";
 
@@ -453,4 +454,61 @@ test("a failed promotion call records the bounded failed outcome", async () => {
 
   assert.deepEqual(recorded.map((point) => point.outcome), ["claimed", "fare_quoted", "offer_created", "failed"]);
   assert.equal(recorded.at(-1)?.reasonCode, "other");
+});
+
+
+/** The fulfillment client's only job here: report the promoted order terminal. */
+class StubFulfillment implements WaitlistFulfillmentClient {
+  async getOrder(orderId: string): Promise<OrderFacts> {
+    return { orderId, accountId: "acc", offerId: "off", status: "CANCELLED", riskClear: true, travelerRefs: ["t1"], segmentRefs: ["seg"], amount: { currency: "CNY", minorUnits: 10_750 } };
+  }
+  async findSaga(): Promise<undefined> { return undefined; }
+  async requestReservation(): Promise<never> { throw new Error("unexpected reservation request"); }
+  async getReservation(): Promise<undefined> { return undefined; }
+  async createPayment(): Promise<never> { throw new Error("unexpected payment create"); }
+  async getPayment(): Promise<never> { throw new Error("unexpected payment read"); }
+  async findPayment(): Promise<undefined> { return undefined; }
+  async capturePayment(): Promise<never> { throw new Error("unexpected payment capture"); }
+  async cancelPayment(): Promise<undefined> { return undefined; }
+  async releaseCapacity(): Promise<void> {}
+  async cancelOrder(): Promise<void> {}
+  async issueEntitlement(): Promise<never> { throw new Error("unexpected entitlement issue"); }
+}
+
+test("a failed promotion is not handed the same credit again on the next tick", async () => {
+  // A promotion whose order ends terminal returns its credit to the pool and the
+  // entry to the queue. Measured on the resident release, the one-second
+  // promotion tick then handed that same credit straight back to the same entry,
+  // which created and cancelled an order every half minute for the whole thirty
+  // minute window. The credit must still reach the pool, but not this entry
+  // immediately.
+  let now = new Date("2026-01-01T00:00:00.000Z");
+  const repository = new InMemoryWaitlistRepository();
+  const publisher = new InMemoryEventPublisher();
+  const service = new WaitlistApplicationService(
+    repository,
+    publisher,
+    new StubFarePricing(),
+    new StubCapacity(),
+    new StubJourneyOrder(),
+    () => now,
+    new StubOfferManagement(),
+    undefined,
+    new StubFulfillment(),
+  );
+  const entry = await service.join({ accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "SECOND", loyaltyTier: "PLATINUM", tripCount: 0, daysBefore: 20 });
+
+  const promoted = await service.handleCapacityFreed(capacityEvent());
+  assert.equal(promoted.promoted[0]?.status, "MATCHING");
+
+  // The order the promotion created comes back terminal, so the entry requeues.
+  const queued = await service.handleJourneyOrderCancelled(`ord-${entry.waitlistRequestId}`);
+  assert.equal(queued?.status, "QUEUED");
+
+  now = new Date(now.getTime() + 1_000);
+  assert.equal(await repository.claimNextPromotion(now), undefined, "the same credit must not be re-claimed on the next tick");
+
+  now = new Date(now.getTime() + 5 * 60 * 1000);
+  const reclaimed = await repository.claimNextPromotion(now);
+  assert.equal(reclaimed?.entryId, entry.waitlistRequestId, "the entry is promotable again once the backoff has passed");
 });
