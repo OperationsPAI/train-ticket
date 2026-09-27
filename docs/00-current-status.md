@@ -55,6 +55,7 @@ to one and back.
 
 | Check | Result | Evidence |
 |---|---|---|
+| Ten minute window at revision 489, one whole diurnal cycle | 275189 requests and 31810 journeys, peak minute 6050 journeys and trough minute 887, **0 unexpected HTTP errors and 0 failed journeys** in every minute; the recorder read `written=585546 dropped=0` and the dead-letter population was unchanged | `/tmp/sweep/acc489.cur.jsonl` |
 | Ten minute window at revision 488, one whole diurnal cycle | 250625 requests and 29090 journeys, peak minute 4245 journeys and trough minute 1563, **0 unexpected HTTP errors and 0 failed journeys** in every minute, including the minutes after a restart -- which used to carry two boarding refusals and one change 500 -- and the dead-letter population unchanged | `/tmp/sweep/acc488.cur.jsonl` |
 | Ten minute window at revision 483, one whole diurnal cycle | 239925 requests and 27502 journeys, peak minute 4138 journeys and trough minute 1428, **0 unexpected HTTP errors and 0 failed journeys** in every minute; the dead-letter population unchanged across the window and every consumer group within 27 entries of its stream's head | `/tmp/sweep/acc483.*.jsonl` |
 | Ten minute window at revision 481, one whole diurnal cycle | 249230 requests and 28815 journeys, peak minute 4242 journeys and trough minute 1484, **0 unexpected HTTP errors and 0 failed journeys** in every minute; the dead-letter population was unchanged across the window, every consumer group at zero or one entry of lag | `/tmp/sweep/acc481.cur.jsonl` |
