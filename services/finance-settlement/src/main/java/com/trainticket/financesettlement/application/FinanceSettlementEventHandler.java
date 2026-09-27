@@ -246,6 +246,7 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
         String channelStatementId = text(payload, "channelStatementId");
         ChannelStatementProjection existing = projections.findChannelStatement(channelStatementId).orElse(null);
         Currency currency = Currency.getInstance(text(payload, "currency"));
+        String status = text(payload, "status");
         // A freeze that arrives before any generation has nothing to merge from,
         // and the column is NOT NULL; the announcement's own instant is the
         // honest answer for a statement whose generation this consumer never saw.
@@ -253,6 +254,17 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
         Instant generatedAt = mergeInstant(payload, "generatedAt", existing == null ? null : existing.generatedAt());
         if (generatedAt == null) {
             generatedAt = frozenAt != null ? frozenAt : envelope.occurredAt();
+        }
+        boolean announcesFreeze = optionalText(payload, "frozenAt").isPresent();
+        if (existing != null && existing.frozenAt() != null && !announcesFreeze) {
+            // The two announcements are published in one relay pass, so with
+            // more than one consumer they can be applied in either order, and
+            // the projection has to be monotonic: a statement that is frozen
+            // stays frozen. Measured at revision 508 -- the frozen statement was
+            // stored GENERATED with its frozenAt null, because the generation
+            // was applied after it.
+            status = existing.status();
+            frozenAt = existing.frozenAt();
         }
         projections.saveChannelStatement(new ChannelStatementProjection(
             channelStatementId,
@@ -265,7 +277,7 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             mergeMoney(payload, "grossRefundAmount", existing == null ? null : existing.grossRefundAmount(), currency),
             mergeMoney(payload, "feeAmount", existing == null ? null : existing.feeAmount(), currency),
             text(payload, "statementHash"),
-            text(payload, "status"),
+            status,
             generatedAt,
             frozenAt,
             envelope.eventId()
