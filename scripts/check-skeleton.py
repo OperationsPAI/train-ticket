@@ -149,6 +149,33 @@ def java_contract_check_class(service_root: Path) -> str:
     return f"{package_name}.ApplicationContractCheck"
 
 
+def python_has_pytest(interpreter: Path) -> bool:
+    """Whether this interpreter can run the tests this script is about to ask for.
+
+    A service's `.venv` is normally the right interpreter, and the script prefers
+    it. A venv that exists but was never given the service's dev group cannot run
+    pytest at all, and failing the whole check on that says nothing about the
+    service: measured on 2026-09-27, `services/reporting/.venv` had no pytest
+    while the other five Python services did, and the index it would have come
+    from answered 403, so the sync could not repair it here. The fallback below
+    runs the same tests with the interpreter the check itself runs under, which
+    is what the branch without a venv already does.
+    """
+    try:
+        result = subprocess.run(
+            [str(interpreter), "-c", "import pytest"],
+            cwd=interpreter.parents[1],
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    if result.returncode != 0:
+        print(f"note: {interpreter} cannot import pytest; using {sys.executable} for its tests")
+        return False
+    return True
+
+
 def run_available_language_checks(services: list[dict], strict: bool) -> None:
     if require_tool("go", strict):
         for service in services:
@@ -168,7 +195,7 @@ def run_available_language_checks(services: list[dict], strict: bool) -> None:
                 require_tool("uv", True)
                 run(["uv", "sync"], service_root)
                 run(["uv", "run", "python", *test_args], service_root)
-            elif (service_root / ".venv/bin/python").is_file():
+            elif (service_root / ".venv/bin/python").is_file() and python_has_pytest(service_root / ".venv/bin/python"):
                 run([str(service_root / ".venv/bin/python"), *test_args], service_root)
             else:
                 env = os.environ.copy()
