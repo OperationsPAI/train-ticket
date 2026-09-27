@@ -459,6 +459,10 @@ class CorporateTravelService:
     publisher: EventPublisher = field(default_factory=InMemoryEventPublisher)
     repository: InMemoryCorporateTravelRepository = field(default_factory=InMemoryCorporateTravelRepository)
     unit_of_work: Callable[[], Iterator[None]] = null_unit_of_work
+    # Resolves a stored `priceRef.ruleSetId` against fare-pricing. Optional, so a
+    # service built without a fare-pricing to ask -- an isolated unit test --
+    # keeps working; the deployed service always has one.
+    rule_set_exists: Callable[[str, str | None], bool] | None = None
 
     def create_agreement(
         self,
@@ -477,6 +481,21 @@ class CorporateTravelService:
     ) -> CorporateAgreementResult:
         with self.unit_of_work():
             agreement_id = prefixed_id("agr")
+            price_reference = AgreementPriceRef(
+                fare_rule_refs=tuple(str(ref) for ref in price_ref.get("fareRuleRefs", ())),
+                rule_set_id=_optional_text(price_ref.get("ruleSetId")),
+                rule_set_version=_optional_text(price_ref.get("ruleSetVersion")),
+            )
+            # The price reference is folded into the agreement's digest and used
+            # to price its travel, so a rule set id that names nothing is a price
+            # basis that cannot be recomputed. Measured at revision 493: 127,064
+            # ACTIVE agreements carried `rs-<uuid8>` values no published rule set
+            # matched, because nothing asked.
+            if price_reference.rule_set_id is not None and self.rule_set_exists is not None:
+                if not self.rule_set_exists(price_reference.rule_set_id, correlation_id):
+                    raise CorporateTravelError(
+                        f"price reference names a fare rule set that does not exist: {price_reference.rule_set_id}"
+                    )
             agreement = CorporateAgreement(
                 agreement_id=agreement_id,
                 corporate_id=corporate_id,
@@ -487,11 +506,7 @@ class CorporateTravelService:
                     starts_at=parse_rfc3339(str(effective_window["startsAt"])),
                     ends_at=parse_rfc3339(str(effective_window["endsAt"])),
                 ),
-                price_ref=AgreementPriceRef(
-                    fare_rule_refs=tuple(str(ref) for ref in price_ref.get("fareRuleRefs", ())),
-                    rule_set_id=_optional_text(price_ref.get("ruleSetId")),
-                    rule_set_version=_optional_text(price_ref.get("ruleSetVersion")),
-                ),
+                price_ref=price_reference,
                 monthly_credit_limit=money_from_mapping(monthly_credit_limit),
                 billing_calendar=BillingCalendar(
                     period=str(billing_calendar["billingPeriod"]),
