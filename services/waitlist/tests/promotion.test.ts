@@ -512,3 +512,65 @@ test("a failed promotion is not handed the same credit again on the next tick", 
   const reclaimed = await repository.claimNextPromotion(now);
   assert.equal(reclaimed?.entryId, entry.waitlistRequestId, "the entry is promotable again once the backoff has passed");
 });
+
+test("the promotion re-quotes with the pricing inputs the customer's guarantee was based on", async () => {
+  // fare-pricing prices from the request: the same segment and class quote at
+  // 28750 without the distance and 16979 with it, so a promotion that omitted it
+  // produced an offer above every authorized amount and the guarantee guard
+  // parked the entry. Measured on the resident release, that is why no waitlist
+  // entry reached FULFILLED.
+  const originalFetch = globalThis.fetch;
+  const quoteBodies: Array<Record<string, unknown>> = [];
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/api/v1/fare-quotes") && init?.body) {
+      quoteBodies.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      return Response.json({ quoteId: "fq-promotion" }, { status: 201 });
+    }
+    if (url.endsWith("/api/v1/offers")) {
+      return Response.json({ offerId: "off-promotion", offerVersion: 1, expiresAt: "2026-01-01T00:10:00.000Z", total: { currency: "CNY", minorUnits: 10_000 } }, { status: 201 });
+    }
+    if (url.endsWith("/api/v1/journey-orders")) {
+      return Response.json({ orderId: "ord-promotion", monetarySummary: { payableTotal: { currency: "CNY", minorUnits: 10_000 } } }, { status: 201 });
+    }
+    return Response.json({ error: "unexpected" }, { status: 500 });
+  }) as typeof fetch;
+  try {
+    const repository = new InMemoryWaitlistRepository();
+    const entry = WaitlistEntry.create({
+      accountId: "acc", travelerRefs: ["t1"], segmentRef: "seg", departureDate: "2026-07-20", seatClass: "BUSINESS_CLASS",
+      scheduledServiceRef: "seg", interval: { fromSeq: 0, toSeq: 1 }, stopSequenceVersion: "segment:seg",
+      priority: { loyaltyTier: "PLATINUM", tripCount: 0, daysBefore: 20 },
+      pricingContext: { productCode: "rail-standard", channel: "MOBILE", distanceKm: 233, departureTime: "2026-07-20T03:00:00Z" },
+      deadline: "2026-01-01T00:30:00.000Z",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+    await repository.add(entry);
+    const service = new WaitlistApplicationService(
+      repository,
+      new InMemoryEventPublisher(),
+      new HttpFarePricingClient("http://fare-pricing", "WEB"),
+      new StubCapacity(),
+      new StubJourneyOrder(),
+      () => new Date("2026-01-01T00:00:00.000Z"),
+      new StubOfferManagement(),
+      undefined,
+      new StubFulfillment(),
+    );
+
+    await service.handleCapacityFreed(capacityEvent({ seatClass: "BUSINESS_CLASS" }));
+
+    assert.equal(quoteBodies.length, 1);
+    assert.deepEqual(quoteBodies[0], {
+      travelerRefs: ["t1"],
+      channel: "MOBILE",
+      segmentRefs: ["seg"],
+      seatClass: "BUSINESS_CLASS",
+      productCode: "rail-standard",
+      distanceKm: 233,
+      departureTime: "2026-07-20T03:00:00Z",
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
