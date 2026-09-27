@@ -5,7 +5,7 @@ Last verified: 2026-09-27, Asia/Beijing.
 ## Runtime
 
 The resident Helm release is `train-ticket` in namespace `train-ticket`,
-revision **459**.
+revision **470**.
 Its values come from one file, `deploy/helm/train-ticket/values.yaml`: the
 registry, the `local-path` storage class, the central telemetry store, the
 resident exporters, the load generator settings and the `loadgen-resident-state`
@@ -99,11 +99,21 @@ of `events:capacity-availability` -- every consumer group on those streams read,
 parsed, deduplicated and acknowledged a second copy of that share.
 
 The Java and Rust platform kits now elect one publisher per database with a
-session advisory lock; the Go kit's `DBTX` interface offers no session to hold
-one, so it still relays from every replica, which its 250 millisecond interval
-bounds at the 2 to 4 percent measured on `events:provider-integration` and
-`events:seat-assignment`. Measured at revision 401, all four streams carry zero
-duplicates.
+session advisory lock. The Go kit could not: its `DBTX` interface offers no
+session to hold one, and it was left relaying from every replica behind a note
+that its 250 millisecond interval bounded the damage "at the 2 to 4 percent
+measured on `events:provider-integration` and `events:seat-assignment`". That
+bound was wrong, and the note hid it. Measured on 2026-09-27, **999 of the last
+1500 entries** on `events:provider-integration` and **993 of 1500** on
+`events:seat-assignment` carried an event id the stream already had, and
+`events:payment` carried **885 of 2000** -- the payment service built its own
+relay rather than using the kit's, so every replica ran it too. Every group
+reading those three streams parsed, deduplicated and acknowledged each duplicate.
+
+Both halves are fixed: the Go relay now takes the same session advisory lock on
+a connection of its own (every Go service passes the `*pgxpool.Pool` the lock
+needs), and payment uses the kit's relay. Measured after: **0 duplicate entries
+of 28034 sampled across all 37 streams**.
 
 Two earlier reports go with this. The Rust relay opened and discarded its
 leadership connection on every poll, which at six replicas and a fifty
@@ -268,20 +278,20 @@ all of them share. Redis is single-threaded, and on this release it sits at a
 **whole core** through every burst while each group's own lag reads zero -- the
 signature of consumers waiting on the server, not on their handlers.
 
-What it was spending its thread on, measured over thirty seconds at revision
-456, with `INFO commandstats` sampled twice:
+What it was spending its thread on, with `INFO commandstats` sampled twice over
+thirty seconds. The first number is revision 456, before this pass; the second is
+revision 470, after it:
 
-| Command | Per second | Why |
-|---|---|---|
-| `xreadgroup` | 6928 | every consumer's read, and a blocking read that finds nothing still costs one |
-| `xack` | 3691 | one per delivered event per consumer group |
-| `xpending` | 2028 | one per delivered message, to learn its delivery count |
-| `xautoclaim` | 4896 before this pass, 306 after | a pending sweep on every poll iteration |
-| `xadd` | 950 | the publishes themselves |
+| Command | Before | After | Why it cost that |
+|---|---|---|---|
+| `xreadgroup` | 6928 | 3400 | every consumer's read; a blocking read that finds nothing still costs one |
+| `xack` | 3691 | 5447 | one per delivered event per consumer group |
+| `xpending` | 2028 | under 100 | one per delivered message, to learn a delivery count nothing read |
+| `xautoclaim` | 4896 | 250 | a pending sweep on every poll iteration |
+| `xadd` | 950 | 1800 | the publishes themselves, inflated before by the duplicate relay publication below |
+| **total** | **21376** | **about 11700** | |
 
-Four changes came out of that, one commit each, and they cut the release from
-**21376 to roughly 13000 commands a second** and Redis from a pinned core to
-0.4 to 0.7:
+Five changes came out of that, one commit each:
 
 1. The TypeScript, Python and Java kits blocked on an idle read for a hundred
    milliseconds and the Go and Rust kits for two seconds. A blocking read is
@@ -298,6 +308,16 @@ Four changes came out of that, one commit each, and they cut the release from
    delivered message and passed it to a method that never read it.
 4. A poll now reads five hundred entries instead of a hundred, because one read
    that returns five hundred costs one command where five reads cost five.
+5. `XACK` is issued once per read batch in all five kits instead of once per
+   entry, and the per-delivery `XPENDING` is gone from the Go, Python and Java
+   kits -- each asked Redis for a delivery count on every message and used it
+   only on the paths that decide something.
+
+`xack` is the one number that did not fall, and the reason is worth recording:
+its count is the number of *delivery rounds that carried anything*, not the
+number of entries. A reader that is keeping up gets one to three entries per
+poll, so one XACK per batch is still one XACK per entry. Cutting it further means
+holding entries longer to batch them, which trades latency for commands.
 
 Separately, `reporting` alone held **890** of the release's 1900 Redis
 connections: one consumer per stream is one connection parked in a blocking
