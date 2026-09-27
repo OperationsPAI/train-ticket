@@ -703,6 +703,18 @@ confirmation is not, and the reason is measured to the seat in item 6.
    The load generator was scaled back to one afterwards, and the acceptance window
    after it is clean.
 
+   The fixture's own by-product, recorded rather than hidden: releasing a Confirmed
+   hold out of band leaves its purchase's order CONFIRMED while the seat it held
+   is sold to the waitlist customer. That is what a capacity release without a
+   cancellation is, and it is the state the fixture needs -- capacity cannot tell
+   an operator's release from a cancellation's. The reconciliation is what would
+   surface it if it mattered, the released hold's allocation is RELEASED with it,
+   and the order's own post-sales paths handle a hold that is already gone (the
+   release wait and its limit are T19.8's repair). The one thing the fixture did
+   leave behind is a post-sales case opened by hand with an incomplete scope: it
+   answers `ADJUSTMENT_QUOTE_UNAVAILABLE` and stays OPENED, inert to every journey
+   the workload runs, and post-sales has no reject endpoint to terminalise it.
+
 ### T05: Prove durable event recovery
 
 Status: **closed**, revision 500. The three items are covered by live tests run
