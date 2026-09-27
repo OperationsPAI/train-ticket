@@ -10,6 +10,7 @@ import (
 
 	"github.com/trainticket/greenfield/platform/go-kit/ids"
 	kitmsg "github.com/trainticket/greenfield/platform/go-kit/messaging"
+	"github.com/trainticket/greenfield/services/travel-insurance/config"
 	"github.com/trainticket/greenfield/services/travel-insurance/domain"
 )
 
@@ -69,26 +70,17 @@ func (s *InsuranceService) seedProducts() {
 	now := s.clock.Now()
 	start := now.Add(-24 * time.Hour)
 	end := now.AddDate(2, 0, 0)
-	premiumDelay, _ := domain.NewMoney("CNY", 300)
-	limitDelay, _ := domain.NewMoney("CNY", 3000)
-	premiumCancellation, _ := domain.NewMoney("CNY", 1)
-	limitCancellation, _ := domain.NewMoney("CNY", 1)
-	premiumAccident, _ := domain.NewMoney("CNY", 500)
-	limitAccident, _ := domain.NewMoney("CNY", 50000000)
-	premiumBaggage, _ := domain.NewMoney("CNY", 200)
-	limitBaggage, _ := domain.NewMoney("CNY", 200000)
-	for _, p := range []domain.InsuranceProduct{
-		mustPublishedProduct("ip-delay-v1", domain.ProductDelayInsurance, "v1", premiumDelay, limitDelay, start, end, now),
-		mustPublishedProduct("ip-cancellation-v1", domain.ProductCancellationInsurance, "v1", premiumCancellation, limitCancellation, start, end, now),
-		mustPublishedProduct("ip-accident-v1", domain.ProductAccidentInsurance, "v1", premiumAccident, limitAccident, start, end, now),
-		mustPublishedProduct("ip-baggage-v1", domain.ProductBaggageInsurance, "v1", premiumBaggage, limitBaggage, start, end, now),
-	} {
-		s.products[productKey(p.ProductCode, p.Version)] = p
+	catalogue, err := config.Load()
+	if err != nil {
+		panic(err)
+	}
+	for _, item := range catalogue.Products {
+		s.products[productKey(item.Code, item.Version)] = mustPublishedProduct(item, start, end, now)
 	}
 }
 
-func mustPublishedProduct(id string, code domain.ProductCode, version string, premium, limit domain.Money, start, end, now time.Time) domain.InsuranceProduct {
-	p, err := domain.NewInsuranceProduct(id, code, version, premium, limit, start, end)
+func mustPublishedProduct(item config.Product, start, end, now time.Time) domain.InsuranceProduct {
+	p, err := domain.NewInsuranceProduct(item.ProductID, item.Code, item.Version, item.Premium, item.CoverageLimit, start, end)
 	if err != nil {
 		panic(err)
 	}
