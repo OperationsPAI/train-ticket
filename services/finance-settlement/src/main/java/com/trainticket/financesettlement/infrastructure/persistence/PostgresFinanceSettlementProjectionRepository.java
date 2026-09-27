@@ -385,8 +385,16 @@ public class PostgresFinanceSettlementProjectionRepository implements FinanceSet
                   gross_payment_currency = EXCLUDED.gross_payment_currency, gross_payment_amount = EXCLUDED.gross_payment_amount,
                   gross_refund_currency = EXCLUDED.gross_refund_currency, gross_refund_amount = EXCLUDED.gross_refund_amount,
                   fee_currency = EXCLUDED.fee_currency, fee_amount = EXCLUDED.fee_amount,
-                  statement_hash = EXCLUDED.statement_hash, status = EXCLUDED.status,
-                  frozen_at = EXCLUDED.frozen_at, source_event_id = EXCLUDED.source_event_id,
+                  statement_hash = EXCLUDED.statement_hash,
+                  -- The generation and the freeze are published in one relay
+                  -- pass and applied by whichever replica gets to them, so the
+                  -- two writes can interleave. The decision has to be in the
+                  -- statement itself: a row that is already frozen stays frozen,
+                  -- and a null frozen_at never overwrites one.
+                  status = CASE WHEN channel_statements.frozen_at IS NOT NULL AND EXCLUDED.frozen_at IS NULL
+                                THEN channel_statements.status ELSE EXCLUDED.status END,
+                  frozen_at = COALESCE(channel_statements.frozen_at, EXCLUDED.frozen_at),
+                  source_event_id = EXCLUDED.source_event_id,
                   updated_at = now()
                 """,
             s.channelStatementId(), s.channel(), s.statementDate(), s.currency(), s.seedVersion(), s.lineCount(),
