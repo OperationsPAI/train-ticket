@@ -12,7 +12,13 @@ import pytest
 from opentelemetry import metrics
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 
-from train_ticket_platform.metrics import POOL_NAME, metric_export_interval_millis, register_pool_metrics
+from train_ticket_platform.metrics import (
+    POOL_NAME,
+    OrderFunnel,
+    metric_export_interval_millis,
+    order_funnel,
+    register_pool_metrics,
+)
 from train_ticket_platform.observability import init_opentelemetry_metrics
 
 
@@ -121,3 +127,31 @@ def test_runtime_metrics_publish_python_ecosystem_names(metric_reader):
     collected = collected_metrics(metric_reader)
     for name in ("process.memory.usage", "process.thread.count", "cpython.gc.collections"):
         assert name in collected, f"missing {name}; collected {sorted(collected)}"
+
+
+def test_order_funnel_transitions_carry_only_the_contract_vocabularies(metric_reader):
+    # The funnel is shared with the Java services, so it has to arrive under the
+    # same name and the same three labels. Both an unknown channel and one the
+    # caller passes in an unexpected case collapse to `other` rather than
+    # becoming a new series, which is what keeps the label set bounded.
+    funnel = order_funnel(metrics.get_meter("python-kit-test"))
+    funnel.transition("quote", "attempted", "WEB")
+    funnel.transition("quote", "accepted", "web")
+    funnel.transition("quote", "rejected", "acme-partner-7")
+
+    collected = collected_metrics(metric_reader)
+    metric = collected["train_ticket.order.transitions"]
+    points = {
+        (point.attributes["stage"], point.attributes["outcome"], point.attributes["channel"]): point.value
+        for point in metric.data.data_points
+    }
+    assert points[("quote", "attempted", "web")] == 1
+    assert points[("quote", "accepted", "web")] == 1
+    assert points[("quote", "rejected", "other")] == 1
+    assert metric.unit == "{transition}"
+
+
+def test_order_funnel_without_a_meter_is_a_no_op():
+    # A service run without an exporter must still start; the instrument is
+    # simply absent rather than an exception on the request path.
+    OrderFunnel(None).transition("search", "attempted", "web")
