@@ -1138,11 +1138,18 @@ class MetricAggregator:
             for value, attributed_amount in event_allocations.items():
                 bucket = grouped.setdefault(
                     (value, event.amount.currency),
-                    {"revenue": Decimal("0.00"), "count": 0, "distance": Decimal("0"), "ancillary": 0, "insurance": 0},
+                    {"revenue": Decimal("0.00"), "count": 0, "distance": Decimal("0"),
+                     "revenue_with_distance": Decimal("0.00"), "ancillary": 0, "insurance": 0},
                 )
                 bucket["revenue"] += attributed_amount
                 bucket["count"] += 1
-                bucket["distance"] += (distance_km or Decimal("0")) * Decimal(str(values.count(value))) / len(values)
+                if distance_km:
+                    bucket["distance"] += distance_km * Decimal(str(values.count(value))) / len(values)
+                    # The amount that belongs with that distance. A row can mix
+                    # captures whose order carried a distance with captures whose
+                    # order did not, and dividing the whole row's revenue by the
+                    # known part of its distance describes neither.
+                    bucket["revenue_with_distance"] += attributed_amount
                 bucket["ancillary"] += int(ancillary_attached)
                 bucket["insurance"] += int(insurance_attached)
         all_items = tuple(
@@ -1214,7 +1221,8 @@ class MetricAggregator:
         revenue = Decimal(values["revenue"])
         count = int(values["count"])
         distance = Decimal(values["distance"])
-        yield_per_km = Decimal("0.00") if distance == 0 else (revenue / distance).quantize(Decimal("0.01"))
+        revenue_with_distance = Decimal(values.get("revenue_with_distance", revenue))
+        yield_per_km = Decimal("0.00") if distance == 0 else (revenue_with_distance / distance).quantize(Decimal("0.01"))
         return RevenueItem(
             dimension=dimension,
             value=value,
