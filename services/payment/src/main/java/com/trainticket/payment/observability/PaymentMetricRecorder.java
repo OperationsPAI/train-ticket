@@ -36,8 +36,11 @@ public interface PaymentMetricRecorder {
      * keeping up: an intent past its expiry is money the customer may still be
      * authorized against, and the only durable evidence of the wait was the row
      * itself. Rebuilt from that row on every sweep, so a restart republishes the
-     * same reading rather than resetting it, and a sweep with nothing due leaves
-     * the series to go stale instead of publishing a zero that reads as health.
+     * same reading rather than resetting it.
+     *
+     * <p>An empty backlog clears the reading rather than holding the last one:
+     * a stale positive age would report a queue that is not there. Nothing is
+     * published at all in that case, which is the house rule for these gauges.
      */
-    void oldestDueIntentAge(java.time.Duration age);
+    void oldestDueIntentAge(java.util.Optional<java.time.Duration> age);
 }

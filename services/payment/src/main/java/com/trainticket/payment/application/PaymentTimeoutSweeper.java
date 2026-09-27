@@ -85,8 +85,7 @@ public final class PaymentTimeoutSweeper {
         }
         try {
             Instant now = clock.instant();
-            intents.findOldestDueExpiry(now)
-                .ifPresent(due -> metrics.oldestDueIntentAge(Duration.between(due, now)));
+            metrics.oldestDueIntentAge(intents.findOldestDueExpiry(now).map(due -> Duration.between(due, now)));
         } catch (RuntimeException failure) {
             // The gauge is an observation, not a command: a read that fails must
             // not stop the sweep.
