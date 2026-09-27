@@ -85,6 +85,18 @@ public class PostgresPaymentIntentRepository implements PaymentIntentRepository 
     }
 
     @Override
+    public java.util.Optional<Instant> findOldestDueExpiry(Instant now) {
+        return jdbc.query(
+            "SELECT min(payment_expires_at_immutable(data)) AS due FROM payment_intent_snapshots "
+                + "WHERE payment_expires_at_immutable(data) <= ?::timestamp AND data->>'status' IN ('CREATED','AUTHORIZED')",
+            rs -> rs.next() && rs.getTimestamp("due") != null
+                ? java.util.Optional.of(rs.getTimestamp("due").toInstant())
+                : java.util.Optional.empty(),
+            now.toString()
+        );
+    }
+
+    @Override
     public void save(PaymentIntent intent) {
         long newVersion = snapshots.save(intent.paymentIntentId(), intent.version(), JacksonPaymentJson.intentSnapshot(intent, objectMapper));
         intent.withVersion(newVersion);
