@@ -27,6 +27,8 @@ __all__ = [
     "POOL_NAME",
     "metrics_enabled",
     "metric_export_interval_millis",
+    "order_funnel",
+    "OrderFunnel",
     "register_pool_metrics",
 ]
 
@@ -139,3 +141,71 @@ def register_pool_metrics(meter: Meter, pool: Any, pool_name: str = POOL_NAME) -
         description="The time it took to obtain an open connection from the pool.",
         unit="s",
     )
+
+
+# The order funnel's closed vocabularies, shared with the Java services that
+# publish the same counter. Every label value is a member of one of these sets or
+# the fallback `other`, so a series can never be named after a request, an order
+# or an exception message.
+ORDER_FUNNEL_STAGES = ("search", "quote", "order", "reservation", "payment", "ticket")
+ORDER_FUNNEL_OUTCOMES = ("attempted", "accepted", "rejected")
+ORDER_FUNNEL_CHANNELS = ("web", "mobile", "counter", "partner", "api")
+OTHER = "other"
+
+
+def _vocabulary(value: str | None, allowed: tuple[str, ...]) -> str:
+    if value is None:
+        return OTHER
+    normalized = value.strip().lower()
+    return normalized if normalized in allowed else OTHER
+
+
+class OrderFunnel:
+    """Publishes `train_ticket.order.transitions` for the stages one service owns.
+
+    A reader takes `rate()` over it and gets the funnel of a stage by outcome and
+    purchase channel. The counter is a plain synchronous instrument: the
+    transition has already happened when it is recorded, so there is nothing for
+    an observable to read.
+
+    One stage records `attempted` once and then exactly one of `accepted` or
+    `rejected`, which is what keeps `attempted = accepted + rejected` for that
+    stage. Services that own no stage get the no-op instance `NOOP`.
+    """
+
+    def __init__(self, meter: Meter | None) -> None:
+        self._counter = (
+            None
+            if meter is None
+            else meter.create_counter(
+                name="train_ticket.order.transitions",
+                description="Order funnel transitions by stage, outcome and purchase channel.",
+                unit="{transition}",
+            )
+        )
+
+    def transition(self, stage: str, outcome: str, channel: str | None) -> None:
+        if self._counter is None:
+            return
+        self._counter.add(
+            1,
+            {
+                "stage": _vocabulary(stage, ORDER_FUNNEL_STAGES),
+                "outcome": _vocabulary(outcome, ORDER_FUNNEL_OUTCOMES),
+                "channel": _vocabulary(channel, ORDER_FUNNEL_CHANNELS),
+            },
+        )
+
+
+def order_funnel(meter: Meter | None = None, service_name: str | None = None) -> OrderFunnel:
+    """The funnel instrument for this process, or a no-op when metrics are off.
+
+    `service_name` is accepted so a caller can pass the name it already uses for
+    its other instruments; the meter's own scope name is what reaches the
+    backend, so both paths produce the same series.
+    """
+    if meter is None:
+        from .observability import meter as process_meter
+
+        meter = process_meter(service_name)
+    return OrderFunnel(meter)
