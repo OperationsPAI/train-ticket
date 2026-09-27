@@ -58,6 +58,20 @@ public class PostSalesExceptionHandler {
             Map.of("journeyOrderId", exception.journeyOrderId()));
     }
 
+    /**
+     * 409 rather than 500, for the same reason as the policy context above: the
+     * quote read failed at the transport, not the request, and the caller
+     * retries. Measured at revision 493 the alternative was one 500 in 1.28
+     * million requests, on an evaluate call that reached APPLIED two seconds
+     * later.
+     */
+    @ExceptionHandler(com.trainticket.postsales.application.AdjustmentQuoteUnavailableException.class)
+    public ResponseEntity<ApiError> handleAdjustmentQuoteUnavailable(
+            com.trainticket.postsales.application.AdjustmentQuoteUnavailableException exception, HttpServletRequest request) {
+        return error(HttpStatus.CONFLICT, "ADJUSTMENT_QUOTE_UNAVAILABLE", exception.getMessage(), request,
+            Map.of("journeyOrderId", exception.journeyOrderId()));
+    }
+
     @ExceptionHandler(OrderNotRefundableException.class)
     public ResponseEntity<ApiError> handleOrderNotRefundable(OrderNotRefundableException exception, HttpServletRequest request) {
         return error(HttpStatus.UNPROCESSABLE_ENTITY, "ORDER_NOT_REFUNDABLE", exception.getMessage(), request, Map.of());
