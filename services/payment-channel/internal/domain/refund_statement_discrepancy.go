@@ -345,7 +345,12 @@ func (s *ChannelStatement) Freeze(hash string, expected int64, now time.Time, op
 	s.FrozenAt = &t
 	s.Version++
 	s.UpdatedAt = t
-	s.addEvent("ChannelStatementFrozen", map[string]any{"channelStatementId": s.ChannelStatementID, "channel": s.Channel, "statementDate": s.StatementDate, "currency": s.Currency, "seedVersion": s.SeedVersion, "lineCount": s.LineCount, "statementHash": s.StatementHash, "status": s.Status, "frozenAt": t, "aggregateVersion": s.Version}, now, cause, corr)
+	// The freeze restates the statement's own facts rather than only the
+	// transition. A consumer that starts reading mid-stream never sees the
+	// generation, and finance projects this statement from whichever
+	// announcement reaches it -- so an event that carried identity and status
+	// alone left that projection with no amounts and no generation instant.
+	s.addEvent("ChannelStatementFrozen", map[string]any{"channelStatementId": s.ChannelStatementID, "channel": s.Channel, "statementDate": s.StatementDate, "currency": s.Currency, "seedVersion": s.SeedVersion, "lineCount": s.LineCount, "grossPaymentAmount": s.GrossPaymentAmount, "grossRefundAmount": s.GrossRefundAmount, "feeAmount": s.FeeAmount, "statementHash": s.StatementHash, "status": s.Status, "generatedAt": s.GeneratedAt, "frozenAt": t, "aggregateVersion": s.Version}, now, cause, corr)
 	return nil
 }
 func (s *ChannelStatement) PullEvents() []Event { ev := s.events; s.events = nil; return ev }
