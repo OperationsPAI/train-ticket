@@ -60,6 +60,7 @@ across currencies.
 | Event transport | `train_ticket.event.consumer.oldest_age` | Gauge, seconds | `event_stream`, `consumer_group` | Age of the oldest undelivered or pending entry. |
 | Event transport | `train_ticket.event.dlq.entries` | Gauge | `event_stream`, `consumer_group`, `event_type` | Current dead-letter population. |
 | Event transport | `train_ticket.event.transport.series` | Gauge | `kind` | Series the collector publishes (`group`, `dead_letter`) and what its own bound held back (`group_dropped`, `dead_letter_dropped`). |
+| Scheduled job | `train_ticket.scheduled_job.success_age` | Gauge, seconds | `job` | Seconds since the job last succeeded, rebuilt from durable run records. A job that has never succeeded publishes nothing rather than zero. |
 
 Every platform kit emits a smaller process-level transport set -- the subscriber
 and the outbox relay of each runtime, under the same names, units and closed
@@ -153,6 +154,7 @@ work is listed in [the repository TODO](../TODO.md#t18-complete-low-cardinality-
 | `train_ticket.wallet.*` | `wallet-promotion`, from its account, instrument and reversal snapshots. |
 | `train_ticket.notification.queue.*`, `.retries` | `notification`. Queue depth is maintained by a trigger on the delivery queue and read from that table, because a count over the queue itself is a scan of tens of millions of rows. |
 | `train_ticket.event.*` | `redis-state-collector`, one process for every stream. Its label set is as wide as the transport is, so it bounds its own output and publishes the bound it applied as `train_ticket.event.transport.series`. See [its README](../../tools/redis-state-collector/README.md). |
+| `train_ticket.scheduled_job.*` | Each service that runs a sweep or a scheduled job, from the durable record of what it did. `finance-settlement` reports `success_age` per job type out of `settlement_schedule_runs`. A sweep that stops is otherwise invisible: it publishes its results and nothing else, which is how the settlement scheduler sat unregistered for ten hours without a series to say so. |
 
 Java services additionally emit the smaller process-level transport set that
 the `train-ticket-transport` rules consume. Porting it to the Go, Python,
