@@ -72,12 +72,19 @@ func estateStatedIn(directory string) boardingEstate {
 		if name == "" || strings.HasPrefix(name, "#") {
 			continue
 		}
-		estate[domain.FulfillmentSource(strings.ToUpper(strings.TrimSpace(name)))] = struct{}{}
+		estate[readerNamed(name)] = struct{}{}
 	}
 	if len(estate) == 0 {
 		return estateOf(imageReaders)
 	}
 	return estate
+}
+
+// readerNamed resolves one entry of the roster. The roster is written the way an
+// operator writes it, so case and surrounding space are not what decides whether
+// a reader is on the estate.
+func readerNamed(name string) domain.FulfillmentSource {
+	return domain.FulfillmentSource(strings.ToUpper(strings.TrimSpace(name)))
 }
 
 func estateOf(readers []domain.FulfillmentSource) boardingEstate {
