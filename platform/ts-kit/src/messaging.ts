@@ -732,18 +732,29 @@ export class RedisEventSubscriber implements EventSubscriber {
       return;
     }
 
+    // Acknowledge the whole batch with one XACK rather than one per entry.
+    //
+    // Redis is single-threaded and `xack` was 4632 of its ~14600 commands a
+    // second on the resident release, one command per delivered event per
+    // consumer group. XACK takes any number of ids for the same stream and
+    // group, so a batch that acknowledges five hundred entries can cost one
+    // command instead of five hundred. Entries whose result is not "ack" still
+    // take the per-entry path, because retry and dead-letter each need their own
+    // bookkeeping.
+    const acknowledged: string[] = [];
     for (const [index, item] of batch.entries()) {
       const rawResult = results[index];
-      await this.finishEntry(
-        stream,
-        group,
-        consumerName,
-        item.entry,
-        item.envelope,
-        item.attempts,
-        rawResult === undefined ? "ack" : normalizeHandlerResult(rawResult),
-        failureReasonFromHandlerResult(rawResult),
-      );
+      const result = rawResult === undefined ? "ack" : normalizeHandlerResult(rawResult);
+      if (result === "ack") {
+        this.rememberConsumed(item.envelope.eventId);
+        acknowledged.push(item.entry[0]);
+        continue;
+      }
+      await this.finishEntry(stream, group, consumerName, item.entry, item.envelope, item.attempts, result, failureReasonFromHandlerResult(rawResult));
+    }
+    if (acknowledged.length > 0) {
+      await (this.redis as unknown as { xack: (stream: string, group: string, ...ids: string[]) => Promise<unknown> })
+        .xack(stream, group, ...acknowledged);
     }
   }
 
@@ -827,15 +838,24 @@ export class RedisEventSubscriber implements EventSubscriber {
     await this.finishEntry(stream, group, consumerName, entry, envelope, attempts, result, failureReason);
   }
 
+  /**
+   * Marks an event id as handled, bounded so a long-lived consumer cannot grow
+   * without limit. Shared by the per-entry and the batched acknowledge paths, so
+   * both dedupe identically.
+   */
+  private rememberConsumed(eventId: string): void {
+    this.consumedEventIds.add(eventId);
+    if (this.consumedEventIds.size > RedisEventSubscriber.CONSUMED_EVENT_CACHE_LIMIT) {
+      const oldest = this.consumedEventIds.values().next().value;
+      if (oldest !== undefined) this.consumedEventIds.delete(oldest);
+    }
+  }
+
   private async finishEntry(stream: string, group: string, consumerName: string, entry: StreamEntry, envelope: EventEnvelope, attempts: number, result: "ack" | "retry" | "dlq", failureReason: unknown): Promise<void> {
     const failureKey = `${stream}:${group}:${entry[0]}`;
     if (result === "ack") {
       this.handlerFailures.delete(failureKey);
-      this.consumedEventIds.add(envelope.eventId);
-      if (this.consumedEventIds.size > RedisEventSubscriber.CONSUMED_EVENT_CACHE_LIMIT) {
-        const oldest = this.consumedEventIds.values().next().value;
-        if (oldest !== undefined) this.consumedEventIds.delete(oldest);
-      }
+      this.rememberConsumed(envelope.eventId);
       await this.redis.xack(stream, group, entry[0]);
       return;
     }
