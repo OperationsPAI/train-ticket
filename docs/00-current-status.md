@@ -5,7 +5,7 @@ Last verified: 2026-09-28, Asia/Beijing.
 ## Runtime
 
 The resident Helm release is `train-ticket` in namespace `train-ticket`,
-revision **511**.
+revision **515**.
 Its values come from one file, `deploy/helm/train-ticket/values.yaml`: the
 registry, the `local-path` storage class, the central telemetry store, the
 resident exporters, the load generator settings and the `loadgen-resident-state`
@@ -53,6 +53,7 @@ to one and back.
 | Settlement schedule | `finance-settlement` runs the closed period's daily reconciliation and supplier settlement from a registered `@Scheduled` method. It carried `@ConditionalOnBean(DataSource.class)`, which Spring only honours reliably in auto-configuration: the class is scanned before the configuration that defines the DataSource, so the bean was skipped and the schedule never ran. |
 | Reconciliation attribution | A provider confirmation is attributed to its order through the local index and, when that index has not caught up or was trimmed, through the booking-orchestration segment booking itself. |
 | Channel statement | `finance-settlement` holds the channel side of the money. The freeze announcement carries the statement's own facts instead of only its transition, the projection merges it with the stored generation instead of demanding generation-only fields, and the upsert refuses to unfreeze a row the freeze already wrote. |
+| Channel reconciliation | The day's captures are compared with the channel's own statement lines, read from payment-channel 500 at a time and keyed by the payment intent both sides carry. Every statement is the closed day's, so a day is reconciled against the day's own account; each statement is read once, and the batch keeps its report and the entries that need attention rather than half a million rows. |
 | Reads that trail their announcement | A read that a just-consumed announcement promises is a wait rather than a rule violation. `travel-insurance` waits for the case or reference it announced to become visible -- five attempts 400 milliseconds apart inside the delivery -- and declares a transient failure only if it still cannot see it. |
 | Scheduled job age | `finance-settlement` publishes `train_ticket.scheduled_job.success_age` for its daily reconciliation and supplier settlement, rebuilt from the durable run table rather than held in memory, and the scrape's label allowlist keeps the `scheduled_job` split it is published with. |
 
@@ -60,6 +61,10 @@ to one and back.
 
 | Check | Result | Evidence |
 |---|---|---|
+| Five minute window at revision 515, after the channel reconciliation | 160929 requests and 13913 completed journeys, **0 unexpected HTTP errors and 0 failed journeys**; the loader's own tally reads `errors {}`, every dead-letter stream holds what it held before the pass, and no consumer group is more than 200 entries behind | the load generator's own record file, `/data/requests.jsonl` on `loadgen` |
+| The whole day 2026-09-26 reconciled line by line, revision 515 | 618650 channel lines read from three frozen statements and compared with the platform's receipts: **488414 entries, 488414 matched, variance 0.00, 0 exceptions** -- against the same day's earlier batch, which had 431530 entries and **0 matched** | `POST /api/v1/settlements/reconciliation/2026-09-26/run`; `reconciliation_batch_snapshots` |
+| The channel side of one real statement, revision 515 | `ChannelStatementIngestLiveTest` reads a deployed statement end to end: 165724 lines (133059 payment / 32665 refund), the payment sum equal to the statement's published gross payment and the refund sum to its gross refund, a second read recording nothing, and 200 sampled real captures joining their lines | the live test against the deployed payment-channel |
+| Scheduled job age, revision 511 | `train_ticket_scheduled_job_success_age_seconds` is scraped with its `scheduled_job` label for both `DAILY_RECONCILIATION` and `SUPPLIER_SETTLEMENT` on every `finance-settlement` replica | `prometheus` query at revision 511 |
 | Five minute window at revision 511, after the channel-statement and travel-insurance fixes | 176489 requests and 20230 journeys, **0 unexpected HTTP errors and 0 failed journeys**; every dead-letter stream holds exactly what it held before the pass (ancillary-service 2, booking-orchestration 1, capacity-availability 6, finance-settlement 5, journey-order 3, payment-channel 3) and no consumer group is more than 200 entries behind its stream | the load generator's own record file, `/data/requests.jsonl` on `loadgen` |
 | Travel insurance's two waits, revision 511 against the release before it | handler failures fell from about **40 a minute** to **3 in ten minutes**, and those three are one message whose case took minutes to reach APPLIED and which then succeeded; `events:journey-order:dlq` did not grow | `travel-insurance` pod log |
 | The channel statement through the API, revision 511 | three statements generated and frozen through `payment-channel` are stored **FROZEN** with their amounts and generation instants, `events:payment-channel:dlq` did not grow, and `ChannelStatementProjectionLiveTest` passes against the deployed PostgreSQL | `finance_settlement.channel_statements`; the live test |
@@ -756,6 +761,52 @@ same label contract, and the scheduled-job metric was added to the first and not
 the second: every scraped sample carried no `scheduled_job` label while the
 collector's own `/metrics` carried it. Both sides now name it, and a test asserts
 that every label the collector keeps survives the scrape.
+
+## The channel's own lines, read rather than published
+
+`ChannelStatementLineMatched` had a consumer and no producer, so finance's
+`channel_statement_lines` was empty and the daily reconciliation compared a
+day's captures with one statement-level total per channel: measured at revision
+500, the whole of 2026-09-26 came back as **431530 entries with 0 matched**. A
+statement is 34万行 on the measured channel-day and neither side should fan that
+out as one event per line, so finance reads what payment-channel already stores,
+500 lines a page by ordinal cursor.
+
+What the first real run taught, in order:
+
+- The batch died on its own size. With the channel side read line by line the
+  day held half a million entries, and PostgreSQL refused the snapshot: `total
+  size of jsonb array elements exceeds the maximum of 268435455 bytes`. The
+  snapshot now keeps the day's report and the entries that are not matched;
+  matched rows are a count. Snapshots written before it still read.
+- The key was the order, and it is not a reference both sides share. The platform
+  attributes a fare's capture to the journey order and an add-on's to the
+  ancillary item, while the channel knows only the payment intent and its own
+  channel order. Measured: 56,884 of 431,530 entries were amount mismatches and
+  **every one of them was an order with exactly two payment lines** against a
+  single capture. Keyed on the payment intent, all 431,530 captures matched.
+- The 56,884 channel lines that were then left over were change difference
+  payments: the channel settled them and the platform captured them, but finance
+  recognized the money as a change payment and returned before recording the
+  receipt. A change payment is a receipt too; migration 011 repairs the
+  historical days from the platform's own recognitions, which name both the
+  payment intent and the order it was recognized against.
+- The statement a closed day is reconciled against has to be the closed day's.
+  The generator was producing *today's* statement, and because a statement's
+  identity is the channel-day and generation reads the day's facts once, a
+  statement generated at 16:24 was frozen as the whole day's answer with only the
+  facts up to 16:24.
+
+After all four, the whole of 2026-09-26 reconciles: **488414 entries, 488414
+matched, variance 0.00, 0 exceptions**. Registering the reconciliation
+(`POST /api/v1/settlements/reconciliation/{date}/run`) is what made that
+verifiable: the scheduler only ever reconciles the day it is living through, and
+a period that has already been batch-reconciled can now be asked for again.
+
+What is deliberately not reconciled yet is the statement's refund side: its
+`REFUND` lines are recorded with their type and are not compared with the
+platform's refunds, which live in different projections under a different key.
+That is [T25](TODO.md#t25-match-the-refund-side-of-a-channel-statement).
 
 ## The resident round of 2026-09-26
 
