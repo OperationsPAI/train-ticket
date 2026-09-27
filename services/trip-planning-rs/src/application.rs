@@ -53,6 +53,19 @@ impl AppState {
         &self.order_funnel
     }
 
+    /// Build the state with an explicit order funnel.
+    ///
+    /// The funnel normally comes from the process-global meter, which is a no-op
+    /// until something installs an SDK provider. A test that has to read the
+    /// funnel's own output brings its own provider, and installing that globally
+    /// would make every other test in the same binary race with it, so the state
+    /// takes one here instead. See the two-identifier cardinality test in
+    /// `tests/api_test.rs`.
+    pub fn with_order_funnel(mut self, order_funnel: rust_kit::metrics::OrderFunnel) -> Self {
+        self.order_funnel = order_funnel;
+        self
+    }
+
     pub async fn save_itinerary(
         &self,
         itinerary_ref: &str,
