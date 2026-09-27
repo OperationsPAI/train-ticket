@@ -89,6 +89,16 @@ export type WaitlistEntrySnapshot = Readonly<{
   capacityReleaseIdempotencyKey?: string;
   journeyOrderIdempotencyKey?: string;
   capacitySegmentBookingId?: string;
+  /**
+   * Earliest instant this queued entry may be promoted again.
+   *
+   * A promotion whose order fails comes back here after the order is cancelled
+   * and the capacity credit is returned, and without this field it is handed the
+   * same credit on the next one-second promotion tick: measured on the resident
+   * release, one entry whose booking saga failed risk created and cancelled an
+   * order every half minute for the whole thirty minute window.
+   */
+  promotionRetryAfter?: string;
 }>;
 
 export type CreateWaitlistEntry = Readonly<{
@@ -153,6 +163,7 @@ export class WaitlistEntry {
     private readonly _capacityReleaseIdempotencyKey: string = uuidV7(),
     private _journeyOrderIdempotencyKey: string = uuidV7(),
     private readonly _capacitySegmentBookingId: string = `sb-${uuidV7()}`,
+    private _promotionRetryAfter: Date | null = null,
     private _loadedVersion = 0,
   ) {}
 
@@ -235,10 +246,12 @@ export class WaitlistEntry {
       snapshot.capacityReleaseIdempotencyKey,
       snapshot.journeyOrderIdempotencyKey,
       snapshot.capacitySegmentBookingId,
+      snapshot.promotionRetryAfter ? new Date(snapshot.promotionRetryAfter) : null,
     );
   }
 
   get status(): WaitlistStatus { return this._status; }
+  get promotionRetryAfter(): Date | null { return this._promotionRetryAfter; }
   get offeredAt(): Date | null { return this._offeredAt; }
   get offerExpiresAt(): Date | null { return this._offerExpiresAt; }
   get fareQuoteId(): string | undefined { return this._fareQuoteId; }
@@ -380,6 +393,15 @@ export class WaitlistEntry {
     this._status = "EXPIRED";
   }
 
+  /**
+   * Parks a queued entry until `until`, so a promotion that failed at its own
+   * booking is offered the next release rather than the same credit again.
+   */
+  deferPromotionRetry(until: Date): void {
+    this.assertStatus("QUEUED", "Only a queued waitlist entry can defer its next promotion");
+    this._promotionRetryAfter = until;
+  }
+
   returnToQueue(): void {
     this.assertStatus("MATCHING", "Only matching waitlist entries can return to the queue");
     this._status = "QUEUED";
@@ -446,6 +468,7 @@ export class WaitlistEntry {
       capacityReleaseIdempotencyKey: this._capacityReleaseIdempotencyKey,
       journeyOrderIdempotencyKey: this._journeyOrderIdempotencyKey,
       capacitySegmentBookingId: this._capacitySegmentBookingId,
+      promotionRetryAfter: this._promotionRetryAfter?.toISOString(),
     };
   }
 

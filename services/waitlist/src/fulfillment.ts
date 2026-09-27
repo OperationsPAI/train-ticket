@@ -18,6 +18,14 @@ export type ReservationFacts = Readonly<{ segmentBookingId: string; orderId: str
 export type PaymentFacts = Readonly<{ paymentIntentId: string; businessRef: string; payerRef: string; status: string; amount: MoneySnapshot }>;
 export type EntitlementFacts = Readonly<{ entitlementId: string; segmentBookingId: string; orderId: string; status: string }>;
 
+/**
+ * How long a queued entry waits before it may be promoted again after its own
+ * promotion failed and its order was cancelled. Long enough for a velocity-style
+ * risk decision to have changed, short enough that a release arriving later in
+ * the window is still offered to the same traveller.
+ */
+export const PROMOTION_RETRY_BACKOFF_MS = 5 * 60 * 1000;
+
 export interface WaitlistFulfillmentClient {
   getOrder(orderId: string, correlationId?: string): Promise<OrderFacts>;
   findSaga(orderId: string, correlationId?: string): Promise<SagaFacts | undefined>;
@@ -373,6 +381,13 @@ export class WaitlistFulfillmentOrchestrator {
     }
     if (unheldSlots > 0) await this.repository.restoreCapacityCredits(entry, unheldSlots);
     entry.returnToQueue();
+    // The credit goes back to the pool, but not to this entry immediately: the
+    // order it produced was cancelled a moment ago, so handing it the same
+    // credit on the next tick retries a decision that has already been made.
+    // Measured on the resident release, a promotion whose booking saga failed
+    // risk created and cancelled an order every half minute for the whole
+    // thirty minute window.
+    entry.deferPromotionRetry(new Date(this.now().getTime() + PROMOTION_RETRY_BACKOFF_MS));
     if (new Date(entry.deadline) <= this.now()) entry.expire();
     const saved = await this.repository.save(entry);
     await publishAll(this.publisher, [saved.status === "EXPIRED"
