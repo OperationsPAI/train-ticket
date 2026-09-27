@@ -636,22 +636,37 @@ mod tests {
             )],
             1_000_000,
         );
+        // Both of this source's gauges are folded from the same durable rows, so
+        // both have to collapse two different pools — different hold, pool and
+        // segment references — onto one label set.
         let labels = |snapshot: &CapacityMetricsSnapshot| -> Vec<String> {
             snapshot
                 .units
                 .iter()
                 .map(|row| {
                     format!(
-                        "{}/{}/{}",
+                        "units/{}/{}/{}",
                         row.state.as_str(),
                         row.travel_class.as_str(),
                         row.seat_mode.as_str()
                     )
                 })
+                .chain(snapshot.hold_age.iter().map(|row| {
+                    format!(
+                        "hold_age/{}/{}",
+                        row.state.as_str(),
+                        row.travel_class.as_str()
+                    )
+                }))
                 .collect()
         };
         assert_eq!(labels(&first), labels(&second));
         assert!(labels(&first).len() > 1, "the fold produced no series");
+        assert!(
+            labels(&first).iter().any(|label| label.starts_with("hold_age/")),
+            "the hold age gauge produced no series: {:?}",
+            labels(&first)
+        );
     }
 
     #[test]
