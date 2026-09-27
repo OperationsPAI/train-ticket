@@ -126,8 +126,8 @@ public class PostgresFinanceSettlementProjectionRepository implements FinanceSet
     public void saveChannelStatementLine(ChannelStatementLineProjection line) {
         jdbc.update(
             """
-                INSERT INTO channel_statement_lines(statement_line_id, channel_statement_id, statement_date, order_id, payment_intent_id, channel_order_id, currency, amount, source_event_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO channel_statement_lines(statement_line_id, channel_statement_id, statement_date, order_id, payment_intent_id, channel_order_id, currency, amount, source_event_id, line_type)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (statement_line_id) DO UPDATE SET
                   channel_statement_id = EXCLUDED.channel_statement_id,
                   statement_date = EXCLUDED.statement_date,
@@ -137,6 +137,7 @@ public class PostgresFinanceSettlementProjectionRepository implements FinanceSet
                   currency = EXCLUDED.currency,
                   amount = EXCLUDED.amount,
                   source_event_id = EXCLUDED.source_event_id,
+                  line_type = EXCLUDED.line_type,
                   updated_at = now()
                 """,
             line.statementLineId(),
@@ -147,15 +148,64 @@ public class PostgresFinanceSettlementProjectionRepository implements FinanceSet
             line.channelOrderId(),
             line.actualAmount().currency().getCurrencyCode(),
             line.actualAmount().amount(),
-            line.sourceEventId()
+            line.sourceEventId(),
+            line.lineType()
         );
+    }
+
+    @Override
+    public void saveChannelStatementLines(java.util.List<ChannelStatementLineProjection> lines) {
+        if (lines == null || lines.isEmpty()) return;
+        // One statement is hundreds of thousands of lines, so a page is written
+        // as one batch rather than one round trip per line.
+        jdbc.batchUpdate(
+            """
+                INSERT INTO channel_statement_lines(statement_line_id, channel_statement_id, statement_date, order_id, payment_intent_id, channel_order_id, currency, amount, source_event_id, line_type)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (statement_line_id) DO UPDATE SET
+                  channel_statement_id = EXCLUDED.channel_statement_id,
+                  statement_date = EXCLUDED.statement_date,
+                  order_id = EXCLUDED.order_id,
+                  payment_intent_id = EXCLUDED.payment_intent_id,
+                  channel_order_id = EXCLUDED.channel_order_id,
+                  currency = EXCLUDED.currency,
+                  amount = EXCLUDED.amount,
+                  source_event_id = EXCLUDED.source_event_id,
+                  line_type = EXCLUDED.line_type,
+                  updated_at = now()
+                """,
+            lines.stream()
+                .map(line -> new Object[] {
+                    line.statementLineId(),
+                    line.channelStatementId(),
+                    line.statementDate(),
+                    line.orderId(),
+                    line.paymentIntentId(),
+                    line.channelOrderId(),
+                    line.actualAmount().currency().getCurrencyCode(),
+                    line.actualAmount().amount(),
+                    line.sourceEventId(),
+                    line.lineType()
+                })
+                .toList()
+        );
+    }
+
+    @Override
+    public boolean hasChannelStatementLines(String channelStatementId) {
+        Boolean present = jdbc.queryForObject(
+            "SELECT EXISTS (SELECT 1 FROM channel_statement_lines WHERE channel_statement_id = ?)",
+            Boolean.class,
+            channelStatementId
+        );
+        return Boolean.TRUE.equals(present);
     }
 
     @Override
     public List<ChannelStatementLineProjection> findChannelStatementLinesForSettlementDate(java.time.LocalDate settlementDate) {
         return jdbc.query(
             """
-                SELECT statement_line_id, channel_statement_id, statement_date, order_id, payment_intent_id, channel_order_id, currency, amount, source_event_id
+                SELECT statement_line_id, channel_statement_id, statement_date, order_id, payment_intent_id, channel_order_id, currency, amount, source_event_id, line_type
                 FROM channel_statement_lines
                 WHERE statement_date = ?
                 ORDER BY statement_line_id
@@ -168,7 +218,8 @@ public class PostgresFinanceSettlementProjectionRepository implements FinanceSet
                 rs.getString("payment_intent_id"),
                 rs.getString("channel_order_id"),
                 money(rs.getString("currency"), rs.getString("amount")),
-                rs.getString("source_event_id")
+                rs.getString("source_event_id"),
+                rs.getString("line_type")
             ),
             settlementDate.toString()
         );
