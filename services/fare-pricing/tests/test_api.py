@@ -148,6 +148,53 @@ class FarePricingApiTest(unittest.TestCase):
             resp = self.client.get(path)
             self.assertEqual(resp.status_code, 200)
 
+    def test_quote_records_one_funnel_attempt_and_one_outcome(self) -> None:
+        """The quote stage of the order funnel leaves attempted = accepted + rejected.
+
+        The metric is not configured in a test process (no exporter), so the
+        instrument is replaced with a recorder here: what is under test is that
+        the handler records exactly one attempt and exactly one outcome on each
+        exit, including the rejection taken before any work is done.
+        """
+
+        class Recorder:
+            def __init__(self) -> None:
+                self.events: list[tuple[str, str, str | None]] = []
+
+            def transition(self, stage: str, outcome: str, channel: str | None) -> None:
+                self.events.append((stage, outcome, channel))
+
+        recorder = Recorder()
+        self.client.app.state.order_funnel = recorder
+
+        accepted = self.client.post(
+            "/api/v1/fare-quotes",
+            json={"travelerRefs": ["tvl-funnel"], "channel": "web", "segmentRefs": ["seg-funnel"]},
+            headers={"Idempotency-Key": uuid7_key(21)},
+        )
+        self.assertEqual(accepted.status_code, 201)
+        self.assertEqual(
+            recorder.events,
+            [("quote", "attempted", "web"), ("quote", "accepted", "web")],
+        )
+
+        recorder.events.clear()
+        rejected = self.client.post(
+            "/api/v1/fare-quotes",
+            json={
+                "travelerRefs": ["tvl-funnel"],
+                "channel": "web",
+                "productCode": "rail-unpublished",
+                "segmentRefs": ["seg-funnel"],
+            },
+            headers={"Idempotency-Key": uuid7_key(22)},
+        )
+        self.assertGreaterEqual(rejected.status_code, 400)
+        self.assertEqual(
+            recorder.events,
+            [("quote", "attempted", "web"), ("quote", "rejected", "web")],
+        )
+
 
     def create_rule_set(
         self,

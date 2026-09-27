@@ -8,6 +8,7 @@ from fastapi import APIRouter, Request
 from fare_pricing.application import deterministic_rule_set_event_id
 from fare_pricing.ports import EventEnvelope
 from train_ticket_platform.messaging import PublishFailed
+from train_ticket_platform.metrics import OrderFunnel
 from train_ticket_platform.storage import OptimisticConcurrencyError
 from fare_pricing.ids import prefixed_uuid7
 from fare_pricing.application.service import (
@@ -37,6 +38,14 @@ from .errors import ApiError
 from .schemas import AdjustmentQuoteRequest, CreateFareRuleSetRequest, FareQuoteRequest
 
 router = APIRouter(prefix="/api/v1", tags=["fare-pricing"])
+
+# A test or a local run may build the app without the funnel instrument; the
+# transition then costs nothing rather than raising on the request path.
+_NOOP_FUNNEL = OrderFunnel(None)
+
+
+def _funnel(request: Request) -> OrderFunnel:
+    return getattr(request.app.state, "order_funnel", None) or _NOOP_FUNNEL
 
 
 def _money_to_schema(m: Money) -> dict[str, Any]:
@@ -247,8 +256,13 @@ def compute_fare_quote(
     req: FareQuoteRequest,
 ) -> dict[str, Any]:
     service: FarePricingService = request.app.state.fare_pricing_service
+    # The quote stage of the order funnel: one attempt, then exactly one
+    # outcome, so attempted = accepted + rejected for this stage.
+    funnel = _funnel(request)
+    funnel.transition("quote", "attempted", req.channel)
     rule_set_id = service.find_published_rule_set_id(req.channel, req.productCode)
     if rule_set_id is None:
+        funnel.transition("quote", "rejected", req.channel)
         raise _validation_error("No applicable fare rule set found")
 
     causation_id = _command_id()
@@ -274,13 +288,23 @@ def compute_fare_quote(
                 except PublishFailed as exc:
                     raise ApiError("UNAVAILABLE", "Event bus publish failed", 503) from exc
     except OptimisticConcurrencyError as exc:
+        funnel.transition("quote", "rejected", req.channel)
         raise _conflict_error(exc) from exc
     except EligibilityUnavailableError as exc:
+        funnel.transition("quote", "rejected", req.channel)
         raise ApiError("UNAVAILABLE", str(exc), 503) from exc
     except (PricingError, RuleSetNotFoundError) as exc:
+        funnel.transition("quote", "rejected", req.channel)
         raise _domain_error(exc) from exc
+    except ApiError:
+        # The quote was computed but its event could not be published, so the
+        # caller is told the attempt failed. Every exit from this handler is
+        # either accepted or rejected for that reason.
+        funnel.transition("quote", "rejected", req.channel)
+        raise
 
     resp = _fare_quote_to_response(quote)
+    funnel.transition("quote", "accepted", req.channel)
     return resp
 
 
