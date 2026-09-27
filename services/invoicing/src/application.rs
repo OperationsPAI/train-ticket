@@ -331,6 +331,11 @@ impl InMemoryInvoicingService {
                 // Record it durably and acknowledge: returning a transient
                 // failure here only buys five redeliveries and a dead letter
                 // for an event the next recognition's own delivery applies.
+                log::warn!(
+                    "reversal {} awaits its recognition {}; held in the order's amount history",
+                    identity,
+                    recognition,
+                );
                 history.pending_reversals.insert(identity, money);
                 s.amount_history.insert(order_id.clone(), history);
                 s.processed_events.insert(e.event_id);
