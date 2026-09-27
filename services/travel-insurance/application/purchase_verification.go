@@ -30,6 +30,16 @@ func (v PurchaseVerifier) read(ctx context.Context, service, path, correlation s
 		return fmt.Errorf("insurance purchase lookup: %w", err)
 	}
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotFound {
+		// Every read on this client follows an announcement that named the
+		// resource, so a 404 is that announcement arriving before the resource
+		// is readable -- the cross-aggregate form of a read-your-writes miss.
+		// Classifying it as a rule violation made each one an unclassified
+		// handler fault: measured on the resident release, 11 of 66 failures in
+		// ninety seconds were these 404s, and each recovered on its next
+		// delivery.
+		return fmt.Errorf("%w: %s does not have %s yet", ErrNotReady, service, path)
+	}
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("%w: %s purchase reference returned %d", ErrDomainRule, service, response.StatusCode)
 	}
@@ -166,7 +176,7 @@ func (v PurchaseVerifier) ResolveJourneyCoverage(ctx context.Context, journeyOrd
 		// A case that answers with different references is a read that has not
 		// caught up with the announcement, so it stays retryable rather than
 		// terminal: the delivery is redelivered while it settles.
-		return JourneyCoverage{}, fmt.Errorf("%w: applied change scope is required", ErrDomainRule)
+		return JourneyCoverage{}, fmt.Errorf("%w: applied change scope is required", ErrNotReady)
 	}
 	if change.CaseType != "CHANGE" {
 		// journey-order announces every post-sales adjustment with this event, and only
@@ -191,7 +201,12 @@ func (v PurchaseVerifier) ResolveJourneyCoverage(ctx context.Context, journeyOrd
 		return JourneyCoverage{}, ErrNotChangeAdjustment
 	}
 	if (change.Status != "EXECUTING" && change.Status != "APPLIED") || len(change.Scope.SegmentRefs) == 0 || len(change.Scope.TravelerRefs) == 0 {
-		return JourneyCoverage{}, fmt.Errorf("%w: applied change scope is required", ErrDomainRule)
+		// The case exists and is a change, but it has not reached the state the
+		// announcement is about. post-sales writes the case's applied snapshot
+		// after journey-order announces the order's adjustment, so the first
+		// read of a change races that write by construction -- measured, the
+		// snapshot commits 5 milliseconds after the announcement is appended.
+		return JourneyCoverage{}, fmt.Errorf("%w: applied change scope is required", ErrNotReady)
 	}
 	target, ok := change.ChangeOperations["target"]
 	if !ok || len(target.Itinerary.Legs) == 0 {
