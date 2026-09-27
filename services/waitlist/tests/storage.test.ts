@@ -185,6 +185,9 @@ test("capacity release credits use event identity and atomic row locks", async (
   assert.match(claim.calls[0].sql, /SUM\(c\.remaining_slots\)/u);
   assert.match(claim.calls[0].sql, /jsonb_array_length\(e\.traveler_refs\)/u);
   assert.match(claim.calls[0].sql, /FOR UPDATE OF e SKIP LOCKED/u);
+  // The durable claim is where the promotion backoff has to be applied: the
+  // in-memory repository is not what the deployed service runs.
+  assert.match(claim.calls[0].sql, /promotionRetryAfter/u);
 
   const migration = await readFile(join(process.cwd(), "migrations/008_capacity_credit_ledger.sql"), "utf8");
   assert.match(migration, /capacity_release_ref text PRIMARY KEY/u);
