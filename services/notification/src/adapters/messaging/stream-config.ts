@@ -4,7 +4,6 @@ export const NOTIFICATION_PRODUCER = "notification";
 export const NOTIFICATION_CONSUMER_GROUP = "notification";
 export const NOTIFICATION_SUBSCRIBED_STREAMS = Object.freeze([
   "events:journey-order",
-  "events:booking-orchestration",
   "events:payment",
   "events:entitlement-ticketing",
   "events:post-sales",
