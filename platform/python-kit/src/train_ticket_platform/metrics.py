@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from enum import Enum
+import logging
 import os
 from typing import Any, Iterable
 
@@ -23,12 +25,24 @@ POOL_NAME = "platform-python-kit-postgres"
 
 _DEFAULT_METRIC_EXPORT_INTERVAL_MILLIS = 60_000
 
+LOGGER = logging.getLogger(__name__)
+
 __all__ = [
+    "EVENT_CONSUMER_FAILURE_TYPES",
+    "EVENT_CONSUMER_OUTCOMES",
+    "OUTBOX_FAILURE_STAGES",
     "POOL_NAME",
+    "EventConsumerFailureType",
+    "EventConsumerMetrics",
+    "EventConsumerOutcome",
+    "OutboxFailureStage",
+    "OutboxMetrics",
+    "event_consumer_metrics",
     "metrics_enabled",
     "metric_export_interval_millis",
     "order_funnel",
     "OrderFunnel",
+    "outbox_metrics",
     "register_pool_metrics",
 ]
 
@@ -209,3 +223,226 @@ def order_funnel(meter: Meter | None = None, service_name: str | None = None) ->
 
         meter = process_meter(service_name)
     return OrderFunnel(meter)
+
+
+# The process-level transport vocabularies, held to the same contract as the
+# Java platform kit's EventConsumerMetrics/OutboxMetrics enums so one recording
+# rule and one dashboard read every runtime. They are closed for the same reason
+# the funnel's are: a stream key, a consumer group, an event type or an exception
+# message as an attribute would create a series per integration, and these
+# values are enough to tell healthy processing from retry pressure, poison
+# messages and a stalled relay.
+EVENT_CONSUMER_OUTCOMES = ("success", "duplicate", "retry", "dead_letter")
+EVENT_CONSUMER_FAILURE_TYPES = (
+    "handler_exception",
+    "transient_result",
+    "fatal_result",
+    "missing_envelope",
+    "invalid_envelope",
+    "redelivery_exhausted",
+    "dlq_write",
+)
+OUTBOX_FAILURE_STAGES = ("select", "publish", "mark_published")
+
+# One warning per distinct out-of-vocabulary value. A caller that passes one is
+# broken, but it must not turn into a series named after the value, and a hot
+# recording path must not become a log flood either.
+_UNKNOWN_TRANSPORT_LABELS: set[str] = set()
+
+
+class EventConsumerOutcome(str, Enum):
+    """How one delivery of an event ended."""
+
+    SUCCESS = "success"
+    DUPLICATE = "duplicate"
+    RETRY = "retry"
+    DEAD_LETTER = "dead_letter"
+
+
+class EventConsumerFailureType(str, Enum):
+    """Why a delivery failed, or why a message was dead-lettered."""
+
+    HANDLER_EXCEPTION = "handler_exception"
+    TRANSIENT_RESULT = "transient_result"
+    FATAL_RESULT = "fatal_result"
+    MISSING_ENVELOPE = "missing_envelope"
+    INVALID_ENVELOPE = "invalid_envelope"
+    REDELIVERY_EXHAUSTED = "redelivery_exhausted"
+    DLQ_WRITE = "dlq_write"
+
+
+class OutboxFailureStage(str, Enum):
+    """Which stage of one relay pass failed."""
+
+    SELECT = "select"
+    PUBLISH = "publish"
+    MARK_PUBLISHED = "mark_published"
+
+
+def _transport_label(value: object, allowed: tuple[str, ...], attribute: str) -> str | None:
+    """Normalize one closed-vocabulary label, or refuse to invent a series.
+
+    The Java instruments take enums, so an out-of-vocabulary value cannot reach
+    them at all. Here a caller may pass either the enum member or the bare value,
+    and anything else is dropped with one warning per distinct value rather than
+    becoming a series named after an exception message.
+    """
+    text = value.value if isinstance(value, Enum) else str(value)
+    text = text.strip().lower()
+    if text in allowed:
+        return text
+    if text not in _UNKNOWN_TRANSPORT_LABELS:
+        _UNKNOWN_TRANSPORT_LABELS.add(text)
+        LOGGER.warning("%s=%r is outside %s; the sample is not recorded", attribute, value, allowed)
+    return None
+
+
+class EventConsumerMetrics:
+    """One Redis event delivery's disposition, under the shared contract.
+
+    Three counters rather than one with three labels: an outcome always exists
+    while a failure classification only exists for failures, and keeping them
+    apart is what lets `messages` be read as a delivery rate.
+
+    A service with OTEL metrics off gets the no-op instance, so a recording call
+    is never a decision point and never an exception on the message path.
+    """
+
+    def __init__(self, meter: Meter | None) -> None:
+        self._messages: Any | None = None
+        self._failures: Any | None = None
+        self._dead_letters: Any | None = None
+        if meter is None:
+            return
+        self._messages = meter.create_counter(
+            name="train_ticket.event.consumer.messages",
+            description="Event deliveries by their processing disposition.",
+            unit="{message}",
+        )
+        self._failures = meter.create_counter(
+            name="train_ticket.event.consumer.failures",
+            description="Event-consumer failures by a bounded failure classification.",
+            unit="{failure}",
+        )
+        self._dead_letters = meter.create_counter(
+            name="train_ticket.event.consumer.dead_letters",
+            description="Messages successfully handed to a dead-letter stream.",
+            unit="{message}",
+        )
+
+    def record_outcome(self, outcome: EventConsumerOutcome | str) -> None:
+        if self._messages is None:
+            return
+        label = _transport_label(outcome, EVENT_CONSUMER_OUTCOMES, "outcome")
+        if label is None:
+            return
+        self._messages.add(1, {"outcome": label})
+
+    def record_failure(self, failure_type: EventConsumerFailureType | str) -> None:
+        if self._failures is None:
+            return
+        label = _transport_label(failure_type, EVENT_CONSUMER_FAILURE_TYPES, "failure.type")
+        if label is None:
+            return
+        self._failures.add(1, {"failure.type": label})
+
+    def record_dead_letter(self, reason: EventConsumerFailureType | str) -> None:
+        if self._dead_letters is None:
+            return
+        label = _transport_label(reason, EVENT_CONSUMER_FAILURE_TYPES, "reason")
+        if label is None:
+            return
+        self._dead_letters.add(1, {"reason": label})
+
+
+class OutboxMetrics:
+    """Health signals of one process's transactional outbox relay.
+
+    The backlog is an observable gauge over the bounded head sample the relay
+    query already returns, never a count of the table: an exact `count(*)` during
+    a large backlog is a new source of database pressure at the moment the
+    database is already the bottleneck. A sample equal to the relay's batch size
+    means at least one full batch is waiting.
+
+    The two gauge values are plain attributes written by the relay thread and
+    read by the metric reader's callback thread; each write is a single
+    reference assignment, so a reader sees the last completed poll rather than a
+    torn one.
+    """
+
+    def __init__(self, meter: Meter | None) -> None:
+        self._unpublished_sample = 0
+        self._oldest_unpublished_seconds = 0.0
+        self._published: Any | None = None
+        self._failures: Any | None = None
+        if meter is None:
+            return
+        meter.create_observable_gauge(
+            name="train_ticket.outbox.unpublished.sample",
+            callbacks=[self._observe_unpublished_sample],
+            description="Rows visible in the relay's bounded unpublished head sample.",
+            unit="{event}",
+        )
+        meter.create_observable_gauge(
+            name="train_ticket.outbox.oldest_unpublished.age",
+            callbacks=[self._observe_oldest_unpublished_age],
+            description="Age of the head-of-line unpublished outbox event.",
+            unit="s",
+        )
+        self._published = meter.create_counter(
+            name="train_ticket.outbox.published",
+            description="Outbox events whose bounded Redis publish pipeline completed successfully.",
+            unit="{event}",
+        )
+        self._failures = meter.create_counter(
+            name="train_ticket.outbox.failures",
+            description="Outbox relay failures by a bounded processing stage.",
+            unit="{failure}",
+        )
+
+    def _observe_unpublished_sample(self, options: CallbackOptions) -> Iterable[Observation]:
+        del options
+        yield Observation(int(self._unpublished_sample))
+
+    def _observe_oldest_unpublished_age(self, options: CallbackOptions) -> Iterable[Observation]:
+        del options
+        yield Observation(float(self._oldest_unpublished_seconds))
+
+    def observe_unpublished_sample(self, rows: int, oldest_age_seconds: float) -> None:
+        # Clamped rather than trusted: a negative age is a clock skew, and a
+        # negative gauge value would corrupt any rate or max taken over it.
+        self._unpublished_sample = max(int(rows), 0)
+        self._oldest_unpublished_seconds = max(float(oldest_age_seconds), 0.0)
+
+    def record_published(self, rows: int) -> None:
+        if self._published is None or rows <= 0:
+            return
+        self._published.add(rows)
+
+    def record_failure(self, stage: OutboxFailureStage | str) -> None:
+        if self._failures is None:
+            return
+        label = _transport_label(stage, OUTBOX_FAILURE_STAGES, "stage")
+        if label is None:
+            return
+        self._failures.add(1, {"stage": label})
+
+
+def event_consumer_metrics(
+    meter: Meter | None = None, service_name: str | None = None
+) -> EventConsumerMetrics:
+    """The event-consumer instruments for this process, or a no-op when off."""
+    if meter is None:
+        from .observability import meter as process_meter
+
+        meter = process_meter(service_name)
+    return EventConsumerMetrics(meter)
+
+
+def outbox_metrics(meter: Meter | None = None, service_name: str | None = None) -> OutboxMetrics:
+    """The outbox-relay instruments for this process, or a no-op when off."""
+    if meter is None:
+        from .observability import meter as process_meter
+
+        meter = process_meter(service_name)
+    return OutboxMetrics(meter)
