@@ -5,7 +5,7 @@ Last verified: 2026-09-27, Asia/Beijing.
 ## Runtime
 
 The resident Helm release is `train-ticket` in namespace `train-ticket`,
-revision **452**.
+revision **459**.
 Its values come from one file, `deploy/helm/train-ticket/values.yaml`: the
 registry, the `local-path` storage class, the central telemetry store, the
 resident exporters, the load generator settings and the `loadgen-resident-state`
@@ -47,6 +47,7 @@ to one and back.
 
 | Check | Result | Evidence |
 |---|---|---|
+| Ten minute window at revision 458, one whole cycle in the resident steady state | 414205 requests, 46147 journeys, P99 270 milliseconds, **0 unexpected error groups and 0 failed journeys**; the recorder read `written=594793 dropped=0` | `.scratch/runtime-fixes/goal-acc-steady-rev458.json` |
 | Ten minute window at revision 452, one whole cycle in the resident steady state | 417464 requests, 46350 journeys, P99 294 milliseconds, **0 unexpected error groups, 0 failed journeys and 0 recorder drops**; the recorder read `written=1427213 dropped=0`, payment's conservation identity holds exactly (captured 5408457406 = refunded 1187431372 + unsettled 4221026034), and every dead-letter stream is empty | `.scratch/runtime-fixes/goal-acc-steady-rev452.json` |
 | Ten minute window at revision 451, two consecutive cycles | 342783 requests, 37846 journeys, P99 294 milliseconds, **0 unexpected error groups and 0 failed journeys**; the cycle after it, 23:09 to 23:19, is clean as well | `.scratch/runtime-fixes/goal-rev451-clean-window.json` |
 | Ten minute window at revision 447, the same burst, one fix later | 439115 requests, 48526 journeys, P99 106 milliseconds, 0 error groups, 20 failed journeys at the refund case poll (see the reservation and refund sections below) | `.scratch/runtime-fixes/goal-rev446-ten-minute.json` |
@@ -256,6 +257,59 @@ not errors: the load generator retries an offer up to eight times and declares
 the intermediate 422s expected, and the analysis counts those separately. In
 the window above, `23:33` to `23:41` carries 1398 expected 422s and **0
 unexpected** ones.
+
+#### The ceiling under all of it is one Redis thread
+
+Every consumer-shaped failure in this document has the same shape: a group is
+behind, and the group behind it is behind because *its* dependency is slow. The
+measurement that explains why no single hop's fix removes the tail is the server
+all of them share. Redis is single-threaded, and on this release it sits at a
+**whole core** through every burst while each group's own lag reads zero -- the
+signature of consumers waiting on the server, not on their handlers.
+
+What it was spending its thread on, measured over thirty seconds at revision
+456, with `INFO commandstats` sampled twice:
+
+| Command | Per second | Why |
+|---|---|---|
+| `xreadgroup` | 6928 | every consumer's read, and a blocking read that finds nothing still costs one |
+| `xack` | 3691 | one per delivered event per consumer group |
+| `xpending` | 2028 | one per delivered message, to learn its delivery count |
+| `xautoclaim` | 4896 before this pass, 306 after | a pending sweep on every poll iteration |
+| `xadd` | 950 | the publishes themselves |
+
+Four changes came out of that, one commit each, and they cut the release from
+**21376 to roughly 13000 commands a second** and Redis from a pinned core to
+0.4 to 0.7:
+
+1. The TypeScript, Python and Java kits blocked on an idle read for a hundred
+   milliseconds and the Go and Rust kits for two seconds. A blocking read is
+   woken by the write itself, so the block is not a delivery delay: the three
+   short ones now block for a second like the others, which removes nine of ten
+   wakeups.
+2. Pending-entry recovery swept on **every poll iteration** in the Java and
+   TypeScript kits -- once per ~20 milliseconds per idle reader -- and before
+   every two-second read in Rust. An entry only becomes claimable after five
+   minutes of silence, so the sweep now runs every fifteen seconds.
+3. `XACK` takes any number of ids for the same stream and group, and the
+   TypeScript batch path acknowledged a whole batch with one command instead of
+   five hundred. The Python subscriber resolved a delivery count for every
+   delivered message and passed it to a method that never read it.
+4. A poll now reads five hundred entries instead of a hundred, because one read
+   that returns five hundred costs one command where five reads cost five.
+
+Separately, `reporting` alone held **890** of the release's 1900 Redis
+connections: one consumer per stream is one connection parked in a blocking
+read, and it had twelve per stream across fourteen streams while its own lag was
+0.0 to 0.1 seconds. Four per stream returns about two hundred connections to a
+server with one thread to serve them.
+
+The ceiling is not removed, it is raised: a burst that offers more than roughly
+**15000 journeys a minute** -- three times the steady cycle's peak -- still
+drives Redis to its core and the reservation poll misses its window. Closing
+that the rest of the way is a change to the event bus's shape (fewer
+subscriptions per stream, or more than one Redis) rather than one more consumer
+count.
 
 ### The resident cycle is not yet clean
 
