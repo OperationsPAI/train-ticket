@@ -2,6 +2,7 @@ import type { Redis } from "ioredis";
 import type { Pool, PoolClient, PoolConfig } from "pg";
 import { type IdempotencyRecord, type IdempotencyStore } from "./http.js";
 import { type Clock } from "./liveness.js";
+import { type OutboxMetrics } from "./metrics.js";
 import { type DeadLetterEvidence, type DeadLetterEvidenceSink, type EventEnvelope } from "./messaging.js";
 export type Database = Pool | PoolClient;
 export declare class OptimisticConcurrencyConflict extends Error {
@@ -201,6 +202,11 @@ export type OutboxRelayOptions = Readonly<{
     name?: string;
     /** Set false to opt out of liveness registration (tests). */
     trackLiveness?: boolean;
+    /**
+     * Process-level relay metrics. Defaults to the meters under the service's own
+     * name, or a no-op when OTEL metrics are disabled.
+     */
+    outboxMetrics?: OutboxMetrics;
 }>;
 export declare class OutboxRelay {
     private readonly pool;
@@ -209,6 +215,7 @@ export declare class OutboxRelay {
     private stopped;
     private loop?;
     private liveness?;
+    private readonly outboxMetrics;
     constructor(pool: Pool, redis: Redis, options?: OutboxRelayOptions);
     start(): void;
     stop(): Promise<void>;
