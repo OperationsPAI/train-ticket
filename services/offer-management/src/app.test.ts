@@ -160,6 +160,13 @@ describe("Offer Management HTTP API — POST /api/v1/offers", () => {
     assert.equal(body.travelerSetHash, "tvl-001,tvl-002");
     assert.equal(response.headers["x-correlation-id"], "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c222");
     assert.ok(response.headers["x-request-id"]);
+
+    // The distance the accepted quote was priced from rides on the price
+    // snapshot, which is where journey-order reads it to put it on the order and
+    // where the revenue report's yieldPerKm gets its divisor.
+    const read = await app.inject({ method: "GET", url: `/api/v1/offers/${body.offerId}` });
+    assert.equal(read.statusCode, 200);
+    assert.equal(read.json().priceSnapshot.distanceKm, 1318);
   });
 
   it("publishes the quoted domain event envelope through the configured port", async () => {
@@ -565,7 +572,12 @@ async function seededUpstreamRepository(): Promise<InMemoryUpstreamStateReposito
     status: "QUOTED",
     validFrom: occurredAt,
     validUntil: expiresAt,
-    breakdown: { subtotal: { currency: "CNY", minorUnits: 20000 }, total: { currency: "CNY", minorUnits: 20000 }, priceSnapshotRef: "price-1" },
+    breakdown: {
+      subtotal: { currency: "CNY", minorUnits: 20000 },
+      total: { currency: "CNY", minorUnits: 20000 },
+      priceSnapshotRef: "price-1",
+      baseDistanceFare: { distanceKm: "1318.0", perKmRate: "0.15" },
+    },
     ruleSnapshot: { ruleSnapshotRef: "rule-1", pricingVersion: "pricing-v1", ruleVersion: "rule-v1" },
   }));
   await applyUpstreamEvent(repository, makeEnvelope("FareQuoteComputed", "fare-pricing", {
