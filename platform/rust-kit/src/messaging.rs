@@ -1151,7 +1151,7 @@ pub mod redis_runtime {
             consumer_name: &str,
             message: StreamMessage,
             handler: &(dyn Fn(EventEnvelope) -> HandlerFuture + Send + Sync),
-        ) -> Result<(), SubscribeFailed> {
+        ) -> Result<bool, SubscribeFailed> {
             let envelope: EventEnvelope = match serde_json::from_str(&message.raw_envelope) {
                 Ok(envelope) => envelope,
                 Err(error) => {
@@ -1168,11 +1168,12 @@ pub mod redis_runtime {
                         // span is started, so there is no valid span to name.
                         "",
                     )
-                    .await;
+                    .await
+                    .map(|()| false);
                 }
             };
             if self.event_filter.is_some_and(|filter| !filter(&envelope)) || self.state.has_seen(&envelope.event_id) {
-                return ops.ack(&message.stream, group, &message.id).await;
+                return Ok(true);
             }
             let tracer = global::tracer("rust-kit.messaging");
             let span_builder = tracer
@@ -1204,7 +1205,7 @@ pub mod redis_runtime {
                 Ok(()) => {
                     span_context.span().end();
                     self.state.mark_consumed(&envelope.event_id);
-                    ops.ack(&message.stream, group, &message.id).await
+                    Ok(true)
                 }
                 Err(HandlerError::Transient(reason)) => {
                     span_context
@@ -1223,7 +1224,7 @@ pub mod redis_runtime {
                         message.delivery_count,
                         reason
                     );
-                    Ok(())
+                    Ok(false)
                 }
                 Err(HandlerError::Fatal(reason)) => {
                     span_context
@@ -1243,6 +1244,7 @@ pub mod redis_runtime {
                         &trace_fields,
                     )
                     .await
+                    .map(|()| false)
                 }
             }
         }
@@ -1300,11 +1302,21 @@ pub mod redis_runtime {
                     } else { selected.push(message); }
                 }
                 for (stream, ids) in ignored { ops.ack_many(&stream, &group, &ids).await?; }
+                // Acknowledge per read batch, not per message: XACK takes any
+                // number of ids for one stream and group, and one command per
+                // delivered event per group is the largest command class a
+                // single-threaded Redis serves.
+                let mut acknowledge: Vec<(String, String)> = Vec::new();
                 for message in selected {
-                    if let Err(error) = self
+                    let message_stream = message.stream.clone();
+                    let message_id = message.id.clone();
+                    match self
                         .process_message(ops, &group, &consumer_name, message, handler)
                         .await
                     {
+                        Ok(true) => acknowledge.push((message_stream, message_id)),
+                        Ok(false) => {}
+                        Err(error) => {
                         // A single message failing (transient handler/XACK/DLQ error)
                         // must NOT tear down the whole subscriber: that thrashed Rust
                         // services into long reconnect-backoff windows where they
@@ -1316,6 +1328,16 @@ pub mod redis_runtime {
                         }
                         Self::handle_consume_error_with_ops(ops, &streams, &group, &error.0).await;
                         break;
+                        }
+                    }
+                }
+                if !acknowledge.is_empty() {
+                    let mut by_stream: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+                    for (stream, id) in acknowledge {
+                        by_stream.entry(stream).or_default().push(id);
+                    }
+                    for (stream, ids) in by_stream {
+                        ops.ack_many(&stream, &group, &ids).await?;
                     }
                 }
                 if run_once {
