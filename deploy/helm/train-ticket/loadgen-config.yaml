@@ -309,7 +309,11 @@ ops:
   # daily reconciliation had no channel side to compare platform captures with.
   # Both calls are idempotent per (channel, date, currency, seed version), so the
   # sweep re-running them produces the same statement and no growth beyond one
-  # row per channel and day.
+  # statement per channel and day. The FIRST generation of a channel-day is a
+  # full pass over that day's channel facts -- 342648 lines and more than 43
+  # seconds when measured -- so the sweep counts that call as pending rather than
+  # failing when it does not answer inside the ten second deadline; the statement
+  # is written anyway and the next sweep reads it back in tens of milliseconds.
   p_channel_statement: 0.50
 
 # ---------------------------------------------------------------------------
