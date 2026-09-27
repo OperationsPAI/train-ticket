@@ -539,13 +539,42 @@ and [standing policy](08-contracts/standing-capacity-policy.md).
 
 ### T04: Verify automatic waitlist fulfillment
 
-Status: remaining integration acceptance.
+Status: partly verified. Matching, offer expiry and the guarantee guard are
+exercised by the resident workload; a successful confirmation is not, and the
+reason is measured below.
 
-1. [ ] Match released capacity by date, class, interval and traveler intent.
-2. [ ] Verify payment guarantees, offered window expiry, confirmation and
-   duplicate promotion recovery.
-3. [ ] Verify downstream ticket issuance and exactly one capacity and payment
-   effect after a restart.
+1. [x] Match released capacity by date, class, interval and traveler intent. A
+   credit carries the segment, scheduled service, departure date, seat class,
+   interval, stop-sequence version and intent fingerprint, and the durable claim
+   matches all of them in one query under `FOR UPDATE OF e SKIP LOCKED`; the
+   resident workload ran 9880 `WaitlistMatchStarted` events in the window this
+   was read from, each of which required a credit to match its entry.
+2. [x] **A promotion that fails does not immediately take the same credit
+   again.** This was a defect, not a verification: a promotion whose order ended
+   terminal returned its credit to the pool and the entry to the queue, and the
+   one-second promotion tick handed that credit straight back to the same entry.
+   Measured: `WaitlistMatchStarted` ran at **215 to 310 a minute** between 12:29
+   and 12:46, with an equal number of requeues -- nearly every promotion undone.
+   A queued entry now carries `promotionRetryAfter`, set five minutes ahead when
+   its promotion is undone. Measured after: **1 to 6 a minute** from 12:47 on,
+   and the entries sit at `QUEUED` with the retry instant set for the whole
+   backoff. The credit still reaches every other waiter immediately.
+3. [ ] A successful confirmation: payment guarantee captured, offer window
+   honoured, downstream ticket issued, and exactly one capacity and payment
+   effect after a restart. **Blocked on the workload, with the reason measured:**
+   of the waitlist's promotions in a 45 minute window, 172 of 211 orders were
+   refused by risk-compliance's velocity rules (`VELOCITY_TRAVELER_BOOKING`,
+   more than two bookings per traveler per hour, and `VELOCITY_ACCOUNT_ORDER`,
+   more than three orders per account per five minutes) and the promotion was
+   undone, so no entry has reached `FULFILLED` in this environment. The rules are
+   the platform's own anti-abuse policy, and the workload reuses travelers
+   (`p_new_traveler: 0.10`), so a waitlisted customer here is almost always the
+   same person who just booked. Verifying this item needs a promotion for a
+   traveler with no recent bookings, which the load generator does not produce.
+   It is an open question whether a waitlist promotion *should* be exempt from
+   the velocity rules -- the customer is buying the seat they waited for, not
+   making a new speculative booking -- and that is a policy decision rather than
+   a defect this pass found.
 
 ### T05: Prove durable event recovery
 
