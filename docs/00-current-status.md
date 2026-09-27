@@ -53,6 +53,7 @@ to one and back.
 | Settlement schedule | `finance-settlement` runs the closed period's daily reconciliation and supplier settlement from a registered `@Scheduled` method. It carried `@ConditionalOnBean(DataSource.class)`, which Spring only honours reliably in auto-configuration: the class is scanned before the configuration that defines the DataSource, so the bean was skipped and the schedule never ran. |
 | Reconciliation attribution | A provider confirmation is attributed to its order through the local index and, when that index has not caught up or was trimmed, through the booking-orchestration segment booking itself. |
 | Channel statement | `finance-settlement` holds the channel side of the money. The freeze announcement carries the statement's own facts instead of only its transition, the projection merges it with the stored generation instead of demanding generation-only fields, and the upsert refuses to unfreeze a row the freeze already wrote. |
+| Waitlist fulfilment | A waitlist entry that gets a credit the workload cannot re-sell completes the whole chain by itself: fare quote, offer, order, risk, reservation, payment capture, ticket, and the entry reaches FULFILLED inside the offer's window with exactly one capacity and one payment effect. |
 | Channel reconciliation | The day's captures are compared with the channel's own statement lines, read from payment-channel 500 at a time and keyed by the payment intent both sides carry. Every statement is the closed day's, so a day is reconciled against the day's own account; each statement is read once, and the batch keeps its report and the entries that need attention rather than half a million rows. |
 | Channel refund reconciliation | The statement's refund lines are compared with the refunds payment actually settled, per refund id -- the one reference both sides carry. Payment keeps its settled refunds in an indexed table written with the settlement and backfilled from its own events, and answers a date's refunds a page at a time. |
 | Reads that trail their announcement | A read that a just-consumed announcement promises is a wait rather than a rule violation. `travel-insurance` waits for the case or reference it announced to become visible -- five attempts 400 milliseconds apart inside the delivery -- and declares a transient failure only if it still cannot see it. |
@@ -64,6 +65,7 @@ to one and back.
 | Check | Result | Evidence |
 |---|---|---|
 | Five minute window at revision 520, after the refund reconciliation | 81713 requests and 6531 completed journeys at the trough of the envelope, **0 unexpected HTTP errors and 0 failed journeys**; every dead-letter stream holds what it held before the pass | the load generator's own record file, `/data/requests.jsonl` on `loadgen` |
+| A waitlist entry fulfilled end to end, revision 520 | QUEUED at 21:23:37, MATCHING with offer `off-01a0e4c0-89c3` and order `ord-01a0e4c0-89f6` at 21:23:42, **FULFILLED at 21:23:52** -- one captured payment (`pi-18684bbc`, 9357 = the offer total, inside the guarantee's authorization), entitlement `ent-01a0e4c0-a135` ISSUED for the entry's traveler and segment, and one Confirmed hold with one CONFIRMED seat allocation; the guarantee itself (`pi-e1532d23`) expired with 0 captured rather than being charged twice | `waitlist_entries`, `payment_intent_snapshots`, `entitlement_snapshots`, `capacity_hold_snapshots` |
 | Five minute window at revision 517, after the sweep telemetry | 166628 requests and 14628 completed journeys at the peak of the envelope, **0 unexpected HTTP errors and 0 failed journeys** | the load generator's own record file, `/data/requests.jsonl` on `loadgen` |
 | Five minute window at revision 515, after the channel reconciliation | 57636 requests and 4492 completed journeys at the trough of the envelope, **0 unexpected HTTP errors and 0 failed journeys**; the same loader run's cumulative tally carries exactly one `payment-channel:transport` error, in the minutes `payment-channel` itself was rolling out, and it does not move while 19000 further requests are served; every dead-letter stream holds what it held before the pass and no consumer group is more than 200 entries behind | the load generator's own record file and `[stats]` lines on `loadgen` |
 | Five minute window at revision 515, the peak of the same envelope | 160929 requests and 13913 completed journeys, **0 unexpected HTTP errors and 0 failed journeys** | the load generator's own record file, `/data/requests.jsonl` on `loadgen` |
@@ -706,12 +708,9 @@ repository artifacts.
 ## What is open
 
 Everything still open is listed once, in [TODO](TODO.md). The largest items are
-the waitlist fulfillment acceptance -- which is blocked on a real pool with a
-free unit rather than on code -- and the two items that extend what this pass
-finished: matching the refund side of a channel statement (T25) and the
-scheduled-job collector's second half (T18.5). The bus, scale and read-cost items
-are deferred by the operator's instruction, which is recorded with the traffic
-level itself.
+the bus, scale and read-cost items, which are deferred by the operator's
+instruction and recorded with the traffic level itself. Everything else the
+backlog held is closed and carries its measurement.
 
 No part of this document authorises a deployment: the runtime configuration is
 the single values file, and a release is made with
