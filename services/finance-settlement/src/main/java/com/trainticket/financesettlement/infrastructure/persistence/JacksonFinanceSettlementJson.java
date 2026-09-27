@@ -91,8 +91,19 @@ final class JacksonFinanceSettlementJson {
         n.put("settlementDate", batch.settlementDate().toString());
         n.put("cutoffAt", batch.cutoffAt().toString());
         n.put("currency", batch.currency().getCurrencyCode());
+        // The day's totals are stored, and only the entries that are not matched
+        // are kept: a measured day compares half a million entries, and a jsonb
+        // array whose elements total more than 256 MB cannot be written at all
+        // (measured -- PostgreSQL refuses the insert). What a reader needs is the
+        // report and the breaks, not the rows that were fine.
+        ObjectNode report = n.putObject("report");
+        report.put("totalEntries", batch.report().totalEntries());
+        report.put("matchedEntries", batch.report().matchedEntries());
+        report.put("matchRate", batch.report().matchRate().toPlainString());
+        money(report.putObject("totalVariance"), batch.report().totalVariance());
         ArrayNode entries = n.putArray("entries");
         for (ReconciliationEntry entry : batch.entries()) {
+            if (!entry.isException()) continue;
             ObjectNode e = entries.addObject();
             e.put("entryId", entry.entryId());
             e.put("orderId", entry.orderId());
@@ -118,8 +129,25 @@ final class JacksonFinanceSettlementJson {
                 money(e.withObject("platformAmount")), money(e.withObject("channelAmount")), ReconciliationStatus.valueOf(e.path("status").asText()),
                 money(e.withObject("variance")), sourceEventIds));
         });
-        return ReconciliationBatch.rehydrate(n.path("batchId").asText(), LocalDate.parse(n.path("settlementDate").asText()),
-            Instant.parse(n.path("cutoffAt").asText()), Currency.getInstance(n.path("currency").asText()), entries);
+        String batchId = n.path("batchId").asText();
+        LocalDate settlementDate = LocalDate.parse(n.path("settlementDate").asText());
+        Instant cutoffAt = Instant.parse(n.path("cutoffAt").asText());
+        Currency currency = Currency.getInstance(n.path("currency").asText());
+        if (!n.has("report")) {
+            // Snapshots written before the report was stored carry every entry,
+            // so their report is still the one their entries describe.
+            return ReconciliationBatch.rehydrate(batchId, settlementDate, cutoffAt, currency, entries);
+        }
+        ObjectNode report = n.withObject("report");
+        return ReconciliationBatch.rehydrate(batchId, settlementDate, cutoffAt, currency, entries,
+            new com.trainticket.financesettlement.domain.ReconciliationReport(
+                batchId,
+                settlementDate.toString(),
+                report.path("totalEntries").asInt(),
+                report.path("matchedEntries").asInt(),
+                new java.math.BigDecimal(report.path("matchRate").asText()),
+                money(report.withObject("totalVariance")),
+                entries));
     }
 
     static SupplierSettlementSnapshot supplierSnapshot(SupplierSettlement settlement, ObjectMapper mapper) {
