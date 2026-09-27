@@ -78,6 +78,33 @@ describe("EventEnvelope factory", () => {
 
 describe("RedisEventSubscriber DLQ observability", () => {
 
+  it("retries an error thrown out of the handler instead of dead-lettering the event", async () => {
+    // A throw says the handler failed, not that the event is bad: a database
+    // that refuses connections looks exactly like a bug in the handler from
+    // here. Measured on the resident release: two `AncillaryOfferExpired`
+    // events were dead-lettered with `connect ECONNREFUSED` while the read
+    // shard was being created, and no retry would have lost them.
+    const operations: string[] = [];
+    const redis = {
+      xadd: async () => { operations.push("dlq"); return "1-1"; },
+      xack: async () => { operations.push("ack"); return 1; },
+    };
+    const subscriber = new RedisEventSubscriber(redis as never);
+    const envelope = createEventEnvelope({ eventType: "AncillaryOfferExpired", producer: "ancillary-service", payload: {} });
+    const entry: [string, string[]] = ["9-0", ["envelope", JSON.stringify(envelope)]];
+    const originalWarn = console.warn;
+    console.warn = () => undefined;
+    try {
+      await (subscriber as unknown as { processEntry: (stream: string, group: string, consumerName: string, entry: [string, string[]], handler: () => unknown) => Promise<void> })
+        .processEntry("events:ancillary-service", "offer-management", "offer-management-a", entry,
+          () => { throw new Error("connect ECONNREFUSED 10.43.94.0:5432"); });
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.deepEqual(operations, [], "a transient failure leaves the entry pending, neither acknowledged nor dead-lettered");
+  });
+
   it("persists attributable evidence before writing Redis DLQ and ACK", async () => {
     const operations: string[] = [];
     const evidence: unknown[] = [];
