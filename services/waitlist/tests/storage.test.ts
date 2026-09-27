@@ -23,6 +23,43 @@ class UniqueViolationDb {
   }
 }
 
+class RowDb {
+  constructor(private readonly row: Record<string, unknown>) {}
+
+  async query() {
+    return { rows: [this.row], rowCount: 1 };
+  }
+}
+
+function persistedRow(data: Record<string, unknown>): Record<string, unknown> {
+  return {
+    entry_id: "wlr-1",
+    account_id: "acc-1",
+    traveler_refs: ["tvl-1"],
+    segment_ref: "seg-1",
+    departure_date: "2026-07-20",
+    seat_class: "BUSINESS_CLASS",
+    priority_score: 35,
+    status: "QUEUED",
+    offered_at: null,
+    offer_expires_at: null,
+    fare_quote_id: null,
+    capacity_hold_id: null,
+    data: {
+      scheduledServiceRef: "ss-1",
+      interval: { fromSeq: 0, toSeq: 1 },
+      stopSequenceVersion: "sha256:route-v1",
+      itineraryRef: "itn-1",
+      deadline: "2026-07-20T00:00:00.000Z",
+      paymentGuaranteeRef: "pi-1",
+      intentFingerprint: "intent-1",
+      ...data,
+    },
+    version: 4,
+    created_at: "2026-07-19T00:00:00.000Z",
+  };
+}
+
 function persistedEntry(version: number): WaitlistEntry {
   const entry = WaitlistEntry.create({
     accountId: "acc-1",
@@ -121,6 +158,37 @@ test("PostgresWaitlistRepository locks and matches the complete released-capacit
   assert.match(db.calls[0].sql, /jsonb_array_length\(traveler_refs\) <= \$8/u);
   assert.match(db.calls[0].sql, /FOR UPDATE SKIP LOCKED/u);
   assert.deepEqual(db.calls[0].params, ["seg-1", "2026-07-20", "SECOND_CLASS", "ss-1", "sha256:route-v1", 1, 3, 2, "intent-1"]);
+});
+
+test("PostgresWaitlistRepository round-trips the pricing context a promotion re-quotes with", async () => {
+  const repository = new PostgresWaitlistRepository(new RowDb(persistedRow({
+    promotionRetryAfter: "2026-07-19T00:05:00.000Z",
+    pricingContext: { productCode: "rail-standard", channel: "MOBILE", distanceKm: 233, departureTime: "2026-07-20T03:00:00Z" },
+  })) as never);
+
+  const entry = await repository.get("wlr-1");
+
+  // The round trip is the whole point: the promotion prices from the rehydrated
+  // aggregate, so a field the row mapper drops is a field the re-quote does not
+  // send, and fare-pricing then falls back to the flat base fare.
+  assert.deepEqual(entry?.pricingContext, {
+    productCode: "rail-standard",
+    channel: "MOBILE",
+    distanceKm: 233,
+    departureTime: "2026-07-20T03:00:00Z",
+  });
+  assert.equal(entry?.promotionRetryAfter?.toISOString(), "2026-07-19T00:05:00.000Z");
+});
+
+test("PostgresWaitlistRepository loads a row without a pricing context as the pre-existing default", async () => {
+  const repository = new PostgresWaitlistRepository(new RowDb(persistedRow({
+    pricingContext: { productCode: "rail-standard", channel: "WEB" },
+  })) as never);
+
+  const entry = await repository.get("wlr-1");
+
+  assert.deepEqual(entry?.pricingContext, { productCode: "rail-standard", channel: "WEB", distanceKm: undefined, departureTime: undefined });
+  assert.equal(entry?.promotionRetryAfter, null);
 });
 
 test("PostgresWaitlistRepository.add translates unique violation to conflict", async () => {
