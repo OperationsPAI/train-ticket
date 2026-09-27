@@ -28,6 +28,7 @@ Remaining work is tracked in [TODO](../../TODO.md).
 | `segments` | `SegmentOrderSnapshot[]` | yes | Accepted segment detail, including the actual `departureTime`, used for the Post Sales policy context. |
 | `createdAt` | RFC3339 UTC | yes | Order creation time. |
 | `sourceIp` | string | no | First hop from `X-Forwarded-For`/real client IP when available, for downstream risk velocity analysis. |
+| `distanceKm` | number | no | The distance the accepted offer's fare quote was priced from, when its rule set prices by distance. Reporting divides captured money by it to produce `yieldPerKm`; absent when the quote was priced from the flat base fare. |
 
 **MonetarySummary:**
 
