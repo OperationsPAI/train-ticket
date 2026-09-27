@@ -484,6 +484,30 @@ class RealTimeMetricsEnrichmentTest(unittest.TestCase):
 
         self.assertEqual(report.items[0].yield_per_km, Decimal("0.75"))
 
+    def test_yield_per_km_divides_only_the_amount_whose_distance_is_known(self) -> None:
+        """A row can mix captures with and without a recorded distance.
+
+        Dividing the whole row's revenue by only the distance it knows describes
+        neither group -- it overstates the yield of the orders that do carry a
+        distance and says nothing about the ones that do not. The numerator is the
+        amount of the same captures that contributed distance.
+        """
+        aggregator = MetricAggregator()
+        aggregator.revenue_facts.record_order("ord-known", [("A", NOW.date())], (), NOW, Decimal("100"))
+        aggregator.revenue_facts.record_order("ord-unknown", [("A", NOW.date())], (), NOW)
+        aggregator.record(
+            OperationalEvent("payment-known", "PaymentCaptured", NOW, amount=Money("200.00", "USD"), business_ref="ord-known")
+        )
+        aggregator.record(
+            OperationalEvent("payment-unknown", "PaymentCaptured", NOW, amount=Money("600.00", "USD"), business_ref="ord-unknown")
+        )
+
+        report = aggregator.revenue_report("route", at=NOW + timedelta(hours=1))
+
+        # 200.00 over 100 km, not 800.00 over 100 km.
+        self.assertEqual(report.items[0].revenue, Money("800.00", "USD"))
+        self.assertEqual(report.items[0].yield_per_km, Decimal("2.00"))
+
     def test_yield_per_km_stays_zero_for_an_order_priced_without_a_distance(self) -> None:
         aggregator = MetricAggregator()
         aggregator.revenue_facts.record_order("ord-flat", [("A", NOW.date())], (), NOW)

@@ -81,7 +81,7 @@ The default metric catalog describes this meaning; existing stored metric descri
 | `offset` | Requested grouped-row offset. |
 | `items[].revenue` | Gross captured amount for the dimension value and currency. |
 | `items[].count` | Count of valid captured payments with an amount. A `PaymentCaptured` fact with no amount is retained for audit but contributes neither amount nor count. |
-| `items[].yieldPerKm` | Captured amount divided by the sum of recorded distance, or zero when the distance sum is zero. |
+| `items[].yieldPerKm` | Captured amount divided by the sum of recorded distance, or zero when the distance sum is zero. The numerator is the amount of the same captures that contributed distance, because a row can mix orders whose quote carried a distance with orders whose quote did not; the two are equal when every capture in the row has a recorded distance. The distance is the one the order's own fare quote was priced from, absent for a quote priced from the flat base fare. |
 | `items[].ancillaryAttachRate` | Captured payments whose resolved order has an authoritative non-insurance ancillary purchase, divided by captured payment count in the group. |
 | `items[].insuranceAttachRate` | Captured payments whose resolved order has an authoritative insurance policy/item, divided by captured payment count in the group. |
 | `totalRevenue` | Complete filtered-result totals before pagination, one Money value per currency ordered by ISO currency code. An empty result returns `[]`. |
