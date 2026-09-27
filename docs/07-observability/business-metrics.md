@@ -126,7 +126,7 @@ work is listed in [the repository TODO](../TODO.md#t18-complete-low-cardinality-
 
 | Source metric | Owning implementation |
 | --- | --- |
-| `train_ticket.order.transitions` | `journey-order` emits the `order` stage; `booking-orchestration` emits `reservation`, `payment` and `ticket`. Search and quote belong to offer management and are not emitted yet. |
+| `train_ticket.order.transitions` | Each stage is emitted by the service that serves it: `trip-planning` emits `search`, `fare-pricing` emits `quote`, `journey-order` emits `order`, and `booking-orchestration` emits `reservation`, `payment` and `ticket`. Offer management is not an emitter: it sees neither a search nor a quote, and counting its offers under either stage would have made every offer attempt look like a search. Each stage records one `attempted` and then exactly one of `accepted` or `rejected`. |
 | `train_ticket.booking.saga.*` | `booking-orchestration`, rebuilt from durable saga snapshots by a leader-elected reporter. |
 | `train_ticket.payment.*` | `payment` owns the domain view and the conservation gauge; `payment-channel` publishes the edge it settles; `post-sales` publishes compensation outcomes only, with no amount and no conservation series. |
 | `train_ticket.capacity.*`, `train_ticket.seat.allocations` | `capacity-availability` folds pool documents; `seat-assignment` folds its allocations. Both publish a standing substitution with the same `travel_class` and `seat_mode`, so the supply disagreement is expressible as `capacity.units{state="confirmed"} - seat.allocations{state="allocated"}`. |
