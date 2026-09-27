@@ -18,6 +18,16 @@ public interface FinanceSettlementProjectionRepository {
 
     default void saveChannelStatementLine(ChannelStatementLineProjection line) {}
 
+    /** Saves a page of lines; the default is a loop, the SQL one is a batch. */
+    default void saveChannelStatementLines(java.util.List<ChannelStatementLineProjection> lines) {
+        for (ChannelStatementLineProjection line : lines) {
+            saveChannelStatementLine(line);
+        }
+    }
+
+    /** Whether the channel side of this statement has already been read. */
+    default boolean hasChannelStatementLines(String channelStatementId) { return false; }
+
     default List<ChannelStatementLineProjection> findChannelStatementLinesForSettlementDate(LocalDate settlementDate) { return List.of(); }
 
     default List<ChannelStatementProjection> findChannelStatementsForSettlementDate(LocalDate settlementDate) { return List.of(); }

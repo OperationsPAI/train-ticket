@@ -102,6 +102,22 @@ public class FinanceSettlementController {
         return ReconciliationBatchResponse.from(service.getReconciliationBatch(batchId));
     }
 
+    /**
+     * Runs a settlement date's reconciliation on demand.
+     *
+     * The scheduler is the normal path and this is the same call. An operator
+     * who has corrected a fact, or one verifying a period, needs a way to ask
+     * for it -- without one, the only run a period ever gets is the one the
+     * lease happened to allow. It is idempotent per date: an existing batch is
+     * returned rather than recomputed. The answer is the batch's report rather
+     * than its entries, which are half a million rows for a measured day.
+     */
+    @PostMapping("/api/v1/settlements/reconciliation/{date}/run")
+    public DailySettlementResponse runReconciliation(@PathVariable String date, HttpServletRequest httpRequest) {
+        return DailySettlementResponse.from(
+            service.runDailyReconciliation(LocalDate.parse(date), (String) httpRequest.getAttribute("X-Correlation-Id")));
+    }
+
     @GetMapping("/api/v1/settlement-schedule-runs/{jobKey}")
     public SettlementScheduleRunResponse getSettlementScheduleRun(@PathVariable String jobKey) {
         return SettlementScheduleRunResponse.from(scheduleRuns.findByKey(jobKey)
