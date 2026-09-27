@@ -116,6 +116,53 @@ async fn mixed_revenue_basis_hash_is_independent_of_valid_arrival_order() {
     );
 }
 
+#[tokio::test]
+async fn a_reversal_that_arrives_before_its_recognition_waits_in_the_history() {
+    // Measured on the resident release: five reversals reached
+    // `events:finance-settlement:dlq` as MaxDeliveryAttempts because the
+    // recognition they name had not been projected when they were applied, and
+    // every one of them was applied by a later delivery. The projection runs
+    // several workers on one stream, so the order is not guaranteed -- the
+    // reversal has to be durable until the recognition it reverses arrives.
+    let out_of_order = InMemoryInvoicingService::default();
+    let in_order = InMemoryInvoicingService::default();
+    let order = "ord-reversal-first";
+    let confirmed = || rust_kit::messaging::EventEnvelope::new(
+        "JourneyOrderConfirmed", rust_kit::messaging::now_rfc3339_utc(), corr(), None::<String>, "journey-order",
+        json!({"orderId":order,"accountId":"acc-reversal-first","segmentRefs":["seg-1"],
+            "monetarySummary":{"total":{"currency":"CNY","minorUnits":7500}}}),
+    );
+    let recognized = rust_kit::messaging::EventEnvelope::new(
+        "RevenueRecognized", rust_kit::messaging::now_rfc3339_utc(), corr(), None::<String>, "finance-settlement",
+        json!({"orderId":order,"revenueRecognitionId":"rr-original",
+            "amount":{"currency":"CNY","minorUnits":10000}}),
+    );
+    let reversed = rust_kit::messaging::EventEnvelope::new(
+        "RevenueRecognitionReversed", rust_kit::messaging::now_rfc3339_utc(), corr(), None::<String>, "finance-settlement",
+        json!({"orderId":order,"revenueRecognitionId":"rr-original","sourceEventId":"rf-1",
+            "amount":{"currency":"CNY","minorUnits":2500}}),
+    );
+
+    for service in [&out_of_order, &in_order] {
+        service.apply_subscribed_event(confirmed()).await.unwrap();
+    }
+    out_of_order.apply_subscribed_event(reversed.clone()).await.unwrap();
+    assert!(out_of_order.get_amount_basis(order.into()).await.is_err(), "nothing is projected before the recognition");
+    out_of_order.apply_subscribed_event(recognized.clone()).await.unwrap();
+
+    in_order.apply_subscribed_event(recognized).await.unwrap();
+    in_order.apply_subscribed_event(reversed).await.unwrap();
+
+    let out_of_order_basis = out_of_order.get_amount_basis(order.into()).await.unwrap();
+    let in_order_basis = in_order.get_amount_basis(order.into()).await.unwrap();
+    assert_eq!(out_of_order_basis, in_order_basis);
+    assert_eq!(out_of_order_basis.total_amount.minor_units, 7500);
+    assert_eq!(
+        serde_json::to_value(&out_of_order.snapshot().amount_history[order]).unwrap(),
+        serde_json::to_value(&in_order.snapshot().amount_history[order]).unwrap(),
+    );
+}
+
 async fn project_amount(
     svc: &InMemoryInvoicingService,
     order_id: &str,
