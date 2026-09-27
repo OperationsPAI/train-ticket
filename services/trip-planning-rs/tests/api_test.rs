@@ -486,3 +486,107 @@ async fn multileg_search_rejects_unbounded_preferences() {
     assert_eq!(json["code"], "VALIDATION_FAILED");
     assert!(json["message"].as_str().unwrap().contains("maxConnections"));
 }
+
+/// Two different searches must publish one bounded label set.
+///
+/// The funnel is handed the stage, the outcome and the channel and nothing else,
+/// so a traveler, origin, destination or itinerary identifier that reached a
+/// label would show up here as a series of its own. The two searches below differ
+/// in every one of those identifiers and in the itinerary they return; the
+/// assertion is that the exported label keys are the same for both and that no
+/// identifier appears in a label value.
+#[tokio::test]
+async fn two_different_searches_record_the_same_label_set() {
+    use opentelemetry::metrics::MeterProvider;
+    use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
+    use opentelemetry_sdk::metrics::{InMemoryMetricExporter, SdkMeterProvider};
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+
+    let exporter = InMemoryMetricExporter::default();
+    let provider = SdkMeterProvider::builder()
+        .with_periodic_exporter(exporter.clone())
+        .build();
+    let funnel = rust_kit::metrics::OrderFunnel::new(&provider.meter("trip-planning-api-test"));
+    let state = Arc::new(
+        trip_planning::AppState::new(None, Arc::new(trip_planning::PlanIndex::new()), "test:trip-planning")
+            .with_order_funnel(funnel),
+    );
+    let app = trip_planning::router_with_state(state.clone());
+    seed_route(&state, "cardinality-a", "cardinality-b", "2026-07-10");
+    seed_route(&state, "cardinality-c", "cardinality-d", "2026-07-11");
+
+    let searches = [
+        ("cardinality-traveler-1", "cardinality-a", "cardinality-b", "2026-07-10"),
+        ("cardinality-traveler-2", "cardinality-c", "cardinality-d", "2026-07-11"),
+    ];
+    for (traveler, origin, destination, date) in searches {
+        let payload = serde_json::json!({
+            "originRef": origin,
+            "destinationRef": destination,
+            "departureDate": date,
+            "travelerRefs": [traveler],
+            "channel": "web"
+        });
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/itineraries/search")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    provider.force_flush().expect("flush metrics");
+
+    let mut label_keys: BTreeSet<Vec<String>> = BTreeSet::new();
+    let mut samples = 0;
+    for resource_metric in exporter.get_finished_metrics().expect("finished metrics") {
+        for scope_metric in resource_metric.scope_metrics() {
+            for metric in scope_metric.metrics() {
+                if metric.name() != "train_ticket.order.transitions" {
+                    continue;
+                }
+                let AggregatedMetrics::U64(MetricData::Sum(sum)) = metric.data() else {
+                    panic!("the funnel counter is a u64 sum");
+                };
+                for point in sum.data_points() {
+                    let mut keys = Vec::new();
+                    for kv in point.attributes() {
+                        let value = kv.value.to_string();
+                        for identifier in [
+                            "cardinality-traveler-1",
+                            "cardinality-traveler-2",
+                            "cardinality-a",
+                            "cardinality-b",
+                            "cardinality-c",
+                            "cardinality-d",
+                        ] {
+                            assert!(
+                                !value.contains(identifier),
+                                "a business identifier reached the label {}={}",
+                                kv.key.as_str(),
+                                value
+                            );
+                        }
+                        keys.push(kv.key.to_string());
+                    }
+                    keys.sort();
+                    label_keys.insert(keys);
+                    samples += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(samples, 2, "both searches share one attempted and one accepted series");
+    assert_eq!(label_keys.len(), 1, "every series must carry the same label keys: {label_keys:?}");
+    assert_eq!(
+        label_keys.into_iter().next().unwrap(),
+        vec!["channel".to_string(), "outcome".to_string(), "stage".to_string()]
+    );
+}
