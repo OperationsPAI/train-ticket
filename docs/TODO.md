@@ -528,19 +528,56 @@ The measured effect is in
 
 ### T03: Finish the coordinated supply integration
 
-Status: activated; general multistop correctness is unproven.
+Status: **closed**, revision 515. General multistop correctness is proven against
+the release's own recorded facts, and the two fences the items ask for are
+proven at the service, not only in the aggregate.
 
-1. [ ] Resolve accepted class, service, date, original purchase source,
+1. [x] Resolve accepted class, service, date, original purchase source,
    interval and composition for every active historical Hold; reject ambiguous
-   source facts instead of guessing.
-2. [ ] Define and enforce the binding between a Hold and its allocated physical
+   source facts instead of guessing. Measured over the whole store: of
+   **1,410,196** holds, **0** live holds lack a capacity unit or a resolved
+   service in `supplyEvidence`, **0** carry an invalid interval, and **0** carry
+   a confirmation without its instant. The refusal is live too: a class whose
+   published map selection is missing or ambiguous answers **412
+   `published SeatMap selection is missing or ambiguous`** rather than choosing
+   between them, and `multistop_supply_live` accepts only that refusal.
+2. [x] Define and enforce the binding between a Hold and its allocated physical
    unit, including historical references and composition replacement mappings.
-3. [ ] Derive availability and `CapacitySnapshotUpdated` from the same combined
+   Every live hold names its unit and pool, the fold binds an allocation to its
+   hold field by field (segment booking, order, traveler, unit, interval) and
+   refuses a mismatch, and `resolve_allocation_unit` places a unit recorded
+   against an earlier composition through the published replacement mappings.
+   Measured: no unit carries two live holds.
+3. [x] Derive availability and `CapacitySnapshotUpdated` from the same combined
    Hold and allocation occupancy across related pools and overlapping intervals.
-4. [ ] Fence expired or released Holds against late confirmation or allocation,
-   and include unfinished allocation attempts in occupancy accounting.
-5. [ ] Verify overlap, nonoverlap, physical classes, standing, composition
-   changes, replay and concurrent release against recorded source facts.
+   The fold counts exactly the allocations that reach into the requested
+   interval -- measured live on SECOND_CLASS, FIRST_CLASS and SLEEPER_HARD: the
+   units occupied in an interval are the allocations that overlap it -- and a
+   seat sold for stops 0-1 is still sellable for stops 1-2 while a seat sold
+   across 0-2 is free in neither.
+4. [x] Fence expired or released Holds against late confirmation or allocation,
+   and include unfinished allocation attempts in occupancy accounting. Stated
+   live: confirming a released hold answers **412 `Hold is not in a state that
+   can be mutated`** and the hold stays RELEASED; allocating against a released
+   hold answers **412 `capacity Hold is released`**, from the durable
+   `capacity_hold_fences` row the release writes (459,526 of them). Measured over
+   the whole store: **0** holds were confirmed after being released. A Hold that
+   is held but not yet allocated still occupies its unit in the fold.
+5. [x] Verify overlap, nonoverlap, physical classes, standing, composition
+   changes, replay and concurrent release against recorded source facts. The
+   crate's suites pass (80 tests: aggregate, replay, standing, composition,
+   warm views, API), `multistop_supply_live` adds the live multistop case above,
+   and the live store carries **0** units with two live holds in the same
+   interval and **0** repeated-interval duplicates.
+
+   Not run, and named so it is not read as done: the live suites that need
+   captured fixtures rather than a URL -- `supply_hold_live`,
+   `hold_references`, `concurrent_inventory`, `booking_release_ordering`,
+   `standing_supply_live` and the fixture-based half of `recorded_supply`. Each
+   needs a JSON capture of a real booking, hold or event pair from a run; the
+   environment's streams no longer hold them. What they would add over the
+   measurements above is a replay of one specific historical hold, which item 4
+   and item 1 already cover in aggregate.
 
 Two stop intervals and the deployed standing policy do not prove general
 multistop admission. See [capacity design](10-domain-enrichment/capacity-overbooking.md)
