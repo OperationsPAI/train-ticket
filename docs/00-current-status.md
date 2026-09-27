@@ -5,7 +5,7 @@ Last verified: 2026-09-27, Asia/Beijing.
 ## Runtime
 
 The resident Helm release is `train-ticket` in namespace `train-ticket`,
-revision **476**.
+revision **478**.
 Its values come from one file, `deploy/helm/train-ticket/values.yaml`: the
 registry, the `local-path` storage class, the central telemetry store, the
 resident exporters, the load generator settings and the `loadgen-resident-state`
@@ -21,8 +21,12 @@ Redis Streams carries events, with no persistent volume or AOF, so Redis can be
 connected to without any event having been consumed.
 
 The resident Go load generator uses the `loadgen-resident-state` claim, a 600
-second diurnal period, `target_rps: 20`, bursts between three and eight times
-the mean rate and a 10 second HTTP request timeout. It is scaled to zero
+second diurnal period, `target_rps: 20`, a diurnal peak of `2.0` and a burst
+multiplier of `1.5` to `2.0` (product `4.0`, near 4800 journeys a minute, against
+a measured knee at 13572) and a 10 second HTTP request timeout. The level is a
+fact about the deployment and lives in the one values file, not in the chart's
+default ConfigMap: the chart injects it as environment overrides so the
+generator, the chart and this document cannot disagree. It is scaled to zero
 between acceptance runs; the run whose evidence is below was made by scaling it
 to one and back.
 
@@ -37,6 +41,9 @@ to one and back.
 | Disruption recovery | A segment signal with no affected order is an audited no-op that is acknowledged; only resolver and database failures retry. |
 | Autoscaled replicas | The chart writes `spec.replicas` only on install for a Deployment that has an HPA, so an upgrade no longer resets a scaled-out replica count. |
 | Redis consumer recovery | A failed pending-entry recovery no longer ends consumption in any language kit; `XAUTOCLAIM` cursors are paged rather than restarted. |
+| Dead-letter classification | An error thrown out of a TypeScript handler is a bounded retry rather than a dead letter: a database that refuses connections is evidence about the handler, not about the event. Every kit's retry is bounded, and an event that really cannot be handled still reaches the dead letter. |
+| Revenue basis | Invoicing's amount basis folds the order's durable recognition and reversal history, so the several workers on the finance stream cannot change the answer by applying a reversal first. |
+| Booking reservation race | A capacity Hold that arrives for a booking the saga already cancelled keeps its reference for release and asks the provider to cancel; it never reopens the booking. |
 | Trip planning | Search reads supply on demand rather than loading every service plan at startup; a new pod is ready in seconds and holds about 3Mi. |
 | Reporting | Monetary revenue fields are gross `PaymentCaptured` amounts, and the summary views are committed rather than aggregated per request. |
 | Database sharding | Six shards by workload shape, with the copies and cutover checks recorded in the chart. |
@@ -47,6 +54,7 @@ to one and back.
 
 | Check | Result | Evidence |
 |---|---|---|
+| Ten minute window at revision 478, one whole diurnal cycle | 237355 requests and 28035 journeys, peak minute 4136 journeys and trough minute 1514, **0 unexpected HTTP errors and 0 failed journeys** in every minute; the recorder read `written=305897 dropped=0`; the dead-letter population was unchanged across the window (ancillary-service 2, capacity-availability 6, finance-settlement 5, journey-order 3, booking-orchestration 0) | `/tmp/sweep/acc478.cur.jsonl` |
 | Ten minute window at revision 476, one whole diurnal cycle | 274892 requests and 31865 journeys, peak minute 5256 journeys, **0 unexpected HTTP errors and 0 failed journeys**; the recorder read `written=509839 dropped=0` and every dead-letter stream that this workload uses is empty of new entries | `/tmp/sweep/fix2.*.jsonl` |
 | Six minute window at revision 459, the resident steady state after a restart's catch-up | 203561 requests, 22291 journeys, P99 359 milliseconds, **0 unexpected error groups and 0 failed journeys**; the recorder read `written=735198 dropped=0`. The same run's `01:46` catch-up minute carries 7652 journeys and 765 failures, which is the exception below | `.scratch/runtime-fixes/goal-acc-steady-rev459-6min.json` |
 | Ten minute window at revision 458, one whole cycle in the resident steady state | 414205 requests, 46147 journeys, P99 270 milliseconds, **0 unexpected error groups and 0 failed journeys**; the recorder read `written=594793 dropped=0` | `.scratch/runtime-fixes/goal-acc-steady-rev458.json` |
@@ -87,6 +95,47 @@ to one and back.
 The skipped tests are the ones gated on `TEST_DATABASE_URL` and on other
 environment variables that a module run does not set. They are not a claim that
 the live path works.
+
+### The two dead-letter sources and their root cause
+
+The two open sources in [TODO](TODO.md) T20 were both a race, and both are
+closed on the code rather than reclassified:
+
+`events:capacity-availability:dlq` held six `CapacityHeld` entries for
+`booking-orchestration` dead-lettered as `FATAL_FAILURE` after one attempt. Their
+segment-booking snapshots are all `CANCELLED` with
+`cancellationReason: SAGA_STEP_TIMED_OUT` and a durable
+`pendingProviderReference`, which is the race: the saga's reservation step timed
+out and cancelled the booking while the provider's confirmation waited for its
+Hold, and the Hold arrived after. `markCapacityHolding` then completed the
+deferred confirmation on a cancelled booking, and `confirmReservation` refused
+it with an `IllegalStateException`. A hold that arrives for a terminal booking
+keeps its reference and asks the provider to cancel instead.
+
+`events:finance-settlement:dlq` held five `RevenueRecognitionReversed` entries
+for `invoicing` dead-lettered as `MaxDeliveryAttempts`. The projection runs
+eight workers on the finance stream, so a reversal can be projected before the
+recognition it reverses; it answered `Unavailable` and took five redeliveries to
+reach the cap that a later delivery then passed. All five orders carry the
+reversal in their amount history, so they were late rather than lost. A reversal
+now waits in the order's durable history and the recognition's own delivery
+applies it.
+
+The subscriber's own classification was the third source. Two
+`AncillaryOfferExpired` events were dead-lettered with `connect ECONNREFUSED`
+while the read shard was being created: the TypeScript kit treated any error
+thrown out of a handler as a dead letter. A throw is evidence about the handler,
+not about the event, so the default is now a bounded retry -- it still reaches
+the dead letter when the event really cannot be handled.
+
+### The orphan consumer group that looked like a stalled reader
+
+`events:booking-orchestration` carried a `notification` consumer group with a lag
+of 30003 entries and an oldest owed entry of twelve minutes, and no service
+behind it: notification's subscription to that stream was dropped deliberately
+(none of the event types it renders is published there), but the Redis group
+outlives the configuration that made it. The group was destroyed on the resident
+release, and the lag table now reports three live groups at zero or one entry.
 
 ### Duplicate publication is fixed
 
