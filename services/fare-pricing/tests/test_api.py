@@ -148,6 +148,42 @@ class FarePricingApiTest(unittest.TestCase):
             resp = self.client.get(path)
             self.assertEqual(resp.status_code, 200)
 
+    def test_two_different_quotes_record_the_same_label_set(self) -> None:
+        """Two different quotes must publish one bounded label set.
+
+        The funnel recorder is handed the stage, the outcome and the channel and
+        nothing else, so a traveler, segment or quote identifier it was given
+        instead would show up here as a different recorded tuple. Two quotes for
+        different travelers and segments on the same channel therefore have to
+        record exactly the same two tuples.
+        """
+
+        class Recorder:
+            def __init__(self) -> None:
+                self.events: list[tuple[str, str, str | None]] = []
+
+            def transition(self, stage: str, outcome: str, channel: str | None) -> None:
+                self.events.append((stage, outcome, channel))
+
+        recorder = Recorder()
+        self.client.app.state.order_funnel = recorder
+        recorded: list[list[tuple[str, str, str | None]]] = []
+        for index, (traveler, segment) in enumerate([("tvl-one", "seg-one"), ("tvl-two", "seg-two")]):
+            recorder.events.clear()
+            resp = self.client.post(
+                "/api/v1/fare-quotes",
+                json={"travelerRefs": [traveler], "channel": "web", "segmentRefs": [segment]},
+                headers={"Idempotency-Key": uuid7_key(31 + index)},
+            )
+            self.assertEqual(resp.status_code, 201)
+            recorded.append(list(recorder.events))
+
+        self.assertNotEqual(recorded[0], [])
+        self.assertEqual(recorded[1], recorded[0], "two quotes must share one label set")
+        for stage, outcome, channel in recorded[0]:
+            for identifier in ("tvl-one", "tvl-two", "seg-one", "seg-two"):
+                self.assertNotIn(identifier, f"{stage}{outcome}{channel}")
+
     def test_quote_records_one_funnel_attempt_and_one_outcome(self) -> None:
         """The quote stage of the order funnel leaves attempted = accepted + rejected.
 
