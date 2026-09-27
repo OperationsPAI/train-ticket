@@ -284,7 +284,10 @@ func (b *RedisEventBus) consumeLoop(ctx context.Context, streams []string, group
 			}
 		default:
 		}
-		result, err := b.client.XReadGroup(ctx, &redis.XReadGroupArgs{Group: group, Consumer: consumer, Streams: append(append([]string{}, streams...), ids...), Count: 100, Block: b.cfg.ReadBlock}).Result()
+		// Five hundred rather than a hundred: one read that returns five hundred
+		// entries costs one command, and xreadgroup is the largest command class a
+		// single-threaded Redis serves.
+		result, err := b.client.XReadGroup(ctx, &redis.XReadGroupArgs{Group: group, Consumer: consumer, Streams: append(append([]string{}, streams...), ids...), Count: 500, Block: b.cfg.ReadBlock}).Result()
 		if err != nil {
 			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
 				return
