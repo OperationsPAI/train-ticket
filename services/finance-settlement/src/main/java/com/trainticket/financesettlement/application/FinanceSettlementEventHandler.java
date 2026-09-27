@@ -317,7 +317,8 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
             // A refund line reaching this comparison is recorded as what it is
             // rather than as a payment the reconciliation would then look for a
             // capture for.
-            optionalText(payload, "lineType").orElse(ChannelStatementLineProjection.PAYMENT)
+            optionalText(payload, "lineType").orElse(ChannelStatementLineProjection.PAYMENT),
+            optionalText(payload, "refundId").orElse("")
         ));
     }
 
