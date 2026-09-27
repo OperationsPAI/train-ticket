@@ -367,6 +367,98 @@ class MessagingTest {
         assertFalse(((String) ((Map<?, ?>) completed.payload()).get("orderId")).startsWith("order-unknown-for-"));
     }
 
+    /**
+     * A provider confirmation that arrives before the money does is a race, not
+     * a discrepancy. Measured at revision 493 this opened 1,119,675
+     * `missing-in-platform` cases with expected 0.00 against actual 0.00, none of
+     * which could ever be true or resolved.
+     */
+    @Test
+    void operationalFactBeforeAnyMoneyIsRecordedOpensNoCase() {
+        InMemoryConsumedEventLogRepository consumedEvents = new InMemoryConsumedEventLogRepository();
+        RecordingPublisher publisher = new RecordingPublisher();
+        FinanceSettlementApplicationService service = new FinanceSettlementApplicationService(
+            new InMemoryRevenueRepository(), new InMemoryReconciliationRepository(), publisher, new DomainEventEnvelopeMapper());
+        FinanceSettlementEventHandler handler = new FinanceSettlementEventHandler(
+            consumedEvents, new InMemoryPaymentIntentOrderReferenceRepository(), new InMemorySegmentBookingOrderReferenceRepository(),
+            Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC), service);
+
+        handler.handle(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e211", "SegmentReservationRequested", Instant.parse("2026-07-03T10:28:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e105", null, "booking-orchestration", 1, Map.of(
+                "segmentBookingId", "sb-0194f2e0-7b3e-7610-0284-5c26e8b0c333",
+                "journeyOrderId", "ord-0194f2e0-7b3e-7610-0284-5c26e8b0c333",
+                "segmentRef", "seg-1",
+                "travelerRef", "trav-1",
+                "idempotencyKey", "idem-333")));
+        HandlerResult confirmed = handler.handle(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e212", "ProviderReservationConfirmed", Instant.parse("2026-07-03T10:31:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e105", null, "provider-integration", 1, Map.of(
+                "segmentBookingId", "sb-0194f2e0-7b3e-7610-0284-5c26e8b0c333",
+                "providerReference", "pr-1",
+                "normalizedEvidence", "confirmed")));
+
+        assertEquals(HandlerResult.SUCCESS, confirmed);
+        assertFalse(
+            publisher.published.stream().anyMatch(e -> "ReconciliationCaseOpened".equals(e.eventType())),
+            "nothing recorded on either side is not a discrepancy");
+    }
+
+    /**
+     * A changed order is captured on a second payment intent, recorded as its own
+     * recognition and never into `captures_by_order_id`. Comparing the fare
+     * capture with every component made every changed order a discrepancy by
+     * construction: 172,933 `amount-mismatch` cases at revision 493.
+     */
+    @Test
+    void changedOrderComparesTheCaptureAgainstItsOwnComponentOnly() {
+        InMemoryConsumedEventLogRepository consumedEvents = new InMemoryConsumedEventLogRepository();
+        RecordingPublisher publisher = new RecordingPublisher();
+        FinanceSettlementApplicationService service = new FinanceSettlementApplicationService(
+            new InMemoryRevenueRepository(), new InMemoryReconciliationRepository(), publisher, new DomainEventEnvelopeMapper());
+        InMemoryFinanceSettlementProjectionRepository projections = new InMemoryFinanceSettlementProjectionRepository();
+        FinanceSettlementEventHandler handler = new FinanceSettlementEventHandler(
+            consumedEvents, new InMemoryPaymentIntentOrderReferenceRepository(), new InMemorySegmentBookingOrderReferenceRepository(),
+            projections, Clock.fixed(Instant.parse("2026-07-05T10:00:00Z"), ZoneOffset.UTC), service);
+        String orderId = "ord-0194f2e0-7b3e-7610-0284-5c26e8b0c444";
+        Instant occurredAt = Instant.parse("2026-07-03T10:30:00Z");
+        service.saveAndPublish(RevenueRecognition.recognize(
+            orderId, "item-1", "fare", Money.of("CNY", "35.00"), "policy-v1",
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e213", occurredAt, occurredAt,
+            "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0e201", "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e101"));
+        service.saveAndPublish(RevenueRecognition.recognize(
+            orderId, "item-1", "change-payment", Money.of("CNY", "10.00"), "policy-v1",
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e214", occurredAt, occurredAt,
+            "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0e202", "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e101"));
+        projections.saveCapture(orderId, new FinanceSettlementEventHandler.PaymentCaptureFact(
+            orderId, "pi-0194f2e0-7b3e-7610-0284-5c26e8b0c789", Money.of("CNY", "35.00"),
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e215", occurredAt));
+
+        handler.handle(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e216", "SegmentReservationRequested", Instant.parse("2026-07-03T10:28:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e105", null, "booking-orchestration", 1, Map.of(
+                "segmentBookingId", "sb-0194f2e0-7b3e-7610-0284-5c26e8b0c444",
+                "journeyOrderId", orderId,
+                "segmentRef", "seg-1",
+                "travelerRef", "trav-1",
+                "idempotencyKey", "idem-444")));
+        HandlerResult confirmed = handler.handle(new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0e217", "ProviderReservationConfirmed", Instant.parse("2026-07-03T10:31:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0e105", null, "provider-integration", 1, Map.of(
+                "segmentBookingId", "sb-0194f2e0-7b3e-7610-0284-5c26e8b0c444",
+                "providerReference", "pr-1",
+                "normalizedEvidence", "confirmed")));
+
+        assertEquals(HandlerResult.SUCCESS, confirmed);
+        assertFalse(
+            publisher.published.stream().anyMatch(e -> "ReconciliationCaseOpened".equals(e.eventType())),
+            "the capture covers its own component, so this order matches");
+        EventEnvelope completed = publisher.published.stream()
+            .filter(e -> "ReconciliationCompleted".equals(e.eventType())).findFirst().orElseThrow();
+        assertEquals(orderId, ((Map<?, ?>) completed.payload()).get("orderId"));
+        assertEquals(3500L, ((Map<?, ?>) ((Map<?, ?>) completed.payload()).get("expectedAmount")).get("minorUnits"));
+    }
+
     @Test
     void operationalFactWithoutSegmentIndexOpensUnassignedCaseWithoutSyntheticOrderKey() {
         InMemoryConsumedEventLogRepository consumedEvents = new InMemoryConsumedEventLogRepository();
