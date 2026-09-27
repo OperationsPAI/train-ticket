@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from enum import Enum
 from statistics import median
 from typing import Any, Mapping, Self
@@ -720,11 +720,33 @@ class OrderTravelerFact:
     traveler_type: str
 
 
+def _optional_distance(value: Any) -> Decimal | None:
+    """A distance that came off an event, as a positive decimal or nothing.
+
+    fare-pricing publishes the distance inside the pricing component it computed
+    the base fare with, as a decimal string, and does not publish one at all when
+    the request carried no distance -- a flat-base-fare quote was priced without
+    a trip length, and reporting must not invent one.
+    """
+    if value is None:
+        return None
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    return parsed if parsed.is_finite() and parsed > 0 else None
+
+
 @dataclass(frozen=True, slots=True)
 class OrderDimensionFact:
     routes: tuple[OrderRouteFact, ...]
     travelers: tuple[OrderTravelerFact, ...]
     occurred_at: datetime
+    # The distance the order was priced from, when its offer's quote carried one.
+    # The revenue report divides captured money by it, and it belongs to the
+    # order rather than to any one capture: a capture's own payload has no
+    # distance, and every capture of the order covers the same trip.
+    distance_km: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -769,14 +791,19 @@ class RevenueFactIndex:
         # The in-memory projection keeps these values on OperationalEvent.
         return None
 
-    def record_order(self, order_id: str, routes: Any, traveler_types: Any, occurred_at: datetime) -> None:
+    def record_order(self, order_id: str, routes: Any, traveler_types: Any, occurred_at: datetime, distance_km: Any = None) -> None:
         order_id = order_id.strip()
         if not order_id:
             return
         current = self.orders.get(order_id)
         if current is not None and current.occurred_at > occurred_at:
             return
-        self.orders[order_id] = OrderDimensionFact(self._routes(routes), self._travelers(traveler_types), occurred_at)
+        self.orders[order_id] = OrderDimensionFact(
+            self._routes(routes),
+            self._travelers(traveler_types),
+            occurred_at,
+            _optional_distance(distance_km) or (current.distance_km if current is not None else None),
+        )
         self.record_business_order(order_id, order_id, (), (), occurred_at)
 
     def record_business_order(
@@ -839,6 +866,21 @@ class RevenueFactIndex:
     def order_id_for(self, event: OperationalEvent) -> str | None:
         fact = self.business_fact_for(event)
         return None if fact is None else fact.order_id
+
+    def distance_for(self, event: OperationalEvent) -> Decimal | None:
+        """The distance the order behind this event was priced from.
+
+        A capture carries no distance of its own; the order does, and every
+        capture of that order covers the same trip. The capture's own value still
+        wins when one is present, so an event that names a distance explicitly is
+        never overridden by the order it belongs to.
+        """
+        if event.distance_km is not None:
+            return event.distance_km
+        business = self.business_fact_for(event)
+        order_id = None if business is None else business.order_id
+        fact = None if order_id is None else self.orders.get(order_id)
+        return None if fact is None else fact.distance_km
 
     def dimension_values(self, event: OperationalEvent, dimension: str) -> tuple[str, ...]:
         business = self.business_fact_for(event)
@@ -1086,6 +1128,10 @@ class MetricAggregator:
             allocations = self._split_money(event.amount, len(values))
             ancillary_attached, insurance_attached = self.revenue_facts.attachment_flags(event)
             complete_totals.append(event.amount)
+            # The distance belongs to the order, not to the capture: a capture's
+            # own payload carries none, and this is the same rule the SQL view
+            # applies, so the two aggregations agree on `yieldPerKm`.
+            distance_km = self.revenue_facts.distance_for(event)
             event_allocations: dict[str, Decimal] = {}
             for value, amount in zip(values, allocations, strict=True):
                 event_allocations[value] = event_allocations.get(value, Decimal("0.00")) + amount.amount
@@ -1096,7 +1142,7 @@ class MetricAggregator:
                 )
                 bucket["revenue"] += attributed_amount
                 bucket["count"] += 1
-                bucket["distance"] += (event.distance_km or Decimal("0")) * Decimal(str(values.count(value))) / len(values)
+                bucket["distance"] += (distance_km or Decimal("0")) * Decimal(str(values.count(value))) / len(values)
                 bucket["ancillary"] += int(ancillary_attached)
                 bucket["insurance"] += int(insurance_attached)
         all_items = tuple(
