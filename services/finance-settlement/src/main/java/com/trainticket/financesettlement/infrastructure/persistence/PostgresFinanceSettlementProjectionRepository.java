@@ -130,8 +130,8 @@ public class PostgresFinanceSettlementProjectionRepository implements FinanceSet
     public void saveChannelStatementLine(ChannelStatementLineProjection line) {
         jdbc.update(
             """
-                INSERT INTO channel_statement_lines(statement_line_id, channel_statement_id, statement_date, order_id, payment_intent_id, channel_order_id, currency, amount, source_event_id, line_type)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO channel_statement_lines(statement_line_id, channel_statement_id, statement_date, order_id, payment_intent_id, channel_order_id, currency, amount, source_event_id, line_type, refund_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (statement_line_id) DO UPDATE SET
                   channel_statement_id = EXCLUDED.channel_statement_id,
                   statement_date = EXCLUDED.statement_date,
@@ -142,6 +142,7 @@ public class PostgresFinanceSettlementProjectionRepository implements FinanceSet
                   amount = EXCLUDED.amount,
                   source_event_id = EXCLUDED.source_event_id,
                   line_type = EXCLUDED.line_type,
+                  refund_id = EXCLUDED.refund_id,
                   updated_at = now()
                 """,
             line.statementLineId(),
@@ -153,7 +154,8 @@ public class PostgresFinanceSettlementProjectionRepository implements FinanceSet
             line.actualAmount().currency().getCurrencyCode(),
             line.actualAmount().amount(),
             line.sourceEventId(),
-            line.lineType()
+            line.lineType(),
+            line.refundId()
         );
     }
 
@@ -164,8 +166,8 @@ public class PostgresFinanceSettlementProjectionRepository implements FinanceSet
         // as one batch rather than one round trip per line.
         jdbc.batchUpdate(
             """
-                INSERT INTO channel_statement_lines(statement_line_id, channel_statement_id, statement_date, order_id, payment_intent_id, channel_order_id, currency, amount, source_event_id, line_type)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO channel_statement_lines(statement_line_id, channel_statement_id, statement_date, order_id, payment_intent_id, channel_order_id, currency, amount, source_event_id, line_type, refund_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (statement_line_id) DO UPDATE SET
                   channel_statement_id = EXCLUDED.channel_statement_id,
                   statement_date = EXCLUDED.statement_date,
@@ -176,6 +178,7 @@ public class PostgresFinanceSettlementProjectionRepository implements FinanceSet
                   amount = EXCLUDED.amount,
                   source_event_id = EXCLUDED.source_event_id,
                   line_type = EXCLUDED.line_type,
+                  refund_id = EXCLUDED.refund_id,
                   updated_at = now()
                 """,
             lines.stream()
@@ -189,7 +192,8 @@ public class PostgresFinanceSettlementProjectionRepository implements FinanceSet
                     line.actualAmount().currency().getCurrencyCode(),
                     line.actualAmount().amount(),
                     line.sourceEventId(),
-                    line.lineType()
+                    line.lineType(),
+                    line.refundId()
                 })
                 .toList()
         );
@@ -209,7 +213,7 @@ public class PostgresFinanceSettlementProjectionRepository implements FinanceSet
     public List<ChannelStatementLineProjection> findChannelStatementLinesForSettlementDate(java.time.LocalDate settlementDate) {
         return jdbc.query(
             """
-                SELECT statement_line_id, channel_statement_id, statement_date, order_id, payment_intent_id, channel_order_id, currency, amount, source_event_id, line_type
+                SELECT statement_line_id, channel_statement_id, statement_date, order_id, payment_intent_id, channel_order_id, currency, amount, source_event_id, line_type, refund_id
                 FROM channel_statement_lines
                 WHERE statement_date = ?
                 ORDER BY statement_line_id
@@ -223,7 +227,8 @@ public class PostgresFinanceSettlementProjectionRepository implements FinanceSet
                 rs.getString("channel_order_id"),
                 money(rs.getString("currency"), rs.getString("amount")),
                 rs.getString("source_event_id"),
-                rs.getString("line_type")
+                rs.getString("line_type"),
+                rs.getString("refund_id")
             ),
             settlementDate.toString()
         );
