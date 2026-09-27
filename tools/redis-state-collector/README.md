@@ -24,6 +24,7 @@ Prometheus.
 | `train_ticket.event.consumer.pending` | Gauge | `event_stream`, `consumer_group` | Entries delivered to the group and not acknowledged. |
 | `train_ticket.event.consumer.oldest_age` | Gauge, seconds | `event_stream`, `consumer_group` | Age of the oldest entry the group still owes. |
 | `train_ticket.event.dlq.entries` | Gauge | `event_stream`, `consumer_group`, `event_type` | Current dead-letter population. |
+| `train_ticket.event.transport.series` | Gauge | `kind` | Series this collector publishes (`group`, `dead_letter`) and what its own bound held back (`group_dropped`, `dead_letter_dropped`). |
 
 Label values come from the transport itself: stream names, consumer group
 names, and the event type of a dead-letter envelope. Anything unreadable
@@ -38,6 +39,8 @@ hostname, URL or exception text is ever attached.
 | `REDIS_URL` | `redis://localhost:6379` | Redis endpoint holding the `events:*` streams. |
 | `PORT` | `8080` | Port for `/healthz` and `/readyz`. |
 | `TRANSPORT_POLL_INTERVAL_SECONDS` | `15` | How often the snapshot is refreshed. |
+| `TRANSPORT_MAX_GROUP_SERIES` | `400` | Most (stream, group) series the group gauges may publish per poll. |
+| `TRANSPORT_MAX_DEAD_LETTER_SERIES` | `400` | Most (stream, group, event type) dead-letter series per poll. |
 | `OTEL_SERVICE_NAME` | `redis-state-collector` | Resource service name on every exported series. |
 | `OTEL_METRICS_EXPORTER` | unset | Any non-empty value other than `none` enables export. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | OTLP gRPC endpoint. Without it the poller runs and exports nothing. |
@@ -48,6 +51,14 @@ One poll is a `SCAN` of the `events:*` namespace, one `XINFO GROUPS` per stream,
 one `XPENDING` summary and at most one `XRANGE ... COUNT 1` per group, and one
 `XLEN` plus a bounded `XRANGE` per dead-letter stream. It never reads a whole
 stream with `XRANGE` and never calls `XAUTOCLAIM`.
+
+The label set of the first three gauges *is* the transport, so it grows with the
+number of consumer groups rather than with the number of services. A service
+that started one group per pod would multiply those series without changing any
+value a reader would notice, which is why the collector bounds its own output:
+past `TRANSPORT_MAX_GROUP_SERIES` (or the dead-letter bound) it publishes the
+sorted head of the list and reports the rest under `kind="group_dropped"`, so the
+truncation is a series an alert can read rather than a silence.
 
 A poll that cannot read Redis leaves the previous snapshot in place and reports
 not-ready, so "the collector is blind" and "the transport is idle" do not
