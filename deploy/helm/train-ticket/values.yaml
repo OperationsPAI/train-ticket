@@ -1481,6 +1481,12 @@ services:
       # `Connection is not available, request timed out after 15000ms` and three
       # thousand timed out traveler creations in four minutes.
       HIKARI_MAX_POOL_SIZE: "40"
+      # The window of claimed ages the register carries. The ends are the fare
+      # catalogue's own: the youngest band it prices, and the oldest one, past
+      # which the assisted-travel desk takes the booking. They sit here rather
+      # than in the image so a release can move them without one.
+      TRAVELER_PROFILE_CLAIM_MIN_AGE_YEARS: "6"
+      TRAVELER_PROFILE_CLAIM_MAX_AGE_YEARS: "65"
     # JVM event consumer -- see the note on defaults.resources.
     #
     # 4 cores: measured at 96.3% of a 500m limit over a full envelope, so the
