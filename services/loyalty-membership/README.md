@@ -17,7 +17,7 @@ Status: implemented and deployed (Helm revision 521; see [current status](../../
   image at `/app/config` and read once at startup by `src/programme.ts`: the
   poles and what each asks for,
   the pole a membership opens at, the names the member-relations export uses and
-  the account-reference namespaces an enrolment keys by.
+  the account-reference namespace an enrolment keys by.
 
 ## HTTP surface
 
