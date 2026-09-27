@@ -1,11 +1,11 @@
 # Current project status
 
-Last verified: 2026-09-27, Asia/Beijing.
+Last verified: 2026-09-28, Asia/Beijing.
 
 ## Runtime
 
 The resident Helm release is `train-ticket` in namespace `train-ticket`,
-revision **505**.
+revision **511**.
 Its values come from one file, `deploy/helm/train-ticket/values.yaml`: the
 registry, the `local-path` storage class, the central telemetry store, the
 resident exporters, the load generator settings and the `loadgen-resident-state`
@@ -52,11 +52,18 @@ to one and back.
 | Service quality compensation | An approved `COMPENSATION` issues the approved currency and amount to the order account as wallet credit, preserving the original tickets, seats, order and payment. |
 | Settlement schedule | `finance-settlement` runs the closed period's daily reconciliation and supplier settlement from a registered `@Scheduled` method. It carried `@ConditionalOnBean(DataSource.class)`, which Spring only honours reliably in auto-configuration: the class is scanned before the configuration that defines the DataSource, so the bean was skipped and the schedule never ran. |
 | Reconciliation attribution | A provider confirmation is attributed to its order through the local index and, when that index has not caught up or was trimmed, through the booking-orchestration segment booking itself. |
+| Channel statement | `finance-settlement` holds the channel side of the money. The freeze announcement carries the statement's own facts instead of only its transition, the projection merges it with the stored generation instead of demanding generation-only fields, and the upsert refuses to unfreeze a row the freeze already wrote. |
+| Reads that trail their announcement | A read that a just-consumed announcement promises is a wait rather than a rule violation. `travel-insurance` waits for the case or reference it announced to become visible -- five attempts 400 milliseconds apart inside the delivery -- and declares a transient failure only if it still cannot see it. |
+| Scheduled job age | `finance-settlement` publishes `train_ticket.scheduled_job.success_age` for its daily reconciliation and supplier settlement, rebuilt from the durable run table rather than held in memory, and the scrape's label allowlist keeps the `scheduled_job` split it is published with. |
 
 ## Verification evidence
 
 | Check | Result | Evidence |
 |---|---|---|
+| Five minute window at revision 511, after the channel-statement and travel-insurance fixes | 176489 requests and 20230 journeys, **0 unexpected HTTP errors and 0 failed journeys**; every dead-letter stream holds exactly what it held before the pass (ancillary-service 2, booking-orchestration 1, capacity-availability 6, finance-settlement 5, journey-order 3, payment-channel 3) and no consumer group is more than 200 entries behind its stream | the load generator's own record file, `/data/requests.jsonl` on `loadgen` |
+| Travel insurance's two waits, revision 511 against the release before it | handler failures fell from about **40 a minute** to **3 in ten minutes**, and those three are one message whose case took minutes to reach APPLIED and which then succeeded; `events:journey-order:dlq` did not grow | `travel-insurance` pod log |
+| The channel statement through the API, revision 511 | three statements generated and frozen through `payment-channel` are stored **FROZEN** with their amounts and generation instants, `events:payment-channel:dlq` did not grow, and `ChannelStatementProjectionLiveTest` passes against the deployed PostgreSQL | `finance_settlement.channel_statements`; the live test |
+| Scheduled job age, revision 511 | `train_ticket_scheduled_job_success_age_seconds` is scraped with its `scheduled_job` label for both `DAILY_RECONCILIATION` and `SUPPLIER_SETTLEMENT` on every `finance-settlement` replica | `prometheus` query at revision 511 |
 | Five minute window at revision 505, the state this pass leaves behind | 116248 requests at 387 a second and 12973 journeys, **0 unexpected HTTP errors and 0 failed journeys**; the loader's own tally reads `errors {}` | `/tmp/sweep/final3.cur.jsonl` |
 | Five minute window at revision 504, with the priced distance flowing | 191665 requests at 639 a second and 21795 journeys, **0 unexpected HTTP errors and 0 failed journeys**; the recorder read `written=279765 dropped=0` and every dead-letter stream is unchanged | `/tmp/sweep/rev504b.cur.jsonl` |
 | Revenue yield, revision 504 | `yieldPerKm` is a measurement rather than a constant zero: SECOND_CLASS 0.13, FIRST_CLASS 0.23, BUSINESS_CLASS 0.44, SLEEPER_HARD 0.23, SLEEPER_SOFT 0.29 and STANDING 0.09 CNY per km, against the platform's own 0.15/km base rate and 2.8 class multiplier | `reporting` revenue report |
@@ -686,11 +693,69 @@ repository artifacts.
 
 Everything still open is listed once, in [TODO](TODO.md). The largest items are
 the general multistop capacity verification, the waitlist fulfillment
-acceptance, durable event recovery, and the reporting monetary edge cases.
+acceptance, the channel statement's line-level matching, and the scheduled-job
+collector's remaining half.
 
 No part of this document authorises a deployment: the runtime configuration is
 the single values file, and a release is made with
 `skaffold run -p resident -d mirrors.tencent.com/microservice`.
+
+## The channel statement reaches finance, and a read that trails its announcement
+
+Four defects, each measured before and after, all of them found from the
+resident release's own dead letters and logs rather than from a test.
+
+The channel statement never reached `finance-settlement`. A statement is
+announced twice -- generated, then frozen -- and the freeze carried only the
+transition, while the projection read it as if it restated the statement. The
+handler's `money()` throws on a payload that omits `grossPaymentAmount`, so every
+freeze was answered `grossPaymentAmount is required`, classified fatal and dead
+lettered on its first delivery: measured, `events:payment-channel:dlq` held one
+entry per channel (16:25 `UNIONPAY_SIM`, 16:51 `WECHAT_SIM`) while the generated
+rows sat correct in `channel_statements`. Both halves are wrong on their own --
+a consumer that starts mid-stream never sees the generation, and a freeze that
+restates nothing leaves it with no amounts -- so the freeze now carries the
+statement's own facts and the projection merges the two announcements.
+
+The projection was then not monotonic. The two announcements are written to the
+outbox in one relay pass and published together, and the consumer group runs one
+consumer per replica, so they are applied in whichever order the replicas reach
+them. The last writer decided the status: reproduced live at revision 509, a
+statement frozen through the API was stored `GENERATED` with a null `frozen_at`
+while a sibling statement in the same run landed correctly. A guard in the
+handler cannot hold that race -- both replicas can read a row that does not
+exist yet and then write -- so the decision moved into the upsert, where it is
+atomic: a row that is already frozen stays frozen and a null `frozen_at` never
+overwrites one.
+
+What the fix moved is visible: at revision 511 three statements generated and
+frozen through the API are stored `FROZEN` with their amounts and generation
+instants, the dead letter did not grow, and the day's statement is now the
+fallback the daily reconciliation compares against. What it does not yet give
+finance is the line level, which is [T22](TODO.md#t22-match-a-channel-statement-line-to-the-order-it-settles).
+
+The fourth defect was noise rather than a wrong answer, and it was noise the
+monitoring read as failure. Every event `travel-insurance` consumes is thin --
+it names a case, an order or a refund -- so every handler reads the owning
+service immediately, and that service writes its own state after it announces.
+Measured at revision 510: post-sales commits a change case's applied snapshot
+**5 milliseconds after** journey-order appends the announcement that wakes this
+handler, so the first read races the write by construction. Reporting that race
+as a domain rule violation made it an unclassified handler fault -- 55 of 66
+failures in ninety seconds were `applied change scope is required`, 11 were a
+404 on a reference the announcement had just named -- and each one recovered
+only because the retry budget outlasted the race. A case that is quoted or
+approved is now a wait, a 404 is a wait, and the subscriber waits for it inside
+the delivery before declaring a transient failure. Measured after: 3 failures in
+ten minutes, all of them one message whose case took minutes to reach APPLIED,
+against about 40 a minute before.
+
+The scrape's label allowlist is a fifth, smaller one. The collector's datapoint
+allowlist and Prometheus' `labelkeep` regex are two independent copies of the
+same label contract, and the scheduled-job metric was added to the first and not
+the second: every scraped sample carried no `scheduled_job` label while the
+collector's own `/metrics` carried it. Both sides now name it, and a test asserts
+that every label the collector keeps survives the scrape.
 
 ## The resident round of 2026-09-26
 

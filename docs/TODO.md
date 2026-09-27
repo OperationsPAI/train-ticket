@@ -1,6 +1,6 @@
 # TODO
 
-Updated: 2026-09-27, Asia/Beijing.
+Updated: 2026-09-28, Asia/Beijing.
 
 This is the single active backlog for the resident release. It records what is
 still open, not what has been done: implemented and deployed behaviour lives in
@@ -991,6 +991,25 @@ promises; the one item still open is the scheduled-job collector below.
 5. [ ] Add a collector that reports scheduled job success and the age of the
    oldest due task; several sweeps are only observable through their effects.
 
+   First slice delivered at revision 509, verified at 511: `finance-settlement`
+   publishes `train_ticket.scheduled_job.success_age` in seconds for
+   `DAILY_RECONCILIATION` and `SUPPLIER_SETTLEMENT`, rebuilt from
+   `settlement_schedule_runs` on its own daemon thread so a restart reads the
+   durable last success instead of resetting it, and with **no series at all**
+   for a job that has never succeeded rather than a zero that reads as success.
+   Measured through Prometheus at revision 511: both labels present on every
+   replica. Two things had to be right for that to be readable. The label is
+   `scheduled_job` and not `job`, because the OTel Prometheus exporter drops a
+   datapoint attribute that collides with the constant target label `job`, and
+   it is named in the scrape's `labelkeep` regex as well as in the collector's
+   datapoint allowlist -- the first published series reached Prometheus with no
+   label at all, because the two allowlists are separate copies of the same
+   contract and only the collector's had been updated. A chart test now asserts
+   that every label the collector keeps survives the scrape.
+
+   What remains: the oldest-due-task half, and the same family for
+   booking-orchestration's saga step deadlines and payment's intent expiry.
+
 ### T23: Make `yieldPerKm` a number rather than a constant zero
 
 Status: **closed**, revision 504. The field is a number and it describes one
@@ -1036,6 +1055,16 @@ statement: one ALIPAY_SIM statement with 342,648 lines sits in payment-channel,
 finance holds the statement row and 0 lines, and the daily batch's first run
 predates both.
 
+Updated at revision 511: the statement itself now reaches finance, and what is
+left is exactly the line level. Until T24 the freeze announcement dead-lettered,
+so finance held no statement at all; measured at revision 511, three statements
+generated and frozen through the API are stored `FROZEN` with their amounts and
+generation instants, which is what makes the fallback below real rather than
+empty. The fallback is still one statement-level fact per channel, so the
+platform's captures for the day are still entered as missing in channel one by
+one -- one row per capture rather than one row per line -- and that is the item
+this section is about.
+
 1. [ ] Publish the fact, or replace it with something that scales. payment-channel
    builds each line from a channel order or refund, so a line already knows its
    `channelOrderId` or `channelRefundId`; 342,648 events per statement is not a
@@ -1043,6 +1072,38 @@ predates both.
    read or a compact per-line index the finance side consumes in batches.
 2. [ ] Then verify the daily batch against a real statement: every capture
    matches its line, and the statement's gross totals equal the sum of its lines.
+
+### T24: The frozen channel statement reaches finance
+
+Status: **closed**, revision 511. Three defects, each measured live before and
+after; the narrative and the raw numbers are in
+[current status](00-current-status.md#the-channel-statement-reaches-finance-and-a-read-that-trails-its-announcement).
+
+1. [x] The freeze no longer dead-letters. A statement is announced twice --
+   generated, then frozen -- and the freeze carried only the transition while
+   finance's projection read it as if it restated the statement, so `money()`
+   threw `grossPaymentAmount is required`, the handler classified it fatal and
+   every freeze died on its first delivery: measured, one
+   `events:payment-channel:dlq` entry per channel (16:25 `UNIONPAY_SIM`, 16:51
+   `WECHAT_SIM`) while the generated rows sat correct in `channel_statements`.
+   payment-channel's freeze now carries the statement's own facts and finance
+   merges the payload with the stored row.
+2. [x] The projection is monotonic. Both announcements go to the outbox in one
+   relay pass and the group runs one consumer per replica, so they are applied
+   in either order; reproduced live, a statement frozen through the API was
+   stored `GENERATED` with a null `frozen_at` while its sibling landed
+   correctly. The upsert now decides it atomically -- a row that is already
+   frozen stays frozen and a null `frozen_at` never overwrites one -- and the
+   handler keeps the sequential guard. `ChannelStatementProjectionLiveTest` runs
+   that interleaving against the deployed PostgreSQL.
+3. [x] Verified through the API, not only in tests. Measured at revision 511:
+   three statements generated and frozen through `payment-channel` are stored
+   `FROZEN` with their amounts and generation instants, the dead letter did not
+   grow, and the day's statement is now what the daily reconciliation's
+   statement-level fallback compares against.
+
+The line level is deliberately not part of this: see
+[T22](#t22-match-a-channel-statement-line-to-the-order-it-settles).
 
 ### T21: Resolve the references a booking and an agreement are created with
 
@@ -1168,6 +1229,19 @@ three scale items.
    choice rather than a defect: driving the adjustment from the applied
    announcement instead of from the order's would remove the retry, and it is
    not required for the wait to be correct.
+
+   **Taken at revision 511, and it was a defect rather than a design choice.**
+   Classifying the wait as an *unclassified* error meant 55 of 66 failures in
+   ninety seconds were recorded as handler faults, and the race is structural:
+   measured, post-sales commits a change case's applied snapshot 5 milliseconds
+   *after* journey-order appends the announcement that wakes the handler, so the
+   first read always trails it. The wait is now explicit -- `ErrNotReady` for a
+   case that is only quoted or approved and for a 404 on a reference the
+   announcement named, retried five times 400 milliseconds apart inside the
+   delivery, then handed back as a declared transient failure -- so the metric
+   and the log say what happened. Measured after: **3 failures in ten minutes**
+   against about 40 a minute, and the three are one message whose case took
+   minutes to reach APPLIED and which then succeeded.
 
 ## Handoff rules
 
