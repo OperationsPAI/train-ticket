@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -63,7 +66,11 @@ func main() {
 	transactor := adapterpg.NewTransactor(pool)
 	verifier := application.PurchaseVerifier{Client: &http.Client{Timeout: 5 * time.Second}, BaseURLTemplate: "http://%s:8080"}
 	payout := application.WalletPayoutExecutor{Client: &http.Client{Timeout: 5 * time.Second}, BaseURLTemplate: firstNonBlank(os.Getenv("INSURANCE_PAYOUT_URL_TEMPLATE"), "http://%s:8080")}
-	service := application.NewInsuranceService(application.ServiceConfig{Repository: adapterpg.NewRepositoryWithProvider(transactor), Publisher: adapterpg.NewOutboxPublisherWithProvider(transactor), UnitOfWork: transactor.Within, VerifyPurchase: verifier.Verify, VerifyRefund: verifier.VerifyRefund, PayoutExecutor: payout, JourneyCoverageResolver: verifier})
+	retentionLimitMinor, err := int64Env("INSURANCE_RETENTION_LIMIT_MINOR")
+	if err != nil {
+		log.Fatal(err)
+	}
+	service := application.NewInsuranceService(application.ServiceConfig{Repository: adapterpg.NewRepositoryWithProvider(transactor), Publisher: adapterpg.NewOutboxPublisherWithProvider(transactor), UnitOfWork: transactor.Within, VerifyPurchase: verifier.Verify, VerifyRefund: verifier.VerifyRefund, PayoutExecutor: payout, JourneyCoverageResolver: verifier, RetentionLimitMinor: retentionLimitMinor})
 	bus := kitmessaging.NewRedisEventBusWithClient(redisClient, kitmessaging.RedisConfig{})
 	consumer := os.Getenv("CONSUMER_NAME")
 	if consumer == "" {
@@ -97,4 +104,18 @@ func firstNonBlank(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// int64Env reads a whole-number setting from the environment. An unset or empty
+// value is zero, which is how a release declares that it sets none.
+func int64Env(name string) (int64, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return 0, nil
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be whole minor units: %w", name, err)
+	}
+	return value, nil
 }

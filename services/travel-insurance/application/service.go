@@ -28,6 +28,9 @@ type ServiceConfig struct {
 	VerifyRefund            func(context.Context, domain.Policy, string) error
 	PayoutExecutor          PayoutExecutor
 	JourneyCoverageResolver JourneyCoverageResolver
+	// RetentionLimitMinor is the cover the release's carrier retains for a single
+	// risk, in the catalogue's minor units. Zero means the release declares none.
+	RetentionLimitMinor int64
 }
 
 type InsuranceService struct {
@@ -41,6 +44,7 @@ type InsuranceService struct {
 	verifyRefund            func(context.Context, domain.Policy, string) error
 	payoutExecutor          PayoutExecutor
 	journeyCoverageResolver JourneyCoverageResolver
+	retentionLimitMinor     int64
 	products                map[string]domain.InsuranceProduct
 	policies                map[string]domain.Policy
 	claims                  map[string]domain.Claim
@@ -60,7 +64,7 @@ func NewInsuranceService(cfg ServiceConfig) *InsuranceService {
 	if idgen == nil {
 		idgen = ids.NewPrefixed
 	}
-	s := &InsuranceService{repository: cfg.Repository, publisher: publisher, uow: cfg.UnitOfWork, clock: clock, idGenerator: idgen, verifyPurchase: cfg.VerifyPurchase, verifyRefund: cfg.VerifyRefund, payoutExecutor: cfg.PayoutExecutor, journeyCoverageResolver: cfg.JourneyCoverageResolver, products: map[string]domain.InsuranceProduct{}, policies: map[string]domain.Policy{}, claims: map[string]domain.Claim{}, advices: map[string]domain.PayoutAdvice{}}
+	s := &InsuranceService{repository: cfg.Repository, publisher: publisher, uow: cfg.UnitOfWork, clock: clock, idGenerator: idgen, verifyPurchase: cfg.VerifyPurchase, verifyRefund: cfg.VerifyRefund, payoutExecutor: cfg.PayoutExecutor, journeyCoverageResolver: cfg.JourneyCoverageResolver, retentionLimitMinor: cfg.RetentionLimitMinor, products: map[string]domain.InsuranceProduct{}, policies: map[string]domain.Policy{}, claims: map[string]domain.Claim{}, advices: map[string]domain.PayoutAdvice{}}
 	s.seedProducts()
 	return s
 }
@@ -187,6 +191,12 @@ func (s *InsuranceService) IssuePolicy(ctx context.Context, cmd IssuePolicyComma
 		}
 	}
 	product.Premium = premium
+	// The envelope is a property of the catalogue entry, so it is answered before
+	// the purchase is verified: a product the carrier will not write is refused
+	// without spending the four owning-service reads.
+	if err := s.withinUnderwritingEnvelope(product); err != nil {
+		return domain.Policy{}, err
+	}
 	if s.repository != nil && s.verifyPurchase == nil {
 		return domain.Policy{}, fmt.Errorf("%w: purchase verification is required", ErrDomainRule)
 	}
