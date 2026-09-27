@@ -5,7 +5,7 @@ Last verified: 2026-09-28, Asia/Beijing.
 ## Runtime
 
 The resident Helm release is `train-ticket` in namespace `train-ticket`,
-revision **519**.
+revision **520**.
 Its values come from one file, `deploy/helm/train-ticket/values.yaml`: the
 registry, the `local-path` storage class, the central telemetry store, the
 resident exporters, the load generator settings and the `loadgen-resident-state`
@@ -63,6 +63,7 @@ to one and back.
 
 | Check | Result | Evidence |
 |---|---|---|
+| Five minute window at revision 520, after the refund reconciliation | 81713 requests and 6531 completed journeys at the trough of the envelope, **0 unexpected HTTP errors and 0 failed journeys**; every dead-letter stream holds what it held before the pass | the load generator's own record file, `/data/requests.jsonl` on `loadgen` |
 | Five minute window at revision 517, after the sweep telemetry | 166628 requests and 14628 completed journeys at the peak of the envelope, **0 unexpected HTTP errors and 0 failed journeys** | the load generator's own record file, `/data/requests.jsonl` on `loadgen` |
 | Five minute window at revision 515, after the channel reconciliation | 57636 requests and 4492 completed journeys at the trough of the envelope, **0 unexpected HTTP errors and 0 failed journeys**; the same loader run's cumulative tally carries exactly one `payment-channel:transport` error, in the minutes `payment-channel` itself was rolling out, and it does not move while 19000 further requests are served; every dead-letter stream holds what it held before the pass and no consumer group is more than 200 entries behind | the load generator's own record file and `[stats]` lines on `loadgen` |
 | Five minute window at revision 515, the peak of the same envelope | 160929 requests and 13913 completed journeys, **0 unexpected HTTP errors and 0 failed journeys** | the load generator's own record file, `/data/requests.jsonl` on `loadgen` |
