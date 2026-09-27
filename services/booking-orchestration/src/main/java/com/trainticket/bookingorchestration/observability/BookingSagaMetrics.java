@@ -20,6 +20,17 @@ public interface BookingSagaMetrics {
     /** Rebuilds the age of the oldest nonterminal saga at a stage from durable saga state. */
     void observeOldestAge(Stage stage, Duration oldestAge);
 
+    /**
+     * Rebuilds how long the oldest saga step deadline has been waiting for the sweep.
+     *
+     * <p>The step-timeout sweep runs every second against an indexed deadline table, and
+     * nothing published whether it was keeping up. A deadline past its instant is a saga
+     * step the platform has not retired, so the wait is the oldest of them. An empty queue
+     * clears the reading rather than holding the last one, because a stale age would report
+     * a backlog that is not there.
+     */
+    void observeOldestDueStepAge(java.util.Optional<Duration> age);
+
     void transition(Stage stage, Outcome outcome, ReasonCode reasonCode);
 
     enum Stage {
