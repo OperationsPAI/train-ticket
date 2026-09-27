@@ -1,6 +1,6 @@
 # Waitlist implementation
 
-Last updated: 2026-09-24.
+Last updated: 2026-09-27.
 
 The domain boundary is documented in [Waitlist](../02-domains/waitlist.md).
 Remaining work is tracked in [docs/TODO.md](../TODO.md).
@@ -12,12 +12,13 @@ The public request interface is [Waitlist HTTP API](../08-contracts/api/waitlist
 Requests have `wlr-` identifiers and the statuses `DRAFT`, `QUEUED`, `MATCHING`, `FULFILLED`, `EXPIRED`, `CANCELLED`, `SUSPENDED` and `CLOSED`.
 The queue sorts priority descending, creation time ascending and entry identifier ascending.
 The database enforces active request uniqueness for the leading traveler and intent fingerprint.
-Current queue queries filter by segment and optional class and do not enforce the supplied departure date.
+Queue and matching queries filter by segment, departure date and class, and require the scheduled service, stop-sequence version, interval and intent fingerprint to match.
 The application derives the date from the deadline when it is absent from the request.
 
 ## Matching and confirmation
 
-The application selects a queued request, obtains a current fare quote and commercial Offer, and starts an actual Journey Order.
+The application claims the released credit for a queued request, obtains a fare quote priced from the request's recorded pricing context, creates the commercial Offer on the request's own channel, and starts an actual Journey Order on a later tick.
+The pricing context (product code, channel, distance, departure time) survives the database round trip; without it fare-pricing falls back to the flat base fare and the offer exceeds the customer's guarantee.
 The active promotion method does not directly call the Capacity Hold client.
 Persisted UUID v7 keys identify each downstream operation.
 Creating the order records its reference and leaves the request `MATCHING`.
@@ -44,8 +45,7 @@ The total is clamped to the range 0 through 100.
 | Special status | Military or disabled 10; student 5; none 0 |
 
 Priority inputs come from the request and do not establish independently verified loyalty or special status.
-The queue, fare quote and released inventory do not currently enforce one canonical class throughout the flow.
-The fare quote client does not send the entry's seat class.
+Both the released inventory class and the waitlist class are normalized through `normalizeFareClass`, and the promotion's fare quote carries the entry's seat class as well as its recorded pricing context.
 The current implementation does not enforce multi traveler mutual exclusion independently for every companion.
 
 ## Existing verification scope
@@ -61,8 +61,8 @@ No tests were added or rerun for this documentation update.
 ## Current integration boundary
 
 The `WaitlistCapacityFreed` parser requires `segmentRef`, `departureDate` and a positive released quantity.
-The ordinary `CapacityReleased` handler only promotes when the matching fields are present; it acknowledges and skips releases without a date.
-The deployed ordinary release event lacks that date, so automatic promotion from those releases is not established.
+The ordinary `CapacityReleased` handler promotes through the segment booking named in its references: it reads the booking from booking-orchestration for segment, scheduled service, date and class, and the service-plan supply for the interval and stop-sequence version, then records the credit.
+Promotion from a release is established up to reserving the seat: measured at revision 493 the promotion reaches the booking saga, and the saga refuses the reservation with `NO_AVAILABLE_CAPACITY` because the class that was released is re-sold before the reservation lands.
 The public request and response use the leading traveler; internal traveler arrays do not establish complete preservation of all companions through the public flow.
 The required `paymentGuaranteeRef` is recorded, but it does not currently establish or settle a payment authorization.
 Capacity's combined supply calculation is committed as `caafa668` and undeployed, and Booking coordinated behavior is not enabled.
