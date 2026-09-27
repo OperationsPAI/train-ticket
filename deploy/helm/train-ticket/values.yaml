@@ -687,10 +687,16 @@ defaults:
   # 70% leaves room for metaspace, thread stacks (4 consumer threads plus
   # Tomcat) and direct buffers, all of which live outside the heap and still
   # count against the cgroup. Harmless for the non-JVM services, which ignore
-  # JAVA_TOOL_OPTIONS.
+  # JAVA_TOOL_OPTIONS. The two band ends below are here for the other reason: an
+  # age is priced by more than one service, so where the band ends is the
+  # catalogue's and belongs with the release rather than in any one reader of
+  # it. Per-service `env` wins on a key collision, so a service with a band of
+  # its own still states it under `services.<name>.env`.
   env:
     JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=70.0"
     EVENT_STREAM_MAXLEN: "30000"
+    CATALOGUE_BAND_YOUNGEST_AGE_YEARS: "6"
+    CATALOGUE_BAND_OLDEST_AGE_YEARS: "65"
   # Applied when a service sets no `resources` of its own. The floor a plain
   # HTTP-plus-Postgres service needs; anything CPU- or memory-hungry declares
   # its own block under `services.<name>.resources` below.

@@ -53,3 +53,12 @@ Python keeps fare rules, explanation tooling, and later experimentation lightwei
 ```bash
 uv run python -m unittest discover -s tests
 ```
+
+## The band the catalogue prices
+
+The ages the catalogue sells are published with the release rather than restated per
+service, because more than one service applies them: `CATALOGUE_BAND_YOUNGEST_AGE_YEARS`
+and `CATALOGUE_BAND_OLDEST_AGE_YEARS` sit under `defaults.env` in
+`deploy/helm/train-ticket/values.yaml`, and the register holds a claimed birth date to the
+same two ends. Moving the band is a catalogue decision, so one release moves every service
+that reads it and none of them is rebuilt for it.
