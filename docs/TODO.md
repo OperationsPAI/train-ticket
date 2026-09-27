@@ -738,8 +738,23 @@ remains is breadth and the follow-ups the new reads created.
 3. [ ] Add a cardinality test for each remaining source that proves two
    different business identifiers produce the same label set, and a restart
    test for every gauge that is derived from durable state.
-4. [ ] Give the transport collector a scrape-side guard on its own series count,
-   so a new stream or group cannot silently multiply the label set.
+4. [x] Give the transport collector a guard on its own series count, so a new
+   stream or group cannot silently multiply the label set. The collector's three
+   transport gauges are labelled by stream and consumer group, so their width is
+   the transport's width rather than the services': it now publishes the sorted
+   head of its own output past `TRANSPORT_MAX_GROUP_SERIES` (400) or
+   `TRANSPORT_MAX_DEAD_LETTER_SERIES` (400) and reports the remainder as
+   `train_ticket.event.transport.series{kind="group_dropped"}`, which is a series
+   an alert reads rather than a silence. Measured at revision 485:
+   `series{kind="group"}` is 123 against 123 `consumer.lag` series and
+   `group_dropped` is 0, `dead_letter` is 6, `dead_letter_dropped` is 0.
+
+   The guard also found the reason a new label could go missing: Prometheus'
+   Deployment hashed only its values, so the scrape configuration -- the sample
+   limits and the label allowlist -- never rolled the pod. Measured: the running
+   config was 22 hours old while the ConfigMap beside it held the new one, and
+   the collector's new `kind` label arrived stripped. The rendered config is
+   hashed now, so changing it rolls Prometheus.
 5. [ ] Add a collector that reports scheduled job success and the age of the
    oldest due task; several sweeps are only observable through their effects.
 
