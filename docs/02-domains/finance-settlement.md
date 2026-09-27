@@ -1,7 +1,7 @@
 # Finance Settlement 当前设计
 
-更新日期：2026年9月25日。
-运行基线为 Helm revision 279，服务使用 Java、PostgreSQL 和 Redis 事件处理。
+更新日期：2026年9月28日。
+运行基线为 Helm revision 515，服务使用 Java、PostgreSQL 和 Redis 事件处理。
 统一待办见 [TODO](../TODO.md)。
 
 ## 领域边界
@@ -17,6 +17,7 @@ Finance 通过事实和受控查询形成财务记录，不直接修改订单、
 普通 `PaymentCaptured` 记录订单与 PaymentIntent 的关联、捕获金额及源事件，并按 `payment-capture-v1` 生成 `fare` 收入确认。
 当前确认时点使用支付捕获事实。
 附加服务支付先保存资金事实，附加服务履约事件再形成对应收入记录。
+改签差价支付是渠道真实收到的钱，因此既生成 `change-payment` 收入，也在捕获投影里留一条收款记录（行以 PaymentIntent 为 key，业务引用另存）；此前只记收入不留收款，日对账会把当天每一笔改签差价报成"平台无法解释的渠道资金"。
 
 改签支付通过 Post Sales Case 找到原订单，使用真实捕获事件生成 `change-payment` 收入。
 改签完成核对差价已捕获、Case 与订单一致、退款属于对应支付且全部 `SETTLED`，退款总额必须等于批准金额。
@@ -46,8 +47,12 @@ Payment Channel 的 statement、冻结、匹配行和差异事件进入本地投
 
 日对账和供应商结算已有应用服务方法、持久化模型、自动调度和查询 API。
 调度器按 UTC 已闭合周期执行；每个周期先获得数据库持久化租约，多副本只能有一个 owner，成功后保存业务结果 ID，失败或租约过期后可由其他副本恢复。
+对账也可以按日期按需触发（`POST /api/v1/settlements/reconciliation/{date}/run`），与调度器走同一条路径，按日期幂等：已有批次直接返回。
 供应商自动发现只接受普通 `fare` 收入中已归一化、且不等于订单号的 supplier reference，缺少归属的数据不会被静默结算。
 日对账区分 `MATCHED`、`PLATFORM_ONLY`、`CHANNEL_ONLY` 和 `AMOUNT_MISMATCH`。
+渠道侧不是靠逐行事件，而是按 statement 分页读取 payment-channel 已归一化存储的 statement 行（每页 500 行、按行序游标，单条 statement 实测 34 万行）：一份 statement 的行已记录就跳过，写入按 statement line id 幂等。参与"捕获 vs 渠道"比较的只有 `PAYMENT` 行——`REFUND` 行对应的是平台退款而不是捕获，会被记录但不进入该比较。
+对账 key 使用双方都携带的 PaymentIntent：订单号不是双方共有的引用（平台把票款归到订单、把改签差价归到售后 Case），按订单 key 会把同一订单的多笔支付在一侧合并、另一侧不合并。
+批次快照保存当天报表与**未匹配**的条目：实测量级为单日 48 万条，整表写入会超过 PostgreSQL 单个 jsonb 数组 256 MB 上限；匹配条目的名次数额进报表，明细只保留需要处理的差异。
 供应商结算按指定期间、佣金比例和代扣比例生成结果。
 费用与税额使用服务当前公式，详细输入、时间范围和限制见增补文档。
 
@@ -62,7 +67,8 @@ Payment Channel 的 statement、冻结、匹配行和差异事件进入本地投
 | `GET /api/v1/channel-statements` | 按渠道和日期查询 statement。 |
 | `GET /api/v1/channel-statements/{channelStatementId}` | 查询单个 statement。 |
 | `GET /api/v1/settlements/daily/{date}` | 查询已保存日对账摘要。 |
-| `GET /api/v1/settlements/reconciliation/{batchId}` | 查询对账条目。 |
+| `GET /api/v1/settlements/reconciliation/{batchId}` | 查询对账报表与未匹配条目。 |
+| `POST /api/v1/settlements/reconciliation/{date}/run` | 按日期触发日对账（与调度器同一路径，按日期幂等，返回报表而非全部条目）。 |
 | `GET /api/v1/settlements/suppliers/{supplierId}/period` | 按 `startDate`、`endDate` 查询供应商结算。 |
 | `GET /api/v1/settlement-schedule-runs` | 查询自动调度历史、状态、尝试次数和结果引用。 |
 | `GET /api/v1/settlement-schedule-runs/{jobKey}` | 查询一个精确调度周期的持久化结果。 |
