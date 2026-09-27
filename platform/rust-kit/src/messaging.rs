@@ -1254,19 +1254,29 @@ pub mod redis_runtime {
             run_once: bool,
         ) -> Result<(), SubscribeFailed> {
             Self::create_groups_with_ops(ops, &streams, &group).await?;
+            // Pending recovery is a whole XAUTOCLAIM round trip per stream, and
+            // it used to run before every read. An entry only becomes claimable
+            // after sixty seconds of silence, so sweeping every two seconds
+            // cannot find more than sweeping every fifteen. Redis is
+            // single-threaded and XAUTOCLAIM was 4896 of its ~19300 commands a
+            // second on the resident cluster while it reclaimed nothing.
+            let mut next_recovery = std::time::Instant::now();
             loop {
                 if self.stop.load(std::sync::atomic::Ordering::SeqCst) {
                     return Ok(());
                 }
-                if let Err(error) = self
-                    .recover_pending_with_ops(ops, &streams, &group, &consumer_name, handler)
-                    .await
-                {
-                    Self::handle_consume_error_with_ops(ops, &streams, &group, &error.0).await;
-                    if run_once {
-                        return Err(error);
+                if std::time::Instant::now() >= next_recovery {
+                    next_recovery = std::time::Instant::now() + std::time::Duration::from_secs(15);
+                    if let Err(error) = self
+                        .recover_pending_with_ops(ops, &streams, &group, &consumer_name, handler)
+                        .await
+                    {
+                        Self::handle_consume_error_with_ops(ops, &streams, &group, &error.0).await;
+                        if run_once {
+                            return Err(error);
+                        }
+                        continue;
                     }
-                    continue;
                 }
                 let messages = match ops.read_group(&streams, &group, &consumer_name).await {
                     Ok(messages) => messages,
