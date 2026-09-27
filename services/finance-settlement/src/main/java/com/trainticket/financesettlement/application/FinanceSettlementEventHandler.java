@@ -236,23 +236,53 @@ public class FinanceSettlementEventHandler implements EventSubscriber.EventHandl
     }
 
     private void recordChannelStatement(EventEnvelope envelope, Map<String, Object> payload) {
-        ChannelStatementProjection existing = projections.findChannelStatement(text(payload, "channelStatementId")).orElse(null);
+        // A statement is announced twice: generated, then frozen. The generation
+        // carries the statement's amounts and its generation instant; the freeze
+        // carries only the transition. Reading the freeze as if it restated
+        // everything dead-lettered every frozen statement -- `grossPaymentAmount
+        // is required` -- because money() throws on a payload that omits it. Merge
+        // the two halves instead: take what this envelope carries and keep what
+        // the stored row already knows.
+        String channelStatementId = text(payload, "channelStatementId");
+        ChannelStatementProjection existing = projections.findChannelStatement(channelStatementId).orElse(null);
+        Currency currency = Currency.getInstance(text(payload, "currency"));
+        // A freeze that arrives before any generation has nothing to merge from,
+        // and the column is NOT NULL; the announcement's own instant is the
+        // honest answer for a statement whose generation this consumer never saw.
+        Instant frozenAt = mergeInstant(payload, "frozenAt", existing == null ? null : existing.frozenAt());
+        Instant generatedAt = mergeInstant(payload, "generatedAt", existing == null ? null : existing.generatedAt());
+        if (generatedAt == null) {
+            generatedAt = frozenAt != null ? frozenAt : envelope.occurredAt();
+        }
         projections.saveChannelStatement(new ChannelStatementProjection(
-            text(payload, "channelStatementId"),
+            channelStatementId,
             text(payload, "channel"),
             text(payload, "statementDate"),
             text(payload, "currency"),
             text(payload, "seedVersion"),
             number(payload, "lineCount").intValue(),
-            money(payload.get("grossPaymentAmount"), "grossPaymentAmount"),
-            money(payload.get("grossRefundAmount"), "grossRefundAmount"),
-            money(payload.get("feeAmount"), "feeAmount"),
+            mergeMoney(payload, "grossPaymentAmount", existing == null ? null : existing.grossPaymentAmount(), currency),
+            mergeMoney(payload, "grossRefundAmount", existing == null ? null : existing.grossRefundAmount(), currency),
+            mergeMoney(payload, "feeAmount", existing == null ? null : existing.feeAmount(), currency),
             text(payload, "statementHash"),
             text(payload, "status"),
-            existing == null ? Instant.parse(text(payload, "generatedAt")) : existing.generatedAt(),
-            optionalText(payload, "frozenAt").map(Instant::parse).orElse(existing == null ? null : existing.frozenAt()),
+            generatedAt,
+            frozenAt,
             envelope.eventId()
         ));
+    }
+
+    private static Money mergeMoney(Map<String, Object> payload, String name, Money stored, Currency currency) {
+        return optionalMoney(payload, name)
+            .or(() -> Optional.ofNullable(stored))
+            .orElseGet(() -> Money.zero(currency));
+    }
+
+    private static Instant mergeInstant(Map<String, Object> payload, String name, Instant stored) {
+        return optionalText(payload, name)
+            .map(Instant::parse)
+            .or(() -> Optional.ofNullable(stored))
+            .orElse(null);
     }
 
     private void recordChannelStatementLine(EventEnvelope envelope, Map<String, Object> payload) {
