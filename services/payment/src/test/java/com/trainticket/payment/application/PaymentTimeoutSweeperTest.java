@@ -33,7 +33,8 @@ class PaymentTimeoutSweeperTest {
 
         sweeper.recordOldestDueIntentAge();
 
-        assertNull(metrics.oldestDueIntentAge(), "a sweep with nothing due leaves the series to go stale");
+        assertEquals(java.util.Optional.empty(), metrics.oldestDueIntentAge(),
+            "a sweep with nothing due publishes no point at all");
     }
 
     @Test
@@ -46,7 +47,7 @@ class PaymentTimeoutSweeperTest {
 
         sweeper.recordOldestDueIntentAge();
 
-        assertEquals(Duration.ofMinutes(9), metrics.oldestDueIntentAge());
+        assertEquals(java.util.Optional.of(Duration.ofMinutes(9)), metrics.oldestDueIntentAge());
     }
 
     private static PaymentIntent intent(String id, Instant expiresAt) {
