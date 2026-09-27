@@ -64,10 +64,22 @@ run:
     # a wall-clock day: a real 24h cycle looks flat across any window anyone
     # actually watches, and the shape exists to be observed. Peak is 8x trough,
     # which is a realistic weekday spread for a consumer booking system.
+    #
+    # The PEAK is 2.0 rather than 4.0, and the burst below is capped at 2.0
+    # rather than 8.0, because a measured sweep says where the system stops:
+    # holding the arrival shape flat and stepping `target_rps` found no capacity
+    # failure at all up to 210/s offered -- 11727 journeys a minute, 1578 requests
+    # a second -- and the first one at 260/s, where 157 staff reservations failed
+    # and traveler-profile's group on the identity stream fell 83270 entries
+    # behind. The old shape multiplied 20/s by 4 by up to 8, and its measured
+    # peaks of 14367 to 26326 journeys a minute are past that knee: the 14367
+    # minute lost 1568 journeys and the 26326 minute 8566. The product here is
+    # 4.0, so the peak lands near 7500 journeys a minute, which is the level the
+    # release has repeatedly run clean, with the knee at 13572.
     diurnal:
       enabled: true
       period_seconds: 1800
-      peak_multiplier: 4.0
+      peak_multiplier: 2.0
       trough_multiplier: 0.5
       # Where in the cycle the run starts; 0 = trough. With >1 loadgen replica,
       # set this per replica to keep them out of phase instead of all peaking
@@ -83,7 +95,7 @@ run:
       enabled: true
       mean_gap_seconds: 420
       duration_seconds: { min: 20, max: 90 }
-      multiplier: { min: 3.0, max: 8.0 }
+      multiplier: { min: 1.5, max: 2.0 }
 
 # ---------------------------------------------------------------------------
 # Journey mix — relative weights of what a virtual customer does next.
