@@ -5,7 +5,7 @@ Last verified: 2026-09-27, Asia/Beijing.
 ## Runtime
 
 The resident Helm release is `train-ticket` in namespace `train-ticket`,
-revision **470**.
+revision **474**.
 Its values come from one file, `deploy/helm/train-ticket/values.yaml`: the
 registry, the `local-path` storage class, the central telemetry store, the
 resident exporters, the load generator settings and the `loadgen-resident-state`
@@ -270,6 +270,42 @@ the window above, `23:33` to `23:41` carries 1398 expected 422s and **0
 unexpected** ones.
 
 #### The ceiling under all of it is one Redis thread
+
+##### How much the release actually carries, measured by a flat sweep
+
+The envelope's shape makes every window a different experiment, so the carrying
+capacity was measured with the shape removed: bursts off, both diurnal
+multipliers set to 1.0, and `target_rps` stepped. Each step is a three minute
+window, and the failures are split into the two kinds that mean different things
+-- **capacity** (a reservation, risk assessment or case poll that missed the
+client's ten second budget) and **state** (a 422 the service is right to send
+because the resource the generator reused is no longer in the state the journey
+needs).
+
+| `target_rps` | requests/s | journeys/min | capacity failures | state failures |
+|---|---|---|---|---|
+| 40 | 597 | 4067 | 0 | 0 |
+| 80 | 931 | 7388 | 0 | 2229 |
+| 110 | 1089 | 8106 | 0 | 3150 |
+| 140 | 1231 | 8933 | 0 | 3805 |
+| 170 | 1387 | 10165 | 0 | 4714 |
+| 210 | 1578 | 11727 | **0** | 5591 |
+| 260 | 1806 | 13572 | **157** staff reservations, and `traveler-profile` 83270 entries behind on the identity stream | 7056 |
+
+So the release carries **11727 journeys a minute and 1578 requests a second with
+no capacity failure at all**, and the knee is at **13572 journeys a minute**. The
+load generator is not the limit at these rates: it uses 1.4 to 1.6 of its eight
+cores, with no throttling.
+
+##### The arrival peak now sits under that knee
+
+The envelope multiplied `target_rps` by a diurnal peak of `4.0` and a burst of up
+to `8.0`, and its measured peaks were 14367 to 26326 journeys a minute -- past
+the knee. The 14367 minute lost 1568 journeys and the 26326 minute 8566. The peak
+multiplier is now `2.0` and the burst `1.5` to `2.0`, so the product is 4.0 and
+the peak lands near 7500 journeys a minute, which the release has repeatedly run
+clean. Measured after the change: peaks of 4126 journeys a minute with **zero
+capacity failures**.
 
 Every consumer-shaped failure in this document has the same shape: a group is
 behind, and the group behind it is behind because *its* dependency is slow. The
