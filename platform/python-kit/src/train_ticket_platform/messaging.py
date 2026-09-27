@@ -29,7 +29,12 @@ DEAD_CONSUMER_IDLE_MS = 5 * 60 * 1000
 # far above the poll cadence so the sweep's XINFO CONSUMERS per stream stays
 # negligible.
 PRUNE_INTERVAL_MS = 60 * 1000
-RECOVERY_INTERVAL_MS = 1000
+# Fifteen seconds, not one. Pending recovery is a whole XAUTOCLAIM round trip
+# per stream per consumer, and an entry only becomes claimable after
+# CLAIM_MIN_IDLE_MS of silence, so a faster sweep cannot find more. Measured on
+# the resident cluster, XAUTOCLAIM was 4896 of Redis' ~19300 commands a second
+# while it reclaimed nothing.
+RECOVERY_INTERVAL_MS = 15000
 # One second rather than a hundred milliseconds.
 #
 # A blocking read is woken by the write itself, so the block only bounds how
