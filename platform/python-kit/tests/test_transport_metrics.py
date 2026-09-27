@@ -19,7 +19,7 @@ import pytest
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 
-from train_ticket_platform import messaging
+from train_ticket_platform import messaging, storage
 from train_ticket_platform.events import EventEnvelope
 from train_ticket_platform.messaging import (
     FatalHandlerError,
@@ -213,6 +213,35 @@ def test_transport_instruments_are_no_ops_without_a_meter(monkeypatch) -> None:
 
     assert (consumer._messages, consumer._failures, consumer._dead_letters) == (None, None, None)
     assert (relay._published, relay._failures) == (None, None)
+
+
+def test_the_subscriber_and_the_relay_resolve_the_process_instruments(monkeypatch, transport_meter) -> None:
+    # The recording paths are proven above with instruments supplied; this pins
+    # the other half, that a subscriber and a relay built by a service reach the
+    # kit's own factory plus the process meter rather than recording nowhere.
+    meter, reader = transport_meter
+    monkeypatch.setattr(messaging, "event_consumer_metrics", lambda *_, **__: EventConsumerMetrics(meter))
+    monkeypatch.setattr(storage, "outbox_metrics", lambda *_, **__: OutboxMetrics(meter))
+
+    subscriber = object.__new__(RedisEventSubscriber)
+    subscriber._client = FakeRedis()
+    subscriber._dedup = set()
+    subscriber._dedup_lock = None
+    assert subscriber._transport_metrics() is subscriber._transport_metrics()
+    subscriber._process_message(
+        "events:tester", "tester", "tester-consumer", "1-0", _fields(_envelope()), lambda _: None
+    )
+
+    relay = object.__new__(OutboxRelay)
+    relay._pool = FakeRelayPool([_row(1, "events:tester", 1.0)])
+    relay._redis = FakeRelayRedis()
+    assert relay._transport_metrics() is relay._transport_metrics()
+    relay.relay_once(limit=1)
+
+    collected = _collected(reader)
+    assert _points_of(collected, MESSAGES) == {(("outcome", "success"),): 1}
+    assert _points_of(collected, PUBLISHED) == {(): 1}
+    assert _points_of(collected, SAMPLE) == {(): 1}
 
 
 def test_a_delivered_message_records_one_success_outcome(transport_meter) -> None:
