@@ -11,11 +11,7 @@ import com.trainticket.platformkit.persistence.EventReplayRetentionLifecycle;
 import com.trainticket.platformkit.persistence.EventReplayRetentionPolicy;
 import com.trainticket.platformkit.persistence.MigrationRunner;
 import com.trainticket.platformkit.persistence.OutboxAppender;
-import com.trainticket.platformkit.messaging.LettuceRedisStreamOperations;
-import com.trainticket.platformkit.persistence.OutboxRelay;
-import io.lettuce.core.RedisClient;
-import io.lettuce.core.api.StatefulRedisConnection;
-import jakarta.annotation.PostConstruct;
+import com.trainticket.platformkit.persistence.LazyRedisOutboxRelayLifecycle;
 import java.nio.file.Path;
 import javax.sql.DataSource;
 import org.springframework.beans.factory.annotation.Value;
@@ -83,32 +79,23 @@ public class PaymentPersistenceConfiguration {
         return new DbIdempotencyStore(dataSource, objectMapper);
     }
 
+    /**
+     * The kit's relay, which elects one publisher per database with a session
+     * advisory lock.
+     *
+     * This service used to build its own relay instead, and every replica ran it:
+     * the relay publishes before it marks rows published, so two replicas that
+     * selected the same unpublished rows published both. Measured on 2026-09-27,
+     * 885 of the last 2000 entries on `events:payment` carried an event id that
+     * was already in the stream -- the same defect the session lock was added to
+     * remove for the other services, left behind in this one. Every group that
+     * reads the payment stream parsed, deduplicated and acknowledged each of
+     * those twice.
+     */
     @Bean(destroyMethod = "close")
-    PaymentOutboxRelayLifecycle paymentOutboxRelayLifecycle(DataSource dataSource, @Value("${REDIS_URL:redis://localhost:6379}") String redisUrl) {
-        return new PaymentOutboxRelayLifecycle(dataSource, redisUrl);
-    }
-
-    static final class PaymentOutboxRelayLifecycle implements AutoCloseable {
-        private final RedisClient client;
-        private final StatefulRedisConnection<String, String> connection;
-        private final OutboxRelay relay;
-
-        PaymentOutboxRelayLifecycle(DataSource dataSource, String redisUrl) {
-            this.client = RedisClient.create(redisUrl == null || redisUrl.isBlank() ? "redis://localhost:6379" : redisUrl);
-            this.connection = client.connect();
-            this.relay = new OutboxRelay(dataSource, new LettuceRedisStreamOperations(connection));
-        }
-
-        @PostConstruct
-        void start() {
-            relay.start();
-        }
-
-        @Override
-        public void close() {
-            relay.close();
-            connection.close();
-            client.shutdown();
-        }
+    LazyRedisOutboxRelayLifecycle outboxRelayLifecycle(DataSource dataSource, @Value("${REDIS_URL:redis://localhost:6379}") String redisUrl) {
+        LazyRedisOutboxRelayLifecycle lifecycle = new LazyRedisOutboxRelayLifecycle(dataSource, redisUrl);
+        lifecycle.start();
+        return lifecycle;
     }
 }
