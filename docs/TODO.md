@@ -60,7 +60,11 @@ every consumer group's own lag reads zero. What this pass did to it, all measure
 | `xautoclaim` a second | 4896 | 250 |
 | duplicate entries on the three relay-affected streams | 44 to 66 percent | 0 of 28034 sampled |
 
-What is left, in the order worth trying:
+What is left, in the order worth trying -- **all four deferred by the operator's
+instruction**, which fixed the traffic level and put further bus throughput work
+out of scope for this pass. They are the order worth trying if that decision is
+revisited; at the fixed level the windows carry no failed journey and no
+unexpected error, which is the acceptance boundary this pass is judged by.
 
 1. [ ] **Micro-batch the read.** `xack` is now the largest class (5447 a second)
    and its count is the number of delivery rounds, not entries: a reader that is
@@ -1291,7 +1295,10 @@ conservation refresh runs every ten minutes on its own daemon thread, and the
 capacity fold runs every five minutes and streams its rows so it holds constant
 memory -- so what is left in each is an optimization with no user-visible effect
 at those cadences. The same instruction defers T01's four bus items and T19's
-three scale items.
+four remaining items (Trip Planning's peak search, the shard cutovers, the write
+amplification and the pool-lock admission), and it is what closes the two
+burst-level sections further down: the acceptance no longer runs at the envelope
+those measured.
 
 1. [ ] Payment conservation: the aggregate over `payment_intent_snapshots` is
    still planned as a parallel sequential scan even with the covering index
@@ -1543,6 +1550,17 @@ percent at revision 421. Two items from the same audit are still open.
 
 ## The burst is the acceptance's remaining shape, measured 2026-09-26
 
+**Closed by the level, not by the items below.** This section measured the
+envelope the release ran at *then*: a diurnal peak of 4.0 and a burst of up to
+8.0 on top of `target_rps`, whose minutes carried 15000 to 26326 journeys. The
+operator fixed the traffic level at the measured knee -- peak 2.0, burst 1.5 to
+2.0, product 4.0, in `values.yaml` -- so the acceptance no longer reaches those
+minutes, and the items below are the record of what that shape cost. Every
+acceptance window since revision 511 carries 0 failed journeys and 0 unexpected
+HTTP errors at the peak and the trough of the fixed level, so what remains here
+is a description of a level the release no longer runs at rather than work in
+the backlog.
+
 The split removed the instance-wide half of this: risk assessment went from a
 15 second ninety-fifth percentile at every burst to 0.27 seconds, no consumer
 group stays above 50 entries of lag, and the first window after the reset is
@@ -1709,6 +1727,13 @@ snapshot" (606) and post-sales timeouts (523).
    the notification trigger had.
 
 ## The larger burst is the ceiling, measured 2026-09-27
+
+**Closed the same way**, and for the same reason: these are the measurements of
+the 8.0-burst envelope that took the level decision. The three items below name
+what a burst above the knee costs (reservation confirmation, offer refusals, the
+invoice basis race); none of them is reachable at the fixed level, whose windows
+are clean, and raising the level again would be a new decision rather than a
+backlog item.
 
 The window at revision 440 is clean, and the window after it is not: the load
 generator's cycle reaches 2256 to 2822 orders a minute, against the 1000 to 1200
