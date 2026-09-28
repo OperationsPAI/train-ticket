@@ -1,8 +1,9 @@
 # Post Sales HTTP API
 
-Last updated: 2026-09-24.
+Last updated: 2026-09-28.
 
-Runtime baseline: Helm revision 279.
+The deployed revision and runtime facts are recorded in
+[current status](../../00-current-status.md).
 Remaining work is tracked in [TODO](../../TODO.md).
 
 ## Overview
@@ -21,6 +22,13 @@ The selection is persisted before evaluation and repeated identical selections r
 A different selection or a selection after evaluation is rejected.
 The case details include `targetOfferId`.
 Evaluation resolves the exact target fare quote from that offer and checks account, travelers and validity.
+
+### Revise a Change Target
+
+`POST /api/v1/post-sales-cases/{caseId}/target-offer/revise` accepts `expectedOfferId` and `targetOfferId`.
+It replaces a previously selected change target, requiring the current target to still be `expectedOfferId`, and persists the new selection before evaluation.
+A mismatch, or a revision after evaluation, is rejected.
+The response is the updated case details.
 
 ### Open Post-Sales Case
 
@@ -134,6 +142,20 @@ After verification, Post Sales records the existing downstream effects against t
 Concurrent calls serialize on the order lock; calls that observe `APPLIED` return the existing case without reading downstream state or publishing again.
 
 Incomplete, inconsistent, active-Hold, or mismatched refund evidence returns `DOMAIN_RULE_VIOLATION` and leaves the case `EXECUTING`.
+
+### Cancel an unquoted change
+
+**POST** `/api/v1/internal/post-sales-cases/{caseId}/cancel-unquoted-change`
+
+Accepts `journeyOrderId` and requires `X-Correlation-Id`.
+The case must be an `OPENED` `CHANGE` for that order with no evaluation decision, no recorded change operations and no refund effect, and no payment intent keyed by the case.
+The case becomes `CANCELLED` with `terminalReason=SUPERSEDED_BY_RECOVERY_REFUND`; repeating the call returns the cancelled case.
+Any payment or refund effect returns `DOMAIN_RULE_VIOLATION`.
+
+### Reconcile a conflicting change
+
+`POST /api/v1/internal/post-sales-cases/{caseId}/reconcile-conflict` resolves a change whose scope was already refunded by an earlier case.
+See [post-sales conflict reconciliation](post-sales-reconciliation.md).
 
 ### Get Post-Sales Case
 
@@ -283,4 +305,7 @@ The domain execution operations include:
 
 Verification results are recorded in [current status](../../00-current-status.md).
 Recorded change and compensation operations support retry and restart recovery.
-The accepted supply integration remains inactive in production at Helm revision 279.
+The accepted supply integration is implemented, deployed and verified, and is
+active in production (T03, closed). Post Sales derives the replacement
+`scheduledServiceRef`, `serviceDate` and `classRef` from the accepted target
+offer and itinerary and passes them to Booking Orchestration.
