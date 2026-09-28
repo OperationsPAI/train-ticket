@@ -119,7 +119,8 @@ and stable stop sequence digest.
 The current creation API defines a two stop scheduled service, with interval `[0,1)`.
 `TEST_SERVICE_SEGMENT_SOURCE` and `TEST_DATABASE_URL` enable the recorded PostgreSQL and HTTP test in `internal/http/segment_live_test.go`.
 `internal/application/segment_page_test.go` covers the page the listing serves on both
-paths, and `internal/config/config_test.go` covers the settings a release may set.
+paths, and `internal/config/config_test.go` covers the settings a release may set, including
+the page bound it declares through the chart.
 
 
 ## Seasonal schedules and real-time operations
