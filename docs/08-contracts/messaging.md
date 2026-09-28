@@ -45,6 +45,19 @@ context.
 
 ### All Streams
 
+The table below is the declared Phase-1 contract surface. It is not a guarantee
+that every listed type is emitted by the current release: a declared-only subset
+is reserved and has no producer yet. In this catalog that subset is
+`EntitlementBoarded`, `EntitlementSuspended`, `EntitlementResumed`,
+`EntitlementUsed`, `EntitlementIssueFailed`, `ProviderTicketIssued`,
+`ChallengeIssued`, `ChallengeResolved`, `EvidenceRecorded`, `EInvoiceExpired`,
+`RedFlushRejected`, `RedFlushFailed`, and the seat-assignment types
+`SeatMapBuildFailed`, `AdjacencyGroupCancelled`, `BerthPreferenceRecorded`,
+`BerthPreferenceApplied`, `BerthPreferenceCancelled`, `SeatAllocationFailed`,
+`SeatAllocationMissed`, `SeatReassigned`, `SeatAllocationLedgerAppended`,
+`SeatAllocationCorrectionAppended` and `SeatAllocationDiscrepancyDetected`. The
+per-context `events/*.md` contracts mark each declared-only type.
+
 | # | Producing Context | Stream Key | Produced Event Types (Phase 1) |
 |---|---|---|---|
 | 1 | `place-network` | `events:place-network` | PlaceRegistered, TransportNodeRegistered |
