@@ -7,7 +7,7 @@
 | Domain | Dispatch |
 | Status | accepted-ddd-baseline |
 | Phase | future-scope |
-| Last Updated | 2026-06-28 |
+| Last Updated | 2026-09-28 |
 | High-Level Inputs | `docs/03-ddd-final/decision-record.md`, `docs/03-ddd-final/domain-reduce-status.md`, `docs/01-ddd-high-level/general-travel-ddd.md` |
 
 ## 1. 领域目标
