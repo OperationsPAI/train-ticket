@@ -27,4 +27,11 @@ describe("the queues the desk's release staffs", () => {
     assert.deepEqual(releasedOwnerQueues(), stated);
     assert.equal(deskPollsQueue("post-sales-desk"), queueIsPolled(stated, "post-sales-desk"));
   });
+
+  it("answers a name the roster carries once, however often it appears", () => {
+    const stated = statedOwnerQueues("post-sales-desk,post-sales-desk");
+    assert.deepEqual(stated, ["post-sales-desk", "post-sales-desk"]);
+    assert.equal(queueIsPolled(stated, "post-sales-desk"), true);
+    assert.equal(queueIsPolled(stated, "post-sales-desk "), false);
+  });
 });
