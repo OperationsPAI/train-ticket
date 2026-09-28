@@ -1,6 +1,6 @@
 # Standing capacity policy
 
-Last updated: 2026-09-23.
+Last updated: 2026-09-28.
 
 ## Policy
 
@@ -74,6 +74,7 @@ The quota boundary is exercised by marking recorded second class units unavailab
 It verifies that a standing snapshot reports zero physical seats and that quota confirmation does not emit a physical seat overbooking event.
 The six class online purchase test verifies standing policy metadata on issued allocations.
 Seat Assignment quota enforcement and pre-reservation SeatMap preparation are deployed and verified.
-Capacity's new supply calculation remains under integration and has not been activated in production.
-Its rollout requires coordinated reservation facts, SeatMap preparation and historical occupancy validation.
-Passing the Seat Assignment test alone does not establish that the complete booking flow is ready.
+Capacity's combined supply calculation is deployed and verified, with general
+multistop admission passing on the deployed seat facts for `SECOND_CLASS`,
+`FIRST_CLASS` and `SLEEPER_HARD`; see
+[current status](../00-current-status.md).

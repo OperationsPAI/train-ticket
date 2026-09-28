@@ -1,6 +1,6 @@
 # Group Booking Events
 
-Last updated: 2026-09-25.
+Last updated: 2026-09-28.
 
 Group Booking publishes to `events:group-booking` through a transactional outbox when PostgreSQL is configured.
 

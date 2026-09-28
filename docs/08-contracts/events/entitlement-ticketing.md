@@ -1,6 +1,6 @@
 # Entitlement & Ticketing — Events & Commands
 
-Last updated: 2026-07-09
+Last updated: 2026-09-28
 
 ## Published Events
 
