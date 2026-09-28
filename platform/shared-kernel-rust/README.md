@@ -6,7 +6,7 @@ Language: rust
 
 Phase: phase-1-foundation
 
-Status: contract-baseline
+Status: integration-ready
 
 ## Owns
 
