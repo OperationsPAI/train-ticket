@@ -19,7 +19,7 @@ import { type CustomerServiceRepository } from "./application/ports/customer-ser
 
 const openBody = {
   requesterRef: "tvl-0194f2e0-7b3e-7610-8284-5c26e8b001",
-  channel: "APP",
+  channel: "WEB",
   classification: "PAYMENT_HELP",
   priority: "HIGH",
   description: "Payment not reflected after successful charge",
