@@ -1524,6 +1524,10 @@ services:
       # measured at revision 493, all 127,064 ACTIVE agreements carried
       # `rs-<uuid8>` ids no rule set matched.
       FARE_PRICING_URL: "http://fare-pricing:8080"
+      # The credit facility this deployment is approved to open on the
+      # self-service path. The service ships the benchmark in its own settings
+      # and overlays this over it, so the number travels with the release.
+      CORPORATE_TRAVEL_ONBOARDING_MAX_CREDIT_MINOR: "1000000"
   account:
     db: account
     pgInstance: user

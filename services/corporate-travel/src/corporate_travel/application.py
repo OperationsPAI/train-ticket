@@ -30,7 +30,6 @@ from .domain import (
     BudgetPool,
     CorporateAgreement,
     CorporateTravelError,
-    CreditFacility,
     EffectiveWindow,
     EmployeeLevel,
     EmployeeProfile,
@@ -49,16 +48,17 @@ from .domain import (
     StatementLineSource,
     TravelPolicy,
 )
+from .settings import onboarding_facility
 
 PRODUCER = "corporate-travel"
 SCHEMA_VERSION = 1
 
-ONBOARDING_FACILITY = CreditFacility()
+ONBOARDING_FACILITY = onboarding_facility()
 """The credit facility an agreement opened on the self-service path carries.
 
 Read once here rather than rebuilt per request, so the create path compares
-against one value. A deployment approved for a different one states it where the
-rest of this service's settings live.
+against one value. It comes from the settings the service ships, which the
+release overlays.
 """
 
 

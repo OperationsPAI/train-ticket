@@ -17,6 +17,16 @@ When `DATABASE_URL` is configured, startup applies migrations and wires the owni
 - Liveness `/healthz`, readiness `/readyz`; also `/health`, `/live`, `/ready`,
 `/metadata`.
 
+## Settings
+
+`src/corporate_travel/config/onboarding.json` holds the terms this service
+applies to an agreement opened from the self-service path. Any field of it can
+be stated by the release instead, through the environment:
+`CORPORATE_TRAVEL_ONBOARDING_MAX_CREDIT_MINOR` is the monthly credit facility,
+set by `services.corporate-travel.env` in
+`deploy/helm/train-ticket/values.yaml`. A checkout with no settings file keeps
+the defaults the code compiles.
+
 ## HTTP surface
 
 `/api/v1/agreements`: create, read, `{id}/authorize`,
