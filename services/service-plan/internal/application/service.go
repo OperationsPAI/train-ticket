@@ -461,6 +461,8 @@ func (s *Service) ListServiceSegments(ctx context.Context, service string, limit
 	// The bound belongs to the deployment and not to the request, and it is
 	// read once per call so that the page check and the page answer name the
 	// same bound.
+	// Resolved once, so the page the check accepts is the page the answer
+	// describes, on both the repository and the in-memory path.
 	listingBound := s.listingBound()
 	if err := servesPage(service, limit, offset, listingBound); err != nil {
 		return ServiceSegmentsPage{}, err
