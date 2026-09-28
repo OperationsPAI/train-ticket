@@ -31,6 +31,8 @@ Status: implemented and deployed (Helm revision 521; see [current status](../../
   refused, so a desk that opens a lane names it there rather than waiting for a
   build. A release that states no roster keeps the arrangement the service
   ships.
+- The roster is read once, when the process starts, so a lane a release adds
+  arrives with the release's rollout rather than on a reload.
 
 ## HTTP surface
 
