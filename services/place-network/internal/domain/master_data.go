@@ -166,6 +166,18 @@ func (n *TransportNode) SetAccessWeights(accessTimeMinutes *int, walkingEdges []
 	}
 }
 
+// ApplyAccessAllowance records the wayfinding allowance this service ships for
+// a node whose operator declared no access time of its own. A non-positive
+// allowance leaves the field absent, which keeps "unknown" distinct from a
+// measured zero, and a node that already carries a weight keeps it.
+func (n *TransportNode) ApplyAccessAllowance(minutes int) {
+	if n.AccessTimeMinutes != nil || minutes <= 0 {
+		return
+	}
+	allowance := minutes
+	n.AccessTimeMinutes = &allowance
+}
+
 func (n *TransportNode) MarkCreatedAt(createdAt time.Time) {
 	n.CreatedAt = createdAt.UTC()
 }

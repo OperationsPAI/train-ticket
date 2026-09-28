@@ -17,6 +17,10 @@ type ServiceConfig struct {
 	Publisher  EventPublisher
 	Clock      domain.Clock
 	UnitOfWork UnitOfWork
+	// StationAccessAllowanceMinutes is the wayfinding allowance a station node
+	// carries when its operator declares no access time of its own. Zero leaves
+	// the field absent.
+	StationAccessAllowanceMinutes int
 }
 
 type Service struct {
@@ -25,6 +29,9 @@ type Service struct {
 	publisher  EventPublisher
 	clock      domain.Clock
 	unitOfWork UnitOfWork
+	// stationAccessAllowanceMinutes is the configured allowance, read once at
+	// startup from the service's own settings file.
+	stationAccessAllowanceMinutes int
 }
 
 func NewService(cfg ServiceConfig) *Service {
@@ -40,7 +47,7 @@ func NewService(cfg ServiceConfig) *Service {
 	if unitOfWork == nil {
 		unitOfWork = func(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) }
 	}
-	return &Service{places: cfg.Places, nodes: cfg.Nodes, publisher: publisher, clock: clock, unitOfWork: unitOfWork}
+	return &Service{places: cfg.Places, nodes: cfg.Nodes, publisher: publisher, clock: clock, unitOfWork: unitOfWork, stationAccessAllowanceMinutes: cfg.StationAccessAllowanceMinutes}
 }
 
 type CreatePlaceRequest struct {
@@ -242,6 +249,12 @@ func (s *Service) CreateTransportNode(ctx context.Context, req CreateTransportNo
 		return nil, NewDomainError("VALIDATION_FAILED", err.Error())
 	}
 	node.SetAccessWeights(req.AccessTimeMinutes, walkingEdgesFromRequest(req.WalkingEdges))
+	// A station's wayfinding is planning data like any other, so a node the
+	// operator did not weigh carries the allowance the service ships instead of
+	// leaving the field absent for every reader to interpret on its own.
+	if place.Type == domain.PlaceTypeStation {
+		node.ApplyAccessAllowance(s.stationAccessAllowanceMinutes)
+	}
 	if err := node.Validate(); err != nil {
 		return nil, NewDomainError("VALIDATION_FAILED", err.Error())
 	}

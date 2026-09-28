@@ -23,6 +23,9 @@ Status: REQ-004 master-data primitives, implemented and deployed (Helm revision 
   `deploy/helm/train-ticket/values.yaml`).
 - Liveness `/healthz`, readiness `/readyz`; also `/health`, `/ready`,
 `/metadata`.
+- Wayfinding defaults the release ships live in
+  `internal/config/wayfinding.json`, embedded at build time. A value of `0`
+  leaves a node's `accessTimeMinutes` absent.
 
 ## HTTP surface
 

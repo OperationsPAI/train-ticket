@@ -13,6 +13,7 @@ import (
 	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
 	adapterpg "github.com/trainticket/greenfield/services/place-network/internal/adapters/postgres"
 	"github.com/trainticket/greenfield/services/place-network/internal/application"
+	"github.com/trainticket/greenfield/services/place-network/internal/config"
 	"github.com/trainticket/greenfield/services/place-network/internal/domain"
 	apphttp "github.com/trainticket/greenfield/services/place-network/internal/http"
 )
@@ -64,12 +65,17 @@ func main() {
 	go storage.NewOutboxRelay(pool, redisClient).Run(ctx)
 
 	transactor := adapterpg.NewTransactor(pool)
+	wayfinding, err := config.LoadWayfinding()
+	if err != nil {
+		log.Fatal(err)
+	}
 	service := application.NewService(application.ServiceConfig{
-		Places:     adapterpg.NewPlaceRepositoryWithProvider(transactor),
-		Nodes:      adapterpg.NewTransportNodeRepositoryWithProvider(transactor),
-		Publisher:  adapterpg.NewOutboxPublisherWithProvider(transactor),
-		Clock:      domain.RealClock{},
-		UnitOfWork: transactor.Within,
+		Places:                        adapterpg.NewPlaceRepositoryWithProvider(transactor),
+		Nodes:                         adapterpg.NewTransportNodeRepositoryWithProvider(transactor),
+		Publisher:                     adapterpg.NewOutboxPublisherWithProvider(transactor),
+		Clock:                         domain.RealClock{},
+		UnitOfWork:                    transactor.Within,
+		StationAccessAllowanceMinutes: wayfinding.StationAccessTimeMinutes,
 	})
 	var idempotencyStore idempotency.Store = storage.NewIdempotencyStore(pool)
 
