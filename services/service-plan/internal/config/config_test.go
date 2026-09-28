@@ -29,6 +29,13 @@ func TestFromEnvReadsTheBoundTheReleaseDeclares(t *testing.T) {
 	}
 }
 
+func TestFromEnvReadsABlankPageBoundAsUnset(t *testing.T) {
+	t.Setenv("SERVICE_PLAN_LISTING_PAGE_LIMIT", "   ")
+	if got := FromEnv().ListingPageLimit; got != DefaultListingPageLimit {
+		t.Fatalf("a blank page bound must leave the default, got %d", got)
+	}
+}
+
 func TestFromEnvRefusesAPageBoundWithAUnit(t *testing.T) {
 	t.Setenv("SERVICE_PLAN_LISTING_PAGE_LIMIT", "40 pages")
 	if got := FromEnv().ListingPageLimit; got != DefaultListingPageLimit {
