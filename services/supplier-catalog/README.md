@@ -51,7 +51,8 @@ It consumes no inbound event stream
 ## Metrics
 
 This service owns no service-specific business metric in the
-[`docs/07-observability/business-metrics.md`](../../docs/07-observability/business-metrics.md).
+[`docs/07-observability/business-metrics.md`](../../docs/07-observability/business-metrics.md);
+its pool, its HTTP server and its runtime ship over OTLP like every service.
 
 ## Build and test
 
