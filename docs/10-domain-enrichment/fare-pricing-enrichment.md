@@ -12,7 +12,7 @@ Change adjustments compare the recorded original and target quotes and check tra
 
 [HTTP API](../08-contracts/api/fare-pricing.md) documents fare rule publication, `/api/v1/fare-quotes` and `/api/v1/adjustment-quotes`.
 [Request schemas](../../services/fare-pricing/src/fare_pricing/web/schemas.py) and [HTTP handlers](../../services/fare-pricing/src/fare_pricing/web/handlers.py) define the accepted fields, including `seatClass`, `distanceKm` and `departureTime`.
-[Pricing domain](../../services/fare-pricing/src/fare_pricing/domain.py), [application service](../../services/fare-pricing/src/fare_pricing/application/service.py) and [event handlers](../../services/fare-pricing/src/fare_pricing/handlers.py) contain the calculation and projection logic.
+[Pricing domain](../../services/fare-pricing/src/fare_pricing/domain.py), [application service](../../services/fare-pricing/src/fare_pricing/application/service.py) and [event handlers](../../services/fare-pricing/src/fare_pricing/adapters/messaging/handlers.py) contain the calculation and projection logic.
 [Service README](../../services/fare-pricing/README.md) describes ownership.
 
 ## Boundaries
@@ -20,5 +20,5 @@ Change adjustments compare the recorded original and target quotes and check tra
 Distance pricing requires a configured distance rate and a supplied distance; otherwise the base fare is flat.
 Advance purchase and peak adjustments require departure time, and capacity adjustments depend on available local snapshots.
 A quote does not reserve inventory or eligibility uses and does not execute an order or payment.
-Deployment and verification evidence, including differences from workspace code, are recorded in [current status](../00-current-status.md).
+Deployment and verification evidence are recorded in [current status](../00-current-status.md).
 Remaining work is maintained only in [TODO](../TODO.md).
