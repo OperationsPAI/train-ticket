@@ -1296,8 +1296,8 @@ services:
       # behind, so the ceiling was loops rather than CPU. That held until the
       # burst was raised again: the same group is 5 to 7 seconds behind at the
       # peak now with the pods still at a fraction of a core, so the ceiling is
-      # still loops. Twenty four loops across three replicas replace sixteen
-      # across two.
+      # still loops. Twenty four loops across three replicas replace the
+      # sixteen across two the earlier window was measured with.
       CONSUMER_THREADS: "24"
   entitlement-ticketing:
     db: entitlement_ticketing
