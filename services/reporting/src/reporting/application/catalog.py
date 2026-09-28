@@ -8,7 +8,7 @@ from typing import Any
 from train_ticket_platform.documents import document_path, document_section, read_document
 
 CATALOG_FILE = Path(__file__).resolve().parents[1] / "config" / "release-catalog.json"
-CATALOG_PATH_ENV = "REPORTING_RELEASE_CATALOG"
+CATALOG_PATH_VARIABLE = "REPORTING_RELEASE_CATALOG"
 METRIC_SECTION = "metrics"
 DASHBOARD_SECTION = "dashboards"
 
@@ -27,7 +27,7 @@ class ReleaseCatalog:
 
 def catalog_file() -> Path:
     """The release catalog this build ships, which a deployment may point elsewhere."""
-    return document_path(CATALOG_FILE, CATALOG_PATH_ENV)
+    return document_path(CATALOG_FILE, CATALOG_PATH_VARIABLE)
 
 
 def load_release_catalog(path: Path | None = None) -> ReleaseCatalog:
