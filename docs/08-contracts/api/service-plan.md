@@ -1,6 +1,6 @@
 # Service Plan — HTTP API
 
-Last updated: 2026-09-23
+Last updated: 2026-09-28
 
 ## Overview
 
@@ -55,6 +55,76 @@ master schedule data used by Trip Planning and Capacity.
 **GET** `/api/v1/scheduled-services?limit=20&offset=0&carrierId=...`
 
 **Response (200):** Paginated response.
+
+### Add a Temporary Service
+
+**POST** `/api/v1/scheduled-services/{serviceRef}/temporary-services`
+
+**Idempotency:** REQUIRED
+
+**Request:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `tempServiceRef` | string | yes | Temporary service reference. |
+| `tempTrainNumber` | string | yes | Public temporary train number. |
+| `period` | string | yes | Operating period. |
+| `stopsSubset` | string[] | yes | Stops the temporary service covers. |
+| `availableClasses` | string[] | yes | Classes offered. |
+
+**Response (201):** Created temporary service.
+
+**Error codes:** `VALIDATION_FAILED`, `NOT_FOUND`, `CONFLICT`
+
+### Record a Delay
+
+**POST** `/api/v1/scheduled-services/{serviceRef}/delays`
+
+**Idempotency:** REQUIRED
+
+**Request:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `segmentRef` | string | yes | Delayed segment. |
+| `delayMinutes` | integer | yes | Delay in minutes. |
+
+**Response (200):** Updated segment facts.
+
+**Error codes:** `VALIDATION_FAILED`, `NOT_FOUND`
+
+### Cancel a Service for a Date
+
+**POST** `/api/v1/scheduled-services/{serviceRef}/cancellations`
+
+**Idempotency:** REQUIRED
+
+**Request:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `date` | RFC3339 UTC | yes | Operating date being cancelled. |
+| `reason` | string | yes | Cancellation reason. |
+
+**Response (200):** Updated service facts.
+
+**Error codes:** `VALIDATION_FAILED`, `NOT_FOUND`
+
+### Restore a Service for a Date
+
+**POST** `/api/v1/scheduled-services/{serviceRef}/restorations`
+
+**Idempotency:** REQUIRED
+
+**Request:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `date` | RFC3339 UTC | yes | Operating date being restored. |
+
+**Response (200):** Updated service facts.
+
+**Error codes:** `VALIDATION_FAILED`, `NOT_FOUND`
 
 ### Create a Service Segment
 
