@@ -479,6 +479,10 @@ func newUUIDString() string                      { return ids.NewUUIDv7() }
 func formatUTC(t time.Time) string               { return ids.FormatUTC(t) }
 func canonicalCorrelationID(value string) string { return ids.CanonicalCorrelationID(value) }
 
+// eventType is the name the platform publishes a domain event under. The switch
+// covers the events the catalogue emits; anything else keeps its Go type name, so
+// an event nobody mapped is visible in the stream rather than published under a
+// name the consumers would have to guess.
 func eventType(event interface{}) string {
 	switch event.(type) {
 	case domain.SupplierRegisteredEvent:
