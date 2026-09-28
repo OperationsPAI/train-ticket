@@ -20,3 +20,10 @@ func TestFromEnvReadsThePageBoundAReleaseSets(t *testing.T) {
 		t.Fatalf("listing page bound: got %d, want 40", got)
 	}
 }
+
+func TestFromEnvRefusesAPageBoundWithAUnit(t *testing.T) {
+	t.Setenv("SERVICE_PLAN_LISTING_PAGE_LIMIT", "40 pages")
+	if got := FromEnv().ListingPageLimit; got != DefaultListingPageLimit {
+		t.Fatalf("a page bound with a unit must leave the default, got %d", got)
+	}
+}
