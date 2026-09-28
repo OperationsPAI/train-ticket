@@ -49,6 +49,7 @@ export const contractChannels: readonly CaseChannel[] = [
  */
 export type DeskSheet = Readonly<{
   note?: string;
+  source?: string;
   desks?: readonly string[];
 }>;
 
