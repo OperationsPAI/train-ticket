@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { HttpAncillaryReferences } from "./references.js";
 import { HttpAncillaryPayments } from "./payments.js";
 import { handlesAncillaryEvent } from "./adapters/messaging/event-filter.js";
+import { requireNoticeFloor } from "./catalog-policy.js";
 
 import {
   createEventEnvelope,
@@ -200,6 +201,7 @@ export class AncillaryApplicationService {
   async createCatalogItem(
     input: CatalogInput,
   ): Promise<AncillaryCatalogItemSnapshot> {
+    requireNoticeFloor(input);
     const item = AncillaryCatalogItem.create(input);
     const snapshot = item.toSnapshot();
     await this.repository.saveCatalog(snapshot);
@@ -210,6 +212,7 @@ export class AncillaryApplicationService {
     catalogItemId: string,
     input: CatalogInput & { expectedVersion: number },
   ): Promise<AncillaryCatalogItemSnapshot> {
+    requireNoticeFloor(input);
     const item = AncillaryCatalogItem.fromSnapshot(
       await this.requireCatalog(catalogItemId),
     );
