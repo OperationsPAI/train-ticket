@@ -19,6 +19,6 @@ the programme's decisions. They are stated in
 image carries at `/app/config` and `src/programme.ts` reads once.
 
 `accountReference.acceptedNamespaces` is the statement an enrolment's account
-reference is held to. It ships empty, which accepts a reference as the caller sends
-it, and a deployment that states the namespaces its references arrive in lists them
-there.
+reference is held to. The account contract this platform publishes puts its account
+references in the `acct` namespace, so the programme states that namespace, and the
+statement is held to where the membership is keyed.
