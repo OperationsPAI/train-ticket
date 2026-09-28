@@ -37,5 +37,17 @@ describe("the intake's channel vocabulary", () => {
   it("falls back to the platform's vocabulary when the file is absent or unreadable", () => {
     assert.deepEqual(intakeChannelsFrom(join(directory, "absent.json")), PLATFORM_INTAKE_CHANNELS);
     assert.deepEqual(intakeChannelsFrom(settings("{ not json")), PLATFORM_INTAKE_CHANNELS);
+    assert.deepEqual(intakeChannelsFrom(directory), PLATFORM_INTAKE_CHANNELS);
+  });
+
+  it("falls back to the platform's vocabulary when the file states no channel list", () => {
+    assert.deepEqual(intakeChannelsFrom(settings(JSON.stringify({ desk: "support" }))), PLATFORM_INTAKE_CHANNELS);
+    assert.deepEqual(intakeChannelsFrom(settings(JSON.stringify({ channels: "WEB" }))), PLATFORM_INTAKE_CHANNELS);
+    assert.deepEqual(intakeChannelsFrom(settings(JSON.stringify(null))), PLATFORM_INTAKE_CHANNELS);
+  });
+
+  it("reads the list in the order the file states it", () => {
+    const file = settings(JSON.stringify({ channels: ["EMAIL", "APP"], desk: "support" }));
+    assert.deepEqual(intakeChannelsFrom(file), ["EMAIL", "APP"]);
   });
 });
