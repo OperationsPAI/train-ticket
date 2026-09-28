@@ -105,12 +105,12 @@ timestamps, and Money.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `assignedTo` | string | no | Operator ID to assign (`op-<uuid>`). |
-| `ownerQueue` | string | yes | Target queue name; one the desk's release states. |
+| `ownerQueue` | string | yes | Target queue name, taken from the queues the desk's release states. |
 
 **Response (200):** Updated case.
 
 **Error codes:** `NOT_FOUND`, `VALIDATION_FAILED`, `DOMAIN_RULE_VIOLATION`
-(`CASE_NOT_ASSIGNABLE` while the case is in a status the handoff does not take,
+(`CASE_NOT_ASSIGNABLE` while the case is in a status the handoff does not take;
 `CASE_NOT_ROUTABLE` for a queue the desk's release does not state)
 
 ### Escalate Case
