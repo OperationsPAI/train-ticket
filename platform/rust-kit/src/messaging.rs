@@ -673,6 +673,56 @@ pub mod redis_runtime {
 
     const DEAD_CONSUMER_IDLE_MS: u64 = 5 * 60 * 1_000;
 
+    /// How long an idle reader blocks inside Redis before asking again.
+    ///
+    /// A blocking read is woken by the write itself, so this bounds only how
+    /// long an *idle* reader sleeps before asking again -- it is not a delivery
+    /// delay. Two seconds rather than a hundred milliseconds: an idle reader
+    /// should be woken by a write rather than re-asking ten times a second.
+    const IDLE_BLOCK_MS: u64 = 2_000;
+
+    /// Entries an individual read asks for. One read that returns five hundred
+    /// entries costs one command, and `xreadgroup` is the largest command class
+    /// a single-threaded Redis serves.
+    const READ_COUNT: usize = 500;
+
+    pub const ACCUMULATE_TICK_MS_ENV: &str = "CONSUMER_ACCUMULATE_TICK_MS";
+
+    /// The accumulation tick: how long a reader that has just received entries
+    /// waits before one more, non-blocking, read.
+    ///
+    /// `XREADGROUP ... BLOCK` returns as soon as a *single* entry is available,
+    /// so a reader that keeps up gets one to three entries per round, and the
+    /// one XACK that retires a round is one XACK per entry. Waiting a tick
+    /// first lets a burst accumulate into one round and one XACK, at the cost
+    /// of up to a tick of delivery latency -- well inside the ten second poll.
+    pub const DEFAULT_ACCUMULATE_TICK_MS: u64 = 50;
+
+    /// Resolves the accumulation tick. `0` disables the accumulation and
+    /// restores a read that returns the moment an entry is available.
+    pub fn accumulate_tick_ms(configured: Option<&str>) -> u64 {
+        let Some(raw) = configured else {
+            return DEFAULT_ACCUMULATE_TICK_MS;
+        };
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return DEFAULT_ACCUMULATE_TICK_MS;
+        }
+        match trimmed.parse::<u64>() {
+            Ok(tick) => tick,
+            Err(_) => {
+                log::warn!(
+                    "{ACCUMULATE_TICK_MS_ENV}={raw} is not a non-negative integer; using default {DEFAULT_ACCUMULATE_TICK_MS}"
+                );
+                DEFAULT_ACCUMULATE_TICK_MS
+            }
+        }
+    }
+
+    pub static ACCUMULATE_TICK_MS: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
+        accumulate_tick_ms(std::env::var(ACCUMULATE_TICK_MS_ENV).ok().as_deref())
+    });
+
     async fn prune_dead_consumers(
         connection: &mut redis::aio::MultiplexedConnection,
         stream: &str,
@@ -985,6 +1035,8 @@ pub mod redis_runtime {
             streams: &[String],
             group: &str,
             consumer_name: &str,
+            block_ms: u64,
+            count: usize,
         ) -> Result<Vec<StreamMessage>, SubscribeFailed>;
         async fn delivery_count(
             &mut self,
@@ -1056,18 +1108,23 @@ pub mod redis_runtime {
             streams: &[String],
             group: &str,
             consumer_name: &str,
+            block_ms: u64,
+            count: usize,
         ) -> Result<Vec<StreamMessage>, SubscribeFailed> {
-            let response: redis::Value = redis::cmd("XREADGROUP")
+            let mut command = redis::cmd("XREADGROUP");
+            command
                 .arg("GROUP")
                 .arg(group)
-                .arg(consumer_name)
-                .arg("BLOCK")
-                .arg(2_000)
+                .arg(consumer_name);
+            // A zero block is a non-blocking read, the top-up the accumulation
+            // tick uses; it is omitted rather than sent as `BLOCK 0`, which
+            // Redis reads as "block forever".
+            if block_ms > 0 {
+                command.arg("BLOCK").arg(block_ms);
+            }
+            let response: redis::Value = command
                 .arg("COUNT")
-                // Five hundred rather than a hundred: one read that returns five
-                // hundred entries costs one command, and xreadgroup is the
-                // largest command class a single-threaded Redis serves.
-                .arg(500)
+                .arg(count)
                 .arg("STREAMS")
                 .arg(streams)
                 .arg(vec![">"; streams.len()])
@@ -1404,6 +1461,37 @@ pub mod redis_runtime {
             }
         }
 
+        /// Waits one accumulation tick and takes one more, non-blocking, read,
+        /// so a burst of entries becomes one round and one XACK.
+        ///
+        /// The idle path is untouched: only a read that already returned
+        /// entries pays the tick, and an empty read goes straight back to the
+        /// blocking read above, so an empty stream never spins. A zero tick, or
+        /// a read that already filled the batch, skips the accumulation.
+        async fn accumulate_read(
+            &self,
+            ops: &mut dyn StreamOps,
+            streams: &[String],
+            group: &str,
+            consumer_name: &str,
+            mut messages: Vec<StreamMessage>,
+        ) -> Vec<StreamMessage> {
+            let tick = *ACCUMULATE_TICK_MS;
+            if tick == 0 || messages.is_empty() || messages.len() >= READ_COUNT {
+                return messages;
+            }
+            sleep(Duration::from_millis(tick)).await;
+            // A failed top-up is not fatal to the round: the entries already in
+            // hand are still processed, and the next round re-reads.
+            if let Ok(more) = ops
+                .read_group(streams, group, consumer_name, 0, READ_COUNT - messages.len())
+                .await
+            {
+                messages.extend(more);
+            }
+            messages
+        }
+
         async fn subscribe_with_ops(
             &self,
             ops: &mut dyn StreamOps,
@@ -1438,7 +1526,16 @@ pub mod redis_runtime {
                         continue;
                     }
                 }
-                let messages = match ops.read_group(&streams, &group, &consumer_name).await {
+                let messages = match ops
+                    .read_group(
+                        &streams,
+                        &group,
+                        &consumer_name,
+                        IDLE_BLOCK_MS,
+                        READ_COUNT,
+                    )
+                    .await
+                {
                     Ok(messages) => messages,
                     Err(error) => {
                         Self::handle_consume_error_with_ops(ops, &streams, &group, &error.0).await;
@@ -1448,6 +1545,9 @@ pub mod redis_runtime {
                         continue;
                     }
                 };
+                let messages = self
+                    .accumulate_read(ops, &streams, &group, &consumer_name, messages)
+                    .await;
                 let mut selected = Vec::new();
                 let mut ignored: HashMap<String, Vec<String>> = HashMap::new();
                 for message in messages {
@@ -1822,6 +1922,20 @@ pub mod redis_runtime {
         }
 
         #[test]
+        fn accumulate_tick_defaults_and_honours_an_override() {
+            assert_eq!(DEFAULT_ACCUMULATE_TICK_MS, 50);
+            assert_eq!(accumulate_tick_ms(None), DEFAULT_ACCUMULATE_TICK_MS);
+            assert_eq!(accumulate_tick_ms(Some("  ")), DEFAULT_ACCUMULATE_TICK_MS);
+            assert_eq!(
+                accumulate_tick_ms(Some("not-a-number")),
+                DEFAULT_ACCUMULATE_TICK_MS
+            );
+            assert_eq!(accumulate_tick_ms(Some(" 250 ")), 250);
+            // Zero is the documented way to restore the pre-accumulation read.
+            assert_eq!(accumulate_tick_ms(Some("0")), 0);
+        }
+
+        #[test]
         fn dlq_metadata_fields_are_camel_case_and_attributed() {
             let fields = dlq_metadata_fields(
                 "capacity-availability",
@@ -1853,10 +1967,17 @@ pub mod redis_runtime {
         #[derive(Default)]
         struct FakeStreamOps {
             read_messages: Vec<StreamMessage>,
+            /// The tick top-up read of a round, i.e. the one issued with a zero
+            /// block after the accumulation sleep.
+            top_up_messages: Vec<StreamMessage>,
+            /// The block argument of each read, in order, so a test can tell a
+            /// blocking idle read from a non-blocking top-up.
+            read_blocks: Vec<u64>,
             pending_messages: Vec<StreamMessage>,
             pending_delivery_count: u64,
             dlq_entries: Vec<(String, String, Vec<(&'static str, String)>)>,
             acked: Vec<(String, String, String)>,
+            ack_batches: Vec<(String, String, Vec<String>)>,
             created_groups: Vec<(String, String)>,
         }
 
@@ -1886,8 +2007,15 @@ pub mod redis_runtime {
                 _streams: &[String],
                 _group: &str,
                 _consumer_name: &str,
+                block_ms: u64,
+                _count: usize,
             ) -> Result<Vec<StreamMessage>, SubscribeFailed> {
-                Ok(std::mem::take(&mut self.read_messages))
+                self.read_blocks.push(block_ms);
+                Ok(if block_ms == 0 {
+                    std::mem::take(&mut self.top_up_messages)
+                } else {
+                    std::mem::take(&mut self.read_messages)
+                })
             }
 
             async fn delivery_count(
@@ -1924,6 +2052,23 @@ pub mod redis_runtime {
                     .push((stream.to_string(), group.to_string(), id.to_string()));
                 Ok(())
             }
+
+            async fn ack_many(
+                &mut self,
+                stream: &str,
+                group: &str,
+                ids: &[String],
+            ) -> Result<(), SubscribeFailed> {
+                self.ack_batches.push((
+                    stream.to_string(),
+                    group.to_string(),
+                    ids.to_vec(),
+                ));
+                for id in ids {
+                    self.ack(stream, group, id).await?;
+                }
+                Ok(())
+            }
         }
 
         fn envelope_message(id: &str, event_type: &str) -> StreamMessage {
@@ -1940,6 +2085,96 @@ pub mod redis_runtime {
                 raw_envelope: serde_json::to_string(&envelope).unwrap(),
                 delivery_count: 1,
             }
+        }
+
+        /// `XREADGROUP ... BLOCK` hands back as soon as one entry is available,
+        /// so a reader that keeps up gets one to three entries per round, and
+        /// the one XACK that retires a round costs the same as one XACK per
+        /// entry -- `xack` was the largest command class Redis served. One
+        /// accumulation tick after a non-empty read has to turn a burst into a
+        /// single round acknowledged by a single command.
+        #[tokio::test]
+        async fn a_burst_is_accumulated_into_one_round_and_acknowledged_by_one_command() {
+            let _serial = crate::otel::test_serial();
+            let subscriber = RedisEventSubscriber {
+                client: redis::Client::open("redis://127.0.0.1:0").unwrap(),
+                state: Arc::new(SubscriberState::new()),
+                stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                event_filter: None,
+                consumer_metrics: test_consumer_metrics(),
+            };
+            let mut ops = FakeStreamOps {
+                // The blocking read catches the first entry of the burst ...
+                read_messages: vec![envelope_message("1-0", "BookingSagaStarted")],
+                // ... and the tick top-up catches the rest of it.
+                top_up_messages: vec![
+                    envelope_message("2-0", "BookingSagaStarted"),
+                    envelope_message("3-0", "BookingSagaStarted"),
+                ],
+                ..Default::default()
+            };
+
+            subscriber
+                .subscribe_with_ops(
+                    &mut ops,
+                    vec!["events:booking-orchestration".to_string()],
+                    "entitlement-ticketing".to_string(),
+                    "entitlement-ticketing-1".to_string(),
+                    &|_| Box::pin(async { Ok(()) }),
+                    true,
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(
+                ops.read_blocks,
+                vec![IDLE_BLOCK_MS, 0],
+                "the round is one blocking read plus one non-blocking top-up"
+            );
+            assert_eq!(
+                ops.ack_batches,
+                vec![(
+                    "events:booking-orchestration".to_string(),
+                    "entitlement-ticketing".to_string(),
+                    vec!["1-0".to_string(), "2-0".to_string(), "3-0".to_string()],
+                )],
+                "the whole round is retired by one XACK carrying all three ids"
+            );
+        }
+
+        /// The accumulation must not touch the idle path: an empty read has
+        /// nothing to accumulate, so it goes straight back to the blocking read
+        /// rather than paying a tick or spinning.
+        #[tokio::test]
+        async fn an_empty_read_keeps_the_blocking_idle_path_and_never_ticks() {
+            let _serial = crate::otel::test_serial();
+            let subscriber = RedisEventSubscriber {
+                client: redis::Client::open("redis://127.0.0.1:0").unwrap(),
+                state: Arc::new(SubscriberState::new()),
+                stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                event_filter: None,
+                consumer_metrics: test_consumer_metrics(),
+            };
+            let mut ops = FakeStreamOps::default();
+
+            subscriber
+                .subscribe_with_ops(
+                    &mut ops,
+                    vec!["events:booking-orchestration".to_string()],
+                    "entitlement-ticketing".to_string(),
+                    "entitlement-ticketing-1".to_string(),
+                    &|_| Box::pin(async { Ok(()) }),
+                    true,
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(
+                ops.read_blocks,
+                vec![IDLE_BLOCK_MS],
+                "an empty stream must block in Redis, not tick and re-read"
+            );
+            assert!(ops.ack_batches.is_empty(), "nothing was delivered, so nothing is acknowledged");
         }
 
         /// The paths and the counters have to agree: a transient failure counts
