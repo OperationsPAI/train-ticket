@@ -45,7 +45,7 @@ reason the area would fail if the level were raised again.
    says the system must be sized for 640 journeys a second, and the largest
    observed is 358.
 
-## T19: Trip Planning's peak search, the shard cutovers, the write amplification, and the pool-lock admission
+## T19: Trip Planning's peak search, the write amplification, and the pool-lock admission
 
 1. [ ] Trip Planning's search must hold at the peak. Its query reads the plan
    corpus, and the load generator's own bootstrap adds to that corpus on every
@@ -56,31 +56,19 @@ reason the area would fail if the level were raised again.
    fetching about 20000 segment rows, which is 1.1 million tuples a second from
    the plan tables alone.
 
-2. [ ] Cut the remaining databases over to their shards, if the split is wanted
-   later. The chart defines six shards, but only six of the thirty-seven
-   services set `pgInstance`; the other
-   thirty-one use `core`, including every read-heavy one, and the read shard's
-   copies of `trip_planning`, `offer_management`, `capacity_availability` and
-   `seat_assignment` hold no tables at all. Core is doing the whole system's
-   work: measured over 25 seconds it served 20886 fare-pricing transactions and
-   12304 trip-planning ones, and 45.4 million trip-planning tuple fetches. The
-   loads that need moving are the read shard's seven databases first, then the
-   transactional shard's five; `reporting` is the worked example of the copy,
-   verify and switch that this needs. Plan for the volume before starting it:
-   measured on `core`, `fare_pricing` is 42 GB, `offer_management`,
-   `capacity_availability` and `seat_assignment` are 43 GB each, and
-   `trip_planning` is 3.4 GB, so the read shard's seven databases come to about
-   176 GB of data that has to move while nothing is writing to it.
+2. [ ] Bound the write amplification, or keep resetting the resident state.
+   `capacity_supply_observations` is one row per inventory pool -- measured
+   746808 rows in 12 GB -- and the load generator's bootstrap adds pools on
+   every run; the conflict path already rewrites a row only when the seat map
+   version changes rather than on every admission. `seat_maps` holds 204466
+   rows in 16 GB and keeps every version, and replacement lineage resolution
+   still reads retired maps, so it cannot simply be swept. Decide whether
+   either gets a retention sweep, the way the outbox and `processed_events`
+   sweeps already do, or whether the resident state is simply reset between
+   runs -- every database truncated and Redis flushed, as the shard cutover
+   last did.
 
-3. [ ] Bound the write amplification before moving that data, because a copy
-   carries the growth with it. `capacity_supply_observations` holds 503452 rows
-   in 25 GB -- about 50 KB per admission -- and `seat_maps` holds 427934 rows in
-   37 GB. Both are written per admission or per change and keep every version,
-   so the shards would fill again at the same rate. Decide what a useful
-   retention for each of them is, the way the outbox and `processed_events`
-   sweeps already do.
-
-4. [ ] Capacity's admission serialises on one advisory lock per inventory pool,
+3. [ ] Capacity's admission serialises on one advisory lock per inventory pool,
    and that is the constraint that now fails the reservation poll. Measured at
    revision 401, in the minutes the hold was slow: 21 of the 24 active sessions
    on `capacity_availability` were waiting on
