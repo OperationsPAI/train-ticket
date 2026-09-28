@@ -10,9 +10,15 @@ SERVICES = REPOSITORY_ROOT / "services"
 # without one the sweep plans a Seq Scan over the whole table, which is how
 # traveler_profile reached 12811917 idempotency_records in 7855 MB with
 # 12792783 of them past retention and the oldest 3 days 18 hours old.
+#
+# capacity_supply_observations is swept by the owning service rather than the
+# relay (services/capacity-availability/src/adapters/storage/retention.rs), and
+# it was the same shape: 746808 rows across 12 GB, each row a sixteen kilobyte
+# supply document, with no index on the observed_at the sweep filters on.
 SWEPT_TABLES = {
     "processed_events": "processed_at",
     "idempotency_records": "created_at",
+    "capacity_supply_observations": "observed_at",
 }
 
 
