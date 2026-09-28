@@ -1657,8 +1657,8 @@ services:
       # release's 1900. Measured at revision 456 with twelve, this group's oldest
       # undelivered entry on all fourteen streams it reads is 0.0 to 0.1 seconds,
       # so four leaves the projection far above the rate it has to follow while
-      # returning about two hundred connections to a server that has one thread
-      # to serve them with.
+      # returning about two hundred connections to a Redis that serves every
+      # consumer from one thread.
       REPORTING_CONSUMERS_PER_STREAM: "4"
       WEB_CONCURRENCY: "2"
       # Eight rather than four: the projection consumer fell 3.6 thousand events
