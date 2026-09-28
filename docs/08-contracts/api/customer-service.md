@@ -109,8 +109,8 @@ timestamps, and Money.
 
 **Response (200):** Updated case.
 
-**Error codes:** `NOT_FOUND`, `VALIDATION_FAILED`, `DOMAIN_RULE_VIOLATION`
-(`CASE_NOT_STAFFED` for a queue the release's desk staffs no lane for)
+**Error codes:** `NOT_FOUND`, `VALIDATION_FAILED`, and `DOMAIN_RULE_VIOLATION` with
+`details.domainCode` `CASE_NOT_STAFFED` for a queue this release's desk staffs no lane for.
 
 ### Escalate Case
 
