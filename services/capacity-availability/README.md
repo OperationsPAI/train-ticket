@@ -4,8 +4,7 @@ Rust service for PostgreSQL inventory pools, Hold admission and lifecycle, avail
 
 ## Supply integration
 
-The combined supply implementation is an uncommitted workspace change and is not deployed.
-Booking coordinated behavior is not enabled.
+The combined supply integration is deployed and its verification is closed (Helm revision 521; see [current status](../../docs/00-current-status.md) and [supply design and evidence](../../docs/10-domain-enrichment/capacity-overbooking.md)).
 Seat Assignment's ten percent standing policy and pre-reservation SeatMap preparation are published and deployed separately.
 The supply integration reads accepted reservation references from Booking, segment schedule facts from Service Plan, and published unit or quota facts from Seat Assignment.
 Availability and admission combine active allocations with pending holds and deduplicate them by Hold identifier.
@@ -65,3 +64,37 @@ They do not create or modify production allocations.
 Capacity does not issue tickets, assign passenger seat numbers, capture payment or edit commercial orders.
 The [HTTP API](../../docs/08-contracts/api/capacity-availability.md) documents its external fields.
 The shared runtime exposes health, liveness, readiness and metadata endpoints.
+
+## Runtime
+
+- HTTP port `8080` (`containerPort`/`PORT` in the chart).
+- Database `capacity_availability` on the `read` PostgreSQL instance
+  (`services.capacity-availability.db`, `services.capacity-availability.pgInstance`
+  and `postgres.instances.read.databases` in
+  `deploy/helm/train-ticket/values.yaml`).
+- Liveness `/healthz`, readiness `/readyz`; also `/health`, `/live`, `/ready`,
+`/metadata`.
+
+## HTTP surface
+
+- `POST/GET /api/v1/capacity-holds` plus `{id}/confirm`, `{id}/release`;
+  `POST /api/v1/capacity/holds`.
+- `GET /api/v1/availability-snapshots` and
+  `GET /api/v1/capacity/segments/{segmentRef}/snapshot`.
+
+The full contract lives in
+[`docs/08-contracts/api/capacity-availability.md`](../../docs/08-contracts/api/capacity-availability.md).
+
+## Events
+
+Publishes `CapacityHeld`, `CapacityHoldConfirmed` and `CapacityReleased` to
+`events:capacity-availability`; see
+[`docs/08-contracts/events/capacity-availability.md`](../../docs/08-contracts/events/capacity-availability.md).
+Consumes `events:booking-orchestration`, `events:entitlement-ticketing` and
+`events:post-sales` (`src/adapters/messaging/mod.rs`).
+
+## Metrics
+
+Emits `train_ticket.capacity.units` and `train_ticket.capacity.hold.oldest_age`
+(`src/metrics.rs`); the contract is in
+[`docs/07-observability/business-metrics.md`](../../docs/07-observability/business-metrics.md).
