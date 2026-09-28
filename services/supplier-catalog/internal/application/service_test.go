@@ -169,3 +169,26 @@ func TestRegisterSupplierFilesEachCodeAsItsOwnPartner(t *testing.T) {
 		t.Fatalf("expected two partners filed under two codes, got %d", suppliers.Total)
 	}
 }
+
+// The release decides which field names a partner, so a release that names the
+// brand resolves the second onboarding of one trading name to the entry the
+// first one filed and refuses it rather than filing a second partner.
+func TestRegisterSupplierRefusesASecondPartnerUnderOneTradingName(t *testing.T) {
+	service := NewService(nil).WithIdentitySource(IdentitySourceBrand)
+	if _, err := service.RegisterSupplier(context.Background(), RegisterSupplierCommand{
+		LegalName: "Transfer carrier 0194f2e0", BrandName: "Transfer rail", SupplierCode: "T7191d26549",
+	}); err != nil {
+		t.Fatalf("first registration under the trading name: %v", err)
+	}
+	_, err := service.RegisterSupplier(context.Background(), RegisterSupplierCommand{
+		LegalName: "Transfer carrier 0194f2e1", BrandName: "Transfer rail", SupplierCode: "T8191d26549",
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("a second onboarding of one trading name should conflict, got %v", err)
+	}
+	if _, err := service.RegisterSupplier(context.Background(), RegisterSupplierCommand{
+		LegalName: "Transfer carrier 0194f2e2", BrandName: "Transfer coach", SupplierCode: "T9191d26549",
+	}); err != nil {
+		t.Fatalf("a second trading name is a second partner: %v", err)
+	}
+}
