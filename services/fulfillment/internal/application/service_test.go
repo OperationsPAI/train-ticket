@@ -643,3 +643,23 @@ func TestDuplicateBoardingScanKeepsTheFactTheRecordHolds(t *testing.T) {
 		t.Fatalf("record after a second scan=%+v", record.BoardingFact)
 	}
 }
+
+func TestNoShowRecordsTheInstantTheServiceAssessedIt(t *testing.T) {
+	assessedAt := time.Date(2026, 9, 28, 20, 15, 0, 0, time.UTC)
+	service := NewService(NewInMemoryRepository(), &recordingPublisher{}, NewInMemoryConsumedEventLog(), nil, func() time.Time { return assessedAt })
+	seedTicket(t, service, "ent-noshow9", "sb-noshow9", "ord-noshow9", "tvl-noshow9", "seg-noshow9")
+	result, err := service.RecordNoShow(context.Background(), RecordNoShowCommand{EntitlementID: "ent-noshow9", SegmentBookingID: "sb-noshow9", JourneyOrderID: "ord-noshow9", TravelerID: "tvl-noshow9", SegmentRef: "seg-noshow9", Reason: domain.NoShowReasonWindowExpired}, CommandMetadata{})
+	if err != nil {
+		t.Fatalf("record no-show: %v", err)
+	}
+	if result.Status != domain.FulfillmentStatusNoShow || !result.AssessedAt.Equal(assessedAt) {
+		t.Fatalf("no-show result=%+v, want NO_SHOW assessed at %s", result, assessedAt)
+	}
+	record, err := service.GetFulfillmentRecord(context.Background(), result.FulfillmentRecordID)
+	if err != nil {
+		t.Fatalf("read record: %v", err)
+	}
+	if record.NoShowAssessedAt == nil || !record.NoShowAssessedAt.Equal(assessedAt) {
+		t.Fatalf("record assessment instant=%v, want %s", record.NoShowAssessedAt, assessedAt)
+	}
+}
