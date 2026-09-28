@@ -18,3 +18,9 @@ func segmentPageBounds(service string, limit, offset, listingBound int) error {
 	}
 	return nil
 }
+
+// listingPageAnswers is the serve check a listing makes before it reads: the
+// page it was asked for has to be a page this deployment serves.
+func listingPageAnswers(service string, limit, offset, listingBound int) error {
+	return segmentPageBounds(service, limit, offset, listingBound)
+}

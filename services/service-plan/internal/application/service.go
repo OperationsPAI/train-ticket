@@ -261,7 +261,8 @@ func (s *Service) WithListingPageLimit(limit int) *Service {
 }
 
 // listingBound is the largest page a listing served by this process may
-// answer with.
+// answer with, resolved in one place so that every read path of the service
+// agrees on it.
 func (s *Service) listingBound() int {
 	if s.listingPageLimit > 0 {
 		return s.listingPageLimit
