@@ -85,6 +85,8 @@ A section the document omits seeds nothing, which is the shape a checkout withou
 
 The metric entries restate the captured payment rule the service implements, so a reader of the catalog reads the same totals the revenue endpoints return.
 
+The read endpoints answer from the documents the catalog seeded, so a definition read and a dashboard read describe one release.
+
 ## Captured payment metrics
 
 All monetary revenue metrics use `PaymentCaptured` only.
