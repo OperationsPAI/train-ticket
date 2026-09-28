@@ -1338,14 +1338,16 @@ services:
       # readers were built with, and a release that names an estate replaces it,
       # so a reader this release does not operate is refused without a rebuild.
       FULFILLMENT_BOARDING_SOURCES: "GATE,STATION,PROVIDER"
-      # Eight reader loops: one loop processes a read batch on its own
-      # goroutine, and the entitlement projection needs a database write per
-      # ticket. Measured with one loop, fulfillment processed about 37 events
-      # per second while the entitlement stream published roughly 100, so the
-      # stream trimmed events before they were delivered and sixteen percent of
-      # the issued tickets had no fulfillment record when the load generator
-      # boarded them.
+      # Eight reader loops: one loop processes a read batch on its own goroutine,
+      # and the entitlement projection needs a database write per ticket.
+      # Measured with one loop, fulfillment processed about 37 events per second
+      # while the entitlement stream published roughly 100, so the stream trimmed
+      # events before they were delivered and sixteen percent of the issued
+      # tickets had no fulfillment record when the load generator boarded them.
       CONSUMER_WORKERS: "8"
+      # The entitlement projection opens a connection per looping reader and the
+      # boarding path reads the record it updates; measured under the admission
+      # traffic, twenty four holds a replica inside its own share of the pool.
       PG_MAX_POOL_SIZE: "24"
     strategy:
       type: RollingUpdate
