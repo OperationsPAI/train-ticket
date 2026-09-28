@@ -25,7 +25,7 @@ func TestFromEnvReadsThePageBoundAReleaseSets(t *testing.T) {
 }
 
 func TestFromEnvReadsTheBoundTheReleaseDeclares(t *testing.T) {
-	// deploy/helm/train-ticket/values.yaml, services.service-plan.env
+	// The chart declares it in the service-plan release's env block.
 	t.Setenv("SERVICE_PLAN_LISTING_PAGE_LIMIT", "20")
 	if got := FromEnv().ListingPageLimit; got != 20 {
 		t.Fatalf("release page bound: got %d, want 20", got)
