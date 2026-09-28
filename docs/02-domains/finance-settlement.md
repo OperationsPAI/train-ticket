@@ -1,7 +1,7 @@
 # Finance Settlement 当前设计
 
 更新日期：2026年9月28日。
-运行基线为 Helm revision 515，服务使用 Java、PostgreSQL 和 Redis 事件处理。
+运行基线为 Helm revision 521，服务使用 Java、PostgreSQL 和 Redis 事件处理。
 统一待办见 [TODO](../TODO.md)。
 
 ## 领域边界

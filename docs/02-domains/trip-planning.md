@@ -1,6 +1,6 @@
 # Trip Planning Domain Design
 
-更新日期：2026 年 9 月 24 日。
+更新日期：2026年9月28日。
 当前服务为 [services/trip-planning-rs](../../services/trip-planning-rs/README.md)，使用 Rust、Axum、PostgreSQL 和 Redis Streams。
 部署镜像名为 `train-ticket/trip-planning`，构建入口为 `deploy/docker/trip-planning/Dockerfile`。
 
@@ -91,7 +91,7 @@ segment 日期或出发节点改变时，更新逻辑移除旧索引位置并清
 | `POST /api/v1/itineraries/search` | 校验请求，查找并排序候选，保存结果，尝试追加提案事件。 |
 | `GET /api/v1/itineraries/{itineraryRef}` | 读取已保存 itinerary snapshot。 |
 
-[搜索性能记录](../../services/trip-planning-rs/docs/search-performance-20260923.md) 记录了日期与出发节点索引部署至 Helm revision 277 的结果。
+[搜索性能记录](../../services/trip-planning-rs/docs/search-performance-20260923.md) 记录了日期与出发节点索引部署后的搜索结果。
 固定记录包含 394838 个 segment、389797 个节点映射和 45816 条查询。
 本地完整记录测试核对了候选、排序和 HTTP 响应，并经过实际 Axum router 与 PostgreSQL。
 这些结果只支持该记录、固定并发和已记录部署检查的结论，不构成完整生产高峰周期或所有跨服务流程的验收。

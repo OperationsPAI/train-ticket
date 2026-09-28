@@ -1,9 +1,9 @@
 # 跨域设计决策
 
-更新日期：2026 年 9 月 24 日。
+更新日期：2026年9月28日。
 
 DR 编号用于稳定引用当前所有权和协作规则。
-部署基线为 Helm revision 279，发布证据见[当前项目状态](../00-current-status.md)。
+部署状态与发布证据见[当前项目状态](../00-current-status.md)。
 [领域所有权索引](domain-reduce-status.md)提供各服务实际 API 源码，[业务协作与接口](phase-1-contract.md)提供链路说明。
 未实现能力、进行中修改和验收工作统一见 [TODO](../TODO.md)。
 
@@ -45,7 +45,7 @@ Fare 拥有价格规则，Offer 保存面向购买的报价引用。
 
 Service Plan 的 `GET /api/v1/internal/service-segments/:segmentRef/supply` 提供区间及停站版本。
 Seat Assignment 的 `GET /api/v1/internal/capacity-facts` 提供已发布供给事实。
-Capacity 新联合供给已在提交 `caafa668` 中实现，尚未部署，工作状态见 [TODO](../TODO.md)。
+Capacity 新联合供给已实现并部署，工作状态见 [TODO](../TODO.md)。
 
 ## DR-005 Supplier And Place Ownership
 
@@ -153,7 +153,7 @@ Booking 身份连接旅客、分段、日期、席别与占用结果。
 Journey Order 的 accepted purchase source 接口提供订单创建时接受的 Offer。
 订单改签后，原购买来源继续支持原预订事实核对。
 Seat Assignment 重放使用已记录编组和政策证据。
-Capacity 新联合供给已在提交 `caafa668` 中实现，尚未部署，其引用固化和接入工作见 [TODO](../TODO.md)。
+Capacity 新联合供给已实现并部署，其引用固化和接入工作见 [TODO](../TODO.md)。
 
 ## DR-016 Waitlist
 
@@ -209,4 +209,4 @@ Loyalty Membership 拥有会员积分和等级，Marketing Campaign 拥有活动
 Notification 消费订单、支付、出票、售后等业务事实，选择模板和渠道，记录通知状态与发送尝试。
 `GET /api/v1/notifications/:id/trail` 提供触达记录查询。
 业务服务拥有业务完成状态，Notification 拥有发送结果。
-Notification durable 发送队列已在提交 `41917b85` 中实现、尚未部署，工作状态见 [TODO](../TODO.md)。
+Notification durable 发送队列已实现并部署，工作状态见 [TODO](../TODO.md)。
