@@ -1115,8 +1115,8 @@ export class SupportCase {
    * Whether the desk can take this case and hand it on.
    *
    * The status is the service's business; the queue is the release's, because a queue nobody polls
-   * is a lane the case disappears into rather than a case the desk is working. The two are decided
-   * together so that neither the counter nor the assignment applies half of the handoff.
+   * is a lane the case disappears into rather than a case the desk is working. Both are settled
+   * here so that neither the counter nor the assignment applies half of the handoff.
    */
   private requireAssignableHandoff(ownerQueue: string): void {
     if (!this.canAssign()) {
