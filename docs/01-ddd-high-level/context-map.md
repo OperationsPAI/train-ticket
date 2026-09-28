@@ -1,6 +1,6 @@
 # Business context map
 
-Last updated: 2026-09-24.
+Last updated: 2026-09-28.
 
 | Owner | Owns | Collaboration |
 |---|---|---|
@@ -11,7 +11,7 @@ Last updated: 2026-09-24.
 | Offer Management | Accepted quotation, disclosures and expiry. | Journey Order records accepted Offer references. |
 | Journey Order | Commercial order, traveler and segment summaries. | Consumes booking, funds and ticket facts; does not execute channels or allocate seats. |
 | Booking Orchestration | Booking saga and traveler reservations. | Coordinates Capacity, Payment, Provider Integration and ticketing facts. |
-| Capacity & Availability | Holds and inventory admission. | Seat Assignment owns physical selection; combined supply integration remains unpublished. |
+| Capacity & Availability | Holds and inventory admission. | Seat Assignment owns physical selection; the combined supply integration is deployed. |
 | Seat Assignment | Published composition and physical or standing allocation. | Entitlement uses the persisted allocation; standing policy has no physical SeatUnit. |
 | Payment | Captures, refunds, callback identity and funding balances. | Payment Channel owns simulated channel operations and statements. |
 | Entitlement & Ticketing | Ticket identity and usable travel rights. | Fulfillment records boarding and completion; Post Sales controls authorized void/change operations. |
