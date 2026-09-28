@@ -75,6 +75,7 @@ A stored definition is the document that was written rather than a projection of
 The store therefore answers with what the release wrote, and the definition a read returns is only as current as the last document written under its id.
 The revision the catalog states is the governance review's, and the seed logs the revision it wrote, so a database can be compared against the catalog it came from.
 The definitions the service has always shipped and the catalog's are written into the same store by the same seed, so an installation that answered before the catalog existed keeps the definitions it already had and gains the catalog's.
+The seed is a first-writer-wins step, so a database that has been up keeps the definitions it was serving and a redeploy does not rewrite them.
 
 ## Captured payment metrics
 
