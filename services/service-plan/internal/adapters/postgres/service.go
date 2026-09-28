@@ -99,6 +99,9 @@ func (r *Repository) FindServiceSegment(ctx context.Context, ref string) (applic
 	return segment, json.Unmarshal(snap.Data, &segment)
 }
 
+// ListServiceSegments reads one page of a service's segments. The page is
+// bounded by the caller, which resolves the deployment's bound before it
+// reaches this read, so the same limit produces the same page on both paths.
 func (r *Repository) ListServiceSegments(ctx context.Context, service string, limit, offset int) ([]application.ServiceSegment, int, error) {
 	db := r.db.DBFor(ctx)
 	var count int

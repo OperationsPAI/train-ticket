@@ -470,7 +470,7 @@ func (s *Service) ListServiceSegments(ctx context.Context, service string, limit
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	items := []ServiceSegment{}
+	items := make([]ServiceSegment, 0, len(s.segments))
 	for _, segment := range s.segments {
 		if segment.ScheduledServiceRef == service {
 			items = append(items, segment)
