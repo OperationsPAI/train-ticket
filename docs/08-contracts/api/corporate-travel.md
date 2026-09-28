@@ -1,6 +1,6 @@
 # Corporate Travel — HTTP API
 
-Last updated: 2026-09-25.
+Last updated: 2026-09-28.
 
 Corporate Travel owns corporate agreements, employee authorization, travel-policy checks, budget reservations and consolidated monthly invoice preparation.
 
@@ -13,5 +13,7 @@ Canonical endpoints are under `/api/v1/agreements`; equivalent `/agreements` ali
 | POST | `/api/v1/agreements/{agreementId}/authorize` | Grant an employee authorization under the agreement. |
 | POST | `/api/v1/agreements/{agreementId}/policy-checks` | Evaluate policy and reserve applicable budget pools. |
 | POST | `/api/v1/agreements/{agreementId}/monthly-invoices` | Produce a consolidated corporate invoice from supplied statement lines. |
+
+The `/agreements` aliases mirror every canonical path: `POST /agreements`, `GET /agreements/{agreementId}`, `POST /agreements/{agreementId}/authorize`, `POST /agreements/{agreementId}/policy-checks` and `POST /agreements/{agreementId}/monthly-invoices`.
 
 Startup does not insert hidden demo agreements or bypass the domain. Initial business configuration is created through the owning API, emits the normal outbox events and is observable through the same GET endpoint after restart. A repeated POST with the same path, body and idempotency key returns the original response; a changed body under that key returns `IDEMPOTENCY_KEY_REUSED`.
