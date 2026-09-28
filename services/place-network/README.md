@@ -47,6 +47,12 @@ Publishes `PlaceRegistered`, `TransportNodeRegistered` and node-update facts to
 [`docs/08-contracts/events/place-network.md`](../../docs/08-contracts/events/place-network.md).
 It consumes no inbound event stream.
 
+## Settings
+
+`internal/config/wayfinding.json` carries the wayfinding the release ships for
+nodes the operator did not weigh. `stationAccessTimeMinutes` is the station
+allowance in whole minutes; `0` leaves the field absent.
+
 ## Metrics
 
 This service owns no service-specific business metric in the
