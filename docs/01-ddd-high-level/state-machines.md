@@ -1,6 +1,6 @@
 # Implemented state model references
 
-Last updated: 2026-09-24.
+Last updated: 2026-09-28.
 
 Service states are separate and do not imply each other's completion.
 Internal enums and HTTP representations may differ; serializers in the owning service define the public response.
@@ -35,8 +35,7 @@ Refund settlement and ticket changes still require their independent business ch
 | `change_failed` | The checked change failure preserves usable original rights. |
 | `changed` | Fulfillment uses recorded replacement tickets. |
 
-## Notification workspace boundary
+## Notification delivery boundary
 
-The unpublished durable queue introduces `Ready`, `Claimed`, `Sending`, `Unknown`, `Delivered` and `Failed`.
-A send with unknown external outcome is not automatically replayed.
-The deployed release remains on the existing sender until the worktree implementation passes the checks in [TODO](../TODO.md).
+The deployed durable queue uses `Ready`, `Claimed`, `Sending`, `Unknown`, `Delivered` and `Failed`.
+A send with an unknown external outcome is not automatically replayed.

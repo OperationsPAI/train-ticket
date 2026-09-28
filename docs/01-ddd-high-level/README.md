@@ -1,6 +1,6 @@
 # Business design index
 
-Last updated: 2026-09-24.
+Last updated: 2026-09-28.
 
 The implementation oriented design starts with [cross domain ownership](../03-ddd-final/README.md) and [domain details](../02-domains/README.md).
 [Current status](../00-current-status.md) records the actual release and measured verification.
