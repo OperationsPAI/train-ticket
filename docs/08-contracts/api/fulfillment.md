@@ -70,6 +70,9 @@ timestamps, and Money.
 
 **Error codes:** `VALIDATION_FAILED`, `NOT_FOUND`, `CONFLICT`
 
+The assessed instant is the service clock's: the reason is a decision the
+service makes, so the caller states the reason rather than the moment.
+
 ### Record Fulfillment Completion
 
 **POST** `/api/v1/fulfillment-records/completions`
