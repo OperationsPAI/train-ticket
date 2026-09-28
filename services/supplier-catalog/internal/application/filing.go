@@ -45,6 +45,12 @@ func PartnerFilingField(named string) string {
 	}
 }
 
+// canonicalFilingValue trims the value and collapses its inner whitespace, so two
+// spellings of one trading name are one identity.
+func canonicalFilingValue(value string) string {
+	return strings.Join(strings.Fields(value), " ")
+}
+
 // filingIdentity reads the identity a registration is filed under from the named field.
 func filingIdentity(named string, cmd RegisterSupplierCommand) string {
 	switch PartnerFilingField(named) {
@@ -55,12 +61,6 @@ func filingIdentity(named string, cmd RegisterSupplierCommand) string {
 	default:
 		return canonicalFilingValue(cmd.SupplierCode)
 	}
-}
-
-// canonicalFilingValue trims the value and collapses its inner whitespace, so two
-// spellings of one trading name are one identity.
-func canonicalFilingValue(value string) string {
-	return strings.Join(strings.Fields(value), " ")
 }
 
 // FilingClaims remembers the identities the catalogue has filed. The operator import
