@@ -45,8 +45,7 @@ func Estate() map[domain.FulfillmentSource]struct{} {
 }
 
 // statedReaders is the estate a release named, in the order it named it. A
-// release that named none leaves the vocabulary the image was built with in
-// place.
+// release that named none leaves the reader vocabulary in place.
 func statedReaders() []domain.FulfillmentSource {
 	stated := strings.TrimSpace(os.Getenv(SourcesVariable))
 	if stated == "" {
