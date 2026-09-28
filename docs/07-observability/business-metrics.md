@@ -1,6 +1,6 @@
 # Low-cardinality business metrics
 
-Updated: 2026-09-25, Asia/Beijing.
+Last updated: 2026-09-28, Asia/Beijing.
 
 This document defines the Prometheus contract for operational business
 invariants. It is intentionally separate from Reporting's customer-facing
@@ -56,7 +56,10 @@ across currencies.
 | Wallet | `train_ticket.wallet.operations` | Counter | `operation`, `outcome`, `reason_code`, `currency` | Issue, reserve, redeem, release, expire and reverse outcomes. |
 | Notification | `train_ticket.notification.queue.tasks` | Gauge | `state`, `channel` | Durable delivery queue depth. |
 | Notification | `train_ticket.notification.queue.oldest_age` | Gauge, seconds | `state`, `channel` | Oldest task age; this is the primary user-delay signal. |
+| Notification | `train_ticket.notification.delivery_results` | Counter | `channel`, `outcome`, `reason_code` | Durable delivery results by bounded channel, outcome and reason. |
 | Notification | `train_ticket.notification.retries` | Counter | `channel`, `outcome`, `reason_code` | Retry attempts, deferrals and exhausted attempts. |
+| Notification | `train_ticket.notification.policy_actions` | Counter | `action`, `channel`, `outcome`, `reason_code` | Expiry and supersession policy decisions. |
+| Disruption | `train_ticket.disruption.segment_signals` | Counter | `signal_type`, `outcome`, `source` | Inbound segment disruption signals by bounded type, processing outcome and source. |
 | Event transport | `train_ticket.event.consumer.lag` | Gauge | `event_stream`, `consumer_group` | Redis stream entries behind the delivered position. |
 | Event transport | `train_ticket.event.consumer.pending` | Gauge | `event_stream`, `consumer_group` | Pending entries owned by a consumer group. |
 | Event transport | `train_ticket.event.consumer.oldest_age` | Gauge, seconds | `event_stream`, `consumer_group` | Age of the oldest undelivered or pending entry. |
@@ -142,8 +145,8 @@ train_ticket:event_dlq_entries:max
 ## Implementation ownership
 
 The pipeline and names were committed first so service implementations could
-not diverge. Every source below is now implemented and deployed; the remaining
-work is listed in [the repository TODO](../TODO.md#t18-complete-low-cardinality-business-telemetry).
+not diverge. Every source below is now implemented and deployed; the deployed
+revision and evidence are recorded in [current status](../00-current-status.md).
 
 | Source metric | Owning implementation |
 | --- | --- |
@@ -154,13 +157,15 @@ work is listed in [the repository TODO](../TODO.md#t18-complete-low-cardinality-
 | `train_ticket.ticketing.*` | `entitlement-ticketing` emits issue, replacement and void; `fulfillment` emits the validation stage. |
 | `train_ticket.waitlist.*` | `waitlist`, from a group-by of its durable entries. |
 | `train_ticket.wallet.*` | `wallet-promotion`, from its account, instrument and reversal snapshots. |
-| `train_ticket.notification.queue.*`, `.retries` | `notification`. Queue depth is maintained by a trigger on the delivery queue and read from that table, because a count over the queue itself is a scan of tens of millions of rows. |
+| `train_ticket.notification.queue.*`, `.delivery_results`, `.retries`, `.policy_actions` | `notification`. Queue depth is maintained by a trigger on the delivery queue and read from that table, because a count over the queue itself is a scan of tens of millions of rows. |
+| `train_ticket.disruption.segment_signals` | `disruption-recovery`, recording only the bounded classification of each inbound segment signal; unresolved segment refs count as `outcome="retry"` and are not a domain error. |
 | `train_ticket.event.*` | `redis-state-collector`, one process for every stream. Its label set is as wide as the transport is, so it bounds its own output and publishes the bound it applied as `train_ticket.event.transport.series`. See [its README](../../tools/redis-state-collector/README.md). |
 | `train_ticket.scheduled_job.*` | Each service that runs a sweep or a scheduled job, from the durable record of what it did. `finance-settlement` reports `success_age` per job type out of `settlement_schedule_runs`. A sweep that stops is otherwise invisible: it publishes its results and nothing else, which is how the settlement scheduler sat unregistered for ten hours without a series to say so. |
 
-Java services additionally emit the smaller process-level transport set that
-the `train-ticket-transport` rules consume. Porting it to the Go, Python,
-TypeScript and Rust kits is still open and is tracked in the TODO.
+Every platform kit emits that smaller process-level transport set: the Java, Go,
+Python, TypeScript and Rust subscribers and outbox relays publish the same
+names, units and closed vocabularies, so one rule and one dashboard cover every
+service.
 
 Each implementation carries a cardinality test that records two different
 business identifiers and proves they produce the same label set, and a restart
@@ -186,9 +191,16 @@ because collecting them first is several gigabytes of expanded JSON.
 
 ### Adding a label
 
-The Prometheus branch of the collector trims every datapoint attribute except a
-fixed list. A label named in this document but missing from that list is
-published with the label stripped — the notification `action` split and the
-disruption `signal_type`/`source` split both shipped that way. Add the label to
-`keep_keys` in `templates/_collector-configs.tpl` and to the allowlist test in
-`deploy/tests/test_observability_metrics_config.py` in the same change.
+Two independent allowlists trim the scrape, and a label must survive both. The
+Collector's OTTL branch keeps only the datapoint labels named in `keep_keys` in
+`templates/_collector-configs.tpl`; Prometheus then applies its own `labelkeep`
+regex in `templates/_prometheus-config.tpl`. A label named in this document but
+missing from either list is published with the label stripped — the notification
+`action` split, the disruption `signal_type`/`source` split and the scheduled-job
+`scheduled_job` split all shipped that way once. `scheduled_job` is carried by
+both lists today: it is in the collector's `keep_keys` and in the Prometheus
+`labelkeep` regex. The test in
+`deploy/tests/test_observability_metrics_config.py` asserts that every label the
+collector keeps survives the scrape, so the two cannot drift apart again. Add a
+new label to `keep_keys`, to the Prometheus `labelkeep` regex, and to that test
+in the same change.
