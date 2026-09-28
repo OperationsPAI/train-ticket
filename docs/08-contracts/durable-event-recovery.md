@@ -1,6 +1,6 @@
 # Durable event recovery
 
-Last updated: 2026-09-25.
+Last updated: 2026-09-28.
 
 This document defines the implemented T05 recovery boundary. Redis Streams is
 the live transport, not the historical source of record. Recovery therefore
@@ -147,5 +147,6 @@ The automated evidence includes:
 - terminal refund/compensation mismatch persistence, process reconstruction,
   zero subsequent downstream calls and concurrent first-write-wins behavior.
 
-These tests use isolated local PostgreSQL/Redis and HTTP stubs. No Kubernetes,
-Helm, image push or deployment is part of this verification.
+These tests run against the deployed PostgreSQL and Redis rather than unit
+doubles; the terminal-compensation test additionally uses an HTTP stub so it can
+count downstream calls without touching the Wallet service.
