@@ -62,7 +62,9 @@ cd services/fulfillment && go test ./...
 ```
 
 Live PostgreSQL tests skip when `TEST_DATABASE_URL` and their recorded fixture
-variable are unset.
+variable are unset. `internal/boarding` covers the estate a release declares and
+the vocabulary an unset release keeps, and `internal/application` covers the
+source check the boarding command makes.
 
 ## DDD Sources
 
