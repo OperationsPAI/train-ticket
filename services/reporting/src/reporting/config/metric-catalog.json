@@ -43,7 +43,7 @@
       "status": "published",
       "publishedAt": "2026-09-27T00:00:00Z",
       "dependsOnMetricIds": [],
-      "sourceLineage": ["SeatAllocated", "CapacityUpdated"]
+      "sourceLineage": ["SeatAllocated", "SeatReleased", "CapacityUpdated"]
     },
     {
       "metricId": "metric-ops-refund-rate",
