@@ -936,6 +936,8 @@ public class BookingOrchestrationService {
             List<DomainEvent> events = booking.pullEvents();
             segmentBookings.save(booking, sagaId);
             publishEvents(events.subList(recorded, events.size()), correlationId, causationId);
+            LOGGER.info("Released the capacity hold of segment booking {} for saga {}",
+                booking.segmentBookingId(), sagaId);
         }
     }
 
