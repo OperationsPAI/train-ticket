@@ -192,3 +192,21 @@ func TestRegisterSupplierRefusesASecondPartnerUnderOneTradingName(t *testing.T) 
 		t.Fatalf("a second trading name is a second partner: %v", err)
 	}
 }
+
+// The default is the code, so a release that says nothing -- or names a field
+// this version does not know -- keeps filing what it filed before the identity
+// became a release decision.
+func TestSupplierIdentitySourceFromEnvDefaultsToTheCode(t *testing.T) {
+	t.Setenv(SupplierIdentitySourceEnv, "")
+	if got := SupplierIdentitySourceFromEnv(); got != IdentitySourceCode {
+		t.Fatalf("a release that names no field files the code, got %q", got)
+	}
+	t.Setenv(SupplierIdentitySourceEnv, "market")
+	if got := SupplierIdentitySourceFromEnv(); got != IdentitySourceCode {
+		t.Fatalf("a field this version does not know files the code, got %q", got)
+	}
+	t.Setenv(SupplierIdentitySourceEnv, " Brand ")
+	if got := SupplierIdentitySourceFromEnv(); got != IdentitySourceBrand {
+		t.Fatalf("a padded field name still names the brand, got %q", got)
+	}
+}
