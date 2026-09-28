@@ -32,6 +32,14 @@ authorization/policy/billing-period facts to `events:corporate-travel`; see
 Consumes `events:journey-order`, `events:payment` and `events:post-sales`
 (`src/corporate_travel/messaging.py`).
 
+## Price references
+
+`POST /api/v1/agreements` resolves the agreement's `priceRef.ruleSetId` against
+fare-pricing before the id is folded into the price digest. The id is a reference
+the agreement carries for its whole life, so an id fare-pricing does not answer
+is refused rather than stored. An isolated service with no `FARE_PRICING_URL`
+keeps the reference it was given.
+
 ## Metrics
 
 This service owns no service-specific business metric in the
