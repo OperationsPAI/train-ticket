@@ -64,10 +64,11 @@ holds no inventory of its own and answers from the facts it persisted.
   `deploy/helm/train-ticket/values.yaml`).
 - The settings the image reads are `PORT`, `DATABASE_URL`, `REDIS_URL`,
   `MIGRATIONS_DIR` and `SERVICE_PLAN_LISTING_PAGE_LIMIT`, the largest page a
-  listing serves. A release declares them in `services.service-plan.env`; a
-  setting a release leaves out keeps the image's value, which is what this
-  service did before the settings existed (`internal/config`). The release in
-  this repository declares the page bound there.
+  listing serves. A release declares them in `services.service-plan.env`
+  (`internal/config` reads them, and `internal/config/config_test.go` covers
+  them); a setting a release leaves out keeps the image's value, which is what
+  this service did before the settings existed. The release in this repository
+  declares the page bound there.
 - Liveness `/healthz`, readiness `/readyz`; also `/health`, `/ready`,
 `/metadata`.
 
