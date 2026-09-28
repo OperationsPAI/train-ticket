@@ -25,7 +25,8 @@ Status: REQ-004 master-data primitives, implemented and deployed (Helm revision 
 `/metadata`.
 - Wayfinding defaults the release ships live in
   `internal/config/wayfinding.json`, embedded at build time. A value of `0`
-  leaves a node's `accessTimeMinutes` absent.
+  leaves a node's `accessTimeMinutes` absent, which is how the field reads
+  today; a positive value is the allowance an unweighed station node carries.
 
 ## HTTP surface
 
