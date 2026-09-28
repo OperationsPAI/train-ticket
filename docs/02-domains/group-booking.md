@@ -7,7 +7,7 @@
 | Domain | Group Booking |
 | Status | proposed-ddd-baseline |
 | Owner Agent | agentm-group-booking |
-| Last Updated | 2026-09-25 |
+| Last Updated | 2026-09-28 |
 | High-Level Inputs | `docs/adr/0003-commercial-realism-scope.md`, `docs/02-domains/capacity-availability.md`, `docs/02-domains/journey-order.md`, `docs/02-domains/booking-orchestration.md`, `docs/02-domains/entitlement-ticketing.md`, `docs/02-domains/provider-integration.md`, `docs/08-contracts/events/capacity-availability.md`, `docs/08-contracts/api/capacity-availability.md`, `docs/08-contracts/events/journey-order.md`, `docs/08-contracts/api/journey-order.md`, `docs/08-contracts/events/booking-orchestration.md`, `docs/08-contracts/api/booking-orchestration.md`, `docs/08-contracts/events/entitlement-ticketing.md`, `docs/08-contracts/api/entitlement-ticketing.md` |
 
 ## 1. 领域目标
