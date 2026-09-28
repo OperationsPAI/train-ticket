@@ -313,3 +313,42 @@ func (p *httpRecordingPublisher) Publish(_ context.Context, envelope application
 	p.envelopes = append(p.envelopes, envelope)
 	return nil
 }
+
+func TestFulfillmentHTTPRecordReadCarriesTheBoardingFact(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	service := application.NewService(application.NewInMemoryRepository(), application.NoopPublisher{}, application.NewInMemoryConsumedEventLog(), nil, nil)
+	seedHTTPService(t, service, "ent-read1", "sb-read1", "ord-read1", "tvl-read1", "seg-read1")
+	router := RouterWithService(service)
+	body := `{"entitlementId":"ent-read1","segmentBookingId":"sb-read1","journeyOrderId":"ord-read1","travelerId":"tvl-read1","segmentRef":"seg-read1","source":"STATION","sourceEventId":"station-read-1","occurredAt":"2026-09-29T02:00:00Z"}`
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/fulfillment-records/boarding", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "0194f2e0-7b3e-7610-8284-5c26e8b0c009")
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("unexpected status: %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var boarded struct {
+		FulfillmentRecordID string `json:"fulfillmentRecordId"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &boarded); err != nil {
+		t.Fatal(err)
+	}
+
+	get := httptest.NewRecorder()
+	router.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/api/v1/fulfillment-records/"+boarded.FulfillmentRecordID, nil))
+	if get.Code != http.StatusOK {
+		t.Fatalf("unexpected get status: %d body=%s", get.Code, get.Body.String())
+	}
+	var record struct {
+		BoardingFact *struct {
+			Source string `json:"source"`
+		} `json:"boardingFact"`
+	}
+	if err := json.Unmarshal(get.Body.Bytes(), &record); err != nil {
+		t.Fatal(err)
+	}
+	if record.BoardingFact == nil || record.BoardingFact.Source != "STATION" {
+		t.Fatalf("the record read does not carry the reader the fact arrived from: %#v", record)
+	}
+}
