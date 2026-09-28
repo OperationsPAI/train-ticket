@@ -18,9 +18,9 @@ import (
 // SourcesVariable names the setting a release states its boarding estate under.
 const SourcesVariable = "FULFILLMENT_BOARDING_SOURCES"
 
-// imageReaders is the evidence the readers this image was built with report, in
-// the order the service names them.
-var imageReaders = []domain.FulfillmentSource{
+// readerVocabulary is the evidence the readers this image was built with
+// report, in the order the service names them.
+var readerVocabulary = []domain.FulfillmentSource{
 	domain.FulfillmentSourceGate,
 	domain.FulfillmentSourceStation,
 	domain.FulfillmentSourceProvider,
@@ -33,9 +33,9 @@ var imageReaders = []domain.FulfillmentSource{
 // the service's own tests and a local run resolve to.
 func Estate() map[domain.FulfillmentSource]struct{} {
 	stated := strings.TrimSpace(os.Getenv(SourcesVariable))
-	estate := make(map[domain.FulfillmentSource]struct{}, len(imageReaders))
+	estate := make(map[domain.FulfillmentSource]struct{}, len(readerVocabulary))
 	if stated == "" {
-		for _, reader := range imageReaders {
+		for _, reader := range readerVocabulary {
 			estate[reader] = struct{}{}
 		}
 		return estate
@@ -46,7 +46,7 @@ func Estate() map[domain.FulfillmentSource]struct{} {
 		}
 	}
 	if len(estate) == 0 {
-		for _, reader := range imageReaders {
+		for _, reader := range readerVocabulary {
 			estate[reader] = struct{}{}
 		}
 	}
