@@ -64,6 +64,7 @@ func statedReaders() []domain.FulfillmentSource {
 // evidence the deployment boards through. The source check the boarding command
 // makes is the only caller.
 func BoardsThrough(source domain.FulfillmentSource) bool {
-	_, operated := Estate()[source]
+	estate := Estate()
+	_, operated := estate[source]
 	return operated
 }
