@@ -40,5 +40,10 @@ class ReleaseCatalogTest(unittest.TestCase):
             load_release_catalog(Path("no-such-catalog.json"))
 
 
+    def test_every_dashboard_entry_states_a_state(self) -> None:
+        for entry in load_release_catalog().dashboards:
+            self.assertTrue(str(entry["status"]).strip())
+
+
 if __name__ == "__main__":
     unittest.main()
