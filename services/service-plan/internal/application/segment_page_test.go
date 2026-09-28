@@ -54,6 +54,17 @@ func TestListServiceSegmentsServesTheReleasePage(t *testing.T) {
 	}
 }
 
+func TestListServiceSegmentsAnswersThePageItWasAskedFor(t *testing.T) {
+	service := listingService(t, 20, nil)
+	page, err := service.ListServiceSegments(context.Background(), listingServiceRef, 5, 0)
+	if err != nil {
+		t.Fatalf("list a page inside the bound: %v", err)
+	}
+	if page.Limit != 5 || page.Offset != 0 || page.Total != 1 {
+		t.Fatalf("the answer must name the page it was asked for: %#v", page)
+	}
+}
+
 func TestListServiceSegmentsRefusesAPagePastTheReleaseBound(t *testing.T) {
 	service := listingService(t, 20, nil)
 	if _, err := service.ListServiceSegments(context.Background(), listingServiceRef, 100, 0); !errors.Is(err, ErrValidation) {
