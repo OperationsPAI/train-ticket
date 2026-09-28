@@ -30,6 +30,10 @@ timestamps, and Money.
 | `description` | string | yes | Case description from the requester. |
 | `businessReferences` | object | no | References to business objects. |
 
+The `channel` names are the platform's vocabulary. A deployment answers the channels whose intake
+desk it has on duty: the desk sheet the image ships (`config/intake-desks.json`) names those desks,
+and a request that names a channel outside the resulting set is refused with `VALIDATION_FAILED`.
+
 **Response (201):**
 
 | Field | Type | Description |
