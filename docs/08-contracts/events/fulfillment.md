@@ -22,7 +22,7 @@ Last updated: 2026-09-28
 | `journeyOrderId` | `OrderId` | yes | Reference to the journey order (`ord-<uuid>`). |
 | `travelerId` | `TravelerId` | yes | Traveler reference (`tvl-<uuid>`). |
 | `segmentRef` | `SegmentRef` | yes | Segment reference (`seg-<uuid>`). |
-| `source` | string | yes | Source of the boarding verification: `GATE`, `STATION`, `PROVIDER`, `CONDUCTOR`, `ADMIN`. |
+| `source` | string | yes | Source of the boarding verification: a reader this release operates (`FULFILLMENT_BOARDING_SOURCES`), or one the image was built with when the release names no estate. |
 | `sourceEventId` | string | yes | Source event identifier for idempotency. |
 | `occurredAt` | RFC3339 UTC | yes | When the boarding event physically occurred. |
 | `receivedAt` | RFC3339 UTC | yes | When the boarding event was received by the system. |
