@@ -24,6 +24,14 @@ Status: implemented and deployed (Helm revision 521; see [current status](../../
 - Liveness `/healthz`, readiness `/readyz`; also `/health`, `/live`,
 `/livez`, `/ready`, `/metadata`.
 
+## Settings
+
+- The queues this deployment's desk staffs are stated by the release
+  (`services.customer-service.env`): a handoff into a queue no console polls is
+  refused, so a desk that opens a lane names it there rather than waiting for a
+  build. A release that states no roster keeps the arrangement the service
+  ships.
+
 ## HTTP surface
 
 `/api/v1/support-cases`: create, read, `classify`, `assign`, `escalate`,
