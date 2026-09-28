@@ -110,6 +110,7 @@ describe("the registration endpoint refuses a client whose window is spent", () 
     });
     assert.equal(refused.statusCode, 429);
     assert.equal(refused.json().code, "TOO_MANY_REQUESTS");
+    assert.deepEqual(refused.json().details, { windowSeconds: tight.windowSeconds });
     assert.match(refused.json().correlationId, /^corr-/);
 
     // Another client still registers, and the refused client can still read.
