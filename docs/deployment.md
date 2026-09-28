@@ -18,7 +18,7 @@ skaffold run -p resident -d mirrors.tencent.com/microservice
 `values.yaml` 里 `loadgen.replicas` 是 0，所以每次渲染都会把负载生成器缩回 0。
 验收窗口开始前手动 `kubectl scale deploy/loadgen --replicas=1`，窗口结束再缩回 0；窗口期间不要执行任何部署。
 
-常驻 Skaffold profile 只加载 chart 自带的 [values.yaml](../deploy/helm/train-ticket/values.yaml)，镜像仓库、存储类型、集中遥测、负载周期与常驻 exporter 都在这一份文件里；每个服务自己读的运行时设置声明在 `services.<name>.env` 块里。
+常驻 Skaffold profile 只加载 chart 自带的 [values.yaml](../deploy/helm/train-ticket/values.yaml)：镜像仓库、存储类型、集中遥测、负载周期、常驻 exporter，以及每个服务自己读的运行时设置（`services.<name>.env`）都在这一份文件里。
 
 [skaffold.yaml](../skaffold.yaml) 使用 `inputDigest` 生成镜像标签，通过 `setValueTemplates` 传入 `services.<name>.image` 和 `loadgen.image`。
 chart 的镜像函数优先使用这些完整镜像引用。
