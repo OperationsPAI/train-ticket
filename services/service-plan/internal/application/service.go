@@ -462,7 +462,7 @@ func (s *Service) ListServiceSegments(ctx context.Context, service string, limit
 	// read once per call so that the page check and the page answer name the
 	// same bound.
 	listingBound := s.listingBound()
-	if err := segmentPageBounds(service, limit, offset, listingBound); err != nil {
+	if err := servesPage(service, limit, offset, listingBound); err != nil {
 		return ServiceSegmentsPage{}, err
 	}
 	if s.repository != nil {
