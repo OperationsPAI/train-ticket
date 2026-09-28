@@ -25,3 +25,13 @@ func TestValidSourceAnswersTheReadersTheImageCarries(t *testing.T) {
 		t.Fatalf("SYSTEM reports segment status and is not a boarding reader")
 	}
 }
+
+func TestValidSourceAnswersTheEstateTheReleaseKeeps(t *testing.T) {
+	t.Setenv("FULFILLMENT_BOARDING_SOURCES", "STATION,PROVIDER")
+	if !validSource(domain.FulfillmentSourceStation) || !validSource(domain.FulfillmentSourceProvider) {
+		t.Fatalf("the readers the release keeps are accepted")
+	}
+	if validSource(domain.FulfillmentSourceAdmin) {
+		t.Fatalf("a reader the release leaves out is refused")
+	}
+}
