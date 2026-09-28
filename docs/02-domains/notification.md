@@ -1,5 +1,7 @@
 # Notification 领域说明
 
+更新日期：2026年9月28日。
+
 ## 实现与发布状态
 
 本域实现位于 `services/notification`，使用 TypeScript、Fastify、PostgreSQL、Redis Streams 和 Nodemailer。
@@ -52,7 +54,7 @@ Notification 不修改 Journey Order、Capacity、Payment、Entitlement 或 Post
 `Authorized` 是允许 dispatch 的状态，当前调度路径直接使用 `Planned`。
 普通 Preference 禁用时，应用服务创建任务并发布 `NotificationCancelled`，原因是 `SUPPRESSED_BY_PREFERENCES`。
 `transactionRequired` 默认值为 `true`，只跳过普通 Preference 检查，quota 仍然生效。
-未发布实现新增 `Unknown`，表示发送结果无法确认；确定失败且仍有重试或后续渠道时，任务保持 `Delivering`。
+当前实现包含 `Unknown`，表示发送结果无法确认；确定失败且仍有重试或后续渠道时，任务保持 `Delivering`。
 
 ## 事件输入与收件人
 
@@ -84,14 +86,14 @@ Notification 不修改 Journey Order、Capacity、Payment、Entitlement 或 Post
 
 `notification_deferred` 保存事件延期信息，`notification_aggregation` 保存合并窗口信息。
 延期扫描每秒运行一次，每次最多处理 8 条到期事件。
-未发布实现新增 `notification_delivery_queue`、`notification_delivery_attempts` 和 `notification_delivery_evidence`，并增加按任务及渠道唯一的 quota 预留记录。
+当前实现包含 `notification_delivery_queue`、`notification_delivery_attempts` 和 `notification_delivery_evidence`，并包含按任务及渠道唯一的 quota 预留记录。
 
 Notification 还会在 Redis DLQ 写入与原消息 ACK 之前，把原始 envelope、来源 stream/message、首次及最近失败、尝试次数和恢复状态写入 `event_dead_letters`。
 Payment、Post Sales 和 Wallet / Promotion 的受支持历史事件通过独立 HTTP replay source 拉取，游标保存在 `event_replay_checkpoints`。
 恢复事件进入与在线 Redis 消费相同的事务处理入口；业务成功而游标尚未提交的崩溃重放由 `processed_events` 吸收。
 来源返回 retention gap 时 checkpoint 进入 `GAP`，不允许跳过缺失历史。完整边界见[持久事件恢复契约](../08-contracts/durable-event-recovery.md)。
 
-## 未发布的 durable queue
+## durable queue 与发送状态
 
 消费事务保存 `Planned` 任务、`NotificationScheduled` outbox、渠道计划、quota 决策和队列记录后提交。
 队列领取使用 `FOR UPDATE SKIP LOCKED`，每次创建独立 claim token、attempt 编号和 30 秒租约。
@@ -117,7 +119,7 @@ SMTP 的 5 秒期限表示本次等待结束，无法确定发送结果时使用
 ## 查询与验证边界
 
 `GET /api/v1/notifications/{id}/trail` 返回任务状态和按回执生成的发送记录。
-未发布实现使用 `REPEATABLE READ READ ONLY` 查询任务、队列、attempt 和 evidence，追加 `resultUnknown` 与 `delivery` 等字段。
+当前实现使用 `REPEATABLE READ READ ONLY` 查询任务、队列、attempt 和 evidence，追加 `resultUnknown` 与 `delivery` 等字段。
 字段的发布状态见[API 说明](../08-contracts/api/notification.md)。
 EMAIL 的 `Delivered` 表示 SMTP 接受邮件；PUSH、SMS、IN_APP 使用直接成功适配器，当前没有外部供应商送达验证。
 
