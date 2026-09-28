@@ -50,6 +50,21 @@ public final class LettuceRedisStreamOperations implements RedisStreamOperations
      * every burst while every consumer group's own lag reads zero.
      */
     private static final int BATCH_COUNT = Integer.parseInt(System.getenv().getOrDefault("CONSUMER_BATCH_COUNT", "500"));
+    static final String ACCUMULATE_TICK_ENV = "CONSUMER_ACCUMULATE_TICK_MS";
+
+    /**
+     * The accumulation tick: how long a reader that has just received entries waits before
+     * one more, non-blocking, read.
+     *
+     * <p>{@code XREADGROUP} hands back as soon as a <em>single</em> entry is available, so a
+     * reader that keeps up gets one to three entries per round, and the one XACK that retires a
+     * round then costs the same as one XACK per entry -- {@code xack} became the largest command
+     * class the resident Redis served. Waiting a tick first folds a burst into one round, at the
+     * cost of up to a tick of delivery latency, well inside the ten second poll. Zero restores the
+     * read that returns the moment an entry is available.
+     */
+    static final long DEFAULT_ACCUMULATE_TICK_MS = 50L;
+    private static final long ACCUMULATE_TICK_MS = accumulateTickMillis(System.getenv(ACCUMULATE_TICK_ENV));
     /**
      * Cap on entries kept per stream. Redis streams are never read destructively, so without a cap
      * every published event stays resident forever and eventually exhausts the Redis memory limit.
@@ -77,6 +92,32 @@ public final class LettuceRedisStreamOperations implements RedisStreamOperations
 
     static long configuredAutoClaimMinIdleMillis() {
         return AUTOCLAIM_MIN_IDLE_MS;
+    }
+
+    static long configuredAccumulateTickMillis() {
+        return ACCUMULATE_TICK_MS;
+    }
+
+    /**
+     * Resolves the accumulation tick, falling back when it is misconfigured. A blank,
+     * non-numeric or negative value falls back rather than disabling the batching by accident;
+     * only an explicit zero turns the accumulation off.
+     */
+    static long accumulateTickMillis(String configured) {
+        if (configured == null || configured.isBlank()) {
+            return DEFAULT_ACCUMULATE_TICK_MS;
+        }
+        try {
+            long millis = Long.parseLong(configured.trim());
+            if (millis >= 0) {
+                return millis;
+            }
+        } catch (NumberFormatException ignored) {
+            // fall through to the warning below
+        }
+        LoggerFactory.getLogger(LettuceRedisStreamOperations.class)
+            .warn("{}={} is not a non-negative integer; using default {}", ACCUMULATE_TICK_ENV, configured, DEFAULT_ACCUMULATE_TICK_MS);
+        return DEFAULT_ACCUMULATE_TICK_MS;
     }
 
     static long autoClaimMinIdleMillis(String configured) {
