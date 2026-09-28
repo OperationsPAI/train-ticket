@@ -58,3 +58,10 @@ func TestEstateReadsTheSettingOnEveryCall(t *testing.T) {
 		t.Fatalf("a release that changes the setting changes the estate")
 	}
 }
+
+func TestEstateKeepsTheVocabularyWhenTheSettingIsBlank(t *testing.T) {
+	t.Setenv(SourcesVariable, " , ")
+	if !Operates(domain.FulfillmentSourceGate) || !Operates(domain.FulfillmentSourceAdmin) {
+		t.Fatalf("a setting of separators keeps the vocabulary the image was built with")
+	}
+}
