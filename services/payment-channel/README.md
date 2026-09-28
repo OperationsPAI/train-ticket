@@ -12,6 +12,52 @@ Daily statement membership uses the immutable successful payment/refund
 `completedAt` UTC date. Later channel status queries may update an aggregate
 snapshot, but cannot move the settled fact into a different statement day.
 
+## Runtime
+
+- HTTP port `8080` (`containerPort`/`PORT` in the chart).
+- Database `payment_channel` on the `txn` PostgreSQL instance
+  (`services.payment-channel.db`, `services.payment-channel.pgInstance` and
+  `postgres.instances.txn.databases` in
+  `deploy/helm/train-ticket/values.yaml`).
+- Liveness `/healthz`, readiness `/readyz`; also `/health`, `/ready`,
+`/metadata`.
+
+## HTTP surface
+
+- `/api/v1/channel-orders` create, read, `{id}/submit`, `{id}/query`.
+- `/api/v1/channel-refunds` create, read, `{id}/submit`, `{id}/query`.
+- `/api/v1/channel-statements` list, `generate`, `{id}`, `{id}/freeze`,
+  `{id}/lines` (ordinal cursor, page size at most 500).
+- `/api/v1/channel-discrepancies` list, create, `{id}`, `{id}/resolve`.
+
+The full contract lives in
+[`docs/08-contracts/api/payment-channel.md`](../../docs/08-contracts/api/payment-channel.md).
+
+## Events
+
+Publishes `ChannelOrderCreated`, `ChannelOrderSubmitted`,
+`ChannelOrderSucceeded`, `ChannelOrderFailed`, `ChannelOrderMissed`,
+`ChannelRefundSucceeded`, `ChannelRefundFailed`, `ChannelRefundMissed`,
+`ChannelStatementGenerated`, `ChannelStatementFrozen` and the discrepancy facts
+to `events:payment-channel`; see
+[`docs/08-contracts/events/payment-channel.md`](../../docs/08-contracts/events/payment-channel.md).
+It consumes no inbound event stream.
+
+## Metrics
+
+Emits `train_ticket.payment.operations` and `train_ticket.payment.amount` for the
+edge it settles (`internal/metrics/metrics.go`); the contract is in
+[`docs/07-observability/business-metrics.md`](../../docs/07-observability/business-metrics.md).
+
+## Build and test
+
+```bash
+cd services/payment-channel && go test ./...
+```
+
+Live PostgreSQL tests skip when `TEST_DATABASE_URL` and their recorded fixture
+variables are unset.
+
 ## Statement line storage
 
 Migration `005_normalized_statement_lines.sql` stores new statement metadata in

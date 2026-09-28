@@ -63,6 +63,41 @@ It coordinates allocation through Seat Assignment's API and does not directly up
 - `docs/03-ddd-final/phase-1-contract.md`
 - `docs/08-contracts/events/entitlement-ticketing.md`
 
+## Runtime
+
+- HTTP port `8080` (`containerPort`/`PORT` in the chart).
+- Database `entitlement_ticketing` on the `txn` PostgreSQL instance
+  (`services.entitlement-ticketing.db`,
+  `services.entitlement-ticketing.pgInstance` and
+  `postgres.instances.txn.databases` in
+  `deploy/helm/train-ticket/values.yaml`).
+- Liveness `/healthz`, readiness `/readyz`; also `/health`, `/live`,
+`/livez`, `/ready`, `/metadata`.
+
+## HTTP surface
+
+- `POST /api/v1/entitlements`, `GET /api/v1/entitlements/{id}`,
+  `POST /api/v1/entitlements/{id}/void`.
+- `POST /api/v1/internal/seat-allocations`.
+
+The full contract lives in
+[`docs/08-contracts/api/entitlement-ticketing.md`](../../docs/08-contracts/api/entitlement-ticketing.md).
+
+## Events
+
+Publishes `EntitlementIssued`, `EntitlementVoided`, `EntitlementBoarded`,
+`EntitlementSuspended` and `EntitlementResumed` to
+`events:entitlement-ticketing`; see
+[`docs/08-contracts/events/entitlement-ticketing.md`](../../docs/08-contracts/events/entitlement-ticketing.md).
+Consumes `events:booking-orchestration`, `events:fulfillment` and
+`events:post-sales` (`src/adapters/messaging/mod.rs`).
+
+## Metrics
+
+Emits `train_ticket.ticketing.transitions` and `train_ticket.ticketing.active`
+(`src/metrics.rs`); the contract is in
+[`docs/07-observability/business-metrics.md`](../../docs/07-observability/business-metrics.md).
+
 ## Validation
 
 ```bash
