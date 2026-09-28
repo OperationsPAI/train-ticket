@@ -49,9 +49,9 @@ Publishes `SupportCaseOpened`, `EvidenceAttached`, `SupportCaseClassified`,
 `SupportCaseAssigned`, `SupportCaseEscalated`, `SupportCaseResolved`,
 `SupportCaseClosed` and `SupportCaseReopened`; see
 [`docs/08-contracts/events/customer-service.md`](../../docs/08-contracts/events/customer-service.md).
-Consumes `events:journey-order`, `events:post-sales`, `events:admin-audit`,
-`events:transfer-management` and `events:identity-verification`
-(`src/adapters/messaging/stream-config.ts`).
+Consumes five streams -- `events:journey-order`, `events:post-sales`,
+`events:admin-audit`, `events:transfer-management` and
+`events:identity-verification` (`src/adapters/messaging/stream-config.ts`).
 
 ## Metrics
 
