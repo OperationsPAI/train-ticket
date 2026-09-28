@@ -31,6 +31,31 @@ func TestEstateAReleaseStatesIgnoresCaseAndPadding(t *testing.T) {
 	}
 }
 
+func TestEstateLeavesOutAReaderItDoesNotState(t *testing.T) {
+	estate := estateStatedBy("STATION,PROVIDER")
+
+	for _, leftOut := range []domain.FulfillmentSource{
+		domain.FulfillmentSourceGate,
+		domain.FulfillmentSourceConductor,
+		domain.FulfillmentSourceAdmin,
+	} {
+		if estate.operates(leftOut) {
+			t.Fatalf("a reader the release does not state is operated: %q", leftOut)
+		}
+	}
+}
+
+func TestEstateIgnoresAnEmptyEntry(t *testing.T) {
+	estate := estateStatedBy("STATION,,PROVIDER")
+
+	if !estate.operates(domain.FulfillmentSourceStation) || !estate.operates(domain.FulfillmentSourceProvider) {
+		t.Fatalf("a stated reader is not operated")
+	}
+	if estate.operates(domain.FulfillmentSource("")) {
+		t.Fatalf("an empty entry became a reader the deployment operates")
+	}
+}
+
 func TestDeploymentThatStatesNoEstateKeepsTheImageVocabulary(t *testing.T) {
 	for _, stated := range []string{"", "  ", " , "} {
 		estate := estateStatedBy(stated)
