@@ -6,7 +6,7 @@ Language: python
 
 Phase: phase-1-core
 
-Status: tested domain foundation
+Status: tested foundation, implemented and deployed (Helm revision 521; see [current status](../../docs/00-current-status.md))
 
 ## Owns
 
@@ -44,6 +44,39 @@ amounts produced here.
 
 - `docs/02-domains/fare-pricing.md`
 
+## Runtime
+
+- HTTP port `8080` (`containerPort`/`PORT` in the chart).
+- Database `fare_pricing` on the `read` PostgreSQL instance
+  (`services.fare-pricing.db`, `services.fare-pricing.pgInstance` and
+  `postgres.instances.read.databases` in
+  `deploy/helm/train-ticket/values.yaml`).
+- Liveness `/healthz`, readiness `/readyz`; also `/health`, `/live`, `/ready`,
+`/metadata`.
+
+## HTTP surface
+
+- `/api/v1/fare-rule-sets` create/read plus `{id}/publish`.
+- `POST /api/v1/fare-quotes`, `GET /api/v1/fare-quotes/{id}`.
+- `POST /api/v1/adjustment-quotes` for post-sales refund/change fees.
+
+The full contract lives in
+[`docs/08-contracts/api/fare-pricing.md`](../../docs/08-contracts/api/fare-pricing.md).
+
+## Events
+
+Publishes `FareQuoteComputed`, `AdjustmentQuoteComputed`, `FareRuleSetPublished`
+and `FareRuleSetSuperseded` to `events:fare-pricing`; see
+[`docs/08-contracts/events/fare-pricing.md`](../../docs/08-contracts/events/fare-pricing.md).
+Consumes `events:capacity-availability` and `events:identity-verification`
+(`src/fare_pricing/adapters/messaging/handlers.py`).
+
+## Metrics
+
+Emits the `quote` stage of `train_ticket.order.transitions` from
+`src/fare_pricing/web/handlers.py`; the contract is in
+[`docs/07-observability/business-metrics.md`](../../docs/07-observability/business-metrics.md).
+
 ## Language Rationale
 
 Python keeps fare rules, explanation tooling, and later experimentation lightweight.
@@ -51,5 +84,8 @@ Python keeps fare rules, explanation tooling, and later experimentation lightwei
 ## Validation
 
 ```bash
-uv run python -m unittest discover -s tests
+cd services/fare-pricing && PYTHONPATH=src:../../platform/python-kit/src python3 -m pytest -q
 ```
+
+Recorded PostgreSQL tests skip when `TEST_DATABASE_URL` and their recorded
+fixture variables are unset.
