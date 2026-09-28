@@ -67,8 +67,7 @@ Fulfillment 负责记录出行服务被实际使用、核验、开始、进行�
 | Offline Verification | 设备离线时依据本地核验包做出的临时核验事实。 | 回传后需要冲突合并。 |
 | Replay/Backfill | 供应商或设备晚到事件对历史状态的回补。 | 必须保留原 occurredAt 和 receivedAt。 |
 | Fulfillment Source | 产生履约事实的来源。 | Gate、Provider、DriverApp、ConductorApp、Admin、System。 |
-| Boarding Reader | 一次 Boarding 事实来自的 Reader。 | 由本次发布声明的来源登记表决定；发布未声明时沿用镜像自带的 Reader 词汇表。 |
-| 来源登记表 | 发布时声明本次发布运营的 boarding 来源清单。 | `FULFILLMENT_BOARDING_SOURCES`，逗号分隔；未声明时沿用镜像自带的 Reader 词汇表，本次发布为 Station 与 Provider。 |
+| Boarding Reader | 一次 Boarding 事实来自的 Reader。 | 由本次发布声明的来源登记表（`FULFILLMENT_BOARDING_SOURCES`，逗号分隔；本次发布为 Station 与 Provider）决定；发布未声明时沿用镜像自带的 Reader 词汇表。 |
 
 ## 4. 上下游契约
 
