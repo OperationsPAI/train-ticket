@@ -81,6 +81,8 @@ The operations dashboard covers the demand and capacity reads that the revenue d
 
 The document ships inside the package, so the image carries the same file a checkout reads.
 
+A section the document omits seeds nothing, which is the shape a checkout without the catalog runs with.
+
 ## Captured payment metrics
 
 All monetary revenue metrics use `PaymentCaptured` only.

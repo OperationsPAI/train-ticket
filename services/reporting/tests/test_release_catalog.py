@@ -1,4 +1,5 @@
 import json
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -49,6 +50,15 @@ class ReleaseCatalogTest(unittest.TestCase):
         for entry in load_release_catalog().dashboards:
             self.assertTrue(str(entry["dashboardId"]).strip())
             self.assertTrue(str(entry["name"]).strip())
+
+
+    def test_a_section_the_document_omits_seeds_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "catalog.json"
+            path.write_text(json.dumps({"schemaVersion": "trainticket.release-catalog/v1"}), encoding="utf-8")
+            catalog = load_release_catalog(path)
+        self.assertEqual(catalog.metrics, ())
+        self.assertEqual(catalog.dashboards, ())
 
 
 if __name__ == "__main__":
