@@ -7,7 +7,8 @@ open and nothing else. Finished work is recorded with its measurements in
 [current status](00-current-status.md), the telemetry contract is in
 [business metrics](07-observability/business-metrics.md), and a closed item is
 deleted rather than archived: git history keeps its text, current status keeps
-its evidence.
+its evidence. The design for the items that outgrow a single code change is in
+[scale architecture](09-performance/scale-architecture.md).
 
 Everything below is **deferred by the operator's instruction**. The traffic level
 is fixed in `deploy/helm/train-ticket/values.yaml` at `target_rps: 20` with a
@@ -19,27 +20,25 @@ below the 13572 journeys a minute where the first capacity failure was measured.
 
 ## T01: Give the Redis bus more headroom
 
-The four bus items, in the order worth trying, kept because each is still the
-reason the area would fail if the level were raised again.
+The three bus items left, in the order worth trying, kept because each is still
+the reason the area would fail if the level were raised again. The read is now
+micro-batched: all five kits accumulate on a 50 millisecond tick and acknowledge
+the round in one `XACK`, so a burst is one round instead of one round per entry.
 
-1. [ ] **Micro-batch the read.** `xack` is now the largest class (5447 a second)
-   and its count is the number of delivery rounds, not entries: a reader that is
-   keeping up gets one to three entries per poll, so one XACK per batch is one
-   XACK per entry. Reading on a short tick (50 to 100 milliseconds) so entries
-   accumulate, instead of returning the moment one is available, multiplies the
-   batch size by ten and divides both `xreadgroup` and `xack` by it. It costs up
-   to a tick of delivery latency, which is well inside the ten second poll.
+1. [ ] Reduce the groups per stream further. Measured now: fourteen groups read
+   `events:post-sales` and `events:journey-order`, ten read
+   `events:booking-orchestration`, nine read `events:payment` and
+   `events:ancillary-service`, and 123 read streams in total. The cheap cut is
+   an audit for a group whose service acts on no type the stream carries, the
+   one already made for Journey Order. The designs are in
+   [scale architecture](09-performance/scale-architecture.md).
 
-2. [ ] Reduce the groups per stream further. Measured now: ten groups read
-   `events:booking-orchestration`, five read `events:capacity-availability`, and
-   `reporting` still holds fourteen of the 122 subscriptions.
-
-3. [ ] Or give the bus more than one thread: shard streams across Redis
+2. [ ] Or give the bus more than one thread: shard streams across Redis
    instances, or move the reads to a transport with parallel work. This is the
    only step that removes the ceiling rather than raising it, and it is a change
    to the deployment's shape rather than to a service.
 
-4. [ ] Decide whether the acceptance envelope includes a burst the steady cycles
+3. [ ] Decide whether the acceptance envelope includes a burst the steady cycles
    never reach. If it does, the arithmetic in
    [current status](00-current-status.md#the-configured-envelope-is-wider-than-any-window-has-measured)
    says the system must be sized for 640 journeys a second, and the largest
@@ -56,17 +55,16 @@ reason the area would fail if the level were raised again.
    fetching about 20000 segment rows, which is 1.1 million tuples a second from
    the plan tables alone.
 
-2. [ ] Bound the write amplification, or keep resetting the resident state.
-   `capacity_supply_observations` is one row per inventory pool -- measured
-   746808 rows in 12 GB -- and the load generator's bootstrap adds pools on
-   every run; the conflict path already rewrites a row only when the seat map
-   version changes rather than on every admission. `seat_maps` holds 204466
-   rows in 16 GB and keeps every version, and replacement lineage resolution
-   still reads retired maps, so it cannot simply be swept. Decide whether
-   either gets a retention sweep, the way the outbox and `processed_events`
-   sweeps already do, or whether the resident state is simply reset between
-   runs -- every database truncated and Redis flushed, as the shard cutover
-   last did.
+2. [ ] `seat_maps` retention. `capacity_supply_observations` now sweeps its own
+   rows past a seven day window (`CAPACITY_SUPPLY_RETENTION_HOURS`), which is
+   safe because nothing reads it. `seat_maps` cannot be swept by age: it holds
+   204466 rows in 16 GB and keeps every version, and replacement lineage
+   resolution still reads retired maps to place a hold whose unit left the
+   current composition. Decide between sweeping only unreferenced maps and
+   keeping a compact lineage projection, or resetting the resident state
+   between runs -- every database truncated and Redis flushed, as the shard
+   cutover last did. The designs are in
+   [scale architecture](09-performance/scale-architecture.md).
 
 3. [ ] Capacity's admission serialises on one advisory lock per inventory pool,
    and that is the constraint that now fails the reservation poll. Measured at
@@ -79,8 +77,13 @@ reason the area would fail if the level were raised again.
    reuse a small set of `pool:segment:class` keys, so admissions into one pool
    queue behind each other. The next measurement is where the hold time goes:
    the supply history read, the pool aggregate update, or the hold insert, in
-   that transaction. Splitting the lock by unit, or shortening the transaction,
-   is what the number asks for.
+   that transaction. The service now logs that breakdown for any admission over
+   200 milliseconds (`src/adapters/storage/mod.rs`), and the timing already
+   shows the lock's critical section does not contain the supply fold. What is
+   left is to aggregate the line under load and decide between dropping the
+   pessimistic lock for the existing optimistic `expected_version` retry and
+   shrinking the document each admission rewrites. See
+   [scale architecture](09-performance/scale-architecture.md).
 
 ## Operational follow-ups
 
@@ -101,9 +104,14 @@ rather than by its cost.
    1.17 million rows, not the heap access.
 
 2. [ ] Capacity levels: the fold streams rather than materialises, so it is
-   constant memory, but it still reads seven hundred thousand pool documents
-   (about five seconds). Pushing the fold into SQL would cut the transfer to the
-   label combinations alone.
+   constant memory, but it still reads every pool document (measured 306286,
+   about five seconds). The SQL push-down was implemented and measured: it is
+   exactly equivalent, but no pool is hold-free, so it saves no transfer and
+   costs a second scan, and it was dropped. The lever is retiring terminal holds
+   on every pool, not only on the one being written -- which also stops the
+   published `released` level from being a lifetime count for a pool that is
+   never written again. That changes a published level, so it is a decision; the
+   measurement is in [scale architecture](09-performance/scale-architecture.md).
 
 ## Rules
 
