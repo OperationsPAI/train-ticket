@@ -83,6 +83,8 @@ The document ships inside the package, so the image carries the same file a chec
 
 A section the document omits seeds nothing, which is the shape a checkout without the catalog runs with.
 
+The metric entries restate the captured payment rule the service implements, so a reader of the catalog reads the same totals the revenue endpoints return.
+
 ## Captured payment metrics
 
 All monetary revenue metrics use `PaymentCaptured` only.
