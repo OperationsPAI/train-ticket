@@ -60,7 +60,7 @@ func Load() (Catalogue, error) {
 	for _, entry := range entries {
 		product, err := readProduct(document, entry.prefix, entry.code)
 		if err != nil {
-			return Catalogue{}, err
+			return Catalogue{}, fmt.Errorf("catalogue product %s: %w", entry.code, err)
 		}
 		catalogue.Products = append(catalogue.Products, product)
 	}
