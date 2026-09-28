@@ -247,11 +247,12 @@ func (s *Service) WithUnitOfWork(uow UnitOfWork) *Service {
 	return s
 }
 
-// WithListingPageLimit sets the page a segment listing serves. A release
-// declares it: a page is what one listing call costs this service's read path,
-// so the bound is sized with the deployment rather than by whichever caller
-// asks, and a process that resolved none keeps the bound the listing shipped
-// with.
+// WithListingPageLimit sets the page a segment listing serves, applied where
+// the service is built so that every request a process answers reads one bound.
+// A release declares it: a page is what one listing call costs this service's
+// read path, so the bound is sized with the deployment rather than by whichever
+// caller asks, and a process that resolved none keeps the bound the listing
+// shipped with.
 func (s *Service) WithListingPageLimit(limit int) *Service {
 	if s != nil && limit > 0 {
 		s.listingPageLimit = limit
