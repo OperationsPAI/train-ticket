@@ -51,7 +51,8 @@ Focused tests in `internal/domain/service_plan_test.go` cover these invariants.
 
 ## Language Rationale
 
-Go keeps schedule query services small, fast, and easy to operate.
+Go keeps schedule query services small, fast, and easy to operate: this service
+holds no inventory of its own and answers from the facts it persisted.
 
 ## Runtime
 
