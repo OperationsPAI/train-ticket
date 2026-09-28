@@ -7,6 +7,7 @@ import (
 
 	kitmsg "github.com/trainticket/greenfield/platform/go-kit/messaging"
 	"github.com/trainticket/greenfield/services/travel-insurance/application"
+	"github.com/trainticket/greenfield/services/travel-insurance/config"
 	"github.com/trainticket/greenfield/services/travel-insurance/domain"
 )
 
@@ -397,5 +398,42 @@ func TestHandleUnknownEventType_IsIgnored(t *testing.T) {
 	}
 	if len(pub.events) != 0 {
 		t.Fatalf("expected no events for unknown event type, got %d", len(pub.events))
+	}
+}
+
+// A refund gives back the premium the policy was issued at, so a repricing does
+// not change what an already sold policy returns.
+func TestHandlePostSalesApplied_RefundsThePublishedPremium(t *testing.T) {
+	now := time.Date(2026, 7, 10, 10, 0, 0, 0, time.UTC)
+	pub := &capturePublisher{}
+	svc := newTestService(t, now, pub)
+	handler := NewInboundHandler(svc)
+	if _, err := svc.IssuePolicy(context.Background(), application.IssuePolicyCommand{ProductCode: string(domain.ProductDelayInsurance), ProductVersion: "v1", JourneyOrderID: "ord-refund-price", AncillaryOrderItemID: "anc-refund-price", AccountID: "acc-refund-price", TravelerRef: "tvl-refund-price", SegmentRefs: []string{"seg-refund-price"}, PaymentIntentID: "pi-refund-price", CoverageStartAt: now.Add(-time.Minute), CoverageEndAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	catalogue, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var published domain.Money
+	for _, product := range catalogue.Products {
+		if product.Code == domain.ProductDelayInsurance {
+			published = product.Premium
+		}
+	}
+	envelope := makeEnvelope(t, "PostSalesApplied", map[string]any{
+		"caseId":        "psc-refund-price",
+		"orderId":       "ord-refund-price",
+		"resultSummary": map[string]any{"description": "refund executed"},
+	}, now)
+	if err := handler.Handle(context.Background(), envelope); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	policy, err := svc.GetPolicy(context.Background(), "pol-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy.RefundedPremium != published {
+		t.Fatalf("refunded = %#v, the catalogue publishes %#v", policy.RefundedPremium, published)
 	}
 }
