@@ -1,6 +1,6 @@
 # Payment — HTTP API
 
-Last updated: 2026-07-05
+Last updated: 2026-09-28
 
 ## Overview
 
@@ -167,6 +167,42 @@ Each item includes the refund ID, payment intent, amount, state and channel refu
 **Response (200):** Full refund details.
 
 **Error codes:** `NOT_FOUND`
+
+### List Settled Refunds
+
+**GET** `/api/v1/internal/refund-settlements?settledFrom={instant}&settledTo={instant}&after={cursor}&limit=500`
+
+Returns the refunds this service settled in a `[settledFrom, settledTo)` instant
+window, ordered by settlement instant and refund id. Read by Finance
+Settlement's daily reconciliation, which compares the rows with the channel's
+refund lines by the refund id both sides carry.
+
+`settledFrom` and `settledTo` are required RFC3339 instants and `settledTo` must
+be after `settledFrom`. `limit` defaults to 500 and is clamped to 1..1000.
+`after` is the opaque cursor from a previous page.
+
+**Response (200):** `items` and, when a full page was returned, `nextCursor`.
+Each item has `refundId`, `paymentIntentId`, `businessReference`, `sourceCaseRef`, `currency`, `amountMinorUnits` and `settledAt`.
+
+**Error codes:** `VALIDATION_FAILED`
+
+### Recover an Orphan Refund
+
+**POST** `/api/v1/internal/refund-recoveries/{caseId}`
+
+**Request:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `channelRefundId` | string | yes | Channel refund id to recover. |
+
+Reconstructs the refund for a case from the channel's refund facts and the
+approved case, when the platform has no local refund record. The channel status
+must be `CREATED` or `SUCCEEDED`.
+
+**Response (200):** Refund details.
+
+**Error codes:** `VALIDATION_FAILED`, `DOMAIN_RULE_VIOLATION`, `NOT_FOUND`
 
 ## Bus-only commands
 
