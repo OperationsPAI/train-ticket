@@ -8,10 +8,10 @@ metrics: these series answer whether workflows are progressing and conserving
 money or capacity, not what should appear in a product report.
 
 The metric transport is already available. Services send metrics over OTLP to
-`otel-collector`; its bounded exporter exposes only approved runtime families
-and `train_ticket.*`, and Prometheus scrapes that aggregate on port 9464. A
-service must use its existing OpenTelemetry meter rather than add a second
-Prometheus server.
+`otel-collector`, whose bounded exporter exposes only the approved runtime
+families and `train_ticket.*`. A service must use its existing OpenTelemetry
+meter rather than add a second Prometheus server; the scrape and the aggregation
+live with the collector.
 
 ## Cardinality rules
 
