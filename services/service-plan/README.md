@@ -23,7 +23,8 @@ Status: tested domain foundation (REQ-005)
 
 - Place, TransportNode, topology, or timezone master data; this context stores
   only Place & Network identifiers and node snapshot versions.
-- Capacity, seats, quotas, holds, or sellability decisions beyond publishing schedule-period capacity multipliers for downstream contexts.
+- Capacity, seats, quotas, holds, or sellability decisions beyond publishing
+  schedule-period capacity multipliers for downstream contexts.
 - Fare, tax, rule, order, entitlement, payment, post-sales, or realtime
   disruption state.
 
