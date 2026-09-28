@@ -16,7 +16,8 @@ Status: tested domain foundation (REQ-005)
 - Timetable planned stop times, timezone, and explicit cross-day offsets.
 - ScheduledService materialized from published plan versions.
 - ServiceSegment references derived from ordered stop sequences.
-- Seasonal schedule variants, rush-period temporary trains, dated service cancellations, and delay propagation facts.
+- Seasonal schedule variants, rush-period temporary trains, dated service
+  cancellations, and delay propagation facts.
 
 ## Does Not Own
 
