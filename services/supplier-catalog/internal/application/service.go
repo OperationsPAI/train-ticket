@@ -265,6 +265,8 @@ func (s *Service) RegisterCarrier(ctx context.Context, cmd RegisterCarrierComman
 			}
 			return CarrierView{}, err
 		}
+		// A carrier code is the namespace the operations callers quote, so a code
+		// another carrier already holds is refused rather than filed beside it.
 		if _, err := s.repository.FindCarrierByCode(ctx, carrier.Code); err == nil {
 			return CarrierView{}, fmt.Errorf("%w: carrier code already exists", ErrConflict)
 		} else if !errors.Is(err, ErrNotFound) {
