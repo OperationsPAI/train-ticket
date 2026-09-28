@@ -1670,6 +1670,13 @@ services:
       limits: { cpu: '8', memory: 6Gi }
   supplier-catalog:
     db: supplier_catalog
+    env:
+      # The operator import brings the same bureau in more than once, first under the
+      # code its own batch minted and then under the name it trades as on the market it
+      # is being rolled out to, and the master data reconciles the two arrivals as one
+      # partner. Which registration field carries a partner's identity is the release's
+      # decision rather than the call's, and this release files under the trading name.
+      PARTNER_FILING_FIELD: "brandName"
   waitlist:
     db: waitlist
     image: mirrors.tencent.com/microservice/waitlist:final-e98069db@sha256:42657e4c3f0d2328cfa9885a62a4b1f9a7f11366afa093cb8bdd93b8729f4253
