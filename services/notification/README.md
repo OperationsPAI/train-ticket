@@ -6,12 +6,27 @@ Notification 使用 TypeScript、Fastify、PostgreSQL、Redis Streams 和 Nodema
 
 ## 发布状态
 
-线上 revision 279 仍使用 SMTP 位于 PostgreSQL 事务内的发送路径。
-该路径在消费事件的事务中完成收件人处理、发送和回执保存，等待 SMTP 时仍占用数据库连接及收件人事务锁。
+durable queue 与 durable 回执语义已部署并在线上生效（Helm revision 521，见 [current status](../../docs/00-current-status.md)）。
+SMTP 发送不再位于消费事件的事务内：`006_durable_delivery.sql`、发送 worker、claim 租约、稳定 MessageID、事务外 SMTP、`Unknown` 结果及迟到结果记录均已提交并运行。
+`GET /api/v1/notifications/{id}/trail` 的追加字段同样已发布。
+事件合同见 [事件说明](../../docs/08-contracts/events/notification.md)。
 
-当前工作区的 durable queue 是未提交 WIP，尚未部署，新设计在线上未生效。
-工作区包含 `006_durable_delivery.sql`、发送 worker、claim 租约、稳定 MessageID、事务外 SMTP、`Unknown` 结果及迟到结果记录。
-`GET /api/v1/notifications/{id}/trail` 的追加字段也属于工作区未发布内容。
+## 运行时事实
+
+- HTTP 端口 `8080`（chart 的 `containerPort`/`PORT`）。
+- 数据库 `notification`，位于 `event` PostgreSQL 实例
+  （`services.notification.db`、`services.notification.pgInstance` 与
+  `postgres.instances.event.databases`，见 `deploy/helm/train-ticket/values.yaml`）。
+- 存活探针 `/healthz`，就绪探针 `/readyz`；另有 `/health`、`/live`、
+`/livez`、`/ready`、`/metadata`。
+- 订阅 `events:journey-order`、`events:payment`、`events:entitlement-ticketing`、
+`events:post-sales`、`events:disruption-recovery`、`events:transfer-management`、
+`events:ancillary-service`、`events:dispatch`、`events:waitlist`、
+`events:wallet-promotion`（`src/adapters/messaging/stream-config.ts`），
+向 `events:notification` 发布通知事实。
+- 指标：`train_ticket.notification.queue.tasks`、`train_ticket.notification.queue.oldest_age`、
+`train_ticket.notification.retries`（`src/metrics.ts`；合同见
+[business metrics](../../docs/07-observability/business-metrics.md)）。
 
 ## 当前实现
 
@@ -31,7 +46,7 @@ SMTP 邮箱由 `recipientRef` 推导为 `passengers.train-ticket.local` 地址�
 PUSH、SMS 和 IN_APP 当前使用 `DirectSuccessGateway`；这些渠道返回成功不代表外部供应商已经完成触达。
 EMAIL 的 `Delivered` 表示 SMTP 接受邮件，不表示用户已经阅读。
 
-## 工作区 durable queue
+## durable queue
 
 消费事务保存任务、`NotificationScheduled` outbox 记录、quota 决策和发送队列后提交。
 worker 使用 `FOR UPDATE SKIP LOCKED` 领取任务，并记录 claim token、30 秒租约和 attempt。
@@ -61,7 +76,17 @@ schema 应用状态及数据库探测参与 readiness，outbox relay 将已提�
 PostgreSQL/Mailpit durable delivery 验证包含 10 个子项及父项，共 11 PASS，耗时 20.8 秒。
 验证涉及并发 claim、发送前租约恢复、SMTP 接受后的结果丢失、稳定 MessageID 重试、迟到结果、32 个任务并发发送、连接中断和有界重试。
 完整 `npm test` 尚未运行，quota 延期后的恢复尚未专项验收。
-这些结果属于工作区验证，不代表 revision 279 已启用 durable queue。
+这些结果来自已部署的 durable queue（Helm revision 521）。
+
+## 构建与测试
+
+```bash
+cd services/notification && npm test
+```
+
+`npm test` 将 TypeScript 编译到被忽略的 `test-output/` 并用 Node 内置测试运行。
+需要 live PostgreSQL / Mailpit / Redis 的测试在相应 `TEST_DATABASE_URL`、
+`TEST_REDIS_URL` 等变量缺失时跳过。
 
 领域边界见[领域说明](../../docs/02-domains/notification.md)，发送机制见[能力说明](../../docs/10-domain-enrichment/notification-enrichment.md)。
 待办统一见 [docs/TODO.md](../../docs/TODO.md)。
