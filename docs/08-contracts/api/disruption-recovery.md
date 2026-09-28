@@ -1,6 +1,6 @@
 # Disruption Recovery — HTTP API
 
-Last updated: 2026-07-09
+Last updated: 2026-09-28
 
 ## Overview
 
@@ -405,7 +405,8 @@ Wallet / Promotion benefit with `issuanceSource=DISRUPTION_COMP`.
 `REACCOMMODATION` calls Transfer Management
 `POST /api/v1/connections/{connectionId}/reaccommodate` and completes according
 to that `200` response. `MANUAL` moves to `MANUAL_REVIEW` and is handled by
-operations/customer service outside this public API.
+operations/customer service through
+`POST /api/v1/recovery-cases/{caseId}/manual-review/resolve`.
 
 **Error codes:** `NOT_FOUND`, `PRECONDITION_FAILED`, `DOMAIN_RULE_VIOLATION`,
 `IDEMPOTENCY_KEY_REUSED`, `UNAVAILABLE`
@@ -413,6 +414,28 @@ operations/customer service outside this public API.
 - `PRECONDITION_FAILED` is returned when the case is not in
   `AWAITING_USER_CHOICE`, the option set is expired, or the option has already
   been selected.
+
+### Resolve a Manual Review
+
+**POST** `/api/v1/recovery-cases/{caseId}/manual-review/resolve`
+
+Required when the case is in `MANUAL_REVIEW`.
+
+**Request:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `outcome` | enum | yes | `RECOVERED` or `FAILED`. |
+| `resolvedBy` | object | no | Resolving actor (`ActorRef`). |
+| `reason` | string | no | Reason; used on the `RecoveryExecutionFailed` path. |
+| `manualRef` | string | no | External reference for the manual work; defaults to `manual:<caseId>`. |
+
+**Response (200):** `RecoveryCase` resource.
+
+**Domain effects:** emits `RecoveryCompleted` for `RECOVERED` and
+`RecoveryExecutionFailed` for `FAILED`.
+
+**Error codes:** `NOT_FOUND`, `PRECONDITION_FAILED`, `DOMAIN_RULE_VIOLATION`
 
 ### Close Recovery Case
 
