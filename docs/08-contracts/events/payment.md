@@ -1,6 +1,6 @@
 # Payment — Events & Commands
 
-Last updated: 2026-07-10
+Last updated: 2026-09-28
 
 ADR-0003 Wave A same-wave increment（需同波实现）: Payment events that represent channel-backed
 capture/refund outcomes carry `channelRef` from Payment Channel. This requires
