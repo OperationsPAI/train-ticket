@@ -34,9 +34,9 @@ timestamps, and Money.
 
 The vocabulary above is the contract's. Which of those readers a deployment
 operates is the release's boarding register, stated as
-`FULFILLMENT_BOARDING_SOURCES` in the release settings, and a boarding whose
-`source` is outside the register this deployment states never reaches the
-record.
+`FULFILLMENT_BOARDING_SOURCES` in the release settings; this release states
+Station and Provider, and a boarding whose `source` is outside that register
+never reaches the record.
 
 **Response (201):**
 
