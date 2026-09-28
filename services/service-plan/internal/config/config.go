@@ -36,8 +36,8 @@ func FromEnv() Settings {
 	}
 }
 
-// Describe names the settings a process resolved, for the line a release is
-// read out of.
+// Describe names the settings a process resolved, for the startup line that
+// answers which release a pod is running.
 func (s Settings) Describe() string {
 	return fmt.Sprintf("port=%d listingPageLimit=%d", s.Port, s.ListingPageLimit)
 }
