@@ -28,16 +28,24 @@ def read_settings(path: str | Path | None = None) -> Mapping[str, Any]:
     return document if isinstance(document, Mapping) else {}
 
 
-def _declared_credit_ceiling(document: Mapping[str, Any]) -> int | None:
-    section = document.get("onboarding")
-    if not isinstance(section, Mapping):
+def _named_section(name: str, path: str | Path | None = None) -> Mapping[str, Any]:
+    """One named section of the settings document, or an empty mapping."""
+
+    section = read_settings(path).get(name)
+    return section if isinstance(section, Mapping) else {}
+
+
+def _as_int(value: object) -> int | None:
+    """A number the file states as JSON and the environment states as text."""
+
+    if value is None:
         return None
-    declared = section.get("maxMonthlyCreditMinor")
-    if declared is None:
+    text = str(value).strip()
+    if not text:
         return None
     try:
-        return int(declared)
-    except (TypeError, ValueError):
+        return int(text)
+    except ValueError:
         return None
 
 
@@ -49,7 +57,7 @@ def onboarding_facility() -> CreditFacility:
     approved for without a rebuild.
     """
 
-    ceiling = _declared_credit_ceiling(read_settings())
+    ceiling = _as_int(_named_section("onboarding").get("maxMonthlyCreditMinor"))
     override = os.getenv(ONBOARDING_MAX_CREDIT_ENV)
     if override:
         ceiling = int(override)
