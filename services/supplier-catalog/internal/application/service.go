@@ -52,6 +52,7 @@ type Service struct {
 	publisher      EventPublisher
 	repository     Repository
 	uow            UnitOfWork
+	identitySource string
 }
 
 func NewService(publisher EventPublisher) *Service {
@@ -73,6 +74,15 @@ func (s *Service) WithRepository(repository Repository) *Service {
 func (s *Service) WithUnitOfWork(uow UnitOfWork) *Service {
 	if s != nil {
 		s.uow = uow
+	}
+	return s
+}
+
+// WithIdentitySource names the field a partner's identity is taken from, which
+// the release decides rather than this service.
+func (s *Service) WithIdentitySource(source string) *Service {
+	if s != nil {
+		s.identitySource = source
 	}
 	return s
 }
@@ -173,10 +183,11 @@ func (s *Service) RegisterSupplier(ctx context.Context, cmd RegisterSupplierComm
 		s.mu.Unlock()
 	}
 
+	identity := partnerIdentity(s.identitySource, cmd.SupplierCode, cmd.BrandName)
 	envelopes := wrapDomainEvents(ctx, events, cmd.CorrelationID, cmd.CausationID)
 	if err := s.persistAndPublish(ctx, func(txCtx context.Context) error {
 		if s.repository != nil {
-			return s.claimPartnerIdentity(txCtx, supplier)
+			return s.claimPartnerIdentity(txCtx, supplier, identity)
 		}
 		return nil
 	}, envelopes); err != nil {
@@ -192,8 +203,8 @@ func (s *Service) RegisterSupplier(ctx context.Context, cmd RegisterSupplierComm
 // written, so a filing that carries one the catalogue already holds is refused
 // rather than filed beside the partner that holds it. The claim and the partner
 // share the caller's transaction, so a refused filing leaves neither behind.
-func (s *Service) claimPartnerIdentity(ctx context.Context, supplier domain.Supplier) error {
-	claimed, err := s.repository.ClaimPartnerIdentity(ctx, supplier.Profile, string(supplier.SupplierID))
+func (s *Service) claimPartnerIdentity(ctx context.Context, supplier domain.Supplier, identity string) error {
+	claimed, err := s.repository.ClaimPartnerIdentity(ctx, identity, string(supplier.SupplierID))
 	if err != nil {
 		return err
 	}

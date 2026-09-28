@@ -109,7 +109,7 @@ func (r *identityRepository) ClaimPartnerIdentity(_ context.Context, identity, s
 	return true, nil
 }
 
-func TestRegisterSupplierFilesASecondOnboardingUnderItsOwnCode(t *testing.T) {
+func TestRegisterSupplierFilesASecondOnboardingUnderItsOwnCodeByDefault(t *testing.T) {
 	repository := newIdentityRepository()
 	service := NewService(nil).WithRepository(repository)
 	for _, code := range []string{"T1111111111", "T2222222222"} {
@@ -124,6 +124,28 @@ func TestRegisterSupplierFilesASecondOnboardingUnderItsOwnCode(t *testing.T) {
 	}
 	if _, held := repository.claims["t1111111111"]; !held {
 		t.Fatalf("expected the code to be the identity claimed, got %v", repository.claims)
+	}
+}
+
+func TestRegisterSupplierRefusesASecondPartnerUnderOneTradingName(t *testing.T) {
+	repository := newIdentityRepository()
+	service := NewService(nil).WithRepository(repository).WithIdentitySource(IdentitySourceBrand)
+	if _, err := service.RegisterSupplier(context.Background(), RegisterSupplierCommand{
+		LegalName: "Transfer carrier 0194f2e0-7b3e-7610-0284-5c26e8b0c444", BrandName: "Transfer rail", SupplierCode: "T1111111111",
+	}); err != nil {
+		t.Fatalf("first registration: %v", err)
+	}
+	_, err := service.RegisterSupplier(context.Background(), RegisterSupplierCommand{
+		LegalName: "Transfer carrier 0194f2e1-7b3e-7610-0284-5c26e8b0c555", BrandName: "Transfer rail", SupplierCode: "T2222222222",
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("expected the second filing under one trading name to be refused, got %v", err)
+	}
+	if len(repository.claims) != 1 {
+		t.Fatalf("expected the refused filing to leave no identity behind, got %v", repository.claims)
+	}
+	if len(repository.profiles) != 1 {
+		t.Fatalf("expected the refused filing to leave no partner behind, got %v", repository.profiles)
 	}
 }
 
