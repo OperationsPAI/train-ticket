@@ -38,8 +38,49 @@ The current Java model creates a `JourneyOrder` from a valid Offer snapshot and 
 ## Check
 
 ```bash
-mvn test
+cd services/journey-order && mvn -o test
 ```
+
+## Runtime
+
+- HTTP port `8080` (`containerPort`/`PORT` in the chart).
+- Database `journey_order` on the `hot` PostgreSQL instance
+  (`services.journey-order.db`, `services.journey-order.pgInstance` and
+  `postgres.instances.hot.databases` in
+  `deploy/helm/train-ticket/values.yaml`).
+- Liveness `/healthz`, readiness `/readyz`; also `/health`, `/live`,
+`/livez`, `/ready`, `/metadata`.
+
+## HTTP surface
+
+- `/api/v1/journey-orders`: create, list, read, `{orderId}/cancel`,
+  `{orderId}/apply-change`.
+- `GET /api/v1/internal/journey-orders/{orderId}/purchase-source`.
+
+The full contract lives in
+[`docs/08-contracts/api/journey-order.md`](../../docs/08-contracts/api/journey-order.md).
+
+## Events
+
+Publishes `JourneyOrderCreated`, `JourneyOrderPendingPayment`,
+`JourneyOrderPaymentRecorded`, `JourneyOrderConfirmed`,
+`JourneyOrderCancelled` and post-sales adjustment facts to
+`events:journey-order`; see
+[`docs/08-contracts/events/journey-order.md`](../../docs/08-contracts/events/journey-order.md).
+Consumes `events:payment`, `events:post-sales`, `events:risk-compliance`,
+`events:account`, `events:entitlement-ticketing`,
+`events:ancillary-service`, `events:identity-verification` and
+`events:transfer-management`
+(`adapters/messaging/RedisJourneyOrderSubscriptions.java`).
+
+## Metrics
+
+Emits the `order` stage of `train_ticket.order.transitions`
+(`src/main/java/com/trainticket/journeyorder/observability/`); the contract is in
+[`docs/07-observability/business-metrics.md`](../../docs/07-observability/business-metrics.md).
+
+Java tests require JDK 25 (the repo's devcontainer /
+`maven:3.9-eclipse-temurin-25` image).
 
 `PurchaseSourceLiveTest` loads a recorded changed order into an isolated PostgreSQL schema and exercises the HTTP endpoint.
 It verifies the original Offer, repeated reads, unknown order response, unchanged snapshot version and no outbox effects.
@@ -49,12 +90,12 @@ The test requires a source whose current Offer differs from its recorded purchas
 ## Recorded wallet compensation tests
 
 `CompensationRecordedEventLiveTest` replays actual approval and applied envelopes through `OrderManagementService` with PostgreSQL persistence and transactions in an isolated schema.
-`src/test/resources/wallet-compensation-recorded.json` contains revision 274 case `psc-01a0ceba-9bb5-7fbe-ac91-2168e09ae5ad` and order `ord-01a0ceba-74bf-7000-a01c-6e5c316e1b84` at version 7.
+`src/test/resources/wallet-compensation-recorded.json` contains recorded case `psc-01a0ceba-9bb5-7fbe-ac91-2168e09ae5ad` and order `ord-01a0ceba-74bf-7000-a01c-6e5c316e1b84` at version 7.
 The source order is confirmed, has two travelers and has no cancelled commercial items.
 The test compares the entire persisted row after each event, including items, amounts, timeline, state, version and update timestamp, and requires an empty outbox.
 Duplicate delivery and handler reconstruction preserve the same state.
 Both fixtures retain the original event identifiers and payloads, including the recorded `caseType=COMPENSATION`.
-The historical order is already adjusted; the revision 274 fixture covers a preserved confirmed order.
+The historical order is already adjusted; the recorded fixture covers a preserved confirmed order.
 
 Run from this module with Java 25 and a disposable PostgreSQL database.
 The test creates and removes its own schema and uses no Redis subscriber or outbox relay.
