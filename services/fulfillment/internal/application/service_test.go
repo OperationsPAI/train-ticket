@@ -663,3 +663,19 @@ func TestNoShowRecordsTheInstantTheServiceAssessedIt(t *testing.T) {
 		t.Fatalf("record assessment instant=%v, want %s", record.NoShowAssessedAt, assessedAt)
 	}
 }
+
+func TestRecordReadAnswersTheReferencesItStored(t *testing.T) {
+	service := NewService(NewInMemoryRepository(), &recordingPublisher{}, NewInMemoryConsumedEventLog(), nil, func() time.Time { return time.Date(2026, 9, 28, 22, 0, 0, 0, time.UTC) })
+	seedTicket(t, service, "ent-read1", "sb-read1", "ord-read1", "tvl-read1", "seg-read1")
+	projection, err := service.readyRecord(context.Background(), "ent-read1", "sb-read1", "seg-read1")
+	if err != nil {
+		t.Fatalf("read model: %v", err)
+	}
+	record, err := service.GetFulfillmentRecord(context.Background(), projection.FulfillmentRecordID)
+	if err != nil {
+		t.Fatalf("read record: %v", err)
+	}
+	if record.EntitlementID != "ent-read1" || record.SegmentBookingID != "sb-read1" || record.JourneyOrderID != "ord-read1" || record.TravelerID != "tvl-read1" || record.SegmentRef != "seg-read1" {
+		t.Fatalf("record references=%+v", record)
+	}
+}
