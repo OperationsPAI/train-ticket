@@ -1577,11 +1577,10 @@ services:
     env:
       # The TypeScript kit has no CONSUMER_THREADS support: the effective knob
       # is the parallel handler count per read batch. Four handlers kept up at
-      # troughs only, and this consumer fell thirteen seconds behind on the
-      # identity verification stream while a peak held near one hundred and
-      # sixty events per second.
-      # A burst then produced five hundred to seven hundred identity events per
-      # second and this consumer plateaued near five hundred.
+      # troughs only: this consumer fell thirteen seconds behind on the identity
+      # verification stream at a peak near one hundred and sixty events per
+      # second, and then plateaued near five hundred when a burst produced five
+      # hundred to seven hundred of them.
       CONSUMER_BATCH_CONCURRENCY: "48"
       # The pool covers the thirty two handlers without widening the total
       # connection count that decides whether a rollout fits.
