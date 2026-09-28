@@ -5,7 +5,7 @@ Last verified: 2026-09-28, Asia/Beijing.
 ## Runtime
 
 The resident Helm release is `train-ticket` in namespace `train-ticket`,
-revision **520**.
+revision **521**.
 Its values come from one file, `deploy/helm/train-ticket/values.yaml`: the
 registry, the `local-path` storage class, the central telemetry store, the
 resident exporters, the load generator settings and the `loadgen-resident-state`
@@ -64,6 +64,7 @@ to one and back.
 
 | Check | Result | Evidence |
 |---|---|---|
+| Fifteen minutes at the fixed level, revision 521, on the load generator's own records | 412636 requests and 47203 journeys across a trough (1489 journeys) and a peak (5312 journeys): **0 failed journeys, 0 unexpected HTTP errors, 0 requests at the ten second client timeout**, and the only non-2xx answers are the two declared retry refusals -- `offer-management:422` at the `offer` step (969) and at the `scalper-offer` step (3881). No 5xx, no reporting deadlock, and the peak sits at 2.6x below the 13572 journeys a minute where the first capacity failure was measured | `/data/requests.jsonl*` on `loadgen` |
 | Five minute window at revision 520, after the refund reconciliation | 81713 requests and 6531 completed journeys at the trough of the envelope, **0 unexpected HTTP errors and 0 failed journeys**; every dead-letter stream holds what it held before the pass | the load generator's own record file, `/data/requests.jsonl` on `loadgen` |
 | A waitlist entry fulfilled end to end, revision 520 | QUEUED at 21:23:37, MATCHING with offer `off-01a0e4c0-89c3` and order `ord-01a0e4c0-89f6` at 21:23:42, **FULFILLED at 21:23:52** -- one captured payment (`pi-18684bbc`, 9357 = the offer total, inside the guarantee's authorization), entitlement `ent-01a0e4c0-a135` ISSUED for the entry's traveler and segment, and one Confirmed hold with one CONFIRMED seat allocation; the guarantee itself (`pi-e1532d23`) expired with 0 captured rather than being charged twice | `waitlist_entries`, `payment_intent_snapshots`, `entitlement_snapshots`, `capacity_hold_snapshots` |
 | Five minute window at revision 517, after the sweep telemetry | 166628 requests and 14628 completed journeys at the peak of the envelope, **0 unexpected HTTP errors and 0 failed journeys** | the load generator's own record file, `/data/requests.jsonl` on `loadgen` |
