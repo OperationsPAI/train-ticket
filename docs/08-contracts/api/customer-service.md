@@ -104,7 +104,7 @@ timestamps, and Money.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `assignedTo` | string | no | Operator ID to assign (`op-<uuid>`). |
+| `assignedTo` | string | no | Operator ID the case is assigned to (`op-<uuid>`). |
 | `ownerQueue` | string | yes | Target queue name; one the desk's release names. |
 
 **Response (200):** Updated case.

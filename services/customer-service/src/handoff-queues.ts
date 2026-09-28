@@ -1,10 +1,10 @@
 /**
  * The queues the support desk runs.
  *
- * Where a case is handed on is a deployment's arrangement rather than the service's: a desk opens
- * a lane and states it in the release, without waiting for a build. The handoff guard therefore
- * takes a queue only when the release names it, so that a case cannot be filed in a lane no
- * console reads.
+ * Where a case is handed on is the deployment's arrangement rather than the service's: a desk
+ * opens a lane and states it in the release, without waiting for a build. The handoff guard takes
+ * a queue only when the release names it, so that a case cannot be filed in a lane no console
+ * reads.
  *
  * A release that names no queue keeps the arrangement every release so far has run, where the
  * queue the caller gives is taken as it stands. Blank counts as nothing named, so a release that
