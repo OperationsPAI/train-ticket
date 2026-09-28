@@ -23,6 +23,9 @@ Status: implemented and deployed (Helm revision 521; see [current status](../../
   `deploy/helm/train-ticket/values.yaml`).
 - Liveness `/healthz`, readiness `/readyz`; also `/health`, `/live`,
 `/livez`, `/ready`, `/metadata`.
+- Settings `config/intake-channels.json` states the intake queue that owns each support channel
+  and the queues this deployment staffs. The process reads it once at start-up and validates
+  `channel` against the channels those queues own.
 
 ## HTTP surface
 
