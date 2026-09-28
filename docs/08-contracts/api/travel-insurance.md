@@ -25,6 +25,11 @@ All state-changing endpoints require a UUID-v7 `Idempotency-Key`. Money uses `{c
 
 In persistent runtime, Travel Insurance verifies the order, ancillary item and captured insurance payment through their owning APIs. Equal business replays return the existing policy; conflicting purchase facts are rejected.
 
+The product code, the version and the premium come from the release's
+published catalogue (`services/travel-insurance/config/insurance-products.properties`).
+A policy records the product version it was issued from, and a version the
+catalogue does not publish is refused rather than treated as a new product.
+
 ## Claim filing
 
 `POST /api/v1/claims` requires `policyId`, `claimType`, `triggerFactKey` and positive `claimedAmount`. Manual claims require evidence references. Automatic delay claims require a supported delay fact over 60 minutes.
