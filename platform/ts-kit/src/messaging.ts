@@ -275,6 +275,19 @@ const READ_BLOCK_MS = parseInt(process.env.CONSUMER_BLOCK_MS ?? "1000", 10);
 // consumer group's own lag reads zero, which is the signature of consumers
 // waiting on the server rather than on their handlers.
 const READ_COUNT = parseInt(process.env.CONSUMER_BATCH_COUNT ?? "500", 10);
+export const ACCUMULATE_TICK_MS_ENV = "CONSUMER_ACCUMULATE_TICK_MS";
+export const DEFAULT_ACCUMULATE_TICK_MS = 50;
+// The accumulation tick: how long a reader that has just received entries waits
+// before one more, non-blocking, read.
+//
+// `XREADGROUP ... BLOCK` returns as soon as a *single* entry is available, so a
+// reader that keeps up gets one to three entries per round, and the one XACK that
+// retires a round then costs the same as one XACK per entry -- `xack` became the
+// largest command class Redis served. Waiting a tick first folds a burst into one
+// round, at the cost of up to a tick of delivery latency, well inside the ten
+// second poll. Zero restores the read that returns the moment an entry is
+// available.
+const ACCUMULATE_TICK_MS = accumulateTickMs(process.env[ACCUMULATE_TICK_MS_ENV]);
 const CLAIM_MIN_IDLE_MS = 60_000;
 const DEAD_CONSUMER_IDLE_MS = 5 * 60 * 1_000;
 const MAX_HANDLER_FAILURES = 5;
@@ -300,6 +313,26 @@ export function streamMaxLen(configured: string | undefined): number {
     `${STREAM_MAXLEN_ENV}=${configured} is not a positive integer; using default ${DEFAULT_STREAM_MAXLEN}`,
   );
   return DEFAULT_STREAM_MAXLEN;
+}
+
+/**
+ * Resolves the accumulation tick. A blank, non-numeric or negative value falls
+ * back to the default rather than disabling the batching by accident; only an
+ * explicit zero turns the accumulation off.
+ */
+export function accumulateTickMs(configured: string | undefined): number {
+  const trimmed = configured?.trim();
+  if (!trimmed) {
+    return DEFAULT_ACCUMULATE_TICK_MS;
+  }
+  const parsed = Number(trimmed);
+  if (Number.isInteger(parsed) && parsed >= 0) {
+    return parsed;
+  }
+  console.warn(
+    `${ACCUMULATE_TICK_MS_ENV}=${configured} is not a non-negative integer; using default ${DEFAULT_ACCUMULATE_TICK_MS}`,
+  );
+  return DEFAULT_ACCUMULATE_TICK_MS;
 }
 
 /**
@@ -421,6 +454,33 @@ export function attachRedisLifecycleLogging(client: Redis, name: string): Livene
 
 type StreamEntry = [id: string, fields: string[]];
 type StreamMessages = [stream: string, entries: StreamEntry[]];
+
+function entryCount(messages: StreamMessages[] | null): number {
+  return (messages ?? []).reduce((total, [, entries]) => total + entries.length, 0);
+}
+
+/**
+ * Folds one read's entries per stream onto another's, keeping the stream order of
+ * the first read. Each read is capped at COUNT, so the merged round is the burst
+ * the tick caught rather than the batch size times two.
+ */
+function mergeStreamMessages(first: StreamMessages[] | null, more: StreamMessages[] | null): StreamMessages[] | null {
+  if (!more || more.length === 0) {
+    return first;
+  }
+  const merged: StreamMessages[] = (first ?? []).map(([stream, entries]) => [stream, [...entries]]);
+  const index = new Map<string, number>(merged.map(([stream], at) => [stream, at]));
+  for (const [stream, entries] of more) {
+    const at = index.get(stream);
+    if (at === undefined) {
+      index.set(stream, merged.length);
+      merged.push([stream, [...entries]]);
+    } else {
+      merged[at][1].push(...entries);
+    }
+  }
+  return merged.length > 0 ? merged : null;
+}
 type BatchEntry = Readonly<{ entry: StreamEntry; envelope: EventEnvelope; attempts: number }>;
 
 export class RedisEventPublisher implements EventPublisher {
@@ -612,14 +672,6 @@ export class RedisEventSubscriber implements EventSubscriber {
   private async poll(streams: readonly string[], group: string, consumerName: string, handler: EventHandler, signal?: AbortSignal): Promise<void> {
     let consecutiveFailures = 0;
     while (!this.stopped && !signal?.aborted) {
-      const redisWithRead = this.redis as unknown as {
-        call?: (...args: unknown[]) => Promise<unknown>;
-        xreadgroup?: (...args: unknown[]) => Promise<unknown>;
-      };
-      const read = redisWithRead.call?.bind(this.redis) ?? redisWithRead.xreadgroup?.bind(this.redis);
-      if (!read) {
-        throw new TypeError("Redis client does not support XREADGROUP");
-      }
       try {
         // A reconnect may have landed us on a freshly restarted, empty Redis
         // with no streams and no consumer groups. Re-create them before
@@ -628,19 +680,7 @@ export class RedisEventSubscriber implements EventSubscriber {
           this.groupsNeedRecreate = false;
           await Promise.all(streams.map((stream) => this.createGroup(stream, group)));
         }
-        const messages = await read(
-          "XREADGROUP",
-          "GROUP",
-          group,
-          consumerName,
-          "BLOCK",
-          READ_BLOCK_MS,
-          "COUNT",
-          READ_COUNT,
-          "STREAMS",
-          ...streams,
-          ...streams.map(() => ">"),
-        ) as StreamMessages[] | null;
+        const messages = await this.readRound(streams, group, consumerName);
         consecutiveFailures = 0;
         this.consumerLiveness?.markHealthy();
         await this.processMessages(messages, group, consumerName, handler);
@@ -674,6 +714,70 @@ export class RedisEventSubscriber implements EventSubscriber {
         }
         await sleep(pollBackoffMs(consecutiveFailures));
       }
+    }
+  }
+
+  /**
+   * One read round: the blocking idle read, then the accumulation tick.
+   *
+   * The idle path is untouched -- a read that returns nothing pays neither the
+   * tick nor a second command, and simply loops back to the blocking read, so an
+   * empty stream never spins. Only a round that already received entries waits a
+   * tick and takes one more, non-blocking, read, folding a burst into one round
+   * and one XACK.
+   */
+  private async readRound(streams: readonly string[], group: string, consumerName: string): Promise<StreamMessages[] | null> {
+    const first = await this.readStreams(streams, group, consumerName, READ_BLOCK_MS);
+    return this.accumulateRead(first, streams, group, consumerName);
+  }
+
+  private async readStreams(
+    streams: readonly string[],
+    group: string,
+    consumerName: string,
+    blockMs: number,
+  ): Promise<StreamMessages[] | null> {
+    const redisWithRead = this.redis as unknown as {
+      call?: (...args: unknown[]) => Promise<unknown>;
+      xreadgroup?: (...args: unknown[]) => Promise<unknown>;
+    };
+    const read = redisWithRead.call?.bind(this.redis) ?? redisWithRead.xreadgroup?.bind(this.redis);
+    if (!read) {
+      throw new TypeError("Redis client does not support XREADGROUP");
+    }
+    return await read(
+      "XREADGROUP",
+      "GROUP",
+      group,
+      consumerName,
+      // A non-blocking read omits BLOCK entirely rather than passing BLOCK 0,
+      // which Redis would read as "block forever".
+      ...(blockMs > 0 ? ["BLOCK", blockMs] : []),
+      "COUNT",
+      READ_COUNT,
+      "STREAMS",
+      ...streams,
+      ...streams.map(() => ">"),
+    ) as StreamMessages[] | null;
+  }
+
+  private async accumulateRead(
+    first: StreamMessages[] | null,
+    streams: readonly string[],
+    group: string,
+    consumerName: string,
+  ): Promise<StreamMessages[] | null> {
+    if (ACCUMULATE_TICK_MS <= 0 || entryCount(first) === 0 || entryCount(first) >= READ_COUNT) {
+      return first;
+    }
+    await sleep(ACCUMULATE_TICK_MS);
+    try {
+      const more = await this.readStreams(streams, group, consumerName, 0);
+      return mergeStreamMessages(first, more);
+    } catch {
+      // A failed top-up is not fatal to the round: the entries already in hand
+      // are still processed, and the next round re-reads.
+      return first;
     }
   }
 

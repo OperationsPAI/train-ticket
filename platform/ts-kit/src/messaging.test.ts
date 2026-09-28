@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import { context, trace } from "@opentelemetry/api";
 import { InMemorySpanExporter } from "@opentelemetry/sdk-trace-base";
 
-import { configuredStreamMaxLen, createEventEnvelope, DEFAULT_STREAM_MAXLEN, HandlerError, InMemoryEventSubscriber, RedisEventPublisher, RedisEventSubscriber, STREAM_MAXLEN_ENV, streamMaxLen, type EventEnvelope } from "./messaging.js";
+import { ACCUMULATE_TICK_MS_ENV, accumulateTickMs, configuredStreamMaxLen, createEventEnvelope, DEFAULT_ACCUMULATE_TICK_MS, DEFAULT_STREAM_MAXLEN, HandlerError, InMemoryEventSubscriber, RedisEventPublisher, RedisEventSubscriber, STREAM_MAXLEN_ENV, streamMaxLen, type EventEnvelope } from "./messaging.js";
 import { initOpenTelemetry } from "./observability.js";
 import { isPrefixedUuidV7, newCommandId, newCorrelationId, newEventId } from "./ids.js";
 
@@ -472,5 +472,97 @@ describe("stream MAXLEN cap", () => {
 
     assert.equal(warnings.length, 4);
     assert.match(String(warnings[0]), /is not a positive integer/u);
+  });
+});
+
+describe("RedisEventSubscriber read-batch accumulation", () => {
+  function subscriberWith(readResults: unknown[], acks: unknown[][] = []): {
+    subscriber: RedisEventSubscriber;
+    reads: unknown[][];
+    acks: unknown[][];
+  } {
+    const reads: unknown[][] = [];
+    const redis = {
+      call: async (...args: unknown[]) => {
+        reads.push(args);
+        return readResults.shift() ?? null;
+      },
+      xack: async (...args: unknown[]) => { acks.push(args); return 1; },
+      xadd: async () => "1-1",
+    };
+    return { subscriber: new RedisEventSubscriber(redis as never), reads, acks };
+  }
+
+  function envelopeFields(eventType: string): string[] {
+    return ["envelope", JSON.stringify(createEventEnvelope({ eventType, producer: "ts-kit-test", payload: {} }))];
+  }
+
+  function entriesIn(round: [string, [string, string[]][]][] | null): number {
+    return (round ?? []).reduce((total, [, entries]) => total + entries.length, 0);
+  }
+
+  it("folds a burst into one round with the tick, and the top-up read does not block", async () => {
+    const { subscriber, reads } = subscriberWith([
+      [["events:payment", [["1-0", envelopeFields("PaymentAuthorised")]]]],
+      [["events:payment", [["2-0", envelopeFields("PaymentAuthorised")], ["3-0", envelopeFields("PaymentAuthorised")]]]],
+    ]);
+
+    const round = await (subscriber as unknown as {
+      readRound: (streams: string[], group: string, consumerName: string) => Promise<[string, [string, string[]][]][] | null>;
+    }).readRound(["events:payment"], "journey-order", "journey-order-a");
+
+    assert.equal(entriesIn(round), 3, "the tick must fold the whole burst into one round");
+    assert.equal(round?.length, 1, "the round stays one stream");
+    assert.equal(reads.length, 2, "one blocking read plus one top-up read");
+    assert.equal(reads[0].includes("BLOCK"), true, "the idle read blocks in Redis");
+    assert.equal(reads[1].includes("BLOCK"), false, "the top-up read must not pass BLOCK 0, which Redis reads as forever");
+  });
+
+  it("retires the whole round with one XACK carrying every id", async () => {
+    const acks: unknown[][] = [];
+    const { subscriber } = subscriberWith([], acks);
+    const entries: [string, string[]][] = ["1-0", "2-0", "3-0"].map((id) => [id, envelopeFields("PaymentAuthorised")]);
+
+    await (subscriber as unknown as {
+      processMessages: (messages: [string, [string, string[]][]][], group: string, consumerName: string, handler: () => unknown) => Promise<void>;
+    }).processMessages([["events:payment", entries]], "journey-order", "journey-order-a", () => undefined);
+
+    assert.equal(acks.length, 1, "a three-entry round must cost one XACK");
+    assert.deepEqual(acks[0], ["events:payment", "journey-order", "1-0", "2-0", "3-0"]);
+  });
+
+  it("does not tick an empty read, so an idle stream cannot spin", async () => {
+    const { subscriber, reads } = subscriberWith([]);
+
+    const started = Date.now();
+    const round = await (subscriber as unknown as {
+      accumulateRead: (first: unknown, streams: string[], group: string, consumerName: string) => Promise<unknown>;
+    }).accumulateRead(null, ["events:payment"], "journey-order", "journey-order-a");
+
+    assert.equal(round, null);
+    assert.equal(reads.length, 0, "an empty read must not issue a top-up read");
+    assert.ok(Date.now() - started < DEFAULT_ACCUMULATE_TICK_MS, "an empty read must not sleep the tick");
+  });
+
+  it("resolves the tick, falling back only for a value that is not a non-negative integer", () => {
+    assert.equal(ACCUMULATE_TICK_MS_ENV, "CONSUMER_ACCUMULATE_TICK_MS");
+    assert.equal(DEFAULT_ACCUMULATE_TICK_MS, 50);
+    const warnings: unknown[] = [];
+    const originalWarn = console.warn;
+    console.warn = (value?: unknown) => { warnings.push(value); };
+    try {
+      assert.equal(accumulateTickMs(undefined), DEFAULT_ACCUMULATE_TICK_MS);
+      assert.equal(accumulateTickMs(""), DEFAULT_ACCUMULATE_TICK_MS);
+      assert.equal(accumulateTickMs("not-a-number"), DEFAULT_ACCUMULATE_TICK_MS);
+      assert.equal(accumulateTickMs("-5"), DEFAULT_ACCUMULATE_TICK_MS);
+      assert.equal(accumulateTickMs(" 250 "), 250);
+      // Zero is the documented way to restore the pre-accumulation read.
+      assert.equal(accumulateTickMs("0"), 0);
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.equal(warnings.length, 2);
+    assert.match(String(warnings[0]), /is not a non-negative integer/u);
   });
 });
