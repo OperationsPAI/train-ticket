@@ -422,7 +422,7 @@ class PostgresReportingApplicationService:
 
     def _seed_defaults(self) -> None:
         defaults = default_repository()
-        catalog = load_metric_catalog()
+        published = load_metric_catalog()
         with self._pool.connection() as conn:
             with conn.transaction():
                 for metric in defaults.metrics.values():
@@ -430,7 +430,7 @@ class PostgresReportingApplicationService:
                 # The catalog the governance review signed off is the source of the
                 # definitions this release publishes, so it is written with the
                 # built-in documents under the id each entry declares.
-                for entry in catalog:
+                for entry in published:
                     self._metrics.seed(conn, str(entry["metricId"]), entry)
                 for dashboard in defaults.dashboards.values():
                     self._dashboards.seed(conn, dashboard.dashboard_id, _dashboard_to_json(dashboard))
@@ -443,7 +443,7 @@ class PostgresReportingApplicationService:
         logger.info(
             "definition store seeded from catalog revision %s, %d entries",
             catalog_revision(),
-            len(catalog),
+            len(published),
         )
 
     def list_metrics(self, *, category: MetricCategory | None, limit: int, offset: int) -> tuple[list[MetricDefinition], int]:
