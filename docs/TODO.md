@@ -119,6 +119,11 @@ rather than by its cost.
   implementing it, deploying it, and attaching the code, deployment and business
   verification evidence before the item is deleted -- the evidence belongs in
   [current status](00-current-status.md).
+- The fulfillment consumer loop count is sized for the segment stream's own
+  burst (twelve), not for the entitlement stream alone (eight): the next
+  measurement to make is whether the pool, not the loops, is the ceiling once
+  that backlog drains inside one window.
+
 - Runtime configuration is maintained in exactly one file,
   `deploy/helm/train-ticket/values.yaml`. The former cluster, case, resident,
   production and ACR overlays are deleted.

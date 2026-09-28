@@ -1341,14 +1341,16 @@ services:
       # register replaces it, so a reader outside this one is refused without a
       # rebuild.
       FULFILLMENT_BOARDING_SOURCES: "STATION,PROVIDER"
-      # Eight reader loops: one loop processes a read batch on its own
+      # Twelve reader loops: one loop processes a read batch on its own
       # goroutine, and the entitlement projection needs a database write per
       # ticket. Measured with one loop, fulfillment processed about 37 events
       # per second while the entitlement stream published roughly 100, so the
       # stream trimmed events before they were delivered and sixteen percent of
       # the issued tickets had no fulfillment record when the load generator
-      # boarded them.
-      CONSUMER_WORKERS: "8"
+      # boarded them. Eight loops cleared that backlog inside the window; the
+      # segment stream's own backlog at the cycle's burst needs twelve, and the
+      # pool below carries the extra writers.
+      CONSUMER_WORKERS: "12"
       PG_MAX_POOL_SIZE: "24"
     strategy:
       type: RollingUpdate
