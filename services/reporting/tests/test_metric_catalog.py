@@ -63,6 +63,25 @@ class MetricCatalogTest(unittest.TestCase):
         ids = [str(entry["metricId"]) for entry in load_metric_catalog()]
         self.assertEqual(len(ids), len(set(ids)))
 
+    def test_every_entry_keeps_the_store_document_keys(self) -> None:
+        stored = {
+            "metricId",
+            "name",
+            "description",
+            "owner",
+            "category",
+            "granularity",
+            "version",
+            "expression",
+            "status",
+            "publishedAt",
+            "dependsOnMetricIds",
+            "sourceLineage",
+            "deprecatedAt",
+        }
+        for entry in load_metric_catalog():
+            self.assertTrue(set(entry).issubset(stored), sorted(set(entry) - stored))
+
     def test_an_entry_without_an_id_seeds_nothing(self) -> None:
         self.assertEqual(load_metric_catalog(Path("no-such-catalog.json")), ())
 
