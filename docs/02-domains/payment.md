@@ -34,6 +34,12 @@ The change executor owns fare difference collection or refunds through the Payme
 That case issues Wallet / Promotion credit while the original capture and refundable balance remain unchanged.
 Ancillary refund intents retain their own payment and item references.
 
+## Channel routing and settings
+
+Routing takes the payer's preferred channel when that channel can carry the amount, and draws from the enabled channels by weight when it cannot; the draw is what the channel table's weights are for.
+The table's terms -- ceiling, collection window, enabled and weight -- are settings values in the service's own `application.properties`, and the release overrides any of them by environment name, so a band or a window moves with the release rather than with the image.
+A channel the table does not list is not routable, and payment-channel settles only the three the table names.
+
 ## Persistence and verification
 
 PostgreSQL repositories commit financial snapshots, business identity and outbox events together.
