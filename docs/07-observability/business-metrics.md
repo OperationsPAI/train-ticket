@@ -19,8 +19,8 @@ Allowed labels are bounded enums or configured names:
 
 - `workflow`, `stage`, `state`, `outcome`, `reason_code`, `operation`
 - `currency`, `channel`, `travel_class`, `seat_mode`, `ticket_type`
-- `queue`, `event_stream`, `consumer_group`, `event_type`
-- `source_service`, `target_service`
+- `queue`, `event_stream`, `consumer_group`, `event_type`,
+  `source_service`, `target_service`
 
 Do not attach order, saga, payment, refund, hold, seat, ticket, waitlist,
 wallet, notification, account, traveler, request or correlation identifiers.
