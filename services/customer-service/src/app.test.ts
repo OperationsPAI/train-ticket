@@ -348,6 +348,38 @@ describe("customer-service HTTP API", () => {
     assert.equal(reopened.json().status, "IN_PROGRESS");
   });
 
+  it("resolves a handoff against the lanes the release states", async () => {
+    const previous = process.env.CUSTOMER_SERVICE_CASE_ASSIGN_OWNER_QUEUES;
+    process.env.CUSTOMER_SERVICE_CASE_ASSIGN_OWNER_QUEUES = "post-sales-desk,ticketing-desk";
+    try {
+      const app = createApp();
+      const caseId = await openedCase(app);
+
+      const turnedAway = await app.inject({
+        method: "POST",
+        url: `/api/v1/support-cases/${caseId}/assign`,
+        headers: { "idempotency-key": "018f2e00-7b3e-7610-8284-5c26e8b0e001" },
+        payload: { ownerQueue: "tier1" },
+      });
+      assert.equal(turnedAway.statusCode, 422);
+      assert.equal(turnedAway.json().code, "DOMAIN_RULE_VIOLATION");
+      assert.equal(turnedAway.json().details.domainCode, "CASE_NOT_STAFFED");
+
+      const filed = await app.inject({
+        method: "POST",
+        url: `/api/v1/support-cases/${caseId}/assign`,
+        headers: { "idempotency-key": "018f2e00-7b3e-7610-8284-5c26e8b0e002" },
+        payload: { ownerQueue: "post-sales-desk" },
+      });
+      assert.equal(filed.statusCode, 200);
+      assert.equal(filed.json().status, "IN_PROGRESS");
+      assert.equal(filed.json().ownerQueue, "post-sales-desk");
+    } finally {
+      if (previous === undefined) delete process.env.CUSTOMER_SERVICE_CASE_ASSIGN_OWNER_QUEUES;
+      else process.env.CUSTOMER_SERVICE_CASE_ASSIGN_OWNER_QUEUES = previous;
+    }
+  });
+
   it("supports customer-request escalation and SLA evaluation endpoints", async () => {
     const publisher = new InMemoryEventPublisher();
     const app = createApp({ publisher });
