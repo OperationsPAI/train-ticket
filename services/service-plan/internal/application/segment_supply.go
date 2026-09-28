@@ -58,8 +58,8 @@ func (s *Service) GetSegmentSupply(ctx context.Context, ref string) (*SegmentSup
 }
 
 // publishedInterval names the stop positions the published interval covers.
-// The service states whether the end is the last stop it covers or the first
-// position past it, so a caller reads the bound the service publishes.
+// The contract writes the interval half open, so the end names the first
+// position past the segment and a caller reads the bound the service states.
 func (s *Service) publishedInterval(stops []SupplyStop) (int, int) {
 	first, last := stops[0].Sequence, stops[len(stops)-1].Sequence
 	if strings.EqualFold(strings.TrimSpace(s.supply.IntervalBound), SupplyIntervalBoundExclusive) {

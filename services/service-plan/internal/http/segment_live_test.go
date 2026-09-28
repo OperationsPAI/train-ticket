@@ -106,7 +106,7 @@ func TestRecordedServiceSegmentIsReadableWithoutChangingSupply(t *testing.T) {
 		if response.StatusCode != 200 || supply.SegmentRef != source.Segment.SegmentRef || supply.ScheduledServiceRef != source.Service.ScheduledServiceRef || supply.ServiceDate != source.Service.DepartureTime.UTC().Format("2006-01-02") {
 			t.Fatalf("supply=%+v status=%d", supply, response.StatusCode)
 		}
-		if supply.Interval.FromSeq != 0 || supply.Interval.ToSeq != 1 || len(supply.Stops) != 2 || supply.Stops[0].NodeRef != source.Service.OriginNodeID || supply.Stops[1].NodeRef != source.Service.DestinationNodeID || supply.StopSequenceVersion == "" {
+		if supply.Interval.FromSeq != 0 || supply.Interval.ToSeq != 2 || len(supply.Stops) != 2 || supply.Stops[0].NodeRef != source.Service.OriginNodeID || supply.Stops[1].NodeRef != source.Service.DestinationNodeID || supply.StopSequenceVersion == "" {
 			t.Fatalf("ordered source=%+v", supply)
 		}
 	}
