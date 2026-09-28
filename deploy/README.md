@@ -15,7 +15,7 @@ resident release's individual immutable image references. Capture `helm get
 values`, change only the intended service image or configuration, and use Helm
 for the update so the release remains the source of truth.
 
-The chart's own [values.yaml](train-ticket/values.yaml) is the single values file.
+The chart's own [values.yaml](helm/train-ticket/values.yaml) is the single values file.
 It carries the registry, the StorageClass, the central telemetry wiring, the resident exporters and the `loadgen-resident-state` persistent claim.
 
 Skaffold supplies `services.<name>.image` and `loadgen.image` through `setValueTemplates`.
@@ -102,8 +102,8 @@ skaffold run -p case --kube-context <test-context> \
 ```
 
 `skaffold build` builds and pushes artifacts without deploying a release.
-The separate `push-images` and `deploy-acr` Makefile targets support the registry layout in the production and ACR values files.
-Those files have their own storage, database and resource settings and require validation for the chosen new environment.
+The separate `push-images` and `deploy-acr` Makefile targets push and install a release for an external registry layout.
+They read `HELM_VALUES` and `HELM_VALUES_ACR`, which default to the single chart values file; a different environment must supply its own values file with its storage, database and resource settings and validate them first.
 See [deployment guide](../docs/deployment.md) for their scope and prerequisites.
 
 ### Variables
