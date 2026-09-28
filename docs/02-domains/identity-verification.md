@@ -229,7 +229,7 @@ Identity Verification 拥有 SIM 公安网关防腐层，镜像 Provider Integra
 
 1. SimGatewayAdapter：以 `seed + materialFingerprint + scenarioCode` 作为输入，确定性返回 `MATCH`、`MISMATCH`、`NOT_FOUND`、`EXPIRED`、`TEMPORARY_UNAVAILABLE` 或 `AMBIGUOUS_TIMEOUT`。
 2. Request Mapper：把 CredentialRecord 的加密证件材料解密到短生命周期内存 DTO；仅在 adapter 边界使用，禁止写入日志、事件或普通读模型。
-3. Response Mapper：把 SIM 结果映射为 VerificationPassed、VerificationFailed 或 Ambiguous 状态；失败原因对外只暴露安全 reasonCode，例如 `NAME_DOCUMENT_MISMATCH`、`DOCUMENT_NOT_FOUND`、`DOCUMENT_EXPIRED`。
+3. Response Mapper：把 SIM 结果映射为 VerificationPassed、VerificationFailed 或 Ambiguous 状态；失败原因对外只暴露安全 reasonCode，例如 `NAME_DOCUMENT_MISMATCH`、`MANUAL_REVIEW_REQUIRED`。
 4. Deterministic Fault Policy：测试和本地运行可配置 seed、故障比例和固定 fixtures；同一 seed 与同一 materialFingerprint 必须返回同一 simResultRef 与结果，便于重放和契约测试。
 5. No Network Rule：不得配置真实公安、学信、军残或铁路端点；不得读取真实凭证、token 或证书；adapter 只在进程内模拟，CI 与本地行为一致。
 6. Raw Archive：只保存请求/响应的安全摘要、mappingVersion、simResultRef、latencyBucket 和 resultCode；不保存原始证件号、姓名全文或外部 raw payload。
