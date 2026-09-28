@@ -19,6 +19,7 @@ Concrete seat and berth overbooking is zero in that path.
 
 `SUPPLY_FACTS_BASE_URL_TEMPLATE` selects upstream service addresses and defaults to `http://%s:8080`.
 `DATABASE_URL`, `REDIS_URL` and `MIGRATIONS_DIR` configure persistence and messaging.
+`CAPACITY_SUPPLY_RETENTION_HOURS` sets how long `capacity_supply_observations` keeps a row before the retention sweep removes it, defaulting to `168` (7 days); a zero or unparseable value falls back to the default. The sweep runs every 10 minutes in bounded batches and leaves a table that is far above retention to the following passes rather than deleting it in one transaction (`src/adapters/storage/retention.rs`).
 `reservation_supply_facts` stores accepted source references and `capacity_supply_observations` stores supply evidence.
 Historical Hold identities are preserved.
 Integrated Hold placement reads the Service Plan segment supply interval and records its stop sequence digest.
