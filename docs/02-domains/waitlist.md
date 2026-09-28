@@ -1,6 +1,6 @@
 # Waitlist Domain Design
 
-更新日期：2026 年 9 月 27 日。
+更新日期：2026年9月28日。
 当前服务位于 `services/waitlist`，使用 TypeScript、Fastify、PostgreSQL 和 Redis Streams。
 
 ## 领域职责与边界
@@ -60,7 +60,7 @@ Offer 通过担保校验后，应用在后续 tick 创建实际 Journey Order �
 `WaitlistCapacityFreed` 必须包含 segment、日期和释放名额。
 `CapacityReleased` 只在具有匹配字段时触发候补；缺少日期会被确认消费并跳过。
 当前普通 Capacity 释放事实缺少 `departureDate`，自动从这些释放兑现候补尚未得到完整验证。
-Capacity 的联合 supply 计算已在提交 `caafa668` 中实现，尚未部署，Booking coordinated 未启用。
+Capacity 的联合 supply 计算已在提交 `caafa668` 中实现并部署，Booking coordinated 已启用。
 
 订单确认和取消通过 `journeyOrderRef` 的数据库表达式索引定位请求。
 事件去重、请求保存和 outbox 追加通过存储事务执行。
@@ -72,9 +72,12 @@ Notification 消费 `WaitlistFulfilled`，候补服务不直接发送成功通�
 | 接口 | 用途 |
 |---|---|
 | `POST /api/v1/waitlist-requests` | 创建并排队。 |
+| `POST /api/v1/waitlist/entries` | 创建并排队的等价入口。 |
 | `GET /api/v1/waitlist-requests` | 按旅客查询和分页。 |
 | `GET /api/v1/waitlist-requests/{waitlistRequestId}` | 读取候补请求。 |
 | `POST /api/v1/waitlist-requests/{waitlistRequestId}/cancel` | 取消请求。 |
+| `GET /api/v1/waitlist/entries/{entryId}` | 读取候补条目。 |
+| `DELETE /api/v1/waitlist/entries/{entryId}` | 取消候补条目。 |
 | `POST /api/v1/waitlist/entries/{entryId}/accept` | 对当前有效匹配尝试创建或重放订单关联。 |
 | `GET /api/v1/waitlist/segments/{segmentRef}/{departureDate}/queue` | 查询队列信息；当前数据库不按日期过滤。 |
 | `POST /api/v1/waitlist/archive-sweep` | 归档可归档请求。 |
