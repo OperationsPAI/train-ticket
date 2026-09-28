@@ -20,6 +20,7 @@
     "maxFareShare": 0.5
   },
   "accountReference": {
-    "acceptedNamespaces": []
+    "source": "account contract",
+    "acceptedNamespaces": ["acct"]
   }
 }

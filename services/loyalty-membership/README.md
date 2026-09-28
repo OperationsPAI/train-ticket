@@ -13,8 +13,8 @@ than this service's. They are stated in
 image carries at `/app/config`, and read once at startup by `src/programme.ts`.
 
 `accountReference.acceptedNamespaces` is the statement an enrolment's account
-reference is held to; an empty statement accepts the reference as the caller
-sends it.
+reference is held to, and the account contract publishes its account references
+in the `acct` namespace, so the programme states it.
 
 ## Local validation
 
