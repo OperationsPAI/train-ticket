@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { DomainError, Member } from "./domain.js";
-import { accountReferenceStatement, membershipProgramme } from "./programme.js";
+import { accountReferenceRefused, accountReferenceStatement, membershipProgramme } from "./programme.js";
 
 const ACCOUNT_REFERENCE = "acc-0194f2e0-7b3e-7610-8284-5c26e8b0c456";
 
@@ -38,5 +38,12 @@ describe("membership programme", () => {
 
       assert.equal(member.accountId, accountId);
     }
+  });
+
+  it("answers the same question the enrolment asks, for any reference", () => {
+    assert.equal(accountReferenceRefused(ACCOUNT_REFERENCE, { acceptedNamespaces: [] }), false);
+    assert.equal(accountReferenceRefused(ACCOUNT_REFERENCE, { acceptedNamespaces: ["acct"] }), true);
+    assert.equal(accountReferenceRefused(ACCOUNT_REFERENCE, { acceptedNamespaces: ["acc"] }), false);
+    assert.equal(accountReferenceRefused("acct_0194f2e0-7b3e-7610-8284-5c26e8b0c456", { acceptedNamespaces: ["acct"] }), false);
   });
 });

@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 
+import { accountReferenceRefused } from "./programme.js";
+
 export type MemberId = string;
 export type AccountId = string;
 /**
@@ -538,12 +540,11 @@ function newLedgerEntryId(): PointsLedgerEntryId { return `ple_${randomUUID()}`;
 function newPointsLotId(): PointsLotId { return `lot_${randomUUID()}`; }
 function newRedemptionId(): RedemptionId { return `red_${randomUUID()}`; }
 // An enrolment keys a membership by the account reference its caller sends, and the ledger keeps
-// that reference as it arrives. The programme states the namespaces those references arrive in, so
-// a reference from a namespace the programme does not state is refused where it is read: storing it
-// anyway would key the membership by something the identity service does not resolve an account
-// from. An empty statement accepts the reference as the caller sends it.
+// that reference as it arrives. The statement is the programme's, so the question is asked where
+// the programme is read; storing a reference it does not hold would key the membership by something
+// the identity service does not resolve an account from.
 function assertAccountReferenceStated(accountId: AccountId, statement?: AccountReferenceStatement): void {
-  const accepted = statement?.acceptedNamespaces ?? [];
-  if (accepted.length === 0 || accepted.some((namespace) => accountId.startsWith(`${namespace}-`) || accountId.startsWith(`${namespace}_`))) return;
-  throw new DomainError("ACCOUNT_REFERENCE_NOT_ACCEPTED", "The account reference is not one the membership programme keys by");
+  if (statement && accountReferenceRefused(accountId, statement)) {
+    throw new DomainError("ACCOUNT_REFERENCE_NOT_ACCEPTED", "The account reference is not one the membership programme keys by");
+  }
 }

@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import type { AccountReferenceStatement } from "./domain.js";
+
 /**
  * The membership programme, as member relations exports it.
  *
@@ -19,10 +21,6 @@ import { fileURLToPath } from "node:url";
  * A file that is missing, malformed or incomplete fails the read rather than
  * letting an enrolment be keyed by a statement nobody made.
  */
-export type AccountReferenceStatement = Readonly<{
-  acceptedNamespaces: readonly string[];
-}>;
-
 export type MembershipProgramme = Readonly<{
   programme: string;
   revision: string;
@@ -44,6 +42,21 @@ export function membershipProgramme(): MembershipProgramme {
 /** The statement an enrolment's account reference is held to. */
 export function accountReferenceStatement(): AccountReferenceStatement {
   return membershipProgramme().accountReference;
+}
+
+/**
+ * Whether the statement refuses the account reference an enrolment arrived with.
+ *
+ * An enrolment keys a membership by the account reference its caller sends, and the
+ * ledger keeps that reference as it arrives. The statement is the programme's, so
+ * the question is asked where the programme is read: a reference from a namespace
+ * the statement does not list is one a membership cannot be keyed by, because the
+ * identity service does not resolve an account from it. An empty statement refuses
+ * nothing.
+ */
+export function accountReferenceRefused(reference: string, statement: AccountReferenceStatement): boolean {
+  const accepted = statement.acceptedNamespaces;
+  return accepted.length > 0 && !accepted.some((namespace) => reference.startsWith(`${namespace}-`) || reference.startsWith(`${namespace}_`));
 }
 
 function readProgramme(): MembershipProgramme {
