@@ -25,8 +25,8 @@ func main() {
 		log.Fatalf("failed to initialize OpenTelemetry: %v", err)
 	}
 	defer func() { _ = shutdownOTel(context.Background()) }()
-	log.Printf("service-plan settings: %s", settings.Describe())
 	port := strconv.Itoa(settings.Port)
+	log.Printf("service-plan listening on port %s with %s", port, settings.Describe())
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	// The metrics variant installs pool acquisition tracing, which pgxpool reads
