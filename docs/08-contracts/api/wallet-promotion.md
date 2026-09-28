@@ -1,6 +1,6 @@
 # Wallet / Promotion HTTP API
 
-Last updated: 2026-09-25.
+Last updated: 2026-09-28.
 
 `POST_SALES_COMP` issuance requires one benefit per case.
 If a benefit exists without its persisted issuance request, a new request returns HTTP 409 `CONFLICT` and preserves the existing balance.
