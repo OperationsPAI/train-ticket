@@ -9,8 +9,10 @@ import ch.qos.logback.core.read.ListAppender;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.trainticket.platformkit.observability.EventConsumerMetrics;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
@@ -23,6 +25,80 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 
 class RedisEventSubscriberTest {
+    /**
+     * XREADGROUP hands back as soon as a single entry is available, so a reader that keeps up gets
+     * one to three entries per round, and the one XACK that retires a round then costs the same as
+     * one XACK per entry. One accumulation tick has to fold the rest of the burst into the round,
+     * and it must be paid once for the whole round rather than once per stream.
+     */
+    @Test
+    void accumulateRoundFoldsTheBurstOfEveryStreamThatReadSomething() {
+        var topUpForPayment = new RedisStreamOperations.StreamEntry("2-0", "{}");
+        var scripted = new ScriptedReadsStreams(Map.of("events:payment", List.of(List.of(topUpForPayment))));
+        RedisEventSubscriber subscriber = new RedisEventSubscriber(
+            scripted, new ObjectMapper().registerModule(new JavaTimeModule()), null);
+        Map<String, List<RedisStreamOperations.StreamEntry>> round = new LinkedHashMap<>();
+        round.put("events:payment", new ArrayList<>(List.of(new RedisStreamOperations.StreamEntry("1-0", "{}"))));
+        round.put("events:booking-orchestration",
+            new ArrayList<>(List.of(new RedisStreamOperations.StreamEntry("3-0", "{}"))));
+
+        subscriber.accumulateRound(round, "journey-order", "consumer-1");
+
+        assertThat(round.get("events:payment"))
+            .extracting(RedisStreamOperations.StreamEntry::id)
+            .containsExactly("1-0", "2-0");
+        assertThat(round.get("events:booking-orchestration"))
+            .extracting(RedisStreamOperations.StreamEntry::id)
+            .containsExactly("3-0");
+        assertThat(scripted.readCount("events:payment")).isEqualTo(1);
+        subscriber.close();
+    }
+
+    /**
+     * The accumulation must not touch the idle path: a round that read nothing pays neither the
+     * tick nor a second XREADGROUP, so an empty stream neither ticks nor spins.
+     */
+    @Test
+    void anEmptyRoundPaysNeitherTheTickNorATopUpRead() {
+        var scripted = new ScriptedReadsStreams(Map.of());
+        RedisEventSubscriber subscriber = new RedisEventSubscriber(
+            scripted, new ObjectMapper().registerModule(new JavaTimeModule()), null);
+        Map<String, List<RedisStreamOperations.StreamEntry>> round = new LinkedHashMap<>();
+
+        long startedNanos = System.nanoTime();
+        subscriber.accumulateRound(round, "journey-order", "consumer-1");
+
+        assertThat(round).isEmpty();
+        assertThat(scripted.readCount("events:payment")).isZero();
+        assertThat(Duration.ofNanos(System.nanoTime() - startedNanos))
+            .isLessThan(Duration.ofMillis(LettuceRedisStreamOperations.DEFAULT_ACCUMULATE_TICK_MS));
+        subscriber.close();
+    }
+
+    /**
+     * The whole round is retired by a single command: XACK takes any number of ids for the same
+     * stream and group, and one command per delivered event per group was the largest command
+     * class a single-threaded Redis served.
+     */
+    @Test
+    void anAccumulatedRoundIsRetiredByOneBatchAcknowledge() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
+        var factory = new EventEnvelopeFactory("payment");
+        List<RedisStreamOperations.StreamEntry> entries = List.of(
+            new RedisStreamOperations.StreamEntry("1-0", objectMapper.writeValueAsString(factory.create("PaymentCaptured", Map.of("id", "1")))),
+            new RedisStreamOperations.StreamEntry("2-0", objectMapper.writeValueAsString(factory.create("PaymentCaptured", Map.of("id", "2")))),
+            new RedisStreamOperations.StreamEntry("3-0", objectMapper.writeValueAsString(factory.create("PaymentCaptured", Map.of("id", "3")))));
+        BatchAckStreams streams = new BatchAckStreams(entries);
+        RedisEventSubscriber subscriber = new RedisEventSubscriber(streams, objectMapper, null);
+
+        subscriber.recoverOnce("events:payment", "journey-order", "consumer-1", ignored -> HandlerResult.SUCCESS);
+        subscriber.close();
+
+        assertThat(streams.ackBatches).hasSize(1);
+        assertThat(streams.ackBatches.getFirst().stream()).isEqualTo("events:payment");
+        assertThat(streams.ackBatches.getFirst().ids()).containsExactly("1-0", "2-0", "3-0");
+    }
+
     @Test
     void advancesAndResetsRecoveryCursorPerStreamGroupAndConsumer() {
         CursorRecordingStreams streams = new CursorRecordingStreams();
@@ -696,6 +772,75 @@ class RedisEventSubscriberTest {
                     }
                 })
                 .toList();
+        }
+    }
+
+    /** Serves a scripted page per read and counts how many reads each stream took. */
+    private static final class ScriptedReadsStreams implements RedisStreamOperations {
+        private final Map<String, List<List<StreamEntry>>> scripted;
+        private final Map<String, Integer> reads = new java.util.concurrent.ConcurrentHashMap<>();
+
+        ScriptedReadsStreams(Map<String, List<List<StreamEntry>>> scripted) {
+            this.scripted = scripted;
+        }
+
+        @Override public void createGroup(String stream, String group) { }
+        @Override public String publish(String stream, String envelopeJson) { return "1-0"; }
+
+        @Override
+        public List<StreamEntry> readGroup(String stream, String group, String consumerName) {
+            int call = reads.merge(stream, 1, Integer::sum) - 1;
+            List<List<StreamEntry>> pages = scripted.getOrDefault(stream, List.of());
+            return call < pages.size() ? pages.get(call) : List.of();
+        }
+
+        @Override
+        public AutoClaimResult autoClaim(String stream, String group, String consumerName, String startId) {
+            return new AutoClaimResult("0-0", List.of());
+        }
+
+        @Override public int deliveryCount(String stream, String group, String messageId) { return 1; }
+        @Override public void ack(String stream, String group, String messageId) { }
+        @Override public void moveToDlq(String stream, String envelopeJson, DlqMetadata metadata) { }
+
+        int readCount(String stream) {
+            return reads.getOrDefault(stream, 0);
+        }
+    }
+
+    /** Claims every scripted entry once, and records the batch acknowledges it is asked for. */
+    private static final class BatchAckStreams implements RedisStreamOperations {
+        private final List<StreamEntry> claimed;
+        private boolean claimedOnce;
+
+        BatchAckStreams(List<StreamEntry> claimed) {
+            this.claimed = claimed;
+        }
+
+        record AckBatch(String stream, String group, List<String> ids) { }
+
+        final List<AckBatch> ackBatches = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+        @Override public void createGroup(String stream, String group) { }
+        @Override public String publish(String stream, String envelopeJson) { return "1-0"; }
+        @Override public List<StreamEntry> readGroup(String stream, String group, String consumerName) { return List.of(); }
+
+        @Override
+        public AutoClaimResult autoClaim(String stream, String group, String consumerName, String startId) {
+            if (claimedOnce) {
+                return new AutoClaimResult("0-0", List.of());
+            }
+            claimedOnce = true;
+            return new AutoClaimResult("0-0", claimed);
+        }
+
+        @Override public int deliveryCount(String stream, String group, String messageId) { return 1; }
+        @Override public void ack(String stream, String group, String messageId) { }
+        @Override public void moveToDlq(String stream, String envelopeJson, DlqMetadata metadata) { }
+
+        @Override
+        public void ackMany(String stream, String group, List<String> messageIds) {
+            ackBatches.add(new AckBatch(stream, group, List.copyOf(messageIds)));
         }
     }
 
