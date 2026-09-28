@@ -1670,6 +1670,19 @@ services:
       limits: { cpu: '8', memory: 6Gi }
   supplier-catalog:
     db: supplier_catalog
+    env:
+      # A partner is filed once per identity, and what carries that identity is
+      # a master data decision rather than a property of the call that registers
+      # the partner. The operator import reconciles the partners it brings in by
+      # the name they trade as -- the same bureau arrives first under its own
+      # batch's code and then under the market rollout's -- while an onboarding
+      # call hands the catalogue the code its batch minted. Naming the brand
+      # here files one partner per trading name, so the second import resolves
+      # to the entry the first one filed instead of filing a second partner that
+      # downstream master data cannot tell apart from the first. The code's own
+      # default is the code the registration hands over, which is what every
+      # release before this one filed.
+      SUPPLIER_IDENTITY_SOURCE: "brand"
   waitlist:
     db: waitlist
     image: mirrors.tencent.com/microservice/waitlist:final-e98069db@sha256:42657e4c3f0d2328cfa9885a62a4b1f9a7f11366afa093cb8bdd93b8729f4253

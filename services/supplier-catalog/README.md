@@ -22,6 +22,11 @@ Status: implemented and deployed (Helm revision 521; see [current status](../../
 - Database `supplier_catalog` on the `core` PostgreSQL instance
   (`services.supplier-catalog.db` and `postgres.instances.core.databases` in
   `deploy/helm/train-ticket/values.yaml`).
+- The identity a partner is filed under is `SUPPLIER_IDENTITY_SOURCE` in
+  `services.supplier-catalog.env`: the field a registration's profile is taken
+  from. It defaults to the code the registration hands over, and a release that
+  names the brand files one partner per trading name instead, so two onboardings
+  of one partner under two codes resolve to the entry the first one filed.
 - Liveness `/healthz`, readiness `/readyz`; also `/health`, `/ready`,
 `/metadata`.
 

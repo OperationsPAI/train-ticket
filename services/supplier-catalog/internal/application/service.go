@@ -49,6 +49,7 @@ type Service struct {
 	publisher      EventPublisher
 	repository     Repository
 	uow            UnitOfWork
+	identitySource string
 }
 
 func NewService(publisher EventPublisher) *Service {
@@ -70,6 +71,15 @@ func (s *Service) WithRepository(repository Repository) *Service {
 func (s *Service) WithUnitOfWork(uow UnitOfWork) *Service {
 	if s != nil {
 		s.uow = uow
+	}
+	return s
+}
+
+// WithIdentitySource names the field a partner's profile is taken from, which
+// the release decides rather than this service.
+func (s *Service) WithIdentitySource(source string) *Service {
+	if s != nil {
+		s.identitySource = source
 	}
 	return s
 }
@@ -140,7 +150,13 @@ func (s *Service) RegisterSupplier(ctx context.Context, cmd RegisterSupplierComm
 		return SupplierView{}, fmt.Errorf("%w: legalName, brandName, and supplierCode are required", ErrValidation)
 	}
 	supplierID := domain.SupplierID("sup-" + newUUIDString())
-	supplier, err := domain.NewSupplier(supplierID, cmd.LegalName, cmd.BrandName, cmd.SupplierCode)
+	// The profile is the value one partner is filed under, and which field
+	// carries it is what makes a second onboarding of the same partner the entry
+	// already filed rather than a second entry: the release names the field, so
+	// a partner onboarded twice with two codes under one trading name is not two
+	// partners. Registering under the code keeps what every earlier release did,
+	// where the code the onboarding minted was the identity.
+	supplier, err := domain.NewSupplier(supplierID, cmd.LegalName, cmd.BrandName, supplierProfile(s.identitySource, cmd.SupplierCode, cmd.BrandName))
 	if err != nil {
 		return SupplierView{}, fmt.Errorf("%w: %v", ErrDomainViolation, err)
 	}
