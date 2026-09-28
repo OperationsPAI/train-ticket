@@ -1,6 +1,6 @@
 # Train Ticket 业务流全景目录
 
-Last updated: 2026-09-25
+Last updated: 2026-09-28.
 
 ## 目的
 

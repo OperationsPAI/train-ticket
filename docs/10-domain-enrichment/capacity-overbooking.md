@@ -1,6 +1,6 @@
 # Physical supply and standing quota integration
 
-Last updated: 2026-09-25.
+Last updated: 2026-09-28.
 
 The combined Capacity supply calculation is deployed, and Booking presents the accepted class, service and date with each reservation.
 The current release and its evidence are in [current status](../00-current-status.md).
@@ -20,7 +20,7 @@ The domain's configurable overbooking type is not evidence of an available opera
 
 ## Admission calculation
 
-The workspace implementation reads published physical units or the versioned standing quota for the requested service, date and class.
+The deployed implementation reads published physical units or the versioned standing quota for the requested service, date and class.
 It includes active seat allocations and pending Capacity holds.
 It uses the Hold identifier to deduplicate allocations already represented by a Hold and validates their order, booking, traveler and interval references.
 It serializes admission by scheduled service, date and class and preserves the existing inventory transaction lock.
@@ -68,7 +68,7 @@ Availability queries may persist source facts and supply observations, so they a
 
 ## Current integration boundary
 
-The workspace Capacity request path reads ordered interval facts from Service Plan's internal segment supply endpoint.
+The deployed Capacity request path reads ordered interval facts from Service Plan's internal segment supply endpoint.
 Service Plan currently creates two stop scheduled services, whose explicit zero based interval is `[0,1)`.
 Capacity validates service date and existing Hold intervals against that source and records its stop sequence digest.
 The current service creation API does not expose general multi stop route creation.
@@ -77,7 +77,7 @@ Combined availability queries and inventory pool snapshot events do not yet esta
 Accepted purchase class and standing substitution occupancy do not yet have an atomic quota transition.
 Hold confirmation checks state without an independent expiry deadline check, so a late confirmation is not fully fenced by the timestamp alone.
 The deployed ordinary `CapacityReleased` payload lacks the date required by Waitlist's release parser.
-The local supply tests do not establish automatic waitlist fulfillment or replacement booking compensation under the new admission behavior.
+The local supply tests do not themselves exercise automatic waitlist fulfillment or replacement booking compensation under the new admission behavior.
 
 ## Existing verification evidence
 
@@ -92,5 +92,6 @@ The recorded inventory sample covers 195 Holds across four pools and checks that
 It verifies unchanged inventory records and repeated reads after service reconstruction.
 The recorded run on 2026-09-23 using the deployed original purchase source took 8.22 seconds for the cold query and 453 to 778 milliseconds for subsequent queries.
 These measurements cover the recorded sample and do not establish peak load latency.
-They do not establish complete integration or activation of the new Capacity behavior.
+The coordinated supply integration is deployed and its verification is closed; the release evidence is in [current status](../00-current-status.md).
+General multistop correctness is proven against the release's own recorded facts.
 No tests or deployment checks were rerun for this documentation update.
