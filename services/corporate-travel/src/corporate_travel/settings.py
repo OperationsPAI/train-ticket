@@ -36,11 +36,14 @@ def read_settings(document: str) -> Mapping[str, Any]:
     return loaded if isinstance(loaded, Mapping) else {}
 
 
+def _section(settings: Mapping[str, Any], name: str) -> Mapping[str, Any]:
+    """One named section of a settings document, empty when it is not an object."""
+    section = settings.get(name)
+    return section if isinstance(section, Mapping) else {}
+
+
 def _declared_ceiling(settings: Mapping[str, Any]) -> int | None:
-    section = settings.get("onboarding")
-    if not isinstance(section, Mapping):
-        return None
-    declared = section.get("selfServiceMonthlyCreditCeilingMinor")
+    declared = _section(settings, "onboarding").get("selfServiceMonthlyCreditCeilingMinor")
     if declared is None:
         return None
     try:
