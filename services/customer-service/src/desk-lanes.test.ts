@@ -38,6 +38,11 @@ describe("the counter resolves a handoff against the lanes the release staffs", 
     assert.equal(resolveHandoffLane("tier1", "post-sales-desk, ticketing-desk"), undefined);
   });
 
+  it("keeps the order the release wrote its lanes in", () => {
+    assert.deepEqual(staffedLanes("ticketing-desk,post-sales-desk"), ["ticketing-desk", "post-sales-desk"]);
+    assert.deepEqual(staffedLanes(" post-sales-desk "), ["post-sales-desk"]);
+  });
+
   it("reads the statement the process carries when none is passed in", () => {
     process.env[DESK_LANES_SETTING] = "post-sales-desk";
     assert.equal(resolveHandoffLane("post-sales-desk"), "post-sales-desk");
