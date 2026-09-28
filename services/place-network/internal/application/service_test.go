@@ -91,3 +91,25 @@ func TestCreateTransportNodeLeavesTheFieldAbsentWithoutAnAllowance(t *testing.T)
 		t.Fatalf("expected the field to stay absent, got %v", *created.AccessTimeMinutes)
 	}
 }
+
+// The allowance fills a node the request left unweighed, and the read answers
+// the same value the create did: one node, one weight, whichever route the
+// consumer takes to it.
+func TestGetTransportNodeCarriesTheAllowanceTheCreateAnswered(t *testing.T) {
+	service, places := testService(45)
+	place := saveStation(t, places)
+	created, err := service.CreateTransportNode(context.Background(), CreateTransportNodeRequest{PlaceID: string(place.ID), DisplayName: "Test Junction entrance", ServingModes: []string{"RAIL"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if created.AccessTimeMinutes == nil {
+		t.Fatal("expected the station allowance on the create response")
+	}
+	fetched, err := service.GetTransportNode(context.Background(), domain.TransportNodeID(created.NodeID))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fetched.AccessTimeMinutes == nil || *fetched.AccessTimeMinutes != *created.AccessTimeMinutes {
+		t.Fatalf("expected the read to carry the same allowance, got %v", fetched.AccessTimeMinutes)
+	}
+}
