@@ -1587,9 +1587,9 @@ services:
       # connection count that decides whether a rollout fits.
       PG_MAX_POOL_SIZE: "48"
       # The queues the desk's consoles poll are stated by the release: a desk
-      # that opens a lane names it here rather than waiting for a build, and a
-      # handoff to a lane the release does not name is refused instead of
-      # leaving the case with nobody owning it.
+      # that opens a lane names it here instead of waiting for a build, and a
+      # handoff to a lane the release does not name is refused rather than
+      # recorded against a queue nobody reads.
       CUSTOMER_SERVICE_CASE_ASSIGN_OWNER_QUEUES: "post-sales-desk,ticketing-desk"
     # 4 consumer threads do not fit in the default 500m CPU limit. Raising
     # CONSUMER_THREADS without raising this caused a CrashLoopBackOff: the
