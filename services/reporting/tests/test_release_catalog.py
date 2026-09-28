@@ -45,5 +45,11 @@ class ReleaseCatalogTest(unittest.TestCase):
             self.assertTrue(str(entry["status"]).strip())
 
 
+    def test_every_dashboard_entry_carries_the_id_and_the_name(self) -> None:
+        for entry in load_release_catalog().dashboards:
+            self.assertTrue(str(entry["dashboardId"]).strip())
+            self.assertTrue(str(entry["name"]).strip())
+
+
 if __name__ == "__main__":
     unittest.main()

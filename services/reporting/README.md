@@ -75,6 +75,8 @@ Both sections state the same publication state, so one vocabulary describes what
 
 `dash-revenue` is the dashboard the operations console opens, and `dash-operations` covers the demand and capacity reads.
 
+Each dashboard entry carries the id the store addresses it by, the name the console shows and the events its rebuild consumes.
+
 ## Captured payment metrics
 
 All monetary revenue metrics use `PaymentCaptured` only.
