@@ -133,6 +133,7 @@ export type EvidenceType =
   | "CHANNEL_RECEIPT"
   | "PROVIDER_SUMMARY"
   | "DOCUMENT"
+  | "DESK_RECEIPT"
   | "OTHER";
 
 export type EvidenceAccessLevel =
