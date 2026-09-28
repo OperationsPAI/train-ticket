@@ -7,7 +7,7 @@
 | Domain | Payment Channel |
 | Status | proposed-ddd-baseline |
 | Owner Agent | agentm-payment-channel |
-| Last Updated | 2026-07-10 |
+| Last Updated | 2026-09-28 |
 | High-Level Inputs | `docs/adr/0003-commercial-realism-scope.md`, `docs/02-domains/payment.md`, `docs/02-domains/finance-settlement.md`, `docs/02-domains/provider-integration.md`, `docs/08-contracts/events/payment.md`, `docs/08-contracts/api/payment.md`, `docs/08-contracts/events/finance-settlement-events.md`, `docs/08-contracts/api/finance-settlement.md` |
 
 ## 1. 领域目标

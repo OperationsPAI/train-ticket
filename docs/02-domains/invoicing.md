@@ -1,6 +1,6 @@
 # Invoicing
 
-Last updated: 2026-09-24.
+Last updated: 2026-09-28.
 
 Rust implementation: `services/invoicing`.
 The [HTTP API](../08-contracts/api/invoicing.md), [events](../08-contracts/events/invoicing.md) and [service guide](../../services/invoicing/README.md) define current fields and tests.
