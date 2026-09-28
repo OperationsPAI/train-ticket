@@ -612,3 +612,21 @@ func TestVerifyBoardingOnlyBoardsReadersTheEstateCarries(t *testing.T) {
 		t.Fatalf("the fact the estate does not carry was published: %d event(s)", len(publisher.envelopes))
 	}
 }
+
+func TestRecordNoShowKeepsTheReasonItWasGiven(t *testing.T) {
+	repo := NewInMemoryRepository()
+	service := NewService(repo, &recordingPublisher{}, NewInMemoryConsumedEventLog(), nil, nil)
+	seedTicket(t, service, "ent-reason1", "sb-reason1", "ord-reason1", "tvl-reason1", "seg-reason1")
+
+	_, err := service.RecordNoShow(context.Background(), RecordNoShowCommand{EntitlementID: "ent-reason1", SegmentBookingID: "sb-reason1", JourneyOrderID: "ord-reason1", TravelerID: "tvl-reason1", SegmentRef: "seg-reason1", Reason: domain.NoShowReasonVerificationFailed}, CommandMetadata{})
+	if err != nil {
+		t.Fatalf("record no-show: %v", err)
+	}
+	record, err := repo.FindByEntitlementSegment(context.Background(), "ent-reason1", "sb-reason1", "seg-reason1")
+	if err != nil {
+		t.Fatalf("find record: %v", err)
+	}
+	if record.NoShowReason == nil || *record.NoShowReason != domain.NoShowReasonVerificationFailed {
+		t.Fatalf("the reason the operator stated is not the one stored: %v", record.NoShowReason)
+	}
+}
