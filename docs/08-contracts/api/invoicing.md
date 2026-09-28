@@ -145,7 +145,7 @@ model instead of treating terminal state as an error.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `basisType` | enum | yes | `REVENUE_RECOGNITION`, `FINANCE_INVOICE`, or `MANUAL_APPROVED_SNAPSHOT`. |
+| `basisType` | enum | yes | `REVENUE_RECOGNITION` or `FINANCE_INVOICE`. |
 | `revenueRecognitionIds` | string[] | no | Finance Settlement revenue recognition IDs included in the amount basis. |
 | `financeInvoiceId` | string | no | Finance Settlement invoice/reference when `basisType=FINANCE_INVOICE`. |
 | `taxLines` | array[object] | yes | Tax line snapshots with `taxCode`, `taxRateBasisPoints`, `taxableAmount` Money, and `taxAmount` Money. |
