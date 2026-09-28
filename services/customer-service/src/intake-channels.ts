@@ -30,6 +30,8 @@ export const platformChannels: readonly CaseChannel[] = [
  * together are what the intake answers.
  */
 export type IntakeSheet = Readonly<{
+  /** The desk that works the queues this deployment staffs. */
+  desk?: string;
   routes?: Readonly<Record<string, string>>;
   staffedQueues?: readonly string[];
 }>;

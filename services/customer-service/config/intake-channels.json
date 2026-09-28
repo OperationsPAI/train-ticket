@@ -1,4 +1,5 @@
 {
+  "desk": "customer-care",
   "note": "A support case is worked from the intake queue that owns its channel, so the intake answers a channel where this deployment staffs that queue. This desk staffs the web, phone, chat, mail and message queues.",
   "routes": {
     "APP": "app-desk",
