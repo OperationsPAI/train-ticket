@@ -29,6 +29,9 @@ Status: placeholder-skeleton
   `deploy/helm/train-ticket/values.yaml`).
 - Liveness `/healthz`, readiness `/readyz`; also `/health`, `/live`,
 `/livez`, `/ready`, `/metadata`.
+- Catalogue intake policy: `config/catalog.properties` travels inside the image
+  at `/app/config/catalog.properties` (`CATALOG_POLICY_FILE` overrides the
+  path) and `src/catalog-policy.ts` reads it once at start-up.
 
 ## HTTP surface
 
