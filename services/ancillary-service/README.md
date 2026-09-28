@@ -32,6 +32,12 @@ Status: placeholder-skeleton
 - Catalogue intake policy: `config/catalog.properties` travels inside the image
   at `/app/config/catalog.properties` (`CATALOG_POLICY_FILE` overrides the
   path) and `src/catalog-policy.ts` reads it once at start-up.
+  - `catalog.notice.floor.hours` is the notice, in hours before departure, the
+    partner desk needs for an item it has to confirm with a supplier.
+  - `catalog.notice.floor.methods` is the comma-separated list of fulfillment
+    methods held to that floor. A method that is not listed keeps the
+    `purchaseCutoffHoursBeforeDeparture` its own item declares, so the floor is
+    carried by a release before the desk behind it is ready for it.
 
 ## HTTP surface
 
