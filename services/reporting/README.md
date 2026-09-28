@@ -71,6 +71,8 @@ An id the store already holds keeps its stored document: the seed writes only wh
 The catalog states the period each definition is charted over, which is the period the operations console groups its views by rather than the period the store happens to write.
 Each entry states the id the store files it under, the name and description a read answers with, the owning team, the category the list is filtered by, the period the definition is charted over, the version, and the events the definition is derived from.
 Entries are written in the order the catalog lists them, and that order is what a read with no category pages through.
+A stored definition is the document that was written rather than a projection of it: `metric_definition_snapshots` holds the document body, and a read rebuilds the aggregate from that body.
+The store therefore answers with what the release wrote, and the definition a read returns is only as current as the last document written under its id.
 
 ## Captured payment metrics
 
