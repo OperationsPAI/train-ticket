@@ -22,5 +22,7 @@ COPY --from=builder --chown=app:app /src/services/customer-service/migrations ./
 COPY --from=builder --chown=app:app /src/services/customer-service/config ./config
 USER app
 ENV PORT=8080 REDIS_URL=redis://localhost:6379
+# The intake settings the stage above copied, named for a host that overrides it.
+ENV INTAKE_CHANNELS_FILE=/app/config/intake-channels.json
 EXPOSE 8080
 CMD ["node", "./dist/main.js"]

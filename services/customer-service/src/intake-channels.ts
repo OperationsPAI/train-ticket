@@ -51,6 +51,9 @@ export function intakeChannelsFrom(file: string): readonly CaseChannel[] {
   return channels.length > 0 ? channels : PLATFORM_INTAKE_CHANNELS;
 }
 
-export const intakeChannels: readonly CaseChannel[] = intakeChannelsFrom(
-  process.env.INTAKE_CHANNELS_FILE ?? DEFAULT_INTAKE_CHANNELS_FILE,
-);
+/** The settings file this process reads; `INTAKE_CHANNELS_FILE` overrides the image's path. */
+export function intakeChannelsFile(): string {
+  return process.env.INTAKE_CHANNELS_FILE ?? DEFAULT_INTAKE_CHANNELS_FILE;
+}
+
+export const intakeChannels: readonly CaseChannel[] = intakeChannelsFrom(intakeChannelsFile());
