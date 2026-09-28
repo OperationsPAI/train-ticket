@@ -29,7 +29,7 @@ timestamps, and Money.
 | `travelerId` | string | yes | Traveler reference (`tvl-<uuid>`). |
 | `segmentRef` | string | yes | Segment reference (`seg-<uuid>`). |
 | `source` | string | yes | A reader this release operates (`FULFILLMENT_BOARDING_SOURCES`), or one the image was built with when the release names no estate. |
-| `sourceEventId` | string | yes | Source event identifier for idempotency. |
+| `sourceEventId` | string | yes | Source event identifier for idempotency; a replay of the same source and event id is a no-op. |
 | `occurredAt` | timestamp | yes | When boarding physically occurred. |
 
 **Response (201):**
