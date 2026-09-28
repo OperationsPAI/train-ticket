@@ -11,16 +11,16 @@ import (
 // a master data decision rather than a property of the call that registers the
 // partner: an onboarding hands the catalogue the code its own batch minted,
 // while an operator import hands it the name the partner trades as. A release
-// that reconciles partners a second import onboarded under a second code names
-// the brand, so those partners resolve to the entry the first batch filed
-// instead of being filed twice under two codes downstream cannot tell apart.
+// that reconciles the partners a second import onboarded under a second code
+// names the brand, so those partners resolve to the entry the first batch filed
+// rather than being filed twice under two codes downstream cannot tell apart.
 const SupplierIdentitySourceEnv = "SUPPLIER_IDENTITY_SOURCE"
 
+// The two fields a release may name. An unset or unrecognised value keeps the
+// code, which is the behaviour every release before the master data import had
+// and the shape a rollback returns to.
 const (
-	// IdentitySourceCode files a partner under the code the registration handed
-	// over, which is what every release before the master data import filed.
-	IdentitySourceCode = "code"
-	// IdentitySourceBrand files a partner under the name it trades as.
+	IdentitySourceCode  = "code"
 	IdentitySourceBrand = "brand"
 )
 
