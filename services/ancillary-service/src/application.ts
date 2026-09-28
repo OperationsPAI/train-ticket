@@ -202,10 +202,7 @@ export class AncillaryApplicationService {
     input: CatalogInput,
   ): Promise<AncillaryCatalogItemSnapshot> {
     requireNoticeFloor(input);
-    const item = AncillaryCatalogItem.create(input);
-    const snapshot = item.toSnapshot();
-    await this.repository.saveCatalog(snapshot);
-    return snapshot;
+    return await this.persistCatalog(AncillaryCatalogItem.create(input));
   }
 
   async updateCatalogItem(
@@ -217,6 +214,12 @@ export class AncillaryApplicationService {
       await this.requireCatalog(catalogItemId),
     );
     item.updateDraft(input, input.expectedVersion);
+    return await this.persistCatalog(item);
+  }
+
+  private async persistCatalog(
+    item: AncillaryCatalogItem,
+  ): Promise<AncillaryCatalogItemSnapshot> {
     const snapshot = item.toSnapshot();
     await this.repository.saveCatalog(snapshot);
     return snapshot;
