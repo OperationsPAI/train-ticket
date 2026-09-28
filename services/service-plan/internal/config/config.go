@@ -22,7 +22,8 @@ const (
 	DefaultListingPageLimit = 100
 )
 
-// Settings is what one process resolved from its environment.
+// Settings is what one process resolved from its environment: the port it
+// serves on and the largest page its segment listing answers with.
 type Settings struct {
 	Port             int
 	ListingPageLimit int

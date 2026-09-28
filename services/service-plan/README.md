@@ -74,6 +74,9 @@ holds no inventory of its own and answers from the facts it persisted.
 
 ## HTTP surface
 
+The page the segment listing serves is a setting, so a release can size it
+without a code change; the other read paths take no setting of their own.
+
 - `/api/v1/scheduled-services` create, list, read plus `{serviceRef}/delays`,
   `{serviceRef}/cancellations`, `{serviceRef}/restorations`,
   `{serviceRef}/temporary-services`.
