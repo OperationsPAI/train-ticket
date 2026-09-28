@@ -57,7 +57,7 @@ Last updated: 2026-09-28
 |---|---|
 | **Producer** | provider-integration |
 | **Consumers** | entitlement-ticketing |
-| **Trigger** | External provider issued a ticket/credential. |
+| **Trigger** | Declared-only: reserved for a provider-issued ticket/credential, but not produced by the current release. The deployed ACL normalizes this to the `SUPPLIER_TICKET_ISSUED` internal fact kind; no code path publishes a `ProviderTicketIssued` event. |
 
 **Payload:**
 
