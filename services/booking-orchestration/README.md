@@ -83,6 +83,22 @@ Consumes `events:capacity-availability`, `events:journey-order`,
 `events:seat-assignment` and `events:invoicing`
 (`adapters/messaging/RedisEventBusInitializer.java`).
 
+## Saga step waits
+
+A planned step carries the wait the timeout sweeper enforces: a step still pending when its wait
+is past is failed, its compensation action runs and the saga stops waiting for it.
+
+| Step | Wait |
+| --- | --- |
+| `risk-check` | two minutes |
+| `reserve-<segmentRef>` | five minutes |
+| `invoice` | two minutes |
+| `change-reservations` | fifteen minutes |
+
+The budgets are settings (`booking-orchestration.step-wait.*` in
+`src/main/resources/application.properties`), read once at startup by `SagaStepWaitSettings`; a
+deployment that sets none of them gets the budgets above.
+
 ## Metrics
 
 Emits `train_ticket.booking.saga.active|transitions|oldest_age|step_due_age`
