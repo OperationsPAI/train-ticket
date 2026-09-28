@@ -71,6 +71,11 @@ An approved claim is paid as Wallet stored value through Wallet / Promotion's ow
 
 `PAID_OUT` and `InsurancePayoutCompleted` therefore mean that a concrete Wallet benefit was observed. A timeout or invalid Wallet response leaves the claim `APPROVED` and the payout advice `REQUESTED`; retrying reuses the same advice and idempotency key. `PAYMENT_REFUND` is not accepted for claim proceeds because a claim is not a reversal of the original premium or ticket payment.
 
+A claim's status is what a reader acts on: `PENDING` waits for a decision,
+`APPROVED` means the payout advice exists but no Wallet benefit has been read
+back, `PAID_OUT` means one has, and `REJECTED` closes the claim with a reason
+code.
+
 The downstream URL template defaults to `http://%s:8080` and can be overridden with `INSURANCE_PAYOUT_URL_TEMPLATE`.
 
 The service also consumes `JourneyOrderPostSalesAdjusted`. It resolves the applied change and current order through their owning APIs, then updates each affected issued policy to the replacement segment and travel window. It never guesses dates from event time, and it does not rewrite terminal policies.
