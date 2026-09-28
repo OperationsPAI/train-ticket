@@ -12,6 +12,38 @@ Status: implemented
 - `Claim` aggregate root: filed against a policy, then approved or rejected. `DELAY_AUTO` claims are the automatic path, filed from a disruption rather than by a traveller.
 - `InsuranceProduct`: the versioned catalogue a policy is issued from. A policy names both the code and the version, so a product that changes later does not change what was sold.
 
+## Runtime
+
+- HTTP port `8080` (`containerPort`/`PORT` in the chart).
+- Database `travel_insurance` on the `core` PostgreSQL instance
+  (`services.travel-insurance.db` and `postgres.instances.core.databases` in
+  `deploy/helm/train-ticket/values.yaml`).
+- Liveness `/healthz`, readiness `/readyz`; also `/health`, `/ready`,
+`/metadata`.
+
+The full contract lives in
+[`docs/08-contracts/api/travel-insurance.md`](../../docs/08-contracts/api/travel-insurance.md).
+
+## Events
+
+Publishes `InsurancePolicyIssued`, `InsuranceClaimCreated`,
+`InsuranceClaimApproved`, `InsuranceClaimRejected` and
+`InsurancePayoutCompleted` to `events:travel-insurance`; see
+[`docs/08-contracts/events/travel-insurance.md`](../../docs/08-contracts/events/travel-insurance.md).
+Consumes `events:ancillary-service`, `events:post-sales`,
+`events:service-plan` and `events:journey-order`
+(`cmd/travel-insurance/main.go`).
+
+A read that an announcement promises is treated as a wait rather than a rule
+violation: `settleNotReady` retries the owning-service read five times, 400 ms
+apart, inside the delivery and only then declares a transient failure
+(`adapters/messaging/subscriber.go`, `application/purchase_verification.go`).
+
+## Metrics
+
+This service owns no service-specific business metric in the
+[`docs/07-observability/business-metrics.md`](../../docs/07-observability/business-metrics.md).
+
 ## API
 
 | Method | Path |

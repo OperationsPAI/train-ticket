@@ -6,7 +6,7 @@ HTTP 使用 `tvl-<uuid>` 形式的 `travelerId` 作为旅客引用。
 
 ## 已部署状态
 
-HTTP virtual threads 配置及已发布 outbox 清理索引已部署到 revision 279。
+HTTP virtual threads 配置及已发布 outbox 清理索引已部署（Helm revision 521，见 [current status](../../docs/00-current-status.md)）。
 `spring.threads.virtual.enabled=true` 使等待请求体或 JDBC 连接的 HTTP 请求能够释放 carrier thread，其他 HTTP 请求可以继续处理。
 数据库操作仍受 Hikari 连接池容量约束，readiness 仍检查数据库、outbox relay 和 Redis。
 该配置不增加 JDBC 吞吐能力。
@@ -56,7 +56,7 @@ HTTP virtual threads 配置及已发布 outbox 清理索引已部署到 revision
 测试观察器只统计请求进入情况，HTTP、PostgreSQL 和 Redis outbox 使用应用实现。
 
 已有 PostgreSQL 验证还覆盖两条身份事实并发更新，以及无关身份事件在连接池唯一连接被占用时仍可完成过滤。
-revision 279 部署后，`TestLiveInitialTicketsMatchPurchasedSeatClass` 的 six classes 全部 PASS，总耗时 86.305 秒，包含旅客创建及风险检查。
+当前部署（Helm revision 521）下，`TestLiveInitialTicketsMatchPurchasedSeatClass` 的 six classes 全部 PASS，总耗时 86.305 秒，包含旅客创建及风险检查。
 对应类别为 `SECOND_CLASS`、`FIRST_CLASS`、`BUSINESS_CLASS`、`SLEEPER_HARD`、`SLEEPER_SOFT` 和 `STANDING`。
 
 ## 验证环境说明
@@ -76,3 +76,25 @@ mvn -Dtest=HttpRequestConcurrencyLiveTest,IdentityFactConcurrencyLiveTest,Identi
 完整本地测试入口为 `mvn test`，录制验证需要上述环境输入。
 领域模型与当前边界见[领域说明](../../docs/02-domains/traveler-profile.md)。
 待办统一见 [docs/TODO.md](../../docs/TODO.md)。
+
+## 运行时事实
+
+- HTTP 端口 `8080`（chart 的 `containerPort`/`PORT`）。
+- 数据库 `traveler_profile`，位于 `user` PostgreSQL 实例
+  （`services.traveler-profile.db`、`services.traveler-profile.pgInstance` 与
+  `postgres.instances.user.databases`，见 `deploy/helm/train-ticket/values.yaml`）。
+- 存活探针 `/healthz`，就绪探针 `/readyz`；另有 `/health`、`/live`、
+`/livez`、`/ready`、`/metadata`。
+- HTTP 合同见 [API 说明](../../docs/08-contracts/api/traveler-profile.md)；
+事件合同见 [事件说明](../../docs/08-contracts/events/traveler-profile.md)。
+- 指标：仅发布 Java kit 的进程级 transport 系列；catalog 中无本服务拥有的业务指标
+  （[business metrics](../../docs/07-observability/business-metrics.md)）。
+
+完整测试命令（需要 Java 25）：
+
+```bash
+cd services/traveler-profile && mvn -o test
+```
+
+录制 / live 测试需要 `TEST_DATABASE_URL`、`TEST_DATABASE_URI`、
+`TEST_REDIS_URL` 及各自的快照变量，缺失时跳过。
