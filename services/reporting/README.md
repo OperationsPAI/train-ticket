@@ -15,6 +15,38 @@ Contract baseline: 2026-09-25.
 - MetricDefinition
 - DashboardReadModel
 - FunnelView
+- ConsumedEventLog
+
+## Runtime
+
+- HTTP port `8080` (`containerPort`/`PORT` in the chart).
+- Database `reporting` on the `event` PostgreSQL instance
+  (`services.reporting.db` and `postgres.instances.event.databases` in
+  `deploy/helm/train-ticket/values.yaml`).
+- Liveness `/healthz`, readiness `/readyz`; also `/health`, `/live`, `/ready`,
+`/metadata`.
+
+## HTTP surface
+
+Read-only revenue, operational and route metrics under `/api/v1/metrics`
+(including `/api/v1/metrics/revenue|operational|routes|trends|anomalies`) and
+`/api/v1/dashboards/{id}` with `{id}/rebuilds`.
+The full contract lives in
+[`docs/08-contracts/api/reporting.md`](../../docs/08-contracts/api/reporting.md).
+
+## Events
+
+Publishes Reporting facts to `events:reporting`; the event types are in
+[`docs/08-contracts/events/reporting.md`](../../docs/08-contracts/events/reporting.md).
+Consumes fourteen streams, listed in
+`src/reporting/adapters/messaging/stream_config.py` (`SUBSCRIBED_CONTEXTS`).
+
+## Metrics
+
+Publishes the Python kit's process-level transport series; Reporting owns the
+customer-facing revenue/operational views, not the low-cardinality operational
+contract in
+[`docs/07-observability/business-metrics.md`](../../docs/07-observability/business-metrics.md).
 
 ## DDD Sources
 
@@ -27,7 +59,7 @@ Python is a pragmatic fit for metric definitions, event-derived views, and analy
 ## Skeleton Check
 
 ```bash
-PYTHONPATH=src python3 -m unittest discover -s tests
+cd services/reporting && PYTHONPATH=src:../../platform/python-kit/src python3 -m pytest -q
 ```
 
 ## Captured payment metrics
@@ -138,7 +170,7 @@ Three passes represent approximately 13.18 GiB of base relation pages before cac
 The observed 3963623 reads and 611164160 temporary bytes were statistics window increments, not a measured migration duration.
 Production planning retained sorting at `work_mem=8MB`; fewer scans do not guarantee proportional latency or temporary file reductions.
 The coordinated production migration completed on 2026-09-23 in 10.359 seconds and preserved the source event table.
-All three replacement views were populated at commit, and revision 278 deploys the matching service implementation.
+All three replacement views were populated at commit, and the matching service implementation is deployed at Helm revision 521 (see [current status](../../docs/00-current-status.md)).
 Subsequent refreshes return the same monetary total and payment count for each of the five dimensions.
 The measured migration duration is specific to that production snapshot and resource state.
 
