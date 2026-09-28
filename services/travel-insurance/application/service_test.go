@@ -144,7 +144,7 @@ func TestDelayInsuranceAutoPayoutAndRefundCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if policy.Premium.MinorUnits != 300 || policy.Status != domain.PolicyIssued {
+	if policy.Premium.MinorUnits != 450 || policy.Status != domain.PolicyIssued {
 		t.Fatalf("unexpected issued policy: %#v", policy)
 	}
 	executor.receipt = PayoutReceipt{ExecutionRef: "ben-delay", AccountID: policy.AccountID, Amount: domain.Money{Currency: "CNY", MinorUnits: 3000}, Target: domain.PayoutWalletBenefit}
@@ -171,7 +171,7 @@ func TestDelayInsuranceAutoPayoutAndRefundCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cancelled.Status != domain.PolicyCancelled || cancelled.RefundedPremium.MinorUnits != 300 {
+	if cancelled.Status != domain.PolicyCancelled || cancelled.RefundedPremium.MinorUnits != 450 {
 		t.Fatalf("unexpected cancelled policy: %#v", cancelled)
 	}
 }

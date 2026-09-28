@@ -1093,3 +1093,11 @@ its holds forever. The change therefore saved no transfer and added a second
 scan, so it was dropped rather than shipped. The finding is recorded because it
 is the reason the item now asks whether terminal holds should be retired on
 every pool, which changes the published `released` level.
+
+**The insurance catalogue is published from the service's settings.** The four
+travel-insurance products and the version they are sold under live in
+`services/travel-insurance/config/insurance-products.properties`, so the
+quarterly repricing is a settings change rather than a rebuild of the service
+and everything beside it. The loader compiles the file into the binary, and a
+file that names a product under another product's code, or omits a premium,
+fails at startup rather than on the first sale.

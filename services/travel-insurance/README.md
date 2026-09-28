@@ -16,9 +16,9 @@ Status: implemented
 
 The four products and the version they are published under live in
 [`config/insurance-products.properties`](config/insurance-products.properties),
-beside the loader that reads them. A premium or a coverage limit is a settings
-change and not a rebuild, and a policy keeps the product version it was issued
-from after the catalogue moves on.
+beside the loader that reads them; the autumn release carries `2026.10`. A
+premium or a coverage limit is a settings change and not a rebuild, and a policy
+keeps the product version it was issued from after the catalogue moves on.
 
 ## Runtime
 

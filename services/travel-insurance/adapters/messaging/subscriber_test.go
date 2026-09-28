@@ -169,7 +169,7 @@ func TestHandlePostSalesApplied_CancelsRefundedPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if policy.Status != domain.PolicyCancelled || policy.RefundedPremium.MinorUnits != 300 {
+	if policy.Status != domain.PolicyCancelled || policy.RefundedPremium.MinorUnits != 450 {
 		t.Fatalf("unexpected policy after PostSalesApplied: %#v", policy)
 	}
 	if got := pub.events[len(pub.events)-1].EventType; got != "InsurancePolicyCancelled" {
