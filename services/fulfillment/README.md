@@ -22,6 +22,11 @@ Status: implemented and deployed (Helm revision 521; see [current status](../../
   `deploy/helm/train-ticket/values.yaml`).
 - Liveness `/healthz`, readiness `/readyz`; also `/health`, `/ready`,
 `/metadata`.
+- Boarding register: the readers whose evidence a boarding fact may arrive
+  under are the release's, stated as `FULFILLMENT_BOARDING_SOURCES` in the
+  release settings (`services.fulfillment.env` in
+  `deploy/helm/train-ticket/values.yaml`). A release that states none keeps
+  the vocabulary the image was built with.
 
 ## HTTP surface
 
