@@ -71,3 +71,17 @@ func TestListServiceSegmentsRefusesAPagePastTheReleaseBound(t *testing.T) {
 		t.Fatalf("expected a validation error for a page above the bound, got %v", err)
 	}
 }
+
+func TestListServiceSegmentsKeepsTheBoundOnTheRepositoryPath(t *testing.T) {
+	service := listingService(t, 20, newMemoryRepository())
+	page, err := service.ListServiceSegments(context.Background(), listingServiceRef, 20, 0)
+	if err != nil {
+		t.Fatalf("list from the repository at the release bound: %v", err)
+	}
+	if page.Limit != 20 || page.Total != 1 {
+		t.Fatalf("unexpected page: %#v", page)
+	}
+	if _, err := service.ListServiceSegments(context.Background(), listingServiceRef, 100, 0); !errors.Is(err, ErrValidation) {
+		t.Fatalf("the repository path must keep the same bound, got %v", err)
+	}
+}
