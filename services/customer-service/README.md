@@ -41,6 +41,18 @@ through the queues that own them. Which intake channels that leaves the service
 answering is in `config/intake-channels.json`, the settings the image ships
 beside the process.
 
+## Intake settings
+
+`config/intake-channels.json` states the channels `POST /api/v1/support-cases`
+answers. The image copies it to `/app/config/intake-channels.json`,
+`INTAKE_CHANNELS_FILE` points the process at another path, and the process reads
+it once at start-up, so the list is fixed for the life of the process and a
+change to it reaches the service with the next release.
+
+When the file is absent, unreadable, or names no channel the platform defines,
+the intake answers the platform's whole vocabulary; names the platform does not
+define are dropped from the list. Both rules are in `src/intake-channels.ts`.
+
 ## Events
 
 Publishes `SupportCaseOpened`, `EvidenceAttached`, `SupportCaseClassified`,
