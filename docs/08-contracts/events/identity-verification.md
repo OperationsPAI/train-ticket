@@ -197,7 +197,7 @@ Material fingerprint rule: `materialFingerprint = sha256(canonicalNameHash | doc
 | `simOutcome` | enum | yes | `REJECTED` or `MANUAL_REVIEW_REQUIRED`. |
 | `simResultRef` | string | yes | Safe deterministic SIM result reference. |
 | `verificationStatus` | enum | yes | `FAILED` or `MANUAL_REVIEW_REQUIRED`. |
-| `reasonCode` | string | yes | Safe reason such as `NAME_DOCUMENT_MISMATCH`, `DOCUMENT_NOT_FOUND`, `DOCUMENT_EXPIRED`, or `MANUAL_REVIEW_REQUIRED`. |
+| `reasonCode` | string | yes | Safe reason, one of `NAME_DOCUMENT_MISMATCH` or `MANUAL_REVIEW_REQUIRED`. |
 | `policyVersion` | string | yes | Verification policy version. |
 | `completedAt` | RFC3339 UTC | yes | Completion timestamp. |
 | `aggregateVersion` | integer | yes | Aggregate version after failure. |
