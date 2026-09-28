@@ -456,8 +456,8 @@ type ServiceSegmentsPage struct {
 }
 
 func (s *Service) ListServiceSegments(ctx context.Context, service string, limit, offset int) (ServiceSegmentsPage, error) {
-	if strings.TrimSpace(service) == "" || limit < 1 || limit > s.listingBound() || offset < 0 {
-		return ServiceSegmentsPage{}, fmt.Errorf("%w: scheduledServiceRef and valid pagination are required", ErrValidation)
+	if err := segmentPageBounds(service, limit, offset, s.listingBound()); err != nil {
+		return ServiceSegmentsPage{}, err
 	}
 	if s.repository != nil {
 		items, total, err := s.repository.ListServiceSegments(ctx, service, limit, offset)
