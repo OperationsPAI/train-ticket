@@ -7,7 +7,7 @@
 | Domain | Identity Verification |
 | Status | proposed-ddd-baseline |
 | Owner Agent | agentm-identity-verification |
-| Last Updated | 2026-07-10 |
+| Last Updated | 2026-09-28 |
 | High-Level Inputs | `docs/adr/0003-commercial-realism-scope.md` |
 
 ## 1. 领域目标

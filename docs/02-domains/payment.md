@@ -1,6 +1,6 @@
 # Payment
 
-Last updated: 2026-09-24.
+Last updated: 2026-09-28.
 
 Java implementation: `services/payment`.
 [HTTP API](../08-contracts/api/payment.md), [events](../08-contracts/events/payment.md) and [service guide](../../services/payment/README.md) define current operations.

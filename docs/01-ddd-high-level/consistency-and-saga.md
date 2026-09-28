@@ -1,6 +1,6 @@
 # Transactions and workflow consistency
 
-Last updated: 2026-09-24.
+Last updated: 2026-09-28.
 
 ## Transaction boundaries
 
@@ -35,9 +35,8 @@ Its capacity event stream has a separate subscriber pool.
 Journey Order, Post Sales and Traveler Profile use virtual HTTP threads while retaining database connection limits.
 Invoicing loads command context using its transaction connection and serializes projection writes by order.
 
-Notification's deployed path still sends SMTP while holding its recipient transaction.
-The unpublished queue implementation separates claim, sending and result recording, and treats uncertain sending as `Unknown`.
-That worktree implementation is not deployed or fully accepted.
+Notification's deployed path separates claiming, sending and result recording: the claim and its state commit before the SMTP call, and the result is written in a later transaction.
+An uncertain send is recorded as `Unknown` and is not replayed automatically.
 
 ## Recovery limits
 

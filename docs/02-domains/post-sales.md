@@ -1,7 +1,7 @@
 # Post Sales 当前设计
 
-更新日期：2026年9月25日。
-运行基线为 Helm revision 279，本文根据当前 Java 服务、README 和 HTTP 入口描述行为。
+更新日期：2026年9月28日。
+运行基线为 Helm revision 521，本文根据当前 Java 服务、README 和 HTTP 入口描述行为。
 统一待办见 [TODO](../TODO.md)。
 
 ## 领域边界
@@ -96,9 +96,12 @@ Payment 跳过补偿审批的退款处理，Journey Order 和 Finance 跳过补�
 | `POST /api/v1/post-sales-cases/{caseId}/evaluate` | 保存资格和金额决策。 |
 | `POST /api/v1/post-sales-cases/{caseId}/approve` | 审批并启动执行；对历史 `EXECUTING` Case 使用新 HTTP 幂等键可安全 redrive。 |
 | `POST /api/v1/post-sales-cases/{caseId}/target-offer` | 选择改签目标。 |
+| `POST /api/v1/post-sales-cases/{caseId}/target-offer/revise` | 按预期 Offer 修正改签目标。 |
 | `POST /api/v1/post-sales-cases/{caseId}/execute-change` | 推进改签操作。 |
 | `POST /api/v1/post-sales-cases/{caseId}/execute-compensation` | 推进钱包补偿操作。 |
 | `POST /api/v1/internal/post-sales-cases/{caseId}/reconcile-execution` | 只读核对 redrive 后的权威副作用并收敛历史退款 Case。 |
+| `POST /api/v1/internal/post-sales-cases/{caseId}/reconcile-conflict` | 核对已有同范围退款或取消，收敛未完成的改签 Case。 |
+| `POST /api/v1/internal/post-sales-cases/{caseId}/cancel-unquoted-change` | 取消尚未报价、无执行也无支付影响的改签 Case。 |
 | `GET /api/v1/internal/compensation-mismatches/{caseId}` | 查询终态补偿不一致的完整冻结证据。 |
 | `GET /api/v1/post-sales-cases/{caseId}` | 读取决策、状态和执行证据。 |
 | `GET /api/v1/post-sales-cases/{caseId}/issue-authorization/{bookingId}` | 核验替代票签发条件。 |

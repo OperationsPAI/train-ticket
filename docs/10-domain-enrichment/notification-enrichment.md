@@ -3,11 +3,10 @@
 ## 当前发布状态
 
 服务位于 `services/notification`，使用 TypeScript、Fastify、PostgreSQL、Redis Streams 和 Nodemailer。
-线上具备事件映射、模板渲染、渠道选择、频控、合并、延期记录和发送回执，SMTP 在 revision 280 起移出 PostgreSQL 消费事务。
-该路径等待 SMTP 时占用数据库连接和收件人事务锁。
-durable queue 已在提交 `41917b85` 中实现，并随 revision 280 部署。
-本文其余处提到的工作区行为均来自该提交。
-本文的 claim、事务外 SMTP、稳定 MessageID、`Unknown` 以及 API 追加字段自 revision 280 起在线上生效。
+线上具备事件映射、模板渲染、渠道选择、频控、合并、延期记录和发送回执。
+durable queue 已实现并部署：claim 与状态先提交，SMTP 调用在收件人事务之外执行，结果在后续事务中写回，等待 SMTP 时不占用数据库连接或收件人事务锁。
+本文描述的 claim、事务外 SMTP、稳定 MessageID、`Unknown` 以及 API 追加字段均为已部署行为。
+发布证据见[当前项目状态](../00-current-status.md)。
 
 ## 模板与渠道
 
@@ -37,9 +36,9 @@ PUSH、SMS、IN_APP 以及未配置 SMTP 的路径使用 `DirectSuccessGateway`�
 
 `transactionRequired` 默认值为 `true`，跳过普通 Preference 检查，quota 仍然生效。
 PostgreSQL 使用 `notification_rate_limits` 保存窗口内发送记录。
-工作区通过 `task_id` 与渠道的唯一索引预留 quota，同一任务在同一渠道重试时复用已有预留。
-工作区 SMS 全局 quota 检查使用专用事务 advisory lock，收件人 quota 检查由收件人事务锁协调。
-超过 quota 的工作区任务保留 `Ready`，通过 `available_at` 和 `QuotaDeferred` 证据记录下一次允许处理的时间。
+durable queue 通过 `task_id` 与渠道的唯一索引预留 quota，同一任务在同一渠道重试时复用已有预留。
+SMS 全局 quota 检查使用专用事务 advisory lock，收件人 quota 检查由收件人事务锁协调。
+超过 quota 的任务保留 `Ready`，通过 `available_at` 和 `QuotaDeferred` 证据记录下一次允许处理的时间。
 代码已经包含延期恢复路径，但 quota 延期恢复尚未专项验收。
 
 `NotificationAggregator` 按收件人和业务引用保存最近的可合并通知。
@@ -48,7 +47,7 @@ PostgreSQL 使用 `notification_rate_limits` 保存窗口内发送记录。
 恢复、接续、附加服务、接送和司机进度等事件不参与该合并规则。
 现有 `notification_deferred` 保存事件级延期记录，后台每秒扫描，每次最多处理 8 条到期事件。
 
-## 工作区 durable queue 与事务边界
+## durable queue 与事务边界
 
 `006_durable_delivery.sql` 定义 `notification_delivery_queue`、`notification_delivery_attempts` 和 `notification_delivery_evidence`。
 每个任务对应一条队列记录，保存渠道计划、当前渠道位置、可处理时间、claim、租约、attempt 编号和稳定 MessageID。
@@ -61,12 +60,12 @@ PostgreSQL 使用 `notification_rate_limits` 保存窗口内发送记录。
 | 保存结果 | 校验 claim 所有权，保存追加回执、attempt、evidence、队列状态和通知 outbox。 | outbox relay 发布已提交事件。 |
 
 `SMTP_MAX_CONNECTIONS` 默认值为 8，允许 1 至 128。
-工作区发送 worker 默认使用同一并发配置，空队列轮询等待 250 毫秒，租约恢复循环每秒执行。
+发送 worker 默认使用同一并发配置，空队列轮询等待 250 毫秒，租约恢复循环每秒执行。
 结果持久化最多进行 5 次尝试，期间不会重新调用 SMTP。
 
 ## 失败分类与恢复
 
-| 条件 | 工作区行为 |
+| 条件 | 实际行为 |
 |---|---|
 | SMTP 接受至少一个收件人 | 保存 `Delivered`。 |
 | 明确连接拒绝、DNS 错误或 SMTP 4xx | 记录确定失败并允许重试，同一渠道最多发送 3 次，等待时间为 1 秒、2 秒。 |
@@ -83,13 +82,13 @@ PostgreSQL 使用 `notification_rate_limits` 保存窗口内发送记录。
 ## 查询与事件
 
 `GET /api/v1/notifications/{id}/trail` 已有任务状态及回执查询。
-工作区追加 `resultUnknown`、`delivery`、`attemptId`、`messageId`、`retryAt` 和 `Unknown` 相关状态值，均未发布。
-工作区查询通过 `REPEATABLE READ READ ONLY` 事务读取任务与发送证据。
+API 已追加 `resultUnknown`、`delivery`、`attemptId`、`messageId`、`retryAt` 和 `Unknown` 相关状态值。
+查询通过 `REPEATABLE READ READ ONLY` 事务读取任务与发送证据。
 顶层 `attempts` 由回执生成，`delivery.attempts` 则记录实际领取与发送过程。
 字段详见[API 说明](../08-contracts/api/notification.md)。
 
 现有发布事件为 `NotificationScheduled`、`NotificationDispatched`、`NotificationDelivered`、`NotificationFailed` 和 `NotificationCancelled`。
-工作区新增 `NotificationDeliveryUnknown`。
+已新增 `NotificationDeliveryUnknown`。
 确定失败的单次回执可以发布 `NotificationFailed`，任务是否最终失败需结合状态判断。
 完整输入映射及载荷见[事件说明](../08-contracts/events/notification.md)。
 
@@ -99,5 +98,5 @@ PostgreSQL 使用 `notification_rate_limits` 保存窗口内发送记录。
 PostgreSQL/Mailpit durable delivery 包含 10 个子项及父项，共 11 PASS，耗时 20.8 秒。
 该专项测试覆盖入队后发送、并发 claim、旧 claim 失效、SMTP 接受后的结果丢失、稳定 MessageID 重试、事务外 SMTP、迟到结果竞争、32 个任务发送、连接中断、3 次有界重试及来源事件去重。
 完整 `npm test` 尚未运行，quota 延期恢复未专项验收。
-上述结果属于本地验证，线上自 revision 280 起使用事务外 SMTP 路径。
+上述结果属于本地验证，线上使用上述事务外 SMTP 路径。
 待办统一见 [docs/TODO.md](../TODO.md)。

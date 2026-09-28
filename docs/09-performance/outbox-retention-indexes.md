@@ -45,8 +45,8 @@ CREATE INDEX IF NOT EXISTS idx_outbox_published_at
 | journey_order | `.scratch/runtime-fixes/goal-order-outbox-index-online.log` |
 | offer_management | `.scratch/runtime-fixes/goal-offer-outbox-index-online.log` |
 
-Booking 线上镜像基于 `c5bb352d + 1e62d420`，main 上的 accepted supply 未部署，禁止通过部署 main Booking 应用此索引。
-已保留 migration 供未来镜像执行。
+该记录来自 accepted supply 尚未部署时，Booking 线上镜像当时基于 `c5bb352d + 1e62d420`，migration 已保留待镜像执行。
+此后 main 已部署（revision 521，见[当前项目状态](../00-current-status.md)），该索引 migration 随镜像执行。
 无需现在写入 `schema_migrations`，未来执行器会通过 `IF NOT EXISTS` 保留已经核实的同名索引并登记上述 version。
 
 执行前，在当前目标数据库核对以下目录信息。

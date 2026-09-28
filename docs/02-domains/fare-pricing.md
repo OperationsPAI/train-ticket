@@ -7,7 +7,7 @@
 | Domain | Fare & Pricing |
 | Status | accepted-ddd-baseline |
 | Owner Agent | agentm-fare-pricing |
-| Last Updated | 2026-06-28 |
+| Last Updated | 2026-09-28 |
 | High-Level Inputs | `docs/01-ddd-high-level/context-map.md`, `docs/01-ddd-high-level/aggregate-model.md`, `docs/02-domains/offer-management.md`, `docs/02-domains/post-sales.md`, `docs/02-domains/payment.md` |
 
 ## 1. 领域目标
