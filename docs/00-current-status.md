@@ -1043,3 +1043,53 @@ each other. Migration 013 takes them in the order of `(state, channel)`, which
 removes the cycle and leaves the counts unchanged. Measured on event's log: 66
 deadlocks and 380 `WORKER_CYCLE_FAILED` in two minutes before; zero notification
 errors in the four minutes after the migration was applied.
+
+## The bus read is accumulated, and two capacity reads are bounded
+
+Committed, not yet deployed: these three changes are on `main` and covered by
+their tests, but the resident release still runs the code before them.
+
+**The stream read is micro-batched in all five kits.** A blocking read returns
+as soon as one entry is available, so a reader that is keeping up takes one to
+three entries per round and pays a full round for them; measured before the
+change, `xreadgroup` was 863172848 calls and 32780 seconds of Redis CPU and
+`xack` was 491733225 calls and 2340 seconds, both counted per call rather than
+per entry. Each kit now waits one 50 millisecond tick after a read that
+returned entries, takes one more non-blocking read, and acknowledges the merged
+round with a single `XACK`. An empty read still blocks in Redis, so an idle
+stream does not spin. The tick is `CONSUMER_ACCUMULATE_TICK_MS`, and `0`
+restores the old read. Tests: rust 55 passed (40 without the `redis-impl`
+feature), Go `go test ./...` ok, Java 106 passed in the JDK 25 container,
+Python 78 passed, TypeScript 110 passed.
+
+**`capacity_supply_observations` is swept.** It is one row per inventory pool,
+upserted on a seat map version change and read by nothing but its own tests, so
+a row has no reader that justifies keeping it forever. The sweep drops rows
+older than seven days (`CAPACITY_SUPPLY_RETENTION_HOURS`, defaulted in the
+chart) in bounded batches of a thousand rows, ten batches a pass, every ten
+minutes, with the index migration `010_supply_observation_retention_index.sql`.
+Two live tests against a disposable PostgreSQL prove that a row inside the
+window is kept and one outside is removed, and that a pass stops at its batch
+budget and resumes on the next. Measured before the sweep existed: 746808 rows
+across 12 GB.
+
+**A slow synchronous admission logs where its time went.** The design already
+required one line an operator can read, so any admission over 200 milliseconds
+now emits its phase breakdown (`lock`, `supply`, `poolLock`, `poolLoad`, `hold`,
+`poolSave`, `outbox`, `snapshot`, `idem`, `commit`). The mark is an `Instant`
+read on the fast path and the format does not run below the threshold. It has
+already answered the T19 question's first half without load: the per-pool lock's
+critical section does not contain the supply fold, because `admission_supply`
+runs before `lock_inventory`. The p95 aggregation under the burst is what is
+still missing, and that needs the envelope decision.
+
+**The levels fold was measured and rejected.** Pushing the fold into SQL was
+implemented as a two-stage read -- SQL sums the pools that carry no hold, the
+fold streams the rest, no domain rule moves into SQL -- and proved exactly
+equivalent to the single pass by fixture. It was then measured against the live
+read shard: 0 of 306286 pools carry no hold, because a terminal hold is only
+retired when its pool is written and a pool that is never written again keeps
+its holds forever. The change therefore saved no transfer and added a second
+scan, so it was dropped rather than shipped. The finding is recorded because it
+is the reason the item now asks whether terminal holds should be retired on
+every pool, which changes the published `released` level.
