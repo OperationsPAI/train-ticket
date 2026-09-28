@@ -1,6 +1,6 @@
 # Capacity & Availability Domain Design
 
-更新日期：2026 年 9 月 24 日。
+更新日期：2026年9月28日。
 实现位置：[services/capacity-availability](../../services/capacity-availability/README.md)，使用 Rust、PostgreSQL 和 Redis Streams。
 
 ## 领域职责与当前状态
@@ -107,6 +107,7 @@ HTTP 创建路径使用五分钟 Hold 到期时间。
 | 接口 | 用途 |
 |---|---|
 | `GET /api/v1/availability-snapshots` | 查询指定 segment 的可用性。 |
+| `GET /api/v1/capacity/segments/{segment_ref}/snapshot` | 读取指定 segment 的容量快照、Hold 数和确认数。 |
 | `POST /api/v1/capacity-holds` | 创建或重放 Hold。 |
 | `GET /api/v1/capacity-holds/{holdId}` | 读取 Hold、引用、区间和状态。 |
 | `POST /api/v1/capacity-holds/{holdId}/confirm` | 确认 Hold。 |
