@@ -29,6 +29,9 @@ Status: implemented and deployed (Helm revision 521; see [current status](../../
 - The desk's own actions (`classify`, `assign`, `escalate`, `resolve`, `close`,
   `reopen`) take the statuses the release states; an action it does not state
   keeps the arrangement the service ships.
+- A case that is not in a status an action takes is refused with the action's own
+  `CASE_NOT_*` code; `resolve` and `close` answer `PRECONDITION_FAILED` so a
+  client can reconcile the case and retry.
 
 ## HTTP surface
 
