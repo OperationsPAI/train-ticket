@@ -17,5 +17,6 @@ export {
 export { bootstrap, runtimeHost, runtimePort, runtimeRedisUrl, type BootstrapOptions } from "./bootstrap.js";
 export * from "./domain.js";
 export * from "./application.js";
+export * from "./catalog-policy.js";
 export * from "./pricing.js";
 export { serviceProfile, type ServiceProfile } from "./profile.js";
