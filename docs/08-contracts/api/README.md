@@ -26,11 +26,9 @@ Notification's `GET /api/v1/notifications/{id}/trail` illustrates why enum casin
 | `status` | `Planned`, `Authorized`, `Delivering`, `Unknown`, `Delivered`, `Failed`, `Cancelled` |
 | `attempts[].channelUsed` | `EMAIL`, `SMS`, `PUSH`, `IN_APP` |
 | `attempts[].status` | `DELIVERED`, `FAILED`, `BOUNCED`, `UNKNOWN` |
-| `delivery.state`, when present | `Ready`, `Claimed`, `Sending`, `Unknown`, `Delivered`, `Failed` |
+| `delivery.state`, when present | `Ready`, `Claimed`, `Sending`, `Unknown`, `Delivered`, `Failed`, `Cancelled` |
 
 These fields come from [Notification's HTTP adapter](../../../services/notification/src/app.ts).
-The `delivery` and `Unknown` handling in the current source is subject to the deployment distinction recorded in [current status](../../00-current-status.md).
-Do not infer that every value present in the workspace is already served by the resident image.
 Notification sending commands remain event driven, while the trail endpoint exposes a business query.
 
 ## Request and response headers
