@@ -11,6 +11,8 @@ import com.trainticket.bookingorchestration.domain.BookingSagaStep;
 import com.trainticket.bookingorchestration.domain.BookingStepStatus;
 import com.trainticket.bookingorchestration.domain.SegmentBooking;
 import com.trainticket.bookingorchestration.domain.SegmentBookingStatus;
+import com.trainticket.bookingorchestration.observability.NoopBookingSagaMetrics;
+import com.trainticket.bookingorchestration.observability.NoopOrderFunnelMetrics;
 import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.platformkit.messaging.PrefixedIds;
 import com.trainticket.platformkit.persistence.OptimisticConcurrencyException;
@@ -65,6 +67,37 @@ class BookingSagaStepTimeoutTest {
         assertEquals("SAGA_STEP_TIMED_OUT", booking.cancellationReason().orElseThrow());
         assertEquals(List.of("SegmentBookingCancelled", "BookingSagaFailed"), published.eventTypes());
         assertEquals(List.of(), service.findDueStepDeadlines(10));
+    }
+
+    @Test
+    void narrowedReserveWaitFromTheSettingsFailsTheStepSooner() {
+        MutableClock clock = new MutableClock(START);
+        RecordingEventPublisher published = new RecordingEventPublisher();
+        BookingSagaStepDeadlineRepository deadlines = new InMemoryBookingSagaStepDeadlineRepository();
+        BookingSagaRepository sagas = new InMemoryBookingSagaRepository();
+        BookingOrchestrationService service =
+            new BookingOrchestrationService(clock, published, sagas, new InMemorySegmentBookingRepository(),
+                new InMemoryPaymentIntentSagaReferenceRepository(), new InMemoryConsumedEventRepository(), deadlines,
+                new NoopBookingSagaMetrics(), new NoopOrderFunnelMetrics(), new SagaStepWaitSettings(120, 45, 120, 900));
+
+        String sagaId = startPurchaseSaga(service, clock);
+        String bookingId = requestReservation(service, sagaId);
+        String stepKey = sagaId + ":" + SEGMENT;
+        assertEquals(SegmentBookingStatus.REQUESTED, service.getSegmentBooking(bookingId).orElseThrow().status());
+
+        clock.advance(Duration.ofSeconds(45));
+
+        assertEquals(List.of(new BookingSagaStepDeadlineRepository.BookingSagaStepDeadline(sagaId, stepKey,
+            START.plus(Duration.ofSeconds(45)))), service.findDueStepDeadlines(10),
+            "the plan carries the deployment's wait, not the default");
+
+        new BookingSagaTimeoutSweeper(service).sweepTimedOutSteps();
+
+        BookingSaga saga = sagas.findById(sagaId).orElseThrow();
+        assertEquals(BookingSagaStatus.FAILED, saga.status());
+        assertEquals("SAGA_STEP_TIMED_OUT", saga.terminalReason().orElseThrow());
+        assertEquals(List.of("SegmentBookingCancelled", "BookingSagaFailed"), published.eventTypes());
+        assertEquals("CANCELLED", service.getSegmentBooking(bookingId).orElseThrow().status());
     }
 
     @Test
