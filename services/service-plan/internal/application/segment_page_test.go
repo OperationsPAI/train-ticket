@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/trainticket/greenfield/services/service-plan/internal/config"
 )
 
 const listingServiceRef = "ss-0194f2e0-7b3e-7610-0284-5c26e8b0c901"
@@ -69,6 +71,20 @@ func TestListServiceSegmentsRefusesAPagePastTheReleaseBound(t *testing.T) {
 	service := listingService(t, 20, nil)
 	if _, err := service.ListServiceSegments(context.Background(), listingServiceRef, 100, 0); !errors.Is(err, ErrValidation) {
 		t.Fatalf("expected a validation error for a page above the bound, got %v", err)
+	}
+}
+
+func TestListServiceSegmentsAnswersAnUnsetReleaseWithTheShippedPage(t *testing.T) {
+	service := listingService(t, 0, nil)
+	page, err := service.ListServiceSegments(context.Background(), listingServiceRef, config.DefaultListingPageLimit, 0)
+	if err != nil {
+		t.Fatalf("an unset release must serve the shipped page: %v", err)
+	}
+	if page.Limit != config.DefaultListingPageLimit {
+		t.Fatalf("page limit: got %d, want %d", page.Limit, config.DefaultListingPageLimit)
+	}
+	if _, err := service.ListServiceSegments(context.Background(), listingServiceRef, config.DefaultListingPageLimit+1, 0); !errors.Is(err, ErrValidation) {
+		t.Fatalf("expected a validation error one row past the shipped page, got %v", err)
 	}
 }
 
