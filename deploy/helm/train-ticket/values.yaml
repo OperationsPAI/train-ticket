@@ -566,6 +566,9 @@ mailpit:
 
 loadgen:
   enabled: true
+  # The workload runs from the image the platform publishes rather than one built here:
+  # the generator's source is not part of this tree.
+  image: mirrors.tencent.com/microservice/loadgen:80bda14e27664afe4dab955ed62eb913e0dd9081a5ea7c2bf4e242312397c08e
   # Synthetic traffic stays paused while backlog recovery and shard cutovers
   # are in progress. Final acceptance enables it for one bounded run.
   replicas: 0
