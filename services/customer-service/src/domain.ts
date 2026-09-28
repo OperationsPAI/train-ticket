@@ -122,7 +122,8 @@ export type ManualActionTargetDomain =
   | "post-sales"
   | "disruption-recovery"
   | "account"
-  | "notification";
+  | "notification"
+  | "loyalty-membership";
 
 export type EvidenceType =
   | "SCREENSHOT"

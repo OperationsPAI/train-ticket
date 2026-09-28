@@ -121,7 +121,7 @@ const compensationTypes = ["POINTS", "VOUCHER", "CASH", "UPGRADE"] as const;
 const evidenceTypes = ["SCREENSHOT", "CALL_RECORDING", "CHAT_TRANSCRIPT", "EMAIL", "CHANNEL_RECEIPT", "PROVIDER_SUMMARY", "DOCUMENT", "OTHER"] as const;
 const accessLevels = ["PUBLIC", "INTERNAL", "SENSITIVE", "RESTRICTED"] as const;
 const closeReasons = ["RESOLVED", "ESCALATED", "DUPLICATE", "NO_FURTHER_ACTION", "CUSTOMER_CLOSED"] as const;
-const manualActionTargetDomains = ["journey-order", "payment", "post-sales", "disruption-recovery", "account", "notification"] as const;
+const manualActionTargetDomains = ["journey-order", "payment", "post-sales", "disruption-recovery", "account", "notification", "loyalty-membership"] as const;
 
 export function opentelemetryInstrumentationFromEnv(tracer?: OTelTracer): InstrumentationHooks {
   const exporter = process.env.OTEL_TRACES_EXPORTER?.trim().toLowerCase();
