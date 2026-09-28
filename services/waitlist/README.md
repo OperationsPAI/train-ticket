@@ -3,6 +3,41 @@
 TypeScript service for durable candidate queues, exact capacity matching, automatic booking fulfillment, confirmation, cancellation and archival.
 The current public interface is `/api/v1/waitlist-requests`.
 
+## Runtime
+
+- HTTP port `8080` (`containerPort`/`PORT` in the chart).
+- Database `waitlist` on the `core` PostgreSQL instance
+  (`services.waitlist.db` and `postgres.instances.core.databases` in
+  `deploy/helm/train-ticket/values.yaml`).
+- Liveness `/healthz`, readiness `/readyz`; also `/health`, `/live`,
+`/livez`, `/ready`, `/metadata`.
+
+## HTTP surface
+
+- `/api/v1/waitlist-requests` create, list, read, `{id}/cancel`.
+- `/api/v1/waitlist/entries` create, `{id}` read, `{id}/accept`, `{id}` delete,
+  `GET /api/v1/waitlist/segments/{segmentRef}/{departureDate}/queue`,
+  `POST /api/v1/waitlist/archive-sweep`.
+
+The full contract lives in
+[`docs/08-contracts/api/waitlist.md`](../../docs/08-contracts/api/waitlist.md).
+
+## Events
+
+Publishes `WaitlistRequestCreated`, `WaitlistPaymentAuthorizationRequested`,
+`WaitlistQueued`, `WaitlistMatchStarted`, `WaitlistHoldAuthorized`,
+`WaitlistFulfilled`, `WaitlistCancelled` and `WaitlistExpired` to
+`events:waitlist`; see
+[`docs/08-contracts/events/waitlist.md`](../../docs/08-contracts/events/waitlist.md).
+Consumes `events:capacity-availability` (`CapacityReleased`) and
+`events:journey-order` (`src/subscriber.ts`).
+
+## Metrics
+
+Emits `train_ticket.waitlist.intents`, `train_ticket.waitlist.oldest_age` and
+`train_ticket.waitlist.promotions` (`src/metrics.ts`); the contract is in
+[`docs/07-observability/business-metrics.md`](../../docs/07-observability/business-metrics.md).
+
 ## Automatic fulfillment
 
 Enrollment resolves the requested trip from authoritative Payment, Journey Order, Offer Management, Fare Pricing, Trip Planning and Service Plan reads. The persisted intent includes the complete traveler set, scheduled service, service date, canonical class, station interval, stop-sequence version and a verified payment-guarantee snapshot.
