@@ -47,7 +47,7 @@ Internal command IDs and event causation IDs MUST use `cmd-<uuid-v7>`; event IDs
 | `eligibilityType` | `STUDENT`, `CHILD`, `MILITARY_DISABLED` |
 | `certificateStatus` | `DRAFT`, `ACTIVE`, `REJECTED`, `EXPIRED`, `REVOKED` |
 | `preOrderCheckResult` | `PASS`, `REJECT`, `MANUAL_REVIEW_REQUIRED`, `DEGRADED` |
-| `checkCode` | `VERIFICATION_PASSED`, `VERIFICATION_NOT_PASSED`, `DOCUMENT_EXPIRED`, `ELIGIBILITY_ACTIVE`, `ELIGIBILITY_UNAVAILABLE`, `PURCHASE_LIMIT_RECORDED`, `PURCHASE_LIMIT_CONFLICT`, `SIM_UNAVAILABLE`, `MANUAL_REVIEW_REQUIRED` |
+| `checkCode` | `VERIFICATION_PASSED`, `VERIFICATION_NOT_PASSED`, `ELIGIBILITY_ACTIVE`, `ELIGIBILITY_UNAVAILABLE`, `PURCHASE_LIMIT_RECORDED` |
 | `usageReservationStatus` | `RESERVED`, `CONFIRMED`, `RELEASED` |
 | `purchaseLimitFactStatus` | `RECORDED`, `CONFIRMED`, `RELEASED`, `MISSED`, `FAILED` |
 
@@ -83,7 +83,7 @@ Internal command IDs and event causation IDs MUST use `cmd-<uuid-v7>`; event IDs
 | `status` | enum | yes | Verification status. |
 | `simOutcome` | enum | no | Deterministic SIM outcome after submission. |
 | `simResultRef` | string | no | Safe deterministic reference (`sim-<uuid>`); not a raw SIM response. |
-| `reasonCode` | string | no | Safe machine-readable result reason, e.g. `NAME_DOCUMENT_MISMATCH`, `DOCUMENT_NOT_FOUND`, `DOCUMENT_EXPIRED`, `MANUAL_REVIEW_REQUIRED`. |
+| `reasonCode` | string | no | Safe machine-readable result reason, e.g. `NAME_DOCUMENT_MISMATCH`, `MANUAL_REVIEW_REQUIRED`. |
 | `materialFingerprint` | string | yes | SHA-256 folded material fingerprint. |
 | `simPolicyVersion` | string | yes | SIM mapping / tail-digit policy version. |
 | `validFrom` | RFC3339 UTC | no | Start of reusable passed verification validity. |
@@ -111,7 +111,7 @@ Internal command IDs and event causation IDs MUST use `cmd-<uuid-v7>`; event IDs
 | `annualUsageConfirmed` | integer | yes | Confirmed usages. |
 | `applicableProductCodes` | string[] | yes | Product codes for which the certificate may be considered. |
 | `evidenceHash` | string | yes | Hash of supporting evidence. |
-| `reasonCode` | string | no | Rejection/revocation/expiry reason code. |
+| `reasonCode` | string | no | Reason code reserved for rejection/revocation/expiry; the current Wave A flows do not set it. |
 | `createdAt` | RFC3339 UTC | yes | Creation timestamp. |
 | `updatedAt` | RFC3339 UTC | yes | Last update timestamp. |
 
