@@ -55,7 +55,8 @@ Supplier Catalog 负责把平台可合作的供应侧主数据整理成稳定、
 | Term | Definition | Notes |
 |---|---|---|
 | Supplier | 与平台合作提供运输、票务、调度或附加服务的供应侧主体。 | 可是承运商、代理、平台、车队或运营方。 |
-| SupplierProfile | Supplier 的法律实体、品牌、市场、联系方式、资质和风险属性。 | 发布后作为下游展示和审计引用。 |
+| SupplierProfile | Supplier 的法律实体、品牌、市场、联系方式、资质和风险属性。 | 发布后作为下游展示和审计引用；profile 是"同一个合作伙伴"的唯一身份。 |
+| PartnerIdentity | 目录认定两个接入请求属于同一个合作伙伴所依据的字段。 | 由 master data release 声明：接入批次给的编码，或伙伴对外使用的品牌。 |
 | ProductCatalog | 某 Supplier 可售或可服务产品的版本化目录。 | 包含主票和 AncillaryProduct 底稿。 |
 | Contract | 平台与 Supplier 的合作契约。 | 只保存业务摘要和可引用条款，不替代法务系统原件。 |
 | ContractVersion | Contract 的可发布版本。 | 生效窗口、范围和能力不可与同 scope 版本冲突。 |
@@ -172,6 +173,7 @@ Supplier Catalog 负责把平台可合作的供应侧主数据整理成稳定、
 ## 8. 策略和 Saga 参与点
 
 - 供应商接入策略：Supplier 只有在资质、结算主体、合同范围和风险标识通过后，才能从 UnderReview 进入 Active，并允许创建可发布目录。
+- 身份策略：SupplierProfile 是同一个合作伙伴的唯一身份，同一伙伴第二次接入要解析到首发的那条记录，而不是再建一条；身份由哪个字段承载——接入批次自己铸的编码，或伙伴对外使用的品牌——由 master data release 决定，接入命令不再把"编码"当作身份的同义词。同一个伙伴在两次导入里拿到两个编码时，两条记录必须收敛为一条，否则下游主数据无法分辨它们。
 - 合同版本策略：ContractVersion 生效窗口与 scope 冲突时阻止发布；新版本发布后，旧版本进入 Superseded，但历史 Offer、订单、结算仍按原 version ref 解释。
 - 能力矩阵策略：Capability 不直接调用外部接口，只声明“平台与供应商约定且经验证可使用的能力”。Provider Integration 可消费能力并反馈实际健康状况，但健康熔断状态不写回为目录主状态。
 - 产品上下架策略：ProductCatalogPublished 触发 Service Plan、Fare & Pricing、Ancillary Service 和 Provider Integration 重建读模型；ProductRetired 不删除历史，只禁止新售卖或新计划引用。
