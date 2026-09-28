@@ -3,6 +3,45 @@
 Rust service for invoice titles, deterministic SIM invoice requests, red flush observations and itinerary receipt projections.
 Remaining work is tracked in [TODO](../../docs/TODO.md).
 
+## Runtime
+
+- HTTP port `8080` (`containerPort`/`PORT` in the chart).
+- Database `invoicing` on the `event` PostgreSQL instance
+  (`services.invoicing.db`, `services.invoicing.pgInstance` and
+  `postgres.instances.event.databases` in
+  `deploy/helm/train-ticket/values.yaml`).
+- Liveness `/healthz`, readiness `/readyz`; also `/health`, `/live`,
+`/livez`, `/ready`, `/metadata`.
+
+## HTTP surface
+
+- `/api/v1/invoice-titles` create/read plus `{id}/set-default`.
+- `/api/v1/e-invoice-requests` create/read, `/api/v1/e-invoices` list/read.
+- `/api/v1/invoice-amount-bases/{orderId}` and
+  `/api/v1/internal/invoice-amount-bases/{orderId}/rebuild`.
+- `/api/v1/red-flushes` list/read plus
+  `/api/v1/internal/red-flush-reconciliations/{id}`;
+  `GET /api/v1/itinerary-receipts/generated`.
+
+The full contract lives in
+[`docs/08-contracts/api/invoicing.md`](../../docs/08-contracts/api/invoicing.md).
+
+## Events
+
+Publishes `InvoiceTitleCreated`, `InvoiceRequested`, `EInvoiceIssued`,
+`RedFlushCompleted`, `RefundWithoutRedFlushObserved` and
+`ItineraryReceiptGenerated` to `events:invoicing` (`src/adapters/storage.rs`); see
+[`docs/08-contracts/events/invoicing.md`](../../docs/08-contracts/events/invoicing.md).
+Consumes `events:journey-order`, `events:finance-settlement`,
+`events:post-sales`, `events:admin-audit`,
+`events:booking-orchestration` and `events:payment`
+(`src/adapters/messaging.rs`).
+
+## Metrics
+
+This service owns no service-specific business metric in the
+[`docs/07-observability/business-metrics.md`](../../docs/07-observability/business-metrics.md).
+
 Invoice creation reads order and financial projections through the same PostgreSQL connection as its command transaction.
 The command does not acquire another pool connection while holding account and idempotency locks.
 `recorded_invoice_request_uses_one_connection_and_replays_once` uses an actual recorded title, request and projections in an isolated database schema with a single connection.
@@ -22,20 +61,20 @@ Projection writes retain order scoped PostgreSQL locks and source event timestam
 Creation events supply references without replacing a later confirmation or adjustment total.
 `order_concurrency_recorded` verifies all six event orders, 144 concurrent duplicate deliveries, independent order progress and service reconstruction.
 Its recorded PostgreSQL run passes in 0.41 seconds; live throughput remains separately measured.
-Both changes are deployed in revision 276.
+Both changes are deployed (Helm revision 521; see [current status](../../docs/00-current-status.md)).
 Loadgen's `TestLiveRecordedInvoiceProjectionCompletes` completes the recorded failed order through the current APIs in 0.088 seconds and retains the issued invoice.
 Peak period acceptance is tracked in TODO.
 
 ## Recorded wallet compensation tests
 
 `src/adapters/compensation_recorded_tests.rs` verifies PostgreSQL state through the actual subscription handler using recorded case data and events.
-`tests/fixtures/wallet-compensation-recorded.json` contains unchanged revision 274 approval and applied envelopes for case `psc-01a0ceba-9bb5-7fbe-ac91-2168e09ae5ad` and its original order, amount and recognition projections.
+`tests/fixtures/wallet-compensation-recorded.json` contains unchanged recorded approval and applied envelopes for case `psc-01a0ceba-9bb5-7fbe-ac91-2168e09ae5ad` and its original order, amount and recognition projections.
 The source amount basis is CNY 2886 minor units and has no reversal.
 This order has no issued invoice, so the test verifies that no invoice, request or red flush is created and that all original projections remain unchanged.
 The historical fixture additionally preserves existing blue and red invoices, the invoice request and completed red flush.
 That historical applied envelope has no `caseType`; the test verifies the matching persisted source case and adds its recorded `COMPENSATION` type only to the in memory handler input.
 The stored historical envelope is unchanged.
-The revision 274 test requires the original `caseType` and performs no payload mapping.
+The recorded test requires the original `caseType` and performs no payload mapping.
 
 Both tests check complete command rows, projection rows, correction audit, idempotency records, processed events and outbox after duplicate delivery and service reconstruction.
 Replay also succeeds after closing the database pool, demonstrating that these ignored events need no database access.

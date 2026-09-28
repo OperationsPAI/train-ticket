@@ -25,6 +25,56 @@ Applied post-sales refunds are matched to the revenue recognition whose source e
 
 - `docs/02-domains/finance-settlement.md`
 
+## Runtime
+
+- HTTP port `8080` (`containerPort`/`PORT` in the chart).
+- Database `finance_settlement` on the `txn` PostgreSQL instance
+  (`services.finance-settlement.db`,
+  `services.finance-settlement.pgInstance` and
+  `postgres.instances.txn.databases` in
+  `deploy/helm/train-ticket/values.yaml`).
+- Liveness `/healthz`, readiness `/readyz`; also `/health`, `/live`,
+`/livez`, `/ready`, `/metadata`.
+
+## HTTP surface
+
+- `GET /api/v1/revenue-recognitions/{id}`,
+  `GET /api/v1/order-revenue-bases/{orderId}`,
+  `GET /api/v1/reconciliation-cases` and `{id}`,
+  `GET /api/v1/invoices/{id}`, `POST /api/v1/invoices`.
+- `GET /api/v1/channel-statements` and `{id}`,
+  `GET /api/v1/settlements/daily/{date}`,
+  `GET /api/v1/settlements/suppliers/{supplierId}/period`.
+- Daily reconciliation: `GET /api/v1/settlements/reconciliation/{batchId}` and
+  `POST /api/v1/settlements/reconciliation/{date}/run` (run/rerun a closed
+  period's reconciliation, including the refund side).
+- `GET/POST /api/v1/settlement-schedule-runs` and `{jobKey}`,
+  `GET /api/v1/benefit-costs`, `GET /api/v1/ancillary-financial-facts`, and
+  `POST /api/v1/internal/change-financial-reconciliations/{caseId}`.
+
+The full contract lives in
+[`docs/08-contracts/api/finance-settlement.md`](../../docs/08-contracts/api/finance-settlement.md).
+
+## Events
+
+Publishes `RevenueRecognized`, `RevenueRecognitionReversed`,
+`ReconciliationCaseOpened`, `ReconciliationCaseResolved`,
+`ReconciliationCompleted`, `InvoiceGenerated` and `SettlementViewRebuilt` to
+`events:finance-settlement`; see
+[`docs/08-contracts/events/finance-settlement-events.md`](../../docs/08-contracts/events/finance-settlement-events.md).
+Consumes `events:payment`, `events:provider-integration`,
+`events:booking-orchestration`, `events:post-sales`,
+`events:wallet-promotion`, `events:payment-channel` and
+`events:ancillary-service`
+(`adapters/messaging/RedisMessagingProperties.java`).
+
+## Metrics
+
+Emits `train_ticket.scheduled_job.success_age` for its daily reconciliation and
+supplier settlement, with the `scheduled_job` label
+(`adapters/observability/OtelScheduledJobMetrics.java`); the contract is in
+[`docs/07-observability/business-metrics.md`](../../docs/07-observability/business-metrics.md).
+
 ## Language Rationale
 
 Java is appropriate for financial ledgers, reconciliation workflows, and audit consistency.
@@ -32,12 +82,15 @@ Java is appropriate for financial ledgers, reconciliation workflows, and audit c
 ## Validation
 
 ```bash
-mvn test
+cd services/finance-settlement && mvn -o test
 ```
+
+Requires JDK 25 (the repo's devcontainer / `maven:3.9-eclipse-temurin-25`
+image). Recorded tests use `TEST_DATABASE_URL` and skip when it is unset.
 
 ## Recorded wallet compensation tests
 
-`CompensationRecordedEventLiveTest` consumes unchanged revision 274 events for case `psc-01a0ceba-9bb5-7fbe-ac91-2168e09ae5ad` using PostgreSQL repositories, transaction advice and a transactional outbox in isolated schemas.
+`CompensationRecordedEventLiveTest` consumes unchanged recorded events for case `psc-01a0ceba-9bb5-7fbe-ac91-2168e09ae5ad` using PostgreSQL repositories, transaction advice and a transactional outbox in isolated schemas.
 `src/test/resources/wallet-compensation-recorded.json` contains the source case, original `PaymentCaptured`, `PostSalesApproved`, `PostSalesApplied` and wallet `BenefitIssued` envelopes.
 Approval uses `approvedActions.compensation.method=WALLET_CREDIT` and has no refund instruction.
 The tests establish original revenue from the recorded capture, then verify unchanged revenue, fees, reconciliation, capture references and outbox through duplicate delivery and handler reconstruction.
