@@ -156,7 +156,7 @@ func (s *Service) RegisterSupplier(ctx context.Context, cmd RegisterSupplierComm
 	// a partner onboarded twice with two codes under one trading name is not two
 	// partners. Registering under the code keeps what every earlier release did,
 	// where the code the onboarding minted was the identity.
-	supplier, err := domain.NewSupplier(supplierID, cmd.LegalName, cmd.BrandName, supplierProfile(s.identitySource, cmd.SupplierCode, cmd.BrandName))
+	supplier, err := domain.NewSupplier(supplierID, cmd.LegalName, cmd.BrandName, s.profileFor(cmd))
 	if err != nil {
 		return SupplierView{}, fmt.Errorf("%w: %v", ErrDomainViolation, err)
 	}
@@ -199,6 +199,16 @@ func (s *Service) RegisterSupplier(ctx context.Context, cmd RegisterSupplierComm
 	s.suppliers[supplier.SupplierID] = supplier
 	s.mu.Unlock()
 	return supplierView(supplier), nil
+}
+
+// profileFor returns the value the catalogue treats as one partner's identity
+// from the release's field, and is what a registration is matched on before it
+// is filed.
+func (s *Service) profileFor(cmd RegisterSupplierCommand) string {
+	if s.identitySource == IdentitySourceBrand {
+		return strings.TrimSpace(cmd.BrandName)
+	}
+	return strings.TrimSpace(cmd.SupplierCode)
 }
 
 func (s *Service) GetSupplier(ctx context.Context, supplierID string) (domain.Supplier, error) {

@@ -33,12 +33,3 @@ func SupplierIdentitySourceFromEnv() string {
 	}
 	return IdentitySourceCode
 }
-
-// supplierProfile returns the value the catalogue treats as one partner's
-// identity, which is what the registration is matched on before it is filed.
-func supplierProfile(source, supplierCode, brandName string) string {
-	if source == IdentitySourceBrand {
-		return strings.TrimSpace(brandName)
-	}
-	return strings.TrimSpace(supplierCode)
-}
