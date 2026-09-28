@@ -35,6 +35,11 @@ Status: implemented and deployed (Helm revision 521; see [current status](../../
 The full contract lives in
 [`docs/08-contracts/api/customer-service.md`](../../docs/08-contracts/api/customer-service.md).
 
+The intake answers the channels this deployment routes
+(`CUSTOMER_SERVICE_INTAKE_CHANNELS`; unset means the platform's whole channel
+vocabulary, see `src/intake-rules.ts`), so a channel this desk does not route is
+refused before a case is stored.
+
 ## Events
 
 Publishes `SupportCaseOpened`, `EvidenceAttached`, `SupportCaseClassified`,
