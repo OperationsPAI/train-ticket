@@ -49,8 +49,53 @@ Issued replacements require ticket void confirmation.
 ## Checks
 
 ```bash
-mvn test
+cd services/booking-orchestration && mvn -o test
 ```
+
+## Runtime
+
+- HTTP port `8080` (`containerPort`/`PORT` in the chart).
+- Database `booking_orchestration` on the `hot` PostgreSQL instance
+  (`services.booking-orchestration.db`, `services.booking-orchestration.pgInstance`
+  and `postgres.instances.hot.databases` in
+  `deploy/helm/train-ticket/values.yaml`).
+- Liveness `/healthz`, readiness `/readyz`; also `/health`, `/live`,
+`/livez`, `/ready`, `/metadata`.
+
+## HTTP surface
+
+- `/api/v1/internal/booking-sagas`: create, read, `by-order/{orderId}`,
+  `{sagaId}/request-reservation`, `{sagaId}/mark-ticketed`.
+- `/api/v1/internal/change-reservations` and `{bookingId}/cancel`.
+- `/api/v1/internal/change-compensations/{bookingId}`.
+- `GET /api/v1/internal/segment-bookings/{segmentBookingId}`.
+
+The full contract lives in
+[`docs/08-contracts/api/booking-orchestration.md`](../../docs/08-contracts/api/booking-orchestration.md).
+
+## Events
+
+Publishes to `events:booking-orchestration`; the event types and consumers are
+in [`docs/08-contracts/events/booking-orchestration.md`](../../docs/08-contracts/events/booking-orchestration.md).
+Consumes `events:capacity-availability`, `events:journey-order`,
+`events:payment`, `events:provider-integration`,
+`events:entitlement-ticketing`, `events:risk-compliance`,
+`events:seat-assignment` and `events:invoicing`
+(`adapters/messaging/RedisEventBusInitializer.java`).
+
+## Metrics
+
+Emits `train_ticket.booking.saga.active|transitions|oldest_age|step_due_age`
+and the `reservation`, `payment` and `ticket` stages of
+`train_ticket.order.transitions`
+(`src/main/java/com/trainticket/bookingorchestration/observability/`); the
+contract is in
+[`docs/07-observability/business-metrics.md`](../../docs/07-observability/business-metrics.md).
+
+Java tests require JDK 25 (the repo's devcontainer /
+`maven:3.9-eclipse-temurin-25` image). Recorded tests need a live PostgreSQL
+(and, for some, Redis) and skip when `TEST_DATABASE_URL` / `TEST_REDIS_URL` are
+unset.
 
 ## Accepted supply references
 
