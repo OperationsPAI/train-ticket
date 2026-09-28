@@ -31,6 +31,19 @@ Activation-wave rulings:
   `segmentRef`, `interval`, `releasedAt`, `releaseReason`) and
   `CapacityHoldExpired` (`holdId`, `inventoryPoolId`, `capacityUnitRef`,
   `interval`, `expiredAt`) to release/expire matching seat assignments.
+- **RULING: some declared events have no producer in this wave.**
+  `SeatMapBuildFailed`, `AdjacencyGroupCancelled`, `BerthPreferenceRecorded`,
+  `BerthPreferenceApplied`, `BerthPreferenceCancelled`, `SeatAllocationFailed`,
+  `SeatAllocationMissed`, `SeatReassigned`, `SeatAllocationLedgerAppended`,
+  `SeatAllocationCorrectionAppended` and `SeatAllocationDiscrepancyDetected` are
+  declared-only: their definitions stay for forward compatibility, but the
+  deployed service has no code path that emits them. The other documented event
+  types in this file are emitted: `SeatMapBuilt`, `SeatMapVersionPublished`,
+  `SeatMapVersionRetired`, `SeatUnitUnavailableMarked`, `SeatUnitReopened`,
+  `AdjacencyGroupCreated`, `AdjacentAllocationSolved`,
+  `AdjacencyDegradationAccepted`, `SeatAllocated`, `StandingAssigned`,
+  `SeatAllocationConfirmed`, `SeatAllocationReleased` and
+  `SeatAllocationExpired`.
 
 All payload fields are camelCase, enum values are SCREAMING_SNAKE_CASE, and all
 timestamps are RFC3339 UTC. Envelope fields and optional trace context follow
@@ -131,7 +144,7 @@ half-open `[fromSeq,toSeq)`. Overlap exists when
 |---|---|
 | **Producer** | seat-assignment |
 | **Consumers** | reporting |
-| **Trigger** | SIM seed validation or topology build failed deterministically. |
+| **Trigger** | Declared-only: reserved for a deterministic seed/topology build failure, but not produced by the current release. No code path emits `SeatMapBuildFailed`; a rejected build returns an error response instead. |
 
 **Payload:**
 
@@ -299,7 +312,7 @@ half-open `[fromSeq,toSeq)`. Overlap exists when
 |---|---|
 | **Producer** | seat-assignment |
 | **Consumers** | reporting |
-| **Trigger** | Upstream cancellation closes an open adjacency group. |
+| **Trigger** | Declared-only: reserved for closing an open adjacency group on upstream cancellation, but not produced by the current release. No code path emits `AdjacencyGroupCancelled`. |
 
 **Payload:**
 
@@ -317,7 +330,7 @@ half-open `[fromSeq,toSeq)`. Overlap exists when
 |---|---|
 | **Producer** | seat-assignment |
 | **Consumers** | reporting |
-| **Trigger** | Allocation request records berth-specific preferences. |
+| **Trigger** | Declared-only: reserved for recording berth-specific preferences, but not produced by the current release. Berth/adjacency preferences are stored on the allocation; no code path emits `BerthPreferenceRecorded`. |
 
 **Payload:**
 
@@ -337,7 +350,7 @@ half-open `[fromSeq,toSeq)`. Overlap exists when
 |---|---|
 | **Producer** | seat-assignment |
 | **Consumers** | reporting |
-| **Trigger** | Berth preference is applied or downgraded during allocation. |
+| **Trigger** | Declared-only: reserved for applying or downgrading a berth preference, but not produced by the current release. No code path emits `BerthPreferenceApplied`. |
 
 **Payload:**
 
@@ -358,7 +371,7 @@ half-open `[fromSeq,toSeq)`. Overlap exists when
 |---|---|
 | **Producer** | seat-assignment |
 | **Consumers** | reporting |
-| **Trigger** | Upstream cancellation or manual correction cancels a berth preference request. |
+| **Trigger** | Declared-only: reserved for cancelling a berth preference request, but not produced by the current release. No code path emits `BerthPreferenceCancelled`. |
 
 **Payload:**
 
@@ -506,7 +519,7 @@ Historical standing allocations remain part of current occupancy even when their
 |---|---|
 | **Producer** | seat-assignment |
 | **Consumers** | entitlement-ticketing, booking-orchestration, reporting |
-| **Trigger** | Allocation cannot be completed and standing is not an accepted success path. |
+| **Trigger** | Declared-only: reserved for an allocation that cannot be completed without an accepted standing path, but not produced by the current release. No code path emits `SeatAllocationFailed`; the failed attempt is returned as an error response. |
 
 **Payload:**
 
@@ -528,7 +541,7 @@ Historical standing allocations remain part of current occupancy even when their
 |---|---|
 | **Producer** | seat-assignment |
 | **Consumers** | booking-orchestration, reporting |
-| **Trigger** | Allocation window or upstream saga already closed before Seat Assignment could act. |
+| **Trigger** | Declared-only: reserved for an allocation window or saga that closed before Seat Assignment could act, but not produced by the current release. No code path emits `SeatAllocationMissed`. |
 
 **Payload:**
 
@@ -548,7 +561,7 @@ Historical standing allocations remain part of current occupancy even when their
 |---|---|
 | **Producer** | seat-assignment |
 | **Consumers** | entitlement-ticketing, booking-orchestration, notification, reporting |
-| **Trigger** | Operator-approved or disruption-driven reassignment changes a concrete SeatUnit. |
+| **Trigger** | Declared-only: reserved for an operator-approved or disruption-driven reassignment of a concrete SeatUnit, but not produced by the current release. No code path emits `SeatReassigned`. |
 
 **Payload:**
 
@@ -571,7 +584,7 @@ Historical standing allocations remain part of current occupancy even when their
 |---|---|
 | **Producer** | seat-assignment |
 | **Consumers** | reporting |
-| **Trigger** | Immutable allocation ledger records a lifecycle fact. |
+| **Trigger** | Declared-only: reserved for appending an immutable allocation-ledger fact, but not produced by the current release. No code path emits `SeatAllocationLedgerAppended`. |
 
 **Payload:**
 
@@ -589,7 +602,7 @@ Historical standing allocations remain part of current occupancy even when their
 |---|---|
 | **Producer** | seat-assignment |
 | **Consumers** | reporting |
-| **Trigger** | Operator-approved manual correction is appended without rewriting history. |
+| **Trigger** | Declared-only: reserved for appending an operator-approved manual correction, but not produced by the current release. No code path emits `SeatAllocationCorrectionAppended`. |
 
 **Payload:**
 
@@ -609,7 +622,7 @@ Historical standing allocations remain part of current occupancy even when their
 |---|---|
 | **Producer** | seat-assignment |
 | **Consumers** | reporting |
-| **Trigger** | Reconciliation detects mismatch between SeatMap occupancy, ledger, and upstream facts. |
+| **Trigger** | Declared-only: reserved for reconciliation detecting a mismatch between SeatMap occupancy, the ledger and upstream facts, but not produced by the current release. No reconciliation path emits `SeatAllocationDiscrepancyDetected`. |
 
 **Payload:**
 
