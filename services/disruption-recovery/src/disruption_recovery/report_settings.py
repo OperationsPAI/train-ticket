@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Final, Mapping
 
@@ -16,10 +17,12 @@ DEFAULT_REPORTING_WINDOW_DAYS: Final = 45
 DEFAULT_OPTION_SET_VALIDITY: Final = timedelta(hours=24)
 
 
+@lru_cache(maxsize=1)
 def stated_report_settings() -> Mapping[str, Any]:
     return stated_settings(SETTINGS_PATH, SETTINGS_ENV)
 
 
+@lru_cache(maxsize=1)
 def reporting_window_days() -> int:
     # The reach of the plan the release was published for. Operations widen it for a
     # holiday peak and narrow it when capacity is committed forward, and the report
@@ -27,6 +30,7 @@ def reporting_window_days() -> int:
     return stated_non_negative_int(stated_report_settings(), "reportingWindowDays", DEFAULT_REPORTING_WINDOW_DAYS)
 
 
+@lru_cache(maxsize=1)
 def option_set_validity() -> timedelta:
     # How long a generated set stays selectable for the traveller who has to choose
     # an option in it, which the report path used to state as its own literal.
