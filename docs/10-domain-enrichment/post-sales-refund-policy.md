@@ -1,7 +1,7 @@
 # Post Sales 退改政策
 
-更新日期：2026年9月24日。
-本文描述 Helm revision 279 文档核对时的 Java 政策实现。
+更新日期：2026年9月28日。
+本文描述当前已部署的 Java 政策实现，发布证据见[当前项目状态](../00-current-status.md)。
 领域边界见 [Post Sales](../02-domains/post-sales.md)，统一待办见 [TODO](../TODO.md)。
 
 ## 输入与保存
