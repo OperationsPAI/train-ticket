@@ -51,6 +51,41 @@ Focused tests in `internal/domain/service_plan_test.go` cover these invariants.
 
 Go keeps schedule query services small, fast, and easy to operate.
 
+## Runtime
+
+- HTTP port `8080` (`containerPort`/`PORT` in the chart).
+- Database `service_plan` on the `read` PostgreSQL instance
+  (`services.service-plan.db`, `services.service-plan.pgInstance` and
+  `postgres.instances.read.databases` in
+  `deploy/helm/train-ticket/values.yaml`).
+- Liveness `/healthz`, readiness `/readyz`; also `/health`, `/ready`,
+`/metadata`.
+
+## HTTP surface
+
+- `/api/v1/scheduled-services` create, list, read plus `{serviceRef}/delays`,
+  `{serviceRef}/cancellations`, `{serviceRef}/restorations`,
+  `{serviceRef}/temporary-services`.
+- `/api/v1/service-segments` create, list, read and
+  `GET /api/v1/internal/service-segments/{segmentRef}/supply`.
+
+The full contract lives in
+[`docs/08-contracts/api/service-plan.md`](../../docs/08-contracts/api/service-plan.md).
+
+## Events
+
+Publishes `ServicePlanPublished`, `ServicePlanChanged`,
+`TemporaryServiceAdded`, `TrainDelayed`, `TrainCancelled`, `TrainRestored`
+and `TemporaryServiceExpired` to `events:service-plan`
+(`internal/application/events.go`, producer `service-plan`); see
+[`docs/08-contracts/events/service-plan.md`](../../docs/08-contracts/events/service-plan.md).
+It consumes no inbound event stream.
+
+## Metrics
+
+This service owns no service-specific business metric in the
+[`docs/07-observability/business-metrics.md`](../../docs/07-observability/business-metrics.md).
+
 ## Validation
 
 ```bash
