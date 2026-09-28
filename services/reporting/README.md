@@ -68,6 +68,7 @@ cd services/reporting && PYTHONPATH=src:../../platform/python-kit/src python3 -m
 It ships with the service and is written into `metric_definition_snapshots` at startup, so a freshly initialized database answers the definition reads with the definitions the release was checked against.
 Each entry is stored under the `metricId` it declares, and the store keeps the document the catalog states, which is the same shape the built-in definitions are written in.
 An id the store already holds keeps its stored document: the seed writes only what is absent, so a rolling restart does not overwrite a definition the running service has since superseded.
+The catalog states the period each definition is charted over, which is the period the operations console groups its views by rather than the period the store happens to write.
 
 ## Captured payment metrics
 

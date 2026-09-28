@@ -17,6 +17,21 @@ def catalog_file() -> Path:
     return CATALOG_FILE
 
 
+def catalog_revision(path: Path | None = None) -> str:
+    """The revision the catalog states, so a seed can be read back against it.
+
+    An absent catalog states nothing rather than a placeholder, because a
+    revision that was never signed off is not one a log line should report.
+    """
+    source = path or CATALOG_FILE
+    if not source.is_file():
+        return ""
+    document = json.loads(source.read_text(encoding="utf-8"))
+    if not isinstance(document, Mapping):
+        return ""
+    return str(document.get("revision", ""))
+
+
 def load_metric_catalog(path: Path | None = None) -> tuple[Mapping[str, Any], ...]:
     """The metric documents the catalog publishes, in the order it lists them.
 

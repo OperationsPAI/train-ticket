@@ -1,6 +1,6 @@
 {
   "schemaVersion": "trainticket.metric-catalog/v1",
-  "revision": "2026-09-27",
+  "revision": "2026-09-28",
   "signedOffBy": "governance-review",
   "metrics": [
     {
@@ -9,7 +9,7 @@
       "description": "Journey orders accepted per second, plotted against the arrival the release offers.",
       "owner": "operations-team",
       "category": "operational",
-      "granularity": "daily",
+      "granularity": "hourly",
       "version": "1.0.0",
       "expression": "COUNT(JourneyOrderCreated) / 60",
       "status": "published",
@@ -44,6 +44,20 @@
       "publishedAt": "2026-09-27T00:00:00Z",
       "dependsOnMetricIds": [],
       "sourceLineage": ["SeatAllocated", "CapacityUpdated"]
+    },
+    {
+      "metricId": "metric-ops-refund-rate",
+      "name": "Refund rate",
+      "description": "Settled refunds over captures, the ratio the console reads beside the failed captures.",
+      "owner": "operations-team",
+      "category": "operational",
+      "granularity": "daily",
+      "version": "1.0.0",
+      "expression": "COUNT(RefundSettled) / COUNT(PaymentCaptured)",
+      "status": "published",
+      "publishedAt": "2026-09-28T00:00:00Z",
+      "dependsOnMetricIds": ["metric-ops-payment-failures"],
+      "sourceLineage": ["RefundSettled", "RefundCompleted"]
     }
   ]
 }

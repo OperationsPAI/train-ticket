@@ -10,7 +10,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from reporting.application.catalog import load_metric_catalog
+from reporting.application.catalog import catalog_revision, load_metric_catalog
 from reporting.application.service import (
     PRODUCER,
     RebuildRun,
@@ -422,6 +422,7 @@ class PostgresReportingApplicationService:
 
     def _seed_defaults(self) -> None:
         defaults = default_repository()
+        catalog = load_metric_catalog()
         with self._pool.connection() as conn:
             with conn.transaction():
                 for metric in defaults.metrics.values():
@@ -429,13 +430,21 @@ class PostgresReportingApplicationService:
                 # The catalog the governance review signed off is the source of the
                 # definitions this release publishes, so it is written with the
                 # built-in documents under the id each entry declares.
-                for entry in load_metric_catalog():
+                for entry in catalog:
                     self._metrics.seed(conn, str(entry["metricId"]), entry)
                 for dashboard in defaults.dashboards.values():
                     self._dashboards.seed(conn, dashboard.dashboard_id, _dashboard_to_json(dashboard))
                 for runs in defaults.rebuild_runs.values():
                     for run in runs:
                         self._save_rebuild_run(conn, run)
+        # Which catalog revision a database was seeded from is the first question
+        # asked of a definition that reads back wrong, and by then the file has
+        # moved on.
+        logger.info(
+            "definition store seeded from catalog revision %s, %d entries",
+            catalog_revision(),
+            len(catalog),
+        )
 
     def list_metrics(self, *, category: MetricCategory | None, limit: int, offset: int) -> tuple[list[MetricDefinition], int]:
         with self._pool.connection() as conn:
