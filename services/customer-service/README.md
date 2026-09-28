@@ -26,9 +26,9 @@ Status: implemented and deployed (Helm revision 521; see [current status](../../
 
 ## Settings
 
-- The desk's case actions are stated by the release (`services.customer-service.env`)
-  rather than by the image; an action the release does not state keeps the
-  arrangement the service ships.
+- The desk's own actions (`classify`, `assign`, `escalate`, `resolve`, `close`,
+  `reopen`) take the statuses the release states; an action it does not state
+  keeps the arrangement the service ships.
 
 ## HTTP surface
 
