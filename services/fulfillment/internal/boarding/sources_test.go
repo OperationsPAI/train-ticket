@@ -47,3 +47,14 @@ func TestEstateReadsTheSettingNameByReader(t *testing.T) {
 		t.Fatalf("a reader left out of the setting is outside the estate")
 	}
 }
+
+func TestEstateReadsTheSettingOnEveryCall(t *testing.T) {
+	t.Setenv(SourcesVariable, "STATION")
+	if !Operates(domain.FulfillmentSourceStation) || Operates(domain.FulfillmentSourceProvider) {
+		t.Fatalf("the estate is the setting read at call time")
+	}
+	t.Setenv(SourcesVariable, "PROVIDER")
+	if Operates(domain.FulfillmentSourceStation) || !Operates(domain.FulfillmentSourceProvider) {
+		t.Fatalf("a release that changes the setting changes the estate")
+	}
+}
