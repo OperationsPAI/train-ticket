@@ -1,6 +1,6 @@
 # Customer Service — HTTP API
 
-Last updated: 2026-07-05
+Last updated: 2026-09-28
 
 ## Overview
 
@@ -194,6 +194,72 @@ request; execution stays with Admin & Audit (WP-20 boundary: no business-state
 mutation from support).
 
 **Error codes:** `VALIDATION_FAILED`, `NOT_FOUND`
+
+### Request a Customer Escalation
+
+**POST** `/api/v1/support-cases/{caseId}/request-escalation`
+
+**Idempotency:** REQUIRED
+
+**Request:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `targetQueue` | string | yes | Target escalation queue. |
+| `reason` | string | yes | Customer's escalation reason. |
+
+The trigger condition is fixed to `CUSTOMER_REQUEST`. The response is the updated case.
+
+**Error codes:** `NOT_FOUND`, `VALIDATION_FAILED`
+
+### Evaluate SLA
+
+**POST** `/api/v1/support-cases/evaluate-sla`
+
+**Idempotency:** REQUIRED
+
+Runs the scheduled SLA evaluation sweep over open tickets.
+
+**Response (202):** `{ "evaluated": <count> }`.
+
+### Offer Compensation
+
+**POST** `/api/v1/support-cases/{caseId}/compensation-offers`
+
+**Idempotency:** REQUIRED
+
+**Request:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `type` | enum | yes | Compensation type. |
+| `amountMinor` | integer | yes | Compensation amount in minor units. |
+| `authorizationLevel` | enum | yes | Escalation level authorizing the offer. |
+| `offeredBy` | string | yes | Operator offering the compensation. |
+
+**Response (201):** Compensation offer with `offerId`, `ticketId`, `type`, `amountMinor`, `authorizationLevel` and `status`.
+
+**Error codes:** `NOT_FOUND`, `VALIDATION_FAILED`, `PRECONDITION_FAILED`
+
+### Accept Compensation
+
+**POST** `/api/v1/compensation-offers/{offerId}/accept`
+
+**Idempotency:** REQUIRED
+
+**Response (200):** Compensation offer with `offerId`, `ticketId`, `type`, `amountMinor`, `authorizationLevel` and `status`.
+
+**Error codes:** `NOT_FOUND`, `PRECONDITION_FAILED`
+
+### Issue Compensation
+
+**POST** `/api/v1/compensation-offers/{offerId}/issue`
+
+**Idempotency:** REQUIRED
+
+**Response (200):** Compensation offer with `offerId`, `ticketId`, `type`, `amountMinor`, `authorizationLevel` and `status`.
+
+**Error codes:** `NOT_FOUND`, `PRECONDITION_FAILED`
 
 ## Bus-only commands
 
