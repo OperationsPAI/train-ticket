@@ -16,6 +16,13 @@ class MetricCatalogTest(unittest.TestCase):
         self.assertEqual(catalog_revision(), document["revision"])
         self.assertTrue(catalog_revision())
 
+    def test_the_catalog_keeps_the_order_it_lists(self) -> None:
+        document = json.loads(catalog_file().read_text(encoding="utf-8"))
+        self.assertEqual(
+            [str(entry["metricId"]) for entry in load_metric_catalog()],
+            [str(entry["metricId"]) for entry in document["metrics"]],
+        )
+
     def test_every_entry_is_addressable_in_the_store(self) -> None:
         for entry in load_metric_catalog():
             self.assertTrue(str(entry["metricId"]).strip())
