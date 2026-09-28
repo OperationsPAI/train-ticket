@@ -44,6 +44,12 @@ describe("the desk's roster", () => {
     assert.equal(rosterUnder(" , ").queues, null);
   });
 
+  it("staffs a lane the release names twice", () => {
+    const roster = rosterUnder("post-sales-desk,post-sales-desk");
+    assert.deepEqual(roster.queues, ["post-sales-desk", "post-sales-desk"]);
+    assert.deepEqual(roster.staffs, ["post-sales-desk"]);
+  });
+
   it("staffs every lane while the release states none", () => {
     const roster = rosterUnder(undefined);
     assert.equal(roster.queues, null);
