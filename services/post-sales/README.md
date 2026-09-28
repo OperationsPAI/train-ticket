@@ -30,7 +30,7 @@ The replay must preserve the case version and outbox count, with empty pending l
 All handlers, Redis operations, transactions, repositories and outbox writes in this test are real.
 
 The recorded run on 2026-09-23 completed both capacity releases in 37 milliseconds with five background lock waits and sixteen queued events.
-The isolated subscriber is deployed in revision 277, whose complete broad live regression passes in 225.475 seconds.
+The isolated subscriber is deployed (Helm revision 521; see [current status](../../docs/00-current-status.md)), whose complete broad live regression passes in 225.475 seconds.
 This is an isolated regression result; deployment latency still depends on the shared database and workload.
 The test writes source and replay message IDs, completed case data, outbox records and observed timing to `target/recorded-tests/capacity-isolation.json`.
 Its PostgreSQL schema and Redis keys are removed after execution, and the JSON evidence remains available.
@@ -111,6 +111,47 @@ See the [HTTP API](../../docs/08-contracts/api/post-sales.md) and [inventory int
 - PostSalesExecutionPlan step ordering for entitlement, booking/segment, capacity, payment, and result-application requests
 - PostSales domain events: PostSalesRequested, PostSalesEligibilityEvaluated, PostSalesDecisionQuoted, PostSalesApproved, PostSalesApplied
 
+## Runtime
+
+- HTTP port `8080` (`containerPort`/`PORT` in the chart).
+- Database `post_sales` on the `txn` PostgreSQL instance
+  (`services.post-sales.db`, `services.post-sales.pgInstance` and
+  `postgres.instances.txn.databases` in
+  `deploy/helm/train-ticket/values.yaml`).
+- Liveness `/healthz`, readiness `/readyz`; also `/health`, `/live`,
+`/livez`, `/ready`, `/metadata`.
+
+## HTTP surface
+
+- `/api/v1/post-sales-cases`: create, read, `evaluate`, `target-offer`,
+  `target-offer/revise`, `approve`, `execute-change`, `execute-compensation`,
+  `{id}/settlement` and `{id}/issue-authorization/{bookingId}`.
+- Internal: `/api/v1/internal/post-sales-cases/{id}/reconcile-conflict`,
+  `/reconcile-execution`, `/cancel-unquoted-change` and
+  `GET /api/v1/internal/compensation-mismatches/{caseId}`.
+
+The full contract lives in
+[`docs/08-contracts/api/post-sales.md`](../../docs/08-contracts/api/post-sales.md).
+
+## Events
+
+Publishes `PostSalesCaseOpened`, `PostSalesRequested`,
+`PostSalesEligibilityEvaluated`, `PostSalesDecisionQuoted`,
+`PostSalesApproved`, `PostSalesApplied` and `PostSalesExecutionStarted` to
+`events:post-sales`; see
+[`docs/08-contracts/events/post-sales.md`](../../docs/08-contracts/events/post-sales.md).
+Consumes `events:capacity-availability` (on its own subscriber) plus
+`events:journey-order`, `events:disruption-recovery`,
+`events:ancillary-service` and `events:dispatch`
+(`adapters/messaging/RedisSubscriptionLifecycle.java`).
+
+## Metrics
+
+Emits `train_ticket.payment.operations` for compensation outcomes only, with no
+amount or conservation series
+(`src/main/java/com/trainticket/postsales/observability/`); the contract is in
+[`docs/07-observability/business-metrics.md`](../../docs/07-observability/business-metrics.md).
+
 ## Boundary
 
 Post Sales coordinates refund, change and wallet compensation cases through the owning services' APIs and events.
@@ -145,7 +186,7 @@ Repeated and concurrent reconciliation calls return the resulting `APPLIED` case
 ## Check
 
 ```bash
-mvn -Dpost-sales.messaging.redis.enabled=false test
+cd services/post-sales && mvn -o -Dpost-sales.messaging.redis.enabled=false test
 ```
 
 The full module run on 2026-09-23 reported 89 tests, zero failures, zero errors and 18 tests skipped because their external conditions were not enabled.
