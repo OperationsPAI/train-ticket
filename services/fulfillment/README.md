@@ -10,9 +10,9 @@ Status: implemented and deployed (Helm revision 521; see [current status](../../
 
 ## Owns
 
-- FulfillmentRecord
-- EvidenceDispute
-- BoardingVerified / NoShowRecorded / FulfillmentCompleted facts
+- `FulfillmentRecord`, the facts of one traveler on one segment.
+- `EvidenceDispute`.
+- `BoardingVerified`, `NoShowRecorded` and `FulfillmentCompleted` facts.
 
 ## Runtime
 
