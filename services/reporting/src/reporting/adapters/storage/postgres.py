@@ -423,15 +423,16 @@ class PostgresReportingApplicationService:
     def _seed_defaults(self) -> None:
         defaults = default_repository()
         published = load_metric_catalog()
+        written = 0
         with self._pool.connection() as conn:
             with conn.transaction():
                 for metric in defaults.metrics.values():
-                    self._metrics.seed(conn, metric.metric_id, _metric_to_json(metric))
+                    written += int(self._metrics.seed(conn, metric.metric_id, _metric_to_json(metric)))
                 # The catalog the governance review signed off is the source of the
                 # definitions this release publishes, so it is written with the
                 # built-in documents under the id each entry declares.
                 for entry in published:
-                    self._metrics.seed(conn, str(entry["metricId"]), entry)
+                    written += int(self._metrics.seed(conn, str(entry["metricId"]), entry))
                 for dashboard in defaults.dashboards.values():
                     self._dashboards.seed(conn, dashboard.dashboard_id, _dashboard_to_json(dashboard))
                 for runs in defaults.rebuild_runs.values():
@@ -439,10 +440,12 @@ class PostgresReportingApplicationService:
                         self._save_rebuild_run(conn, run)
         # Which catalog revision a database was seeded from is the first question
         # asked of a definition that reads back wrong, and by then the file has
-        # moved on.
+        # moved on. A restart writes nothing, so the count is what this process
+        # added rather than what the store holds.
         logger.info(
-            "definition store seeded from catalog revision %s, %d entries",
+            "definition store seeded from catalog revision %s, %d definitions written, %d catalog entries",
             catalog_revision(),
+            written,
             len(published),
         )
 
