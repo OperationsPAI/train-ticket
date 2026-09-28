@@ -58,6 +58,11 @@ Go keeps schedule query services small, fast, and easy to operate.
   (`services.service-plan.db`, `services.service-plan.pgInstance` and
   `postgres.instances.read.databases` in
   `deploy/helm/train-ticket/values.yaml`).
+- The settings the image reads are `PORT`, `DATABASE_URL`, `REDIS_URL`,
+  `MIGRATIONS_DIR` and `SERVICE_PLAN_LISTING_PAGE_LIMIT`, the largest page a
+  listing serves. A release declares them in `services.service-plan.env`; a
+  setting a release leaves out keeps the value above, which is what this service
+  did before the settings existed (`internal/config`).
 - Liveness `/healthz`, readiness `/readyz`; also `/health`, `/ready`,
 `/metadata`.
 

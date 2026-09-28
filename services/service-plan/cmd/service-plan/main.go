@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 
 	kitmessaging "github.com/trainticket/greenfield/platform/go-kit/messaging"
@@ -12,20 +13,19 @@ import (
 	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
 	adapterpg "github.com/trainticket/greenfield/services/service-plan/internal/adapters/postgres"
 	"github.com/trainticket/greenfield/services/service-plan/internal/application"
+	"github.com/trainticket/greenfield/services/service-plan/internal/config"
 	"github.com/trainticket/greenfield/services/service-plan/internal/domain"
 	apphttp "github.com/trainticket/greenfield/services/service-plan/internal/http"
 )
 
 func main() {
+	settings := config.FromEnv()
 	shutdownOTel, err := goruntime.InitTelemetryFromEnv(context.Background(), "service-plan")
 	if err != nil {
 		log.Fatalf("failed to initialize OpenTelemetry: %v", err)
 	}
 	defer func() { _ = shutdownOTel(context.Background()) }()
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
+	port := strconv.Itoa(settings.Port)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	// The metrics variant installs pool acquisition tracing, which pgxpool reads
