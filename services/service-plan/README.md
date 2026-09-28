@@ -87,6 +87,8 @@ and `TemporaryServiceExpired` to `events:service-plan`
 (`internal/application/events.go`, producer `service-plan`); see
 [`docs/08-contracts/events/service-plan.md`](../../docs/08-contracts/events/service-plan.md).
 It consumes no inbound event stream.
+The producer every envelope carries is the service identifier in
+`internal/domain/profile.go`.
 
 ## Metrics
 
