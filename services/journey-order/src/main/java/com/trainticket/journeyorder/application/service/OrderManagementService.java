@@ -1076,8 +1076,13 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
 
 
     private EventSubscriber.HandlerResult ackSkipMissingOrder(EventEnvelope envelope) {
-        LOGGER.warn("ack-skip journey-order event={} eventId={} orderId={} reason=ORDER_NOT_FOUND",
-            envelope.eventType(), envelope.eventId(), orderIdForLog(envelope));
+        // A risk assessment is the one event whose subject this service may legitimately never
+        // carry: risk-compliance assesses the order, the payment intent, the post-sales case and
+        // the account on one stream, and only the order's assessment resolves to an order here.
+        // Naming the scenario is what tells an assessment this service is not meant to act on
+        // apart from an order that has not been written yet.
+        LOGGER.warn("ack-skip journey-order event={} eventId={} orderId={} scenario={} reason=ORDER_NOT_FOUND",
+            envelope.eventType(), envelope.eventId(), orderIdForLog(envelope), textPayload(envelope, "scenario", "-"));
         return new EventSubscriber.Success();
     }
 
