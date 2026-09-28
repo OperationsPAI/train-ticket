@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -51,7 +52,25 @@ func (s *Service) GetSegmentSupply(ctx context.Context, ref string) (*SegmentSup
 		return nil, err
 	}
 	result := &SegmentSupply{SegmentRef: segment.SegmentRef, ScheduledServiceRef: service.ScheduledServiceRef, ServiceDate: service.DepartureTime.UTC().Format("2006-01-02"),
-		StopSequenceVersion: fmt.Sprintf("sha256:%x", sha256.Sum256(material)), Stops: stops, DepartureTime: segment.DepartureTime, ArrivalTime: segment.ArrivalTime}
-	result.Interval.FromSeq, result.Interval.ToSeq = stops[0].Sequence, stops[1].Sequence
+		StopSequenceVersion: fmt.Sprintf("%s:%x", s.stopSequenceDigest(), sha256.Sum256(material)), Stops: stops, DepartureTime: segment.DepartureTime, ArrivalTime: segment.ArrivalTime}
+	result.Interval.FromSeq, result.Interval.ToSeq = s.publishedInterval(stops)
 	return result, nil
+}
+
+// publishedInterval names the stop positions the published interval covers.
+// The service states whether the end is the last stop it covers or the first
+// position past it, so a caller reads the bound the service publishes.
+func (s *Service) publishedInterval(stops []SupplyStop) (int, int) {
+	first, last := stops[0].Sequence, stops[len(stops)-1].Sequence
+	if strings.EqualFold(strings.TrimSpace(s.supply.IntervalBound), SupplyIntervalBoundExclusive) {
+		last = last + 1
+	}
+	return first, last
+}
+
+func (s *Service) stopSequenceDigest() string {
+	if strings.TrimSpace(s.supply.StopSequenceDigest) == "" {
+		return "sha256"
+	}
+	return strings.TrimSpace(s.supply.StopSequenceDigest)
 }

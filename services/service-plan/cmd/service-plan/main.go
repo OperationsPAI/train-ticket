@@ -12,6 +12,7 @@ import (
 	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
 	adapterpg "github.com/trainticket/greenfield/services/service-plan/internal/adapters/postgres"
 	"github.com/trainticket/greenfield/services/service-plan/internal/application"
+	serviceconfig "github.com/trainticket/greenfield/services/service-plan/internal/config"
 	"github.com/trainticket/greenfield/services/service-plan/internal/domain"
 	apphttp "github.com/trainticket/greenfield/services/service-plan/internal/http"
 )
@@ -57,8 +58,13 @@ func main() {
 	}
 	defer func() { _ = redisClient.Close() }()
 	go storage.NewOutboxRelay(pool, redisClient).Run(ctx)
+	supplySettings, err := serviceconfig.ShippedSupply()
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("service-plan publishing supply facts with intervalBound=%s stopSequenceDigest=%s", supplySettings.IntervalBound, supplySettings.StopSequenceDigest)
 	transactor := adapterpg.NewTransactor(pool)
-	service := application.NewService(adapterpg.NewOutboxPublisherWithProvider(transactor)).WithRepository(adapterpg.NewRepositoryWithProvider(transactor)).WithUnitOfWork(transactor.Within)
+	service := application.NewService(adapterpg.NewOutboxPublisherWithProvider(transactor)).WithRepository(adapterpg.NewRepositoryWithProvider(transactor)).WithUnitOfWork(transactor.Within).WithSupplySettings(application.SupplySettings{IntervalBound: supplySettings.IntervalBound, StopSequenceDigest: supplySettings.StopSequenceDigest})
 	profile := domain.Profile()
 	httpMetrics, err := goruntime.HTTPMetricsFromEnv(profile.ServiceID)
 	if err != nil {

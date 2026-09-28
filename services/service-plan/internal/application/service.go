@@ -205,6 +205,19 @@ type Repository interface {
 
 type UnitOfWork func(context.Context, func(context.Context) error) error
 
+// SupplySettings is what the service states about the segment supply facts it
+// publishes. An unset bound keeps the shipped convention, so a service built
+// without settings publishes the stop positions it always published.
+type SupplySettings struct {
+	IntervalBound      string
+	StopSequenceDigest string
+}
+
+const (
+	SupplyIntervalBoundInclusive = "INCLUSIVE"
+	SupplyIntervalBoundExclusive = "EXCLUSIVE"
+)
+
 type Service struct {
 	mu                sync.Mutex
 	publishMu         sync.Mutex
@@ -213,6 +226,7 @@ type Service struct {
 	publisher         EventPublisher
 	repository        Repository
 	uow               UnitOfWork
+	supply            SupplySettings
 	scheduledServices map[string]scheduledServiceState
 	segments          map[string]ServiceSegment
 	pendingEvents     []EventEnvelope
@@ -241,6 +255,15 @@ func (s *Service) WithRepository(repository Repository) *Service {
 func (s *Service) WithUnitOfWork(uow UnitOfWork) *Service {
 	if s != nil {
 		s.uow = uow
+	}
+	return s
+}
+
+// WithSupplySettings states the segment supply settings the image carries.
+// Leaving it unset keeps the shipped convention.
+func (s *Service) WithSupplySettings(settings SupplySettings) *Service {
+	if s != nil {
+		s.supply = settings
 	}
 	return s
 }
