@@ -69,7 +69,6 @@ public class PaymentCommandService {
         this.refundSettlementIndex = index;
     }
 
-    @org.springframework.beans.factory.annotation.Autowired
     public PaymentCommandService(
         Clock clock,
         EventPublisher eventPublisher,
@@ -83,6 +82,7 @@ public class PaymentCommandService {
         this(clock, eventPublisher, paymentIntentRepository, refundRepository, reservationPaymentRequestRepository, latePaymentCaseRepository, paymentChannelClient, ChannelRouter.defaults(), transactionManager);
     }
 
+    @org.springframework.beans.factory.annotation.Autowired
     public PaymentCommandService(
         Clock clock,
         EventPublisher eventPublisher,

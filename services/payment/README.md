@@ -22,6 +22,10 @@ Payment publishes funds facts only. It must not confirm orders, issue entitlemen
   (`services.payment.db`, `services.payment.pgInstance` and
   `postgres.instances.txn.databases` in
   `deploy/helm/train-ticket/values.yaml`).
+- Channel table, expiry-sweep cadence and conservation delays from
+  `src/main/resources/application.properties` (`payment.*`); the release
+  overrides any of them through the environment, such as
+  `PAYMENT_CHANNEL_WECHAT_PAY_MAX_AMOUNT_MINOR` for a channel's ceiling.
 - Liveness `/healthz`, readiness `/readyz`; also `/health`, `/live`,
 `/livez`, `/ready`, `/metadata`.
 

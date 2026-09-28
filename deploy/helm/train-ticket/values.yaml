@@ -1261,6 +1261,14 @@ services:
       # is worth far more than the scanning it saves.
       PAYMENT_CONSERVATION_INITIAL_DELAY_MS: "900000"
       PAYMENT_CONSERVATION_REFRESH_MS: "1800000"
+      # The channel table travels with the release through these names, so a
+      # band or a window moves without rebuilding the image. They are the two
+      # the acquirer pinned for the pilot: the wallet's collection band, which
+      # is the acquirer's own rather than the merchant's, and the unionpay
+      # collection window, which is longer than the shipped one because that
+      # settlement file is read later.
+      PAYMENT_CHANNEL_WECHAT_PAY_MAX_AMOUNT_MINOR: "12000"
+      PAYMENT_CHANNEL_UNIONPAY_TIMEOUT_SECONDS: "60"
     # JVM event consumer on 4 streams. 512Mi is not enough at
     # MaxRAMPercentage=70 -- see the note on defaults.resources. The CPU limit
     # goes with CONSUMER_THREADS above: 4 threads do not fit in 500m, and
