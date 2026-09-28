@@ -33,10 +33,41 @@ Offer Management does **not** lock inventory and does **not** create orders, pay
 - `docs/02-domains/offer-management.md`
 - `docs/03-ddd-final/phase-1-contract.md`
 
+## Runtime
+
+- HTTP port `8080` (`containerPort`/`PORT` in the chart).
+- Database `offer_management` on the `read` PostgreSQL instance
+  (`services.offer-management.db`, `services.offer-management.pgInstance` and
+  `postgres.instances.read.databases` in
+  `deploy/helm/train-ticket/values.yaml`).
+- Liveness `/healthz`, readiness `/readyz`; also `/health`, `/live`,
+`/livez`, `/ready`, `/metadata`.
+
+## HTTP surface
+
+- `POST /api/v1/offers`, `GET /api/v1/offers/{offerId}`.
+
+The full contract lives in
+[`docs/08-contracts/api/offer-management.md`](../../docs/08-contracts/api/offer-management.md).
+
+## Events
+
+Publishes `OfferQuoted` and `OfferExpired` to `events:offer-management`
+(`src/adapters/messaging/stream-config.ts`); see
+[`docs/08-contracts/events/offer-management.md`](../../docs/08-contracts/events/offer-management.md).
+Consumes `events:fare-pricing`, `events:trip-planning`,
+`events:traveler-profile`, `events:transfer-management` and
+`events:ancillary-service`.
+
+## Metrics
+
+This service owns no service-specific business metric in the
+[`docs/07-observability/business-metrics.md`](../../docs/07-observability/business-metrics.md).
+
 ## Validation
 
 ```bash
-npm test
+cd services/offer-management && npm test
 ```
 
 The test command compiles TypeScript into ignored `test-output/` files and runs Node's built-in `node:test` suite, including Fastify inject smoke tests for `/health`, `/livez`, and `/readyz`.

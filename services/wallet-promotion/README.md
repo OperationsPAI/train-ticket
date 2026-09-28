@@ -89,6 +89,39 @@ See the [HTTP API](../../docs/08-contracts/api/wallet-promotion.md), [events](..
 `PromotionInstrument`, `WalletAccount`, `WalletBalance`, `BenefitReservation`,
 `BenefitRedemption`, release/reversal records and wallet ledger entries.
 
+## Runtime
+
+- HTTP port `8080` (`containerPort`/`PORT` in the chart).
+- Database `wallet_promotion` on the `core` PostgreSQL instance
+  (`services.wallet-promotion.db` and `postgres.instances.core.databases` in
+  `deploy/helm/train-ticket/values.yaml`).
+- Liveness `/healthz`, readiness `/readyz`; also `/health`, `/live`,
+`/livez`, `/ready`, `/metadata`.
+
+## HTTP surface
+
+- `/api/v1/benefits` create, list, `{id}` read plus `reserve`, `redeem`,
+  `release`, `revoke`, `reverse-redemption`.
+- `GET /api/v1/internal/benefits/by-case/{caseId}` (read-only recovery check).
+- `GET /api/v1/wallet-accounts/{accountId}`.
+
+The full contract lives in
+[`docs/08-contracts/api/wallet-promotion.md`](../../docs/08-contracts/api/wallet-promotion.md).
+
+## Events
+
+Publishes `BenefitIssued`, `BenefitReserved`, `BenefitRedeemed`,
+`BenefitReservationReleased`, `BenefitRevoked`, `BenefitRedemptionReversed`
+and `BenefitExpired` to `events:wallet-promotion`; see
+[`docs/08-contracts/events/wallet-promotion.md`](../../docs/08-contracts/events/wallet-promotion.md).
+It consumes no inbound event stream.
+
+## Metrics
+
+Emits `train_ticket.wallet.balance` and `train_ticket.wallet.operations`
+(`src/main/java/com/trainticket/walletpromotion/metrics/`); the contract is in
+[`docs/07-observability/business-metrics.md`](../../docs/07-observability/business-metrics.md).
+
 ## DDD Sources
 
 `docs/02-domains/wallet-promotion.md`.
@@ -100,8 +133,10 @@ Java represents benefit commands, monetary values and transaction boundaries exp
 ## Check
 
 ```bash
-mvn test
+cd services/wallet-promotion && mvn -o test
 ```
+
+Requires JDK 25 (the repo's devcontainer / `maven:3.9-eclipse-temurin-25` image).
 
 Set `TEST_DATABASE_URL` to execute `WalletMutationConcurrencyLiveTest`. It runs
 16-way concurrent same-operation replay, distinct issuance to one account,
@@ -113,4 +148,4 @@ It verifies eight concurrent requests, service reconstruction, amount conflict a
 The verified run completed both live tests in 4.792 seconds, with one benefit, ledger entry and `BenefitIssued` retained per case.
 
 Loadgen's `TestLiveWalletCompensationPreservesPaidTravel` contains assertions for an equal wallet balance increment, three case and wallet issuance replays with stable identities, preserved tickets, seats, Holds, payments and ancillary item, and completed fulfillment.
-The focused test passes against revision 274 in 17.031 seconds with an approved CNY 8.86 credit and successful subsequent fulfillment.
+The focused test passes against the deployed release (Helm revision 521; see [current status](../../docs/00-current-status.md)) in 17.031 seconds with an approved CNY 8.86 credit and successful subsequent fulfillment.
