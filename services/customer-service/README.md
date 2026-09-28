@@ -35,6 +35,12 @@ Status: implemented and deployed (Helm revision 521; see [current status](../../
 The full contract lives in
 [`docs/08-contracts/api/customer-service.md`](../../docs/08-contracts/api/customer-service.md).
 
+The support desk behind this deployment staffs the web, phone, chat, mail and
+in-app message queues; the mobile app, the bot and the operator console file
+through the queues that own them. Which intake channels that leaves the service
+answering is in `config/intake-channels.json`, the settings the image ships
+beside the process.
+
 ## Events
 
 Publishes `SupportCaseOpened`, `EvidenceAttached`, `SupportCaseClassified`,

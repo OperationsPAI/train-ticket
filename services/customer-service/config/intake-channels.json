@@ -1,3 +1,4 @@
 {
-  "channels": ["APP", "WEB", "PHONE", "IM", "EMAIL", "IN_APP_MESSAGE", "BOT", "OPERATOR_CONSOLE"]
+  "note": "The support desk behind this deployment staffs the web, phone, chat, mail and in-app message queues; the mobile app, the bot and the operator console are answered from the queues that own them.",
+  "channels": ["WEB", "PHONE", "IM", "EMAIL", "IN_APP_MESSAGE"]
 }
