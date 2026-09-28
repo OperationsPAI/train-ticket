@@ -31,11 +31,44 @@ const (
 	// destructively, so without a cap every published event stays resident forever and
 	// eventually exhausts the Redis memory limit.
 	DefaultStreamMaxLen = int64(10000)
+
+	// ReadBatchCount is the number of entries an individual read asks for. One read
+	// that returns five hundred entries costs one command, and xreadgroup is the
+	// largest command class a single-threaded Redis serves.
+	ReadBatchCount = int64(500)
+
+	// AccumulateTickEnv overrides the accumulation tick, the wait before the
+	// non-blocking top-up read that turns a burst into one batch and one XACK.
+	AccumulateTickEnv = "CONSUMER_ACCUMULATE_TICK_MS"
+	// DefaultAccumulateTick is the accumulation tick. XREADGROUP ... BLOCK hands back
+	// as soon as a single entry is available, so a reader that keeps up gets one to
+	// three entries per round and the one XACK that retires a round is one XACK per
+	// entry -- xack was the largest command class Redis served. Waiting a tick first
+	// lets a burst accumulate into one round, at the cost of up to a tick of delivery
+	// latency, well inside the ten second poll. Zero disables the accumulation.
+	DefaultAccumulateTick = 50 * time.Millisecond
 )
 
 // MaxLen is the per-stream entry cap applied to every XADD, always with Approx (MAXLEN ~)
 // so trimming stays O(1) instead of walking the stream to an exact length.
 var MaxLen = StreamMaxLen(os.Getenv(StreamMaxLenEnv))
+
+// AccumulateTick is the resolved accumulation tick. Zero disables the accumulation.
+var AccumulateTick = accumulateTick(os.Getenv(AccumulateTickEnv))
+
+// accumulateTick resolves the accumulation tick, logging and falling back to the
+// default when the configured value is not a non-negative integer of milliseconds.
+func accumulateTick(configured string) time.Duration {
+	trimmed := strings.TrimSpace(configured)
+	if trimmed == "" {
+		return DefaultAccumulateTick
+	}
+	if millis, err := strconv.ParseInt(trimmed, 10, 64); err == nil && millis >= 0 {
+		return time.Duration(millis) * time.Millisecond
+	}
+	log.Printf("WARN %s=%s is not a non-negative integer; using default %v", AccumulateTickEnv, configured, DefaultAccumulateTick)
+	return DefaultAccumulateTick
+}
 
 // StreamMaxLen resolves the configured cap, falling back to the default when the value is
 // blank, non-numeric or non-positive. Falling back beats trimming to zero: a misconfigured
@@ -305,10 +338,7 @@ func (b *RedisEventBus) consumeLoop(ctx context.Context, streams []string, group
 			}
 		default:
 		}
-		// Five hundred rather than a hundred: one read that returns five hundred
-		// entries costs one command, and xreadgroup is the largest command class a
-		// single-threaded Redis serves.
-		result, err := b.client.XReadGroup(ctx, &redis.XReadGroupArgs{Group: group, Consumer: consumer, Streams: append(append([]string{}, streams...), ids...), Count: 500, Block: b.cfg.ReadBlock}).Result()
+		result, err := b.readStreams(ctx, streams, ids, group, consumer, b.cfg.ReadBlock)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
 				return
@@ -333,11 +363,83 @@ func (b *RedisEventBus) consumeLoop(ctx context.Context, streams []string, group
 			continue
 		}
 		backoff = time.Second
+		result = b.accumulateRead(ctx, streams, ids, group, consumer, result)
 		for _, stream := range result {
 			b.processBatch(ctx, stream.Stream, group, consumer, stream.Messages, handler, filter)
 		}
 	}
 }
+
+// readStreams issues one XREADGROUP for every stream this group consumes.
+//
+// A negative block is the non-blocking form: go-redis omits BLOCK rather than sending
+// it, which is what the accumulation top-up needs. Passing zero would instead send
+// `BLOCK 0`, which Redis reads as "block forever".
+func (b *RedisEventBus) readStreams(ctx context.Context, streams, ids []string, group, consumer string, block time.Duration) ([]redis.XStream, error) {
+	return b.client.XReadGroup(ctx, &redis.XReadGroupArgs{
+		Group:    group,
+		Consumer: consumer,
+		Streams:  append(append([]string{}, streams...), ids...),
+		Count:    ReadBatchCount,
+		Block:    block,
+	}).Result()
+}
+
+// accumulateRead waits one tick and takes one more, non-blocking, read, so a burst
+// of entries arrives as one batch and is retired by one XACK.
+//
+// The idle path is untouched: only a read that already returned entries pays the
+// tick, and an empty read loops straight back to the blocking read, so an empty
+// stream never spins. A failed or empty top-up is not fatal to the round; the
+// entries already in hand are still processed and the next round re-reads.
+func (b *RedisEventBus) accumulateRead(ctx context.Context, streams, ids []string, group, consumer string, first []redis.XStream) []redis.XStream {
+	if AccumulateTick <= 0 || countMessages(first) == 0 || countMessages(first) >= ReadBatchCount {
+		return first
+	}
+	select {
+	case <-ctx.Done():
+		return first
+	case <-time.After(AccumulateTick):
+	}
+	more, err := b.readStreams(ctx, streams, ids, group, consumer, -1)
+	if err != nil {
+		return first
+	}
+	return mergeStreams(first, more)
+}
+
+func countMessages(streams []redis.XStream) int64 {
+	var total int64
+	for _, stream := range streams {
+		total += int64(len(stream.Messages))
+	}
+	return total
+}
+
+// mergeStreams concatenates one read's messages per stream onto another's, keeping
+// the stream order of the first read. Redis caps each read at COUNT, so the merged
+// batch is the burst the tick caught, not the batch size times two.
+func mergeStreams(first, more []redis.XStream) []redis.XStream {
+	if len(more) == 0 {
+		return first
+	}
+	merged := make([]redis.XStream, 0, len(first)+len(more))
+	index := make(map[string]int, len(first))
+	for _, stream := range first {
+		index[stream.Stream] = len(merged)
+		merged = append(merged, stream)
+	}
+	for _, stream := range more {
+		if at, ok := index[stream.Stream]; ok {
+			merged[at].Messages = append(merged[at].Messages, stream.Messages...)
+			continue
+		}
+		index[stream.Stream] = len(merged)
+		merged = append(merged, stream)
+	}
+	return merged
+}
+
 func (b *RedisEventBus) recoverPending(ctx context.Context, stream, group, consumer string, handler Handler, filter func(EventEnvelope) bool, start string) string {
 	messages, next, err := b.client.XAutoClaim(ctx, &redis.XAutoClaimArgs{Stream: stream, Group: group, Consumer: consumer, MinIdle: b.cfg.RecoveryMinIdle, Start: start, Count: 100}).Result()
 	if err != nil {
