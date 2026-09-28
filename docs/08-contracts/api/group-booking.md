@@ -1,6 +1,6 @@
 # Group Booking — HTTP API
 
-Last updated: 2026-09-25.
+Last updated: 2026-09-28.
 
 Group Booking owns group reservations for at least ten travelers. All POST commands require a UUID-v7 `Idempotency-Key`; persisted runtime stores both aggregate state and successful HTTP responses in PostgreSQL.
 
