@@ -177,9 +177,17 @@ type ListPlacesResponse struct {
 	Offset int            `json:"offset"`
 }
 
+// listPlacesMaxCodes bounds the array parameter the code filter sends; the
+// indexed lookup was measured at this width and a wider one trades the index
+// for a scan. listPlacesPageSize is the largest page the list will answer.
+const (
+	listPlacesMaxCodes = 100
+	listPlacesPageSize = 100
+)
+
 func (s *Service) ListPlaces(ctx context.Context, req ListPlacesRequest) (*ListPlacesResponse, error) {
-	if len(req.Codes) > 100 {
-		return nil, NewDomainError("VALIDATION_FAILED", "at most 100 place codes are allowed")
+	if len(req.Codes) > listPlacesMaxCodes {
+		return nil, NewDomainError("VALIDATION_FAILED", fmt.Sprintf("at most %d place codes are allowed", listPlacesMaxCodes))
 	}
 	for _, code := range req.Codes {
 		if strings.TrimSpace(code) == "" {
@@ -190,8 +198,8 @@ func (s *Service) ListPlaces(ctx context.Context, req ListPlacesRequest) (*ListP
 	if limit <= 0 {
 		limit = 20
 	}
-	if limit > 100 {
-		limit = 100
+	if limit > listPlacesPageSize {
+		limit = listPlacesPageSize
 	}
 	offset := req.Offset
 	if offset < 0 {
