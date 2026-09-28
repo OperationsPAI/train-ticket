@@ -54,7 +54,7 @@ Last updated: 2026-09-28
 |---|---|
 | **Producer** | entitlement-ticketing |
 | **Consumers** | fulfillment, journey-order |
-| **Trigger** | Passenger boarded the service. |
+| **Trigger** | Declared-only: reserved for passenger boarding, but not produced by the current release. Entitlement & Ticketing publishes only `EntitlementIssued` and `EntitlementVoided`; the deployed consumer of `BoardingVerified` updates the entitlement status locally without emitting this event. |
 
 **Payload:**
 
@@ -69,7 +69,7 @@ Last updated: 2026-09-28
 |---|---|
 | **Producer** | entitlement-ticketing |
 | **Consumers** | post-sales, notification, fulfillment |
-| **Trigger** | Entitlement suspended due to dispute, risk, or provider conflict. |
+| **Trigger** | Declared-only: reserved for suspension due to dispute, risk, or provider conflict, but not produced by the current release. Entitlement & Ticketing publishes only `EntitlementIssued` and `EntitlementVoided`; the domain emits a local suspension event but no code path appends it to the outbox. |
 
 **Payload:**
 
@@ -86,7 +86,7 @@ Last updated: 2026-09-28
 |---|---|
 | **Producer** | entitlement-ticketing |
 | **Consumers** | notification, fulfillment |
-| **Trigger** | `ResumeEntitlement` command processed; suspension cleared. |
+| **Trigger** | Declared-only: reserved for a processed `ResumeEntitlement` command, but not produced by the current release. Entitlement & Ticketing publishes only `EntitlementIssued` and `EntitlementVoided`; the domain emits a local resume event but no code path appends it to the outbox. |
 
 **Payload:**
 
@@ -103,7 +103,7 @@ Last updated: 2026-09-28
 |---|---|
 | **Producer** | entitlement-ticketing |
 | **Consumers** | journey-order, booking-orchestration, notification |
-| **Trigger** | Segment completed; entitlement marked as used. |
+| **Trigger** | Declared-only: reserved for segment completion, but not produced by the current release. Entitlement & Ticketing publishes only `EntitlementIssued` and `EntitlementVoided`; the deployed consumer of `FulfillmentCompleted` updates the entitlement status locally without emitting this event. |
 
 **Payload:**
 
@@ -119,7 +119,7 @@ Last updated: 2026-09-28
 |---|---|
 | **Producer** | entitlement-ticketing |
 | **Consumers** | booking-orchestration, seat-assignment |
-| **Trigger** | Entitlement issuance failed. |
+| **Trigger** | Declared-only: reserved for a failed entitlement issuance, but not produced by the current release. Entitlement & Ticketing publishes only `EntitlementIssued` and `EntitlementVoided`; the domain emits a local issue-failure event but no code path appends it to the outbox. |
 
 **Payload:**
 
