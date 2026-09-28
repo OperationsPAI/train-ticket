@@ -36,23 +36,24 @@ def _stated_settings() -> Mapping[str, Any]:
     return stated if isinstance(stated, Mapping) else {}
 
 
+def _stated_int(key: str, default: int) -> int:
+    try:
+        return int(_stated_settings().get(key))
+    except (TypeError, ValueError):
+        return default
+
+
 @lru_cache(maxsize=1)
 def reporting_window_days() -> int:
     """How many days ahead of the report the release plans recovery for."""
-    try:
-        days = int(_stated_settings().get("reportingWindowDays"))
-    except (TypeError, ValueError):
-        return DEFAULT_REPORTING_WINDOW_DAYS
+    days = _stated_int("reportingWindowDays", DEFAULT_REPORTING_WINDOW_DAYS)
     return days if days >= 0 else DEFAULT_REPORTING_WINDOW_DAYS
 
 
 @lru_cache(maxsize=1)
 def option_set_validity() -> timedelta:
     """How long a generated option set stays selectable in this release."""
-    try:
-        hours = int(_stated_settings().get("optionSetValidityHours"))
-    except (TypeError, ValueError):
-        return DEFAULT_OPTION_SET_VALIDITY
+    hours = _stated_int("optionSetValidityHours", 0)
     return timedelta(hours=hours) if hours > 0 else DEFAULT_OPTION_SET_VALIDITY
 
 
