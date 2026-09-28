@@ -99,11 +99,11 @@ Blank code values return `VALIDATION_FAILED`.
 | `walkingEdges` | array | Optional; same `{toNodeId, walkingTimeMinutes}` directed edge shape as request. Present only when one or more walking/access edges are configured; per-edge `walkingTimeMinutes` is omitted when unknown and present as `0` when explicitly configured as zero. |
 | `createdAt` | timestamp | Creation time. |
 
-A station node whose create request omits `accessTimeMinutes` is stored with no
-weight at all, and this read cannot then tell an unmeasured station from one
-its operator measured at zero. Consumers that plan against the node -- the
-transfer topology in transfer-management is the first -- need a stated
-allowance for those nodes instead of an absence each of them interprets.
+A station node whose create request omits `accessTimeMinutes` is stored with
+the release's station allowance, so this read answers a station the operator
+did not weigh with the value the timetable is planned against rather than an
+absence. A node that declared a weight of its own keeps it, and a node whose
+place is not a station is left unmeasured.
 
 **Error codes:** `VALIDATION_FAILED`, `NOT_FOUND` (placeId), `CONFLICT`
 

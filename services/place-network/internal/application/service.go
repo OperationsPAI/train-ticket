@@ -249,9 +249,9 @@ func (s *Service) CreateTransportNode(ctx context.Context, req CreateTransportNo
 		return nil, NewDomainError("VALIDATION_FAILED", err.Error())
 	}
 	node.SetAccessWeights(req.AccessTimeMinutes, walkingEdgesFromRequest(req.WalkingEdges))
-	// A station's wayfinding is planning data like any other, so a node the
-	// operator did not weigh carries the allowance the service ships instead of
-	// leaving the field absent for every reader to interpret on its own.
+	// A station's wayfinding is planning data like any other: a station the
+	// operator did not weigh is planned from the service's allowance instead of
+	// an absent field every consumer has to interpret for itself.
 	if place.Type == domain.PlaceTypeStation {
 		node.ApplyAccessAllowance(s.stationAccessAllowanceMinutes)
 	}
@@ -259,7 +259,7 @@ func (s *Service) CreateTransportNode(ctx context.Context, req CreateTransportNo
 		return nil, NewDomainError("VALIDATION_FAILED", err.Error())
 	}
 	node.MarkCreatedAt(now)
-	servingModes := stringModes(node.ServingModes)
+	servingModes := apiServingModes(node.ServingModes)
 	walkingEdges := walkingEdgesToResponse(node.WalkingEdges)
 	if err := s.unitOfWork(ctx, func(txCtx context.Context) error {
 		if err := s.nodes.Save(txCtx, node); err != nil {
@@ -292,7 +292,7 @@ func (s *Service) GetTransportNode(ctx context.Context, id domain.TransportNodeI
 	if err != nil || node == nil {
 		return nil, NewDomainError("NOT_FOUND", fmt.Sprintf("transport node not found: %s", id))
 	}
-	return &GetTransportNodeResponse{NodeID: string(node.ID), PlaceID: string(node.PlaceID), DisplayName: node.DisplayName, ServingModes: stringModes(node.ServingModes), AccessTimeMinutes: copyInt(node.AccessTimeMinutes), WalkingEdges: walkingEdgesToResponse(node.WalkingEdges), CreatedAt: domain.FormatTimestamp(node.CreatedAt)}, nil
+	return &GetTransportNodeResponse{NodeID: string(node.ID), PlaceID: string(node.PlaceID), DisplayName: node.DisplayName, ServingModes: apiServingModes(node.ServingModes), AccessTimeMinutes: copyInt(node.AccessTimeMinutes), WalkingEdges: walkingEdgesToResponse(node.WalkingEdges), CreatedAt: domain.FormatTimestamp(node.CreatedAt)}, nil
 }
 
 type DomainError struct {
@@ -314,7 +314,7 @@ func validPlaceTypeForAPI(value domain.PlaceType) bool {
 	}
 }
 
-func stringModes(modes []domain.TransportMode) []string {
+func apiServingModes(modes []domain.TransportMode) []string {
 	out := make([]string, len(modes))
 	for i, mode := range modes {
 		out[i] = apiServingMode(mode)
@@ -325,7 +325,7 @@ func stringModes(modes []domain.TransportMode) []string {
 func nodeSummaries(nodes []domain.TransportNode) []NodeSummary {
 	out := make([]NodeSummary, len(nodes))
 	for i, node := range nodes {
-		out[i] = NodeSummary{NodeID: string(node.ID), DisplayName: node.DisplayName, ServingModes: stringModes(node.ServingModes), AccessTimeMinutes: copyInt(node.AccessTimeMinutes), WalkingEdges: walkingEdgesToResponse(node.WalkingEdges)}
+		out[i] = NodeSummary{NodeID: string(node.ID), DisplayName: node.DisplayName, ServingModes: apiServingModes(node.ServingModes), AccessTimeMinutes: copyInt(node.AccessTimeMinutes), WalkingEdges: walkingEdgesToResponse(node.WalkingEdges)}
 	}
 	return out
 }
