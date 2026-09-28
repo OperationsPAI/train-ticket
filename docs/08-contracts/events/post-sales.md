@@ -1,8 +1,8 @@
 # Post Sales Events & Commands
 
-Last updated: 2026-09-25.
+Last updated: 2026-09-28.
 
-Runtime baseline: Helm revision 279.
+Runtime baseline: the deployed resident release; see [current status](../../00-current-status.md).
 Remaining work is tracked in [TODO](../../TODO.md).
 
 Capacity release handling selects only cases with an unrecorded release that are approved, executing, or applied changes needing release evidence.

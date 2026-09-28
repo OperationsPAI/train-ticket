@@ -1,5 +1,7 @@
 # Shared Primitives
 
+Last updated: 2026-09-28.
+
 ## Cross-Context IDs
 
 | Field | Type | Format | Example |
@@ -24,30 +26,34 @@
 | Field | Type | Format | Example |
 |---|---|---|---|
 | `currency` | string | ISO 4217 | `CNY` |
-| `amount` | string | Decimal with scale matching currency fraction digits | `100.00` |
+| `minorUnits` | integer | Signed amount in the currency's minor unit | `10000` |
 
-Money arithmetic must reject cross-currency operations at the domain level.
-All monetary values use `BigDecimal` with scale set to the currency's default
-fraction digits and `RoundingMode.UNNECESSARY` (or `HALF_EVEN` for division).
+Money is an integer minor-unit amount plus its currency, on the wire and in the
+shared kernel (`Money.amount_minor`, serialized as `minorUnits`). No decimal
+strings or floating-point amounts are used. Money arithmetic must reject
+cross-currency operations at the domain level.
 
 ## Timestamps
 
-All timestamps use `java.time.Instant` (ISO-8601 instant). Precision is
-milliseconds or finer.
+Timestamps are RFC3339 UTC strings on the wire. Java services use
+`java.time.Instant` internally. Precision is milliseconds or finer.
 
 ## Event Envelope
 
 Every domain event carries:
 
-| Field | Type | Description |
-|---|---|---|
-| `eventId` | string | Unique event identifier (UUID v7). |
-| `occurredAt` | timestamp | When the event was recorded. |
-| `sourceCommandId` | string | The command that produced this event. |
-| `causationId` | string | The immediate cause (previous event or external fact). |
-| `correlationId` | string | End-to-end trace identifier. |
-| `schemaVersion` | int | Event schema version (currently 1). |
-| `attributes` | map[string,string] | Extensible metadata. |
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `eventId` | string | yes | Unique event identifier (UUID v7, `evt-` prefixed). |
+| `eventType` | string | yes | Event type name. |
+| `schemaVersion` | int | yes | Event schema version (currently 1). |
+| `producer` | string | yes | Producing context name. |
+| `causationId` | string | no | The immediate cause (previous event or external fact). |
+| `correlationId` | string | yes | End-to-end trace identifier. |
+| `occurredAt` | RFC3339 UTC string | yes | When the event was recorded. |
+| `payload` | object | yes | Event-specific fields. |
+| `traceparent` | string | no | W3C Trace Context, carried when OTel tracing is enabled. |
+| `tracestate` | string | no | W3C Trace Context state; only ever present with `traceparent`. |
 
 ## Consumed Event Record
 
@@ -55,7 +61,6 @@ When a downstream context consumes an upstream event, it must record at least:
 
 | Field | Type | Description |
 |---|---|---|
-| `eventId` | string | The consumed event's unique identifier (dedup key). |
-| `consumedAt` | timestamp | When this context processed the event. |
-| `source` | string | The upstream context name (e.g. `journey-order`, `payment`). |
-| `eventType` | string | The consumed event type name. |
+| `event_id` | string | The consumed event's unique identifier (dedup key, primary key). |
+| `stream` | string | The source stream the event arrived on (e.g. `events:payment`). |
+| `processed_at` | timestamp | When this context processed the event. |

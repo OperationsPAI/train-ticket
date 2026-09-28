@@ -1,6 +1,6 @@
 # Invoicing — Events & Commands
 
-Last updated: 2026-07-10
+Last updated: 2026-09-28
 
 ## Scope and Wave-A rulings
 
