@@ -18,7 +18,6 @@ import com.trainticket.bookingorchestration.observability.NoopBookingSagaMetrics
 import com.trainticket.bookingorchestration.observability.NoopOrderFunnelMetrics;
 import com.trainticket.bookingorchestration.observability.OrderFunnelMetrics;
 import java.time.Clock;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -155,7 +154,7 @@ public class BookingOrchestrationService {
         var saga = sagas.findById(sagaId).orElse(null);
         if (saga == null) {
             saga = BookingSaga.start(sagaId,orderId,"1",purpose,List.of(
-                BookingSaga.stepPlan("change-reservations",sagaId+":reservations",Duration.ofMinutes(15),3,"release-capacity")),clock);
+                BookingSaga.stepPlan("change-reservations",sagaId+":reservations",stepWaits.changeReservations(),3,"release-capacity")),clock);
             saga.advanceTo(BookingSagaStatus.CONFIRMING);
             Instant reservationDeadline = saga.beginStepWait(sagaId + ":reservations");
             sagas.save(saga,correlationId);
