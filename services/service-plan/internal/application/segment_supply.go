@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -55,22 +54,4 @@ func (s *Service) GetSegmentSupply(ctx context.Context, ref string) (*SegmentSup
 		StopSequenceVersion: fmt.Sprintf("%s:%x", s.stopSequenceDigest(), sha256.Sum256(material)), Stops: stops, DepartureTime: segment.DepartureTime, ArrivalTime: segment.ArrivalTime}
 	result.Interval.FromSeq, result.Interval.ToSeq = s.publishedInterval(stops)
 	return result, nil
-}
-
-// publishedInterval names the stop positions the published interval covers.
-// The contract writes the interval half open, so the end names the first
-// position past the segment and a caller reads the bound the service states.
-func (s *Service) publishedInterval(stops []SupplyStop) (int, int) {
-	first, last := stops[0].Sequence, stops[len(stops)-1].Sequence
-	if strings.EqualFold(strings.TrimSpace(s.supply.IntervalBound), SupplyIntervalBoundExclusive) {
-		last = last + 1
-	}
-	return first, last
-}
-
-func (s *Service) stopSequenceDigest() string {
-	if strings.TrimSpace(s.supply.StopSequenceDigest) == "" {
-		return "sha256"
-	}
-	return strings.TrimSpace(s.supply.StopSequenceDigest)
 }
