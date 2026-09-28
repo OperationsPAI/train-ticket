@@ -26,8 +26,9 @@ Do not attach order, saga, payment, refund, hold, seat, ticket, waitlist,
 wallet, notification, account, traveler, request or correlation identifiers.
 Do not attach raw URLs, arbitrary error messages or exception class names.
 
-`reason_code` must come from a small owned vocabulary. Unknown values collapse
-to `OTHER`; they must not be copied from exception text. Monetary instruments
+`reason_code` must come from a small owned vocabulary, and a configured name
+from the list above; unknown values collapse to `OTHER` and must not be copied
+from exception text. Monetary instruments
 use integer minor units and always carry `currency`; PromQL must never sum
 across currencies.
 
