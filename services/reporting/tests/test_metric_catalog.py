@@ -51,6 +51,14 @@ class MetricCatalogTest(unittest.TestCase):
         self.assertIn("metric-ops-refund-rate", entries)
         self.assertEqual(entries["metric-ops-refund-rate"]["category"], "operational")
 
+    def test_the_refund_rate_declares_the_definition_it_depends_on(self) -> None:
+        entries = {str(entry["metricId"]): entry for entry in load_metric_catalog()}
+        self.assertEqual(
+            list(entries["metric-ops-refund-rate"]["dependsOnMetricIds"]),
+            ["metric-ops-payment-failures"],
+        )
+        self.assertIn("metric-ops-payment-failures", entries)
+
     def test_the_catalog_ids_are_unique(self) -> None:
         ids = [str(entry["metricId"]) for entry in load_metric_catalog()]
         self.assertEqual(len(ids), len(set(ids)))
