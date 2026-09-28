@@ -616,3 +616,30 @@ func TestCompletionForARecordNobodyHoldsIsNotFound(t *testing.T) {
 		t.Fatalf("a completion nobody holds: got %v, want not found", err)
 	}
 }
+
+func TestDuplicateBoardingScanKeepsTheFactTheRecordHolds(t *testing.T) {
+	boardedAt := time.Date(2026, 9, 28, 19, 0, 0, 0, time.UTC)
+	publisher := &recordingPublisher{}
+	service := NewService(NewInMemoryRepository(), publisher, NewInMemoryConsumedEventLog(), nil, func() time.Time { return boardedAt })
+	seedTicket(t, service, "ent-dupe1", "sb-dupe1", "ord-dupe1", "tvl-dupe1", "seg-dupe1")
+	command := VerifyBoardingCommand{EntitlementID: "ent-dupe1", SegmentBookingID: "sb-dupe1", JourneyOrderID: "ord-dupe1", TravelerID: "tvl-dupe1", SegmentRef: "seg-dupe1", Source: domain.FulfillmentSourceGate, SourceEventID: "scan-dupe-first", OccurredAt: boardedAt}
+	first, err := service.VerifyBoarding(context.Background(), command, CommandMetadata{})
+	if err != nil {
+		t.Fatalf("first scan: %v", err)
+	}
+	publisher.envelopes = nil
+	command.SourceEventID = "scan-dupe-second"
+	if _, err := service.VerifyBoarding(context.Background(), command, CommandMetadata{}); err != nil {
+		t.Fatalf("second scan: %v", err)
+	}
+	if len(publisher.envelopes) != 0 {
+		t.Fatalf("a second scan published %d events, want none", len(publisher.envelopes))
+	}
+	record, err := service.GetFulfillmentRecord(context.Background(), first.FulfillmentRecordID)
+	if err != nil {
+		t.Fatalf("read record: %v", err)
+	}
+	if record.Status != domain.FulfillmentStatusBoarded || record.BoardingFact == nil || record.BoardingFact.SourceEventID != "scan-dupe-first" {
+		t.Fatalf("record after a second scan=%+v", record.BoardingFact)
+	}
+}
