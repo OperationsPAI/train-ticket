@@ -24,6 +24,16 @@ Wave-A rulings:
   HTTP API. No public state-changing itinerary command is added in this wave;
   the `ItineraryReceiptGenerated` event is reserved for future write-model
   activation and is not produced by the Wave-A GET projection.
+- `EInvoiceExpired`, `RedFlushRejected` and `RedFlushFailed` are likewise
+  declared-only in the current release. The deployed `InvoicingEvent` enum
+  publishes `InvoiceTitleCreated`, `InvoiceTitleUpdated`, `DefaultInvoiceTitleSet`,
+  `InvoiceTitleDeactivated`, `InvoiceRequested`, `InvoiceAmountBasisAttached`,
+  `EInvoiceSubmitted`, `EInvoiceAccepted`, `EInvoiceRejected`, `EInvoiceFailed`,
+  `EInvoiceIssued`, `RedFlushRequested`, `RedFlushSubmitted`, `RedFlushAccepted`,
+  `RedFlushCompleted`, `RefundWithoutRedFlushObserved` and `InvoiceGenerated`;
+  the invoice-request `EXPIRED` and red-flush `REJECTED`/`FAILED` statuses are
+  defined in the lifecycle enums but never assigned, and no code path emits
+  those three events.
 
 All payload fields are camelCase, all enum values are SCREAMING_SNAKE_CASE, and
 all timestamps are RFC3339 UTC. Money is `{currency, minorUnits}`. Event envelope
@@ -101,7 +111,7 @@ hashes canonical JSON with SHA-256.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `basisType` | enum | yes | `REVENUE_RECOGNITION`, `FINANCE_INVOICE`, or `MANUAL_APPROVED_SNAPSHOT`. |
+| `basisType` | enum | yes | `REVENUE_RECOGNITION` or `FINANCE_INVOICE`. |
 | `revenueRecognitionIds` | string[] | no | Finance Settlement revenue recognition IDs. |
 | `financeInvoiceId` | string | no | Finance Settlement invoice/reference when applicable. |
 | `taxLines` | array[object] | yes | Tax line snapshots with `taxCode`, `taxRateBasisPoints`, `taxableAmount` Money, and `taxAmount` Money. |
@@ -354,7 +364,7 @@ hashes canonical JSON with SHA-256.
 |---|---|
 | **Producer** | invoicing |
 | **Consumers** | customer-service, reporting |
-| **Trigger** | Invoice request expires before completion. |
+| **Trigger** | Reserved for a future expiry scheduler; not produced by the current release. The invoice-request `EXPIRED` status is defined but never assigned, and no deployed code path emits `EInvoiceExpired`. |
 
 **Payload:**
 
@@ -435,7 +445,7 @@ hashes canonical JSON with SHA-256.
 |---|---|
 | **Producer** | invoicing |
 | **Consumers** | notification, customer-service, reporting |
-| **Trigger** | Domain validation or SIM rejects the red-flush request. |
+| **Trigger** | Reserved for a future rejection path; not produced by the current release. The red-flush `REJECTED` status is defined but never assigned, and no deployed code path emits `RedFlushRejected`. |
 
 **Payload:**
 
@@ -455,7 +465,7 @@ hashes canonical JSON with SHA-256.
 |---|---|
 | **Producer** | invoicing |
 | **Consumers** | notification, customer-service, reporting |
-| **Trigger** | Red-flush technical failure reaches terminal handling. |
+| **Trigger** | Reserved for a future terminal-failure path; not produced by the current release. The red-flush `FAILED` status is defined but never assigned, and no deployed code path emits `RedFlushFailed`. |
 
 **Payload:**
 
@@ -557,12 +567,12 @@ remains unchanged.
 | `RecordGatewayRejected` | SIM adapter deterministic result | `EInvoiceRejected` |
 | `RecordGatewayFailed` | SIM adapter deterministic result | `EInvoiceFailed` |
 | `MarkEInvoiceIssued` | SIM adapter deterministic result after acceptance | `EInvoiceIssued` |
-| `ExpireEInvoiceRequest` | Invoicing scheduler | `EInvoiceExpired` |
+| `ExpireEInvoiceRequest` | Future Invoicing scheduler (not implemented in the current release) | `EInvoiceExpired` (declared-only; not emitted) |
 | `RequestRedFlush` | Invoicing consumer/scheduler after refund facts | `RedFlushRequested` |
 | `SubmitRedFlush` | Invoicing application flow | `RedFlushSubmitted` |
 | `RecordRedFlushAccepted` | SIM adapter deterministic result | `RedFlushAccepted` |
-| `RecordRedFlushRejected` | SIM adapter deterministic result | `RedFlushRejected` |
-| `RecordRedFlushFailed` | SIM adapter deterministic result | `RedFlushFailed` |
+| `RecordRedFlushRejected` | Future SIM adapter result path (not implemented in the current release) | `RedFlushRejected` (declared-only; not emitted) |
+| `RecordRedFlushFailed` | Future SIM adapter result path (not implemented in the current release) | `RedFlushFailed` (declared-only; not emitted) |
 | `CompleteRedFlush` | SIM adapter deterministic result after acceptance | `RedFlushCompleted` |
 | `ObserveRefundWithoutRedFlush` | Consumer of `PostSalesApplied` when no completed red flush exists | `RefundWithoutRedFlushObserved` |
 | `GenerateItineraryReceipt` | Future write-model only | `ItineraryReceiptGenerated` (not emitted by Wave-A GET projection) |
