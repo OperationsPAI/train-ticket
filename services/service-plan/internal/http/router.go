@@ -173,6 +173,8 @@ func (h Handler) getSegmentSupply(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, supply)
 }
 
+// listScheduledServices serves one carrier's services a page at a time: the
+// caller names the page it wants and reads pages until the total is covered.
 func (h Handler) listScheduledServices(ctx *gin.Context) {
 	limit, err := parseBoundedInt(ctx.Query("limit"), 20, 1, h.settings.ListingPageLimit)
 	if err != nil {
@@ -223,6 +225,8 @@ func (h Handler) getServiceSegment(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, segment)
 }
 
+// listServiceSegments serves one scheduled service's persisted segments in
+// identifier order, beside the scheduled-service listing the same callers read.
 func (h Handler) listServiceSegments(ctx *gin.Context) {
 	limit, err := parseBoundedInt(ctx.Query("limit"), 20, 1, h.settings.ListingPageLimit)
 	if err != nil {
