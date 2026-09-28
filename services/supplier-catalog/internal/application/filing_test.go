@@ -38,6 +38,20 @@ func TestPartnerFilingFieldNamesTheFieldTheReleaseStates(t *testing.T) {
 	}
 }
 
+func TestFilingIdentityReadsTheFieldTheReleaseNames(t *testing.T) {
+	cmd := RegisterSupplierCommand{LegalName: "Legal", BrandName: "Brand", SupplierCode: "T-1"}
+	for named, want := range map[string]string{
+		"":          "T-1",
+		"brandName": "Brand",
+		"legalName": "Legal",
+		"unknown":   "T-1",
+	} {
+		if got := filingIdentity(named, cmd); got != want {
+			t.Fatalf("filingIdentity(%q) = %q, want %q", named, got, want)
+		}
+	}
+}
+
 func TestCanonicalFilingValueCollapsesInnerWhitespace(t *testing.T) {
 	if got := canonicalFilingValue("  Transfer \n rail "); got != "Transfer rail" {
 		t.Fatalf("canonicalFilingValue = %q, want %q", got, "Transfer rail")
