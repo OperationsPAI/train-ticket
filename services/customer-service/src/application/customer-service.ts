@@ -239,9 +239,9 @@ export class CustomerServiceApplication {
   async escalateCase(caseId: string, request: EscalateCaseRequest, operatorRef: string, correlationId?: string, causationId = newCommandId()): Promise<SupportCaseSnapshot> {
     const { aggregate: current, version } = await this.requireVersionedCase(caseId);
     const triggerCondition = request.triggerCondition ?? "MANUAL";
-    const toLevel = triggerCondition === "MANUAL"
-      ? undefined
-      : EscalationPolicy.targetFor(triggerCondition, current.escalationLevel);
+    // A manual escalation keeps the level the case already carries; only a trigger the policy knows
+    // moves the case to the level that trigger names.
+    const toLevel = triggerCondition === "MANUAL" ? undefined : EscalationPolicy.targetFor(triggerCondition, current.escalationLevel);
     const { case: updated, event } = current.escalate({
       caseId,
       targetQueue: request.targetQueue,
