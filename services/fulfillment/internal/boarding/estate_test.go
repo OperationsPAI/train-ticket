@@ -80,3 +80,11 @@ func TestEstateReadsTheEstateTheReleaseKeeps(t *testing.T) {
 		t.Fatalf("the provider feed is the reader the attendant writes")
 	}
 }
+
+func TestEstateKeepsOneEntryPerReader(t *testing.T) {
+	t.Setenv(SourcesVariable, "STATION,STATION,PROVIDER")
+	estate := Estate()
+	if len(estate) != 2 {
+		t.Fatalf("estate: got %d readers, want 2", len(estate))
+	}
+}
