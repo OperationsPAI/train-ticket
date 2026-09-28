@@ -1,8 +1,8 @@
 # Booking Orchestration — Events & Commands
 
-Last updated: 2026-09-24.
+Last updated: 2026-09-28.
 
-Runtime baseline: Helm revision 279.
+Runtime baseline: the deployed resident release; see [current status](../../00-current-status.md).
 Remaining work is tracked in [TODO](../../TODO.md).
 
 ## Published Events
@@ -12,7 +12,7 @@ Remaining work is tracked in [TODO](../../TODO.md).
 | Field | Description |
 |---|---|
 | **Producer** | booking-orchestration |
-| **Consumers** | journey-order |
+| **Consumers** | none |
 | **Trigger** | `StartBookingSaga` command received after `JourneyOrderCreated`. |
 
 **Payload:**
@@ -28,7 +28,7 @@ Remaining work is tracked in [TODO](../../TODO.md).
 | Field | Description |
 |---|---|
 | **Producer** | booking-orchestration |
-| **Consumers** | capacity-availability, provider-integration |
+| **Consumers** | capacity-availability, finance-settlement, payment, provider-integration, reporting |
 | **Trigger** | `RequestSegmentReservation` command executed for a segment. |
 
 **Payload:**
@@ -46,8 +46,8 @@ Remaining work is tracked in [TODO](../../TODO.md).
 | `offerItemRef` | string | initial purchase | Accepted commercial offer item reference. |
 | `postSalesCaseId` | string | replacement | Approved change case reference. |
 
-The current source implementation persists accepted supply references for initial purchase and change HTTP commands before publishing reservation requests.
-The coordinated Booking and Capacity integration is not active in production at Helm revision 279.
+The deployed implementation persists accepted supply references for initial purchase and change HTTP commands before publishing reservation requests.
+The coordinated Booking and Capacity integration is deployed and verified; see [current status](../../00-current-status.md).
 Consumers must not replace that reference with a later order's selected offer.
 Historical events require validated source records during inventory reconciliation.
 
@@ -56,7 +56,7 @@ Historical events require validated source records during inventory reconciliati
 | Field | Description |
 |---|---|
 | **Producer** | booking-orchestration |
-| **Consumers** | capacity-availability |
+| **Consumers** | none |
 | **Trigger** | Capacity hold initiated for a segment. |
 
 **Payload:**
@@ -71,7 +71,7 @@ Historical events require validated source records during inventory reconciliati
 | Field | Description |
 |---|---|
 | **Producer** | booking-orchestration |
-| **Consumers** | journey-order |
+| **Consumers** | capacity-availability, entitlement-ticketing |
 | **Trigger** | Internal or provider reservation confirmed. |
 
 **Payload:**
@@ -87,7 +87,7 @@ Historical events require validated source records during inventory reconciliati
 | Field | Description |
 |---|---|
 | **Producer** | booking-orchestration |
-| **Consumers** | journey-order |
+| **Consumers** | none |
 | **Trigger** | Reservation failed (internal or provider). |
 
 **Payload:**
@@ -102,7 +102,7 @@ Historical events require validated source records during inventory reconciliati
 | Field | Description |
 |---|---|
 | **Producer** | booking-orchestration |
-| **Consumers** | capacity-availability, provider-integration |
+| **Consumers** | capacity-availability, finance-settlement, provider-integration |
 | **Trigger** | Segment booking cancelled. |
 
 **Payload:**
@@ -117,7 +117,7 @@ Historical events require validated source records during inventory reconciliati
 | Field | Description |
 |---|---|
 | **Producer** | booking-orchestration |
-| **Consumers** | journey-order |
+| **Consumers** | capacity-availability, entitlement-ticketing, fulfillment |
 | **Trigger** | Entitlement issued for this segment booking. |
 
 **Payload:**
@@ -132,7 +132,7 @@ Historical events require validated source records during inventory reconciliati
 | Field | Description |
 |---|---|
 | **Producer** | booking-orchestration |
-| **Consumers** | journey-order |
+| **Consumers** | none |
 | **Trigger** | All saga steps completed successfully. |
 
 **Payload:**
@@ -147,7 +147,7 @@ Historical events require validated source records during inventory reconciliati
 | Field | Description |
 |---|---|
 | **Producer** | booking-orchestration |
-| **Consumers** | journey-order |
+| **Consumers** | none |
 | **Trigger** | Saga reached terminal failure. |
 
 **Payload:**
