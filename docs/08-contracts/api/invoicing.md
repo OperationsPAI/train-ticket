@@ -1,6 +1,6 @@
 # Invoicing — HTTP API
 
-Last updated: 2026-07-10
+Last updated: 2026-09-28
 
 ## Overview
 
@@ -474,6 +474,30 @@ sorting for `sourceMaterialHash`.
 - `PRECONDITION_FAILED` is returned when the order is not confirmed or the
   requested traveler/segment material cannot be proven from order/entitlement
   facts.
+
+### Rebuild an Invoice Amount Basis (internal)
+
+**POST** `/api/v1/internal/invoice-amount-bases/{orderId}/rebuild`
+
+Requires `X-Correlation-Id`. Rebuilds the persisted amount basis for the order
+from Finance Settlement's authoritative `order-revenue-bases` read (the folded
+recognition and reversal history) and the Journey Order's monetary summary, and
+requires the two to agree.
+
+**Response (200):** The rebuilt amount basis.
+
+**Error codes:** `VALIDATION_FAILED`, `NOT_FOUND`, `DOMAIN_RULE_VIOLATION`, `UNAVAILABLE`.
+
+### Reconcile a Red Flush (internal)
+
+**POST** `/api/v1/internal/red-flush-reconciliations/{caseId}`
+
+Requires `X-Correlation-Id` and a post-sales case id (`psc-<uuid>`). Re-runs the
+settled-refund reconciliation for that case and advances its red-flush lifecycle.
+
+**Response (200):** `{ "caseId": "...", "status": "RECONCILED" }`.
+
+**Error codes:** `VALIDATION_FAILED`, `NOT_FOUND`, `DOMAIN_RULE_VIOLATION`, `UNAVAILABLE`.
 
 ## Bus-only behavior
 
