@@ -1349,7 +1349,12 @@ services:
       # the issued tickets had no fulfillment record when the load generator
       # boarded them.
       CONSUMER_WORKERS: "8"
-      PG_MAX_POOL_SIZE: "24"
+      # Thirty two: a boarding takes a connection per ticket it projects, and
+      # the twenty four the release carried left the ninth of the twelve
+      # concurrent boards waiting about 1.2 seconds for one at the cycle's
+      # larger burst. The pool is per process, so the eight reader loops and the
+      # HTTP handlers share it.
+      PG_MAX_POOL_SIZE: "32"
     strategy:
       type: RollingUpdate
       rollingUpdate:
