@@ -332,3 +332,23 @@ func assertError(t *testing.T, rec *httptest.ResponseRecorder, code string) {
 type fixedClock struct{ value time.Time }
 
 func (c fixedClock) Now() time.Time { return c.value }
+
+// The allowance the service ships reaches the HTTP surface a caller reads, so a
+// station node the request leaves unweighed is answered with the shipped value
+// rather than an omitted field.
+func TestCreateTransportNodeCarriesTheStationAllowance(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	service := application.NewService(application.ServiceConfig{Places: ports.NewInMemoryPlaceRepository(), Nodes: ports.NewInMemoryTransportNodeRepository(), Clock: fixedClock{value: time.Date(2026, 7, 5, 10, 30, 0, 0, time.UTC)}, StationAccessAllowanceMinutes: 45})
+	router := gin.New()
+	NewHandler(service, idempotency.NewMemoryStore()).RegisterRoutes(router)
+	place := createPlace(t, router, "Allowance Junction", "STATION", "0194f2e0-7b3e-7020-8284-5c26e8b00020")
+	rec := performJSON(router, http.MethodPost, "/api/v1/transport-nodes", map[string]any{"placeId": place.PlaceID, "displayName": "Allowance node", "servingModes": []string{"RAIL"}}, "0194f2e0-7b3e-7021-8284-5c26e8b00021")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp application.CreateTransportNodeResponse
+	decode(t, rec, &resp)
+	if resp.AccessTimeMinutes == nil || *resp.AccessTimeMinutes != 45 {
+		t.Fatalf("expected the station allowance, got %v", resp.AccessTimeMinutes)
+	}
+}
