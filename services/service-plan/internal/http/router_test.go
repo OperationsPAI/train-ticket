@@ -10,6 +10,9 @@ import (
 	"github.com/gin-gonic/gin"
 
 	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
+
+	"github.com/trainticket/greenfield/services/service-plan/internal/application"
+	"github.com/trainticket/greenfield/services/service-plan/internal/config"
 )
 
 func TestRuntimeEndpoints(t *testing.T) {
@@ -164,6 +167,27 @@ func TestGetAndListScheduledServicesHappyPath(t *testing.T) {
 	if list.Total != 1 || len(list.Items) != 1 || list.Limit != 20 || list.Offset != 0 {
 		t.Fatalf("unexpected list response: %#v", list)
 	}
+}
+
+func TestListingsServeThePageTheReleaseDeclares(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	// A release sizes its own read budget, so the page it declares is the page
+	// both listings serve, and a caller that asks for a larger one is refused
+	// rather than served a different page.
+	router := RouterWithSettings(application.NewService(application.NoopPublisher{}), config.Settings{Port: 8080, ListingPageLimit: 40})
+	serviceBody := `{"serviceRef":"ss-0194f2e0-7b3e-7610-0284-5c26e8b0c301","carrierId":"car-0194f2e0-7b3e-7610-0284-5c26e8b0c001","serviceNumber":"G1234","departureTime":"2026-07-05T10:30:00Z","arrivalTime":"2026-07-05T12:30:00Z","originNodeId":"node-a","destinationNodeId":"node-b"}`
+	performJSON(router, http.MethodPost, "/api/v1/scheduled-services", serviceBody, "0194f2e0-7b3e-7610-0284-5c26e8b0c301")
+	segmentBody := `{"scheduledServiceRef":"ss-0194f2e0-7b3e-7610-0284-5c26e8b0c301","originStopRef":"node-a","destinationStopRef":"node-b","departureTime":"2026-07-05T10:30:00Z","arrivalTime":"2026-07-05T12:30:00Z"}`
+	performJSON(router, http.MethodPost, "/api/v1/service-segments", segmentBody, "0194f2e0-7b3e-7610-0284-5c26e8b0c302")
+
+	declared := performJSON(router, http.MethodGet, "/api/v1/scheduled-services?limit=40&offset=0&carrierId=car-0194f2e0-7b3e-7610-0284-5c26e8b0c001", "", "")
+	if declared.Code != http.StatusOK {
+		t.Fatalf("unexpected status at the declared page: %d body=%s", declared.Code, declared.Body.String())
+	}
+	refusedService := performJSON(router, http.MethodGet, "/api/v1/scheduled-services?limit=41&offset=0&carrierId=car-0194f2e0-7b3e-7610-0284-5c26e8b0c001", "", "")
+	assertCanonicalError(t, refusedService, http.StatusBadRequest, "VALIDATION_FAILED")
+	refusedSegments := performJSON(router, http.MethodGet, "/api/v1/service-segments?scheduledServiceRef=ss-0194f2e0-7b3e-7610-0284-5c26e8b0c301&limit=41&offset=0", "", "")
+	assertCanonicalError(t, refusedSegments, http.StatusBadRequest, "VALIDATION_FAILED")
 }
 
 func TestCreateServiceSegmentHappyPath(t *testing.T) {

@@ -3,6 +3,7 @@ package http
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -16,11 +17,13 @@ import (
 	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
 
 	"github.com/trainticket/greenfield/services/service-plan/internal/application"
+	"github.com/trainticket/greenfield/services/service-plan/internal/config"
 	"github.com/trainticket/greenfield/services/service-plan/internal/domain"
 )
 
 type Handler struct {
-	service *application.Service
+	service  *application.Service
+	settings config.Settings
 }
 
 type createScheduledServiceRequest struct {
@@ -84,11 +87,34 @@ func RouterWithServiceAndIdempotency(service *application.Service, store idempot
 	return router
 }
 
+// RouterWithSettings builds the router a process with these settings serves,
+// which is what the read paths are exercised against.
+func RouterWithSettings(service *application.Service, settings config.Settings) *gin.Engine {
+	profile := domain.Profile()
+	router := goruntime.NewGinRouter(goruntime.GinConfig{
+		ServiceID:    profile.ServiceID,
+		Metadata:     profile,
+		HealthStatus: domain.Health(),
+		Observer:     goruntime.ObserverFromEnv(profile.ServiceID),
+	})
+	RegisterRoutesWithSettings(router, service, idempotency.NewMemoryStore(), settings)
+	return router
+}
+
+// RegisterRoutes installs the HTTP surface with the settings this process
+// resolves from its environment.
 func RegisterRoutes(router gin.IRouter, service *application.Service, store idempotency.Store) {
+	RegisterRoutesWithSettings(router, service, store, config.FromEnv())
+}
+
+// RegisterRoutesWithSettings installs the HTTP surface with the settings a
+// release declared: the pages the listings serve are the release's, and a
+// release that declares none keeps the page the contract documents.
+func RegisterRoutesWithSettings(router gin.IRouter, service *application.Service, store idempotency.Store, settings config.Settings) {
 	if store == nil {
 		store = idempotency.NewMemoryStore()
 	}
-	handler := Handler{service: service}
+	handler := Handler{service: service, settings: settings}
 	idempotent := idempotency.Middleware(store)
 	api := router.Group("/api/v1")
 	api.POST("/scheduled-services", idempotent, handler.createScheduledService)
@@ -148,9 +174,9 @@ func (h Handler) getSegmentSupply(ctx *gin.Context) {
 }
 
 func (h Handler) listScheduledServices(ctx *gin.Context) {
-	limit, err := parseBoundedInt(ctx.Query("limit"), 20, 1, 100)
+	limit, err := parseBoundedInt(ctx.Query("limit"), 20, 1, h.settings.ListingPageLimit)
 	if err != nil {
-		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, "limit must be an integer between 1 and 100", nil)
+		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, h.pageLimitMessage(), nil)
 		return
 	}
 	offset, err := parseBoundedInt(ctx.Query("offset"), 0, 0, int(^uint(0)>>1))
@@ -198,14 +224,14 @@ func (h Handler) getServiceSegment(ctx *gin.Context) {
 }
 
 func (h Handler) listServiceSegments(ctx *gin.Context) {
-	limit, err := strconv.Atoi(ctx.DefaultQuery("limit", "20"))
+	limit, err := parseBoundedInt(ctx.Query("limit"), 20, 1, h.settings.ListingPageLimit)
 	if err != nil {
-		writeMappedError(ctx, application.ErrValidation)
+		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, h.pageLimitMessage(), nil)
 		return
 	}
-	offset, err := strconv.Atoi(ctx.DefaultQuery("offset", "0"))
+	offset, err := parseBoundedInt(ctx.Query("offset"), 0, 0, int(^uint(0)>>1))
 	if err != nil {
-		writeMappedError(ctx, application.ErrValidation)
+		httpkit.WriteError(ctx, http.StatusBadRequest, httpkit.ValidationFailed, "offset must be a non-negative integer", nil)
 		return
 	}
 	page, err := h.service.ListServiceSegments(ctx.Request.Context(), ctx.Query("scheduledServiceRef"), limit, offset)
@@ -322,6 +348,13 @@ func writeMappedError(ctx *gin.Context, err error) {
 	default:
 		httpkit.WriteError(ctx, http.StatusInternalServerError, httpkit.Unavailable, "internal error", nil)
 	}
+}
+
+// pageLimitMessage names the page this process serves, so a caller that asked
+// for a larger one is told the page the release allows rather than a bound it
+// cannot see.
+func (h Handler) pageLimitMessage() string {
+	return fmt.Sprintf("limit must be an integer between 1 and %d", h.settings.ListingPageLimit)
 }
 
 func parseBoundedInt(raw string, defaultValue, minValue, maxValue int) (int, error) {

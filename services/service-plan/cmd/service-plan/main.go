@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 
 	kitmessaging "github.com/trainticket/greenfield/platform/go-kit/messaging"
@@ -12,6 +13,7 @@ import (
 	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
 	adapterpg "github.com/trainticket/greenfield/services/service-plan/internal/adapters/postgres"
 	"github.com/trainticket/greenfield/services/service-plan/internal/application"
+	"github.com/trainticket/greenfield/services/service-plan/internal/config"
 	"github.com/trainticket/greenfield/services/service-plan/internal/domain"
 	apphttp "github.com/trainticket/greenfield/services/service-plan/internal/http"
 )
@@ -22,10 +24,8 @@ func main() {
 		log.Fatalf("failed to initialize OpenTelemetry: %v", err)
 	}
 	defer func() { _ = shutdownOTel(context.Background()) }()
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
+	settings := config.FromEnv()
+	port := strconv.Itoa(settings.Port)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	// The metrics variant installs pool acquisition tracing, which pgxpool reads
@@ -68,7 +68,11 @@ func main() {
 		log.Fatalf("failed to register pool metrics: %v", err)
 	}
 	router := goruntime.NewGinRouter(goruntime.GinConfig{ServiceID: profile.ServiceID, Metadata: profile, HealthStatus: domain.Health(), ReadyCheck: storage.ReadyCheck(pool, runner.Ready), Observer: goruntime.ObserverFromEnv(profile.ServiceID), HTTPMetrics: httpMetrics})
-	apphttp.RegisterRoutes(router, service, storage.NewIdempotencyStore(pool))
+	apphttp.RegisterRoutesWithSettings(router, service, storage.NewIdempotencyStore(pool), settings)
+	// The line a release is read out of: it names the settings this process
+	// resolved, so a release that declared a page can be found in the process
+	// that is serving it.
+	log.Printf("service-plan listening on port %d with %s", settings.Port, settings.Describe())
 	server := goruntime.NewHTTPServer(goruntime.ServerConfig{Address: ":" + port, Handler: router})
 	if err := goruntime.RunHTTPServer(ctx, server); err != nil {
 		log.Fatal(err)
