@@ -19,5 +19,14 @@ dev = [
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
+# The onboarding terms are data the create path reads rather than code, so the
+# file has to be named here: the image installs the package, and a wheel that
+# carried only the modules would leave the service on its built-in defaults.
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+corporate_travel = ["config/*.json"]
+
 [tool.uv.sources]
 train-ticket-platform = { path = "../../platform/python-kit", editable = true }

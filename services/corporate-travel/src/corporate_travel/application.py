@@ -36,7 +36,6 @@ from .domain import (
     InvoiceLineItem,
     Money,
     MonthlyInvoice,
-    OnboardingTerms,
     PolicyChecker,
     PolicyDecision,
     PolicyResult,
@@ -49,16 +48,17 @@ from .domain import (
     StatementLineSource,
     TravelPolicy,
 )
+from .settings import onboarding_terms
 
 PRODUCER = "corporate-travel"
 SCHEMA_VERSION = 1
 
-ONBOARDING_TERMS = OnboardingTerms()
+ONBOARDING_TERMS = onboarding_terms()
 """The terms an agreement opened on the self-service path is held to.
 
 Read once here rather than rebuilt per request, so the create path compares
-against one value. A deployment approved for a different ceiling states it
-where the rest of its settings live.
+against one value. The value comes from the settings the service ships with,
+which the release overrides.
 """
 
 

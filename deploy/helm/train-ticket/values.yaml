@@ -1524,6 +1524,10 @@ services:
       # measured at revision 493, all 127,064 ACTIVE agreements carried
       # `rs-<uuid8>` ids no rule set matched.
       FARE_PRICING_URL: "http://fare-pricing:8080"
+      # The onboarding ceiling this deployment is approved for. The service
+      # ships the benchmark ceiling in its own settings and reads this over it,
+      # so the risk desk's number travels with the release instead of a build.
+      CORPORATE_TRAVEL_ONBOARDING_MAX_CREDIT_MINOR: "1000000"
   account:
     db: account
     pgInstance: user
