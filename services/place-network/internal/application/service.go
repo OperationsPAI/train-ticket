@@ -202,9 +202,9 @@ func (s *Service) ListPlaces(ctx context.Context, req ListPlacesRequest) (*ListP
 	if err != nil {
 		return nil, NewDomainError("UNAVAILABLE", "failed to list places")
 	}
-	items := make([]PlaceSummary, 0, len(page.Items))
-	for _, place := range page.Items {
-		items = append(items, PlaceSummary{PlaceID: string(place.ID), PlaceType: string(place.Type), CanonicalName: place.CanonicalName, Code: place.Code, Timezone: place.Timezone, Status: string(place.Status)})
+	items := make([]PlaceSummary, len(page.Items))
+	for i, place := range page.Items {
+		items[i] = PlaceSummary{PlaceID: string(place.ID), PlaceType: string(place.Type), CanonicalName: place.CanonicalName, Code: place.Code, Timezone: place.Timezone, Status: string(place.Status)}
 	}
 	return &ListPlacesResponse{Items: items, Total: page.Total, Limit: limit, Offset: responseOffset}, nil
 }
