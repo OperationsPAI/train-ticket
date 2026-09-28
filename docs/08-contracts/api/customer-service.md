@@ -107,10 +107,11 @@ timestamps, and Money.
 | `assignedTo` | string | no | Operator ID to assign (`op-<uuid>`). |
 | `ownerQueue` | string | yes | Target queue name; one this release's desk polls. |
 
-**Response (200):** Updated case.
+**Response (200):** Updated case, with `ownerQueue` set to the queue named.
 
 **Error codes:** `NOT_FOUND`, `VALIDATION_FAILED`, `DOMAIN_RULE_VIOLATION`
-(`CASE_NOT_ROUTABLE` for a queue the release's desk does not poll)
+(`CASE_NOT_ROUTABLE` for a queue the release's desk does not poll; the case is
+left where it was)
 
 ### Escalate Case
 
