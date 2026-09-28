@@ -26,6 +26,8 @@ import {
   type OfferCompensation,
 } from "./domain.js";
 
+import { CASE_OWNER_QUEUES_SETTING } from "./handoff-queues.js";
+
 const openedAt = new Date("2026-07-03T10:00:00.000Z");
 const testCorrelationId = "corr-test-001";
 
@@ -288,6 +290,45 @@ describe("Customer Service domain foundation", () => {
       assert.equal(event.type, "SupportCaseAssigned");
       assert.equal(event.ownerQueue, "payment-specialist");
       assert.equal(event.assignedTo, "op-test-002");
+    });
+
+    it("refuses a handoff to a queue the release does not name", () => {
+      const previous = process.env[CASE_OWNER_QUEUES_SETTING];
+      process.env[CASE_OWNER_QUEUES_SETTING] = "payment-specialist";
+      try {
+        const { case: supportCase } = SupportCase.open(openCommand());
+        const { case: classified } = supportCase.classify(classifyCommand());
+        let refused: DomainError | undefined;
+        try {
+          classified.assign(assignCommand({ ownerQueue: "tier1" }));
+        } catch (error) {
+          refused = error as DomainError;
+        }
+        assert.equal(refused?.code, "CASE_NOT_DESK_QUEUE");
+      } finally {
+        if (previous === undefined) {
+          delete process.env[CASE_OWNER_QUEUES_SETTING];
+        } else {
+          process.env[CASE_OWNER_QUEUES_SETTING] = previous;
+        }
+      }
+    });
+
+    it("takes a handoff to a queue the release names", () => {
+      const previous = process.env[CASE_OWNER_QUEUES_SETTING];
+      process.env[CASE_OWNER_QUEUES_SETTING] = "payment-specialist, ticketing-desk";
+      try {
+        const { case: supportCase } = SupportCase.open(openCommand());
+        const { case: classified } = supportCase.classify(classifyCommand());
+        const { case: assigned } = classified.assign(assignCommand({ ownerQueue: "ticketing-desk" }));
+        assert.equal(assigned.toSnapshot().ownerQueue, "ticketing-desk");
+      } finally {
+        if (previous === undefined) {
+          delete process.env[CASE_OWNER_QUEUES_SETTING];
+        } else {
+          process.env[CASE_OWNER_QUEUES_SETTING] = previous;
+        }
+      }
     });
 
     it("escalates an assigned case", () => {
