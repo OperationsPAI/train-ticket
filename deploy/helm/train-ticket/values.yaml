@@ -1592,13 +1592,13 @@ services:
       # recorded against a queue nobody reads.
       CUSTOMER_SERVICE_CASE_ASSIGN_OWNER_QUEUES: "post-sales-desk,ticketing-desk"
     # 4 consumer threads do not fit in the default 500m CPU limit. Raising
-    # CONSUMER_THREADS without raising this caused a CrashLoopBackOff: the
-    # threads saturated half a core working through the backlog, the HTTP thread
-    # could not answer /healthz within the probe timeout, and kubelet restarted
-    # the pod every 64 seconds. Threads and CPU must be raised together.
+    # CONSUMER_THREADS without raising it caused a CrashLoopBackOff: the threads
+    # saturated half a core working through the backlog, the HTTP thread could
+    # not answer /healthz within the probe timeout, and kubelet restarted the
+    # pod every 64 seconds. Threads and CPU are raised together.
     #
-    # 1 core was itself binding: measured at 99.9% of the limit with a client p99
-    # of 808ms on timeline projections that do no real work.
+    # 1 core was itself binding: measured at 99.9% of the limit, with a client
+    # p99 of 808ms on timeline projections that do no real work.
     resources:
       requests: { cpu: 100m, memory: 256Mi }
       limits: { cpu: '4', memory: 3Gi }
