@@ -40,13 +40,14 @@ export const platformChannels: readonly CaseChannel[] = [
 ];
 
 /**
- * The desk tool's sheet, as this release ships it beside the service.
+ * The desk tool's own sheet, as this release ships it beside the service.
  *
- * `desks` names the intake desks this release has on duty, under the queue names the desk tool
- * publishes for it. A field the sheet omits is absent rather than wrong: a sheet that names no desk
- * at all is a release that answers the platform's whole vocabulary.
+ * `tool` names the desk tool that publishes the queue names in `desks`, and `desks` names the intake
+ * desks this release has on duty. A field the sheet omits is absent rather than wrong: a sheet that
+ * names no desk at all is a release that answers the platform's whole vocabulary.
  */
 export type DeskSheet = Readonly<{
+  tool?: string;
   note?: string;
   desks?: readonly string[];
 }>;

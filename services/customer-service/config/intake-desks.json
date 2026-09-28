@@ -1,4 +1,5 @@
 {
+  "tool": "desk-ops",
   "note": "A support case is filed on a channel and worked by the intake desk that owns it. This sheet is the release's own statement of which intake desks it runs, refreshed from the queue names the desk tool publishes for it; the intake answers the channels whose desk is listed here.",
   "desks": [
     "handset-desk",
