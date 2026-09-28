@@ -1,6 +1,6 @@
 # Train Ticket DDD 业务流梳理
 
-Last updated: 2026-06-28
+Last updated: 2026-09-28.
 
 ## 目的
 
@@ -880,4 +880,4 @@ Ancillary Sales
 10. `docs/01-ddd-high-level/acl-provider-contracts.md`：供应商防腐层和状态映射。
 11. `docs/01-ddd-high-level/order-inventory-payment-model.md`：订单、库存、支付、出票核心一致性模型。
 
-`project-index.yaml` 仍建议稍后创建。等这些业务设计被确认后，再把 P0/P1/P2 能力索引化为正式重构任务。
+仓库根目录的 [project-index.yaml](../../project-index.yaml) 已创建，登记需求与对应 code/docs/tests 的引用关系。

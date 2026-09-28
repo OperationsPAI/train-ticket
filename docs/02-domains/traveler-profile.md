@@ -1,10 +1,12 @@
 # Traveler Profile 领域说明
 
+更新日期：2026年9月28日。
+
 ## 实现与发布状态
 
 Traveler Profile 位于 `services/traveler-profile`，使用 Java 25、Spring Boot、PostgreSQL 和 Redis Streams。
 服务提供旅客创建、读取、更新、资格判断及外部身份核验事实接收。
-HTTP virtual threads 和已发布 outbox 清理索引已经部署到 revision 279。
+HTTP virtual threads 和已发布 outbox 清理索引已经部署，当前 revision 见[当前状态](../00-current-status.md)。
 
 ## 领域边界
 
@@ -128,7 +130,7 @@ readiness 保持数据库、outbox relay 和 Redis 依赖检查。
 请求体补全后全部返回原 201 响应，录制快照不变，没有增加额外旅客或 outbox 事件。
 另外两个 PostgreSQL 录制验证确认并发身份事实不会互相覆盖，以及无关事件过滤不依赖数据库连接可用性。
 
-revision 279 已部署 HTTP virtual threads 和 outbox 清理索引。
+HTTP virtual threads 和 outbox 清理索引已部署，当前 revision 见[当前状态](../00-current-status.md)。
 部署后的 `TestLiveInitialTicketsMatchPurchasedSeatClass` six classes 全部 PASS，耗时 86.305 秒，包含旅客创建和风险检查。
 类别为 `SECOND_CLASS`、`FIRST_CLASS`、`BUSINESS_CLASS`、`SLEEPER_HARD`、`SLEEPER_SOFT`、`STANDING`。
 验证环境和重现命令见[服务说明](../../services/traveler-profile/README.md)。

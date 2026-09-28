@@ -1,7 +1,7 @@
 # Wallet Promotion 当前设计
 
-更新日期：2026年9月24日。
-运行基线为 Helm revision 279，服务使用 Java 和 PostgreSQL。
+更新日期：2026年9月28日。
+运行基线为 Helm revision 521，服务使用 Java 和 PostgreSQL。
 统一待办见 [TODO](../TODO.md)。
 
 ## 领域边界
