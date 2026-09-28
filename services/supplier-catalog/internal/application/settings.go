@@ -1,6 +1,8 @@
 package application
 
 import (
+	"os"
+	"strconv"
 	"strings"
 
 	"github.com/trainticket/greenfield/services/supplier-catalog/internal/domain"
@@ -25,6 +27,11 @@ const (
 	// of that field: one, which is what every release before the master data import
 	// held.
 	PartnersPerIdentity = 1
+	// PartnerKeyEnv names the registration field the release reads a partner's
+	// identity from.
+	PartnerKeyEnv = "SUPPLIER_PARTNER_KEY"
+	// PartnersPerKeyEnv names how many partners one value of that field may hold.
+	PartnersPerKeyEnv = "SUPPLIER_PARTNERS_PER_KEY"
 )
 
 // PartnerBound is the field a partner's identity is read from and how many
@@ -40,6 +47,27 @@ type PartnerBound struct {
 // partner the caller sent twice.
 func DefaultPartnerBound() PartnerBound {
 	return PartnerBound{Key: PartnerKeyLegalName, Limit: PartnersPerIdentity}
+}
+
+// PartnerBoundFromEnv reads the bound the release names. It is read once at
+// start-up rather than per registration: the value is the same for every request
+// the pod answers. A release that names nothing, or names something this version
+// does not know, keeps the legal name and one partner per value of it, which is the
+// bound every release before the master data consolidation filed under.
+func PartnerBoundFromEnv() PartnerBound {
+	bound := DefaultPartnerBound()
+	switch key := strings.TrimSpace(os.Getenv(PartnerKeyEnv)); {
+	case strings.EqualFold(key, PartnerKeyBrandName):
+		bound.Key = PartnerKeyBrandName
+	case strings.EqualFold(key, PartnerKeyLegalName):
+		bound.Key = PartnerKeyLegalName
+	}
+	if raw := strings.TrimSpace(os.Getenv(PartnersPerKeyEnv)); raw != "" {
+		if limit, err := strconv.Atoi(raw); err == nil && limit > 0 {
+			bound.Limit = limit
+		}
+	}
+	return bound
 }
 
 // partnerIdentity reads the value of the named field that the master data treats as

@@ -24,6 +24,12 @@ Status: implemented and deployed (Helm revision 521; see [current status](../../
   `deploy/helm/train-ticket/values.yaml`).
 - Liveness `/healthz`, readiness `/readyz`; also `/health`, `/ready`,
 `/metadata`.
+- The partner master data files one entry per partner, and the release names the
+  field of a registration that entry's identity is read from:
+  `services.supplier-catalog.env.SUPPLIER_PARTNER_KEY` (`SUPPLIER_PARTNERS_PER_KEY`
+  bounds how many partners one value of it may hold). The service's own default is
+  the legal name the registration hands over; the deployed release names
+  `brandName`, the name the partner trades as.
 
 ## HTTP surface
 

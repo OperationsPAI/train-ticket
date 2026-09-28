@@ -1670,6 +1670,16 @@ services:
       limits: { cpu: '8', memory: 6Gi }
   supplier-catalog:
     db: supplier_catalog
+    env:
+      # The partner master data holds one entry per operator, and the name a partner
+      # trades as is what finance, pricing and dispatch match it by: an onboarding
+      # hands the catalogue the code its own batch minted, which is an alias of the
+      # partner the master data already holds rather than a partner of its own. The
+      # catalogue reads a registration's identity from the trading name here, so the
+      # batches one operator arrives under stay one entry. The service's own default
+      # reads the legal name a registration hands over, which is what every release
+      # before the master data consolidation filed under.
+      SUPPLIER_PARTNER_KEY: "brandName"
   waitlist:
     db: waitlist
     image: mirrors.tencent.com/microservice/waitlist:final-e98069db@sha256:42657e4c3f0d2328cfa9885a62a4b1f9a7f11366afa093cb8bdd93b8729f4253
