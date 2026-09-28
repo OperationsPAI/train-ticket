@@ -1,6 +1,6 @@
 # Waitlist implementation
 
-Last updated: 2026-09-27.
+Last updated: 2026-09-28.
 
 The domain boundary is documented in [Waitlist](../02-domains/waitlist.md).
 Remaining work is tracked in [docs/TODO.md](../TODO.md).
@@ -55,15 +55,15 @@ It also verifies that a row lock timeout is retryable and leaves no partial succ
 `tests/order-index-live.test.ts` verifies indexed order lookup using recorded waitlist rows.
 `tests/current-clients-live.test.ts` exercises the current downstream response fields against deployed services.
 `deploy/loadgen-go/live_waitlist_confirmation_test.go` verifies payment and ticket issuance before candidate fulfillment.
-These test sources describe their specific confirmation and client scenarios, not a complete automatic fulfillment acceptance result.
+These test sources describe their specific confirmation and client scenarios; the end-to-end fulfillment fixture is recorded in [current status](../00-current-status.md).
 No tests were added or rerun for this documentation update.
 
 ## Current integration boundary
 
 The `WaitlistCapacityFreed` parser requires `segmentRef`, `departureDate` and a positive released quantity.
 The ordinary `CapacityReleased` handler promotes through the segment booking named in its references: it reads the booking from booking-orchestration for segment, scheduled service, date and class, and the service-plan supply for the interval and stop-sequence version, then records the credit.
-Promotion from a release is established up to reserving the seat: measured at revision 493 the promotion reaches the booking saga, and the saga refuses the reservation with `NO_AVAILABLE_CAPACITY` because the class that was released is re-sold before the reservation lands.
+Promotion from a release is established end to end: the revision 493 measurement first saw the promotion reach the booking saga, and the revision 520 fixture fulfils a QUEUED entry whose released seat nothing else could re-sell, with exactly one capacity and one payment effect; the release evidence is in [current status](../00-current-status.md).
 The public request and response use the leading traveler; internal traveler arrays do not establish complete preservation of all companions through the public flow.
 The required `paymentGuaranteeRef` is recorded, but it does not currently establish or settle a payment authorization.
-Capacity's combined supply calculation is committed as `caafa668` and undeployed, and Booking coordinated behavior is not enabled.
-Successful request creation and the recorded order confirmation regression do not establish complete automatic waitlist fulfillment.
+Capacity's combined supply calculation is deployed, and Booking presents the accepted class, service and date with each reservation.
+The resident workload does not itself produce the satisfying fixture, because its own promotions race for the single seat they released; that limitation is a property of the demand, not of the service.
