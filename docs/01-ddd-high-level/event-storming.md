@@ -1,6 +1,6 @@
 # Main event relationships
 
-Last updated: 2026-09-24.
+Last updated: 2026-09-28.
 
 This overview names implemented relationships.
 Field level definitions remain in [service event references](../08-contracts/README.md).

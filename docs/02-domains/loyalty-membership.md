@@ -7,7 +7,7 @@
 | Domain | Loyalty Membership |
 | Status | proposed-ddd-baseline |
 | Owner Agent | agentm-loyalty-membership |
-| Last Updated | 2026-07-09 |
+| Last Updated | 2026-09-28 |
 | High-Level Inputs | `docs/adr/0003-commercial-realism-scope.md`, `docs/02-domains/wallet-promotion.md`, `docs/08-contracts/events/fulfillment.md`, `docs/08-contracts/events/journey-order.md`, `docs/08-contracts/api/wallet-promotion.md` |
 
 ## 1. 领域目标
@@ -86,7 +86,7 @@ Loyalty Membership 负责会员档案、等级机、积分账本、滚动 12 个
 
 ### Contract Notes
 
-- `docs/08-contracts/events/journey-order.md` 当前没有 `JourneyCompleted` 或 `JourneyOrderCompleted` 发布事件；`docs/02-domains/journey-order.md` 中的 `JourneyCompleted` 尚未进入 08-contracts 契约面。因此本 baseline 禁止用杜撰的 journey-order 完成事件做 accrual，必须以 `FulfillmentCompleted` 为准；若未来补充 Journey Order 完成契约，应通过单独契约变更接入。
+- `docs/08-contracts/events/journey-order.md` 当前没有 `JourneyCompleted` 或 `JourneyOrderCompleted` 发布事件。因此本 baseline 禁止用杜撰的 journey-order 完成事件做 accrual，必须以 `FulfillmentCompleted` 为准；若未来补充 Journey Order 完成契约，应通过单独契约变更接入。
 - Wallet / Promotion 现有契约包含 `benefitType=POINTS` 和 `balanceType=POINTS`，但 Loyalty Membership 激活后，会员积分的权威账本在本域。Loyalty 发起兑换时原则上请求 Wallet 发行 `COUPON`、`COMPENSATION_CREDIT` 或其他权益产物；不得把 Wallet 的 `POINTS` 子账本当作会员积分余额来源。
 
 ### Durable replay and dead-letter evidence

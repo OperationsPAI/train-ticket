@@ -7,7 +7,7 @@
 | Domain | Customer Service |
 | Status | accepted-ddd-baseline |
 | Owner Agent | agentm-customer-service |
-| Last Updated | 2026-06-28 |
+| Last Updated | 2026-09-28 |
 | High-Level Inputs | `docs/01-ddd-high-level/context-map.md`, `docs/02-domains/account.md`, `docs/02-domains/journey-order.md`, `docs/02-domains/payment.md`, `docs/02-domains/post-sales.md`, `docs/02-domains/disruption-recovery.md` |
 
 ## 1. 领域目标
