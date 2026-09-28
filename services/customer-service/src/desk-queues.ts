@@ -22,12 +22,14 @@ export function deskPollsQueue(
   ownerQueue: string,
   stated: string | undefined = process.env[DESK_QUEUES_SETTING],
 ): boolean {
-  const named = (stated ?? "")
+  const named = statedQueues(stated);
+  return named.length === 0 || named.includes(ownerQueue);
+}
+
+/** The names one statement carries, with the blanks a comma-separated setting collects. */
+function statedQueues(stated: string | undefined): readonly string[] {
+  return (stated ?? "")
     .split(",")
     .map((queue) => queue.trim())
     .filter((queue) => queue.length > 0);
-  if (named.length === 0) {
-    return true;
-  }
-  return named.includes(ownerQueue);
 }
