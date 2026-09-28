@@ -16,6 +16,23 @@ class MetricCatalogTest(unittest.TestCase):
         self.assertEqual(catalog_revision(), document["revision"])
         self.assertTrue(catalog_revision())
 
+    def test_every_entry_carries_the_fields_the_store_reads(self) -> None:
+        fields = {
+            "metricId",
+            "name",
+            "description",
+            "owner",
+            "category",
+            "granularity",
+            "version",
+            "expression",
+            "status",
+            "publishedAt",
+            "sourceLineage",
+        }
+        for entry in load_metric_catalog():
+            self.assertTrue(fields.issubset(entry), sorted(fields - set(entry)))
+
     def test_the_catalog_keeps_the_order_it_lists(self) -> None:
         document = json.loads(catalog_file().read_text(encoding="utf-8"))
         self.assertEqual(
