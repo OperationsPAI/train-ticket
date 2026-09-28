@@ -61,6 +61,49 @@ ACK_BATCHING = os.environ.get("CONSUMER_ACK_BATCHING", "1") != "0"
 ACK_QUEUE_LIMIT = int(os.environ.get("CONSUMER_ACK_QUEUE_LIMIT", "500"))
 LOGGER = logging.getLogger(__name__)
 
+# The accumulation tick: how long a reader that has just received entries waits
+# before one more, non-blocking, read.
+#
+# `XREADGROUP ... BLOCK` returns as soon as a *single* entry is available, so a
+# reader that keeps up gets one to three entries per round, and the one XACK that
+# retires a round then costs the same as one XACK per entry -- `xack` became the
+# largest command class the resident Redis served. Waiting a tick first folds a
+# burst into one round, at the cost of up to a tick of delivery latency, well
+# inside the ten second poll. Zero restores the read that returns the moment an
+# entry is available.
+ACCUMULATE_TICK_MS_ENV = "CONSUMER_ACCUMULATE_TICK_MS"
+DEFAULT_ACCUMULATE_TICK_MS = 50
+
+
+def accumulate_tick_ms(configured: str | None) -> int:
+    """Resolve the accumulation tick, falling back when it is misconfigured.
+
+    A blank, non-numeric or negative value falls back to the default rather than
+    disabling the batching by accident; only an explicit zero turns the
+    accumulation off.
+    """
+    if configured is None:
+        return DEFAULT_ACCUMULATE_TICK_MS
+    trimmed = configured.strip()
+    if not trimmed:
+        return DEFAULT_ACCUMULATE_TICK_MS
+    try:
+        tick = int(trimmed)
+    except ValueError:
+        tick = -1
+    if tick >= 0:
+        return tick
+    LOGGER.warning(
+        "%s=%s is not a non-negative integer; using default %d",
+        ACCUMULATE_TICK_MS_ENV,
+        configured,
+        DEFAULT_ACCUMULATE_TICK_MS,
+    )
+    return DEFAULT_ACCUMULATE_TICK_MS
+
+
+ACCUMULATE_TICK_MS = accumulate_tick_ms(os.environ.get(ACCUMULATE_TICK_MS_ENV))
+
 
 def stream_maxlen(configured: str | None) -> int:
     """Resolve the per-stream entry cap, falling back to the default when misconfigured.
@@ -150,6 +193,27 @@ def stream_for_producer(producer: str) -> str:
 
 def dlq_for_stream(stream: str) -> str:
     return f"{stream}:dlq"
+
+
+def _entry_count(results: Any) -> int:
+    """Entries a single XREADGROUP reply carries, across every stream it named."""
+    return sum(len(messages) for _, messages in results or [])
+
+
+def _merge_results(first: Any, more: Any) -> Any:
+    """Fold one read's entries per stream onto another's, keeping the first's order.
+
+    Each read is capped at POLL_COUNT, so the merged round is the burst the tick
+    caught rather than the batch size times two. Stream names are normalised here
+    because redis-py may hand back bytes on one read and str on another.
+    """
+    if not more:
+        return first
+    merged: dict[str, list] = {}
+    for stream_name, messages in list(first or []) + list(more):
+        name = stream_name.decode("utf-8") if isinstance(stream_name, bytes) else str(stream_name)
+        merged.setdefault(name, []).extend(messages)
+    return list(merged.items())
 
 
 def default_consumer_name(group: str) -> str:
@@ -265,14 +329,12 @@ class RedisEventSubscriber(EventSubscriber):
                     next_recovery_at = now + (RECOVERY_INTERVAL_MS / 1000)
                 if recovering:
                     recovering = self._recover_own_pending(streams_tuple, group, consumer_name, handler)
-                results = self._client.xreadgroup(
+                self._process_results(
+                    self._read_round(streams_tuple, group, consumer_name),
                     group,
                     consumer_name,
-                    {stream: ">" for stream in streams_tuple},
-                    count=POLL_COUNT,
-                    block=POLL_BLOCK_MS,
+                    handler,
                 )
-                self._process_results(results, group, consumer_name, handler)
             except Exception as exc:
                 if self._stop_requested.is_set():
                     break
@@ -427,6 +489,43 @@ class RedisEventSubscriber(EventSubscriber):
                     self._flush_acks()
                     return True
         return False
+
+    def _read_round(self, streams: Sequence[str], group: str, consumer_name: str) -> Any:
+        """One read round: the blocking idle read, then the accumulation tick.
+
+        The idle path is untouched -- a read that returns nothing pays neither
+        the tick nor a second command and simply loops back to the blocking
+        read, so an empty stream never spins. Only a round that already received
+        entries waits a tick and takes one more, non-blocking, read, folding a
+        burst into one round and one XACK.
+        """
+        first = self._client.xreadgroup(
+            group,
+            consumer_name,
+            {stream: ">" for stream in streams},
+            count=POLL_COUNT,
+            block=POLL_BLOCK_MS,
+        )
+        return self._accumulate_read(first, streams, group, consumer_name)
+
+    def _accumulate_read(self, first: Any, streams: Sequence[str], group: str, consumer_name: str) -> Any:
+        if ACCUMULATE_TICK_MS <= 0 or _entry_count(first) == 0 or _entry_count(first) >= POLL_COUNT:
+            return first
+        time.sleep(ACCUMULATE_TICK_MS / 1000)
+        try:
+            # block is left unset: a non-blocking read omits BLOCK entirely, and
+            # block=0 would ask Redis to block forever.
+            more = self._client.xreadgroup(
+                group,
+                consumer_name,
+                {stream: ">" for stream in streams},
+                count=POLL_COUNT,
+            )
+        except Exception:
+            # A failed top-up is not fatal to the round: the entries already in
+            # hand are still processed, and the next round re-reads.
+            return first
+        return _merge_results(first, more)
 
     def _process_results(self, results: Any, group: str, consumer_name: str, handler: Callable[[EventEnvelope], Any]) -> None:
         for stream_name, messages in results or []:
