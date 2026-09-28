@@ -1524,6 +1524,10 @@ services:
       # measured at revision 493, all 127,064 ACTIVE agreements carried
       # `rs-<uuid8>` ids no rule set matched.
       FARE_PRICING_URL: "http://fare-pricing:8080"
+      # The monthly credit this release opens on the self-service onboarding
+      # path, until underwriting raises it. The service's own settings document
+      # keeps the benchmark the platform was measured at.
+      CORPORATE_TRAVEL_ONBOARDING_CEILING_MINOR: "1000000"
   account:
     db: account
     pgInstance: user

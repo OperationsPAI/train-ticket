@@ -49,16 +49,18 @@ from .domain import (
     StatementLineSource,
     TravelPolicy,
 )
+from .settings import self_service_facility
 
 PRODUCER = "corporate-travel"
 SCHEMA_VERSION = 1
 
 
-SELF_SERVICE_FACILITY = SelfServiceFacility()
+SELF_SERVICE_FACILITY = self_service_facility()
 """The facility an agreement opened from self-service is held to.
 
 Read once here rather than rebuilt per request, so the create path compares
-against one value.
+against one value. It comes from the settings the service ships, which the
+release states.
 """
 
 

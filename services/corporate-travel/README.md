@@ -17,6 +17,17 @@ When `DATABASE_URL` is configured, startup applies migrations and wires the owni
 - Liveness `/healthz`, readiness `/readyz`; also `/health`, `/live`, `/ready`,
 `/metadata`.
 
+## Settings
+
+`config/onboarding.json` holds the terms the service applies to an agreement
+opened from the self-service path. The image installs the directory at
+`/app/config` (`CORPORATE_TRAVEL_CONFIG_DIR`), and any field of the document can
+be stated by the release instead through the environment:
+`CORPORATE_TRAVEL_ONBOARDING_CEILING_MINOR` is the monthly credit facility,
+set by `services.corporate-travel.env` in
+`deploy/helm/train-ticket/values.yaml`. A checkout with no such document, and a
+unit test in one, keeps the default the domain compiles.
+
 ## HTTP surface
 
 `/api/v1/agreements`: create, read, `{id}/authorize`,

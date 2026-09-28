@@ -14,7 +14,11 @@ FROM python:3.12-slim
 RUN useradd --system --create-home --home-dir /home/app app
 COPY --from=builder /opt/venv /opt/venv
 COPY services/corporate-travel/migrations /app/migrations
-ENV PATH=/opt/venv/bin:$PATH PORT=8080 REDIS_URL=redis://localhost:6379 MIGRATIONS_DIR=/app/migrations
+# The service reads its settings from a document rather than from the module,
+# and the install above carries only the package: the directory has to be in the
+# image too, or a container runs on the defaults it compiles.
+COPY services/corporate-travel/config /app/config
+ENV PATH=/opt/venv/bin:$PATH PORT=8080 REDIS_URL=redis://localhost:6379 MIGRATIONS_DIR=/app/migrations CORPORATE_TRAVEL_CONFIG_DIR=/app/config
 USER app
 EXPOSE 8080
 CMD ["sh", "-c", "exec uvicorn corporate_travel.api:create_app --factory --host 0.0.0.0 --port ${PORT:-8080} --workers ${WEB_CONCURRENCY:-4}"]
