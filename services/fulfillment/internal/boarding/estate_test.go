@@ -65,3 +65,18 @@ func TestEstateKeepsTheVocabularyWhenTheSettingIsBlank(t *testing.T) {
 		t.Fatalf("a setting of separators keeps the vocabulary the image was built with")
 	}
 }
+
+func TestEstateReadsTheEstateTheReleaseKeeps(t *testing.T) {
+	// deploy/helm/train-ticket/values.yaml, services.fulfillment.env
+	t.Setenv(SourcesVariable, "STATION,PROVIDER")
+	estate := Estate()
+	if len(estate) != 2 {
+		t.Fatalf("estate: got %d readers, want 2", len(estate))
+	}
+	if _, ok := estate[domain.FulfillmentSourceStation]; !ok {
+		t.Fatalf("the station agent is the reader a boarding is handed through")
+	}
+	if _, ok := estate[domain.FulfillmentSourceProvider]; !ok {
+		t.Fatalf("the provider feed is the reader the attendant writes")
+	}
+}
