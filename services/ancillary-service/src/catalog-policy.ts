@@ -34,7 +34,12 @@ export function catalogPolicyFile(): string {
   return process.env.CATALOG_POLICY_FILE?.trim() || "/app/config/catalog.properties";
 }
 
-export function parseCatalogPolicy(text: string, source: string): CatalogPolicy {
+/**
+ * The `key=value` pairs a properties file holds, read the way the other
+ * services' files are read: comments and blank lines dropped, the first `=`
+ * separating a key from its value, later whitespace trimmed from both.
+ */
+export function readProperties(text: string): ReadonlyMap<string, string> {
   const values = new Map<string, string>();
   for (const line of text.split("\n")) {
     const entry = line.trim();
@@ -43,6 +48,11 @@ export function parseCatalogPolicy(text: string, source: string): CatalogPolicy 
     if (separator < 0) continue;
     values.set(entry.slice(0, separator).trim(), entry.slice(separator + 1).trim());
   }
+  return values;
+}
+
+export function parseCatalogPolicy(text: string, source: string): CatalogPolicy {
+  const values = readProperties(text);
   const hours = Number.parseInt(values.get("catalog.notice.floor.hours") ?? "", 10);
   const methods = (values.get("catalog.notice.floor.methods") ?? "")
     .split(",")
