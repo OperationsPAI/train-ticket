@@ -73,6 +73,8 @@ The built-in definitions remain the fallback for an id the catalog does not name
 
 Both sections state the same publication state, so one vocabulary describes what the release published.
 
+`dash-revenue` is the dashboard the operations console opens, and `dash-operations` covers the demand and capacity reads.
+
 ## Captured payment metrics
 
 All monetary revenue metrics use `PaymentCaptured` only.
