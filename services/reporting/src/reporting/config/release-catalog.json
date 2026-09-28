@@ -115,6 +115,24 @@
         "InsurancePolicyIssued",
         "InsurancePolicyCancelled"
       ]
+    },
+    {
+      "dashboardId": "dash-operations",
+      "name": "Operations Dashboard",
+      "description": "Operational demand and capacity dashboard.",
+      "status": "building",
+      "metrics": [
+        {
+          "metricId": "metric-support-cases",
+          "version": "1.0.0"
+        }
+      ],
+      "currentSnapshot": null,
+      "lastBuiltAt": null,
+      "sourceEvents": [
+        "SupportCaseOpened",
+        "CapacityUpdated"
+      ]
     }
   ]
 }

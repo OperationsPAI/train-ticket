@@ -77,6 +77,8 @@ Both sections state the same publication state, so one vocabulary describes what
 
 Each dashboard entry carries the id the store addresses it by, the name the console shows and the events its rebuild consumes.
 
+The operations dashboard covers the demand and capacity reads that the revenue dashboard leaves out.
+
 ## Captured payment metrics
 
 All monetary revenue metrics use `PaymentCaptured` only.
