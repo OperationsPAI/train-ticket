@@ -1172,7 +1172,7 @@ func validateReferences(entitlementID domain.EntitlementRef, segmentBookingID do
 // built for are only the fallback a release that states no estate keeps, so a
 // release can retire a reader without shipping a new image.
 func validSource(source domain.FulfillmentSource) bool {
-	return boarding.Operates(source)
+	return boarding.BoardsThrough(source)
 }
 
 func validNoShowReason(reason domain.NoShowReason) bool {

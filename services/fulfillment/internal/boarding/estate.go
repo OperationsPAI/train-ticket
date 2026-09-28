@@ -61,10 +61,10 @@ func statedReaders() []domain.FulfillmentSource {
 	return readers
 }
 
-// Operates reports whether a boarding fact arriving from this source is
+// BoardsThrough reports whether a boarding fact arriving from this source is
 // evidence the deployment boards through. The source check the boarding command
 // makes is the only caller.
-func Operates(source domain.FulfillmentSource) bool {
+func BoardsThrough(source domain.FulfillmentSource) bool {
 	_, operated := Estate()[source]
 	return operated
 }
