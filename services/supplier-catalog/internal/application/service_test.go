@@ -139,3 +139,24 @@ func mustSpanContext(t *testing.T) trace.SpanContext {
 	}
 	return spanContext
 }
+
+func TestListSuppliersClampsTheBoundsItIsGiven(t *testing.T) {
+	service := NewService(nil)
+	for _, testCase := range []struct {
+		limit, offset         int
+		wantLimit, wantOffset int
+	}{
+		{limit: 0, offset: 0, wantLimit: 20, wantOffset: 0},
+		{limit: -5, offset: 0, wantLimit: 20, wantOffset: 0},
+		{limit: 1000, offset: 0, wantLimit: 100, wantOffset: 0},
+		{limit: 20, offset: -3, wantLimit: 20, wantOffset: 0},
+	} {
+		list, err := service.ListSuppliers(context.Background(), "", testCase.limit, testCase.offset)
+		if err != nil {
+			t.Fatalf("limit %d offset %d: %v", testCase.limit, testCase.offset, err)
+		}
+		if list.Limit != testCase.wantLimit || list.Offset != testCase.wantOffset {
+			t.Fatalf("limit %d offset %d: got limit %d offset %d", testCase.limit, testCase.offset, list.Limit, list.Offset)
+		}
+	}
+}
