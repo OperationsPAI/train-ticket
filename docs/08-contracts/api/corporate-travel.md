@@ -17,3 +17,5 @@ Canonical endpoints are under `/api/v1/agreements`; equivalent `/agreements` ali
 The `/agreements` aliases mirror every canonical path: `POST /agreements`, `GET /agreements/{agreementId}`, `POST /agreements/{agreementId}/authorize`, `POST /agreements/{agreementId}/policy-checks` and `POST /agreements/{agreementId}/monthly-invoices`.
 
 Startup does not insert hidden demo agreements or bypass the domain. Initial business configuration is created through the owning API, emits the normal outbox events and is observable through the same GET endpoint after restart. A repeated POST with the same path, body and idempotency key returns the original response; a changed body under that key returns `IDEMPOTENCY_KEY_REUSED`.
+
+`POST /api/v1/agreements` opens an agreement inside the monthly credit facility the deployment states (`CORPORATE_TRAVEL_ONBOARDING_CEILING_MINOR`, or the facility the service's own `config/onboarding.json` declares). A `monthlyCreditLimit` above the resolved facility answers `400 CORPORATE_TRAVEL_INVARIANT_VIOLATION` and stores nothing; the facility is resolved when the process starts, so it is a deployment property rather than a per-request one.
