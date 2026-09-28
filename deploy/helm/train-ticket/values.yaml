@@ -1621,6 +1621,10 @@ services:
     # queue. The cost is the invoice the load generator collects at the end of a
     # purchase: one order's ten polls all answered 404 and its revenue was
     # recognised 36 seconds after the last of them.
+    #
+    # The three replicas are what covers that peak; the group's own consumer
+    # threads are already eight per pod (CONSUMER_THREADS below), so a fourth
+    # replica adds a reader rather than a wider pool.
     replicas: 3
     strategy:
       type: RollingUpdate
