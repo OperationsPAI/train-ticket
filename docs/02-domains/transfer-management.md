@@ -7,7 +7,7 @@
 | Domain | Transfer Management |
 | Status | accepted-ddd-baseline |
 | Owner Agent | agentm-transfer-management |
-| Last Updated | 2026-06-28 |
+| Last Updated | 2026-09-28 |
 | High-Level Inputs | `docs/01-ddd-high-level/domain-glossary.md`, `docs/01-ddd-high-level/context-map.md`, `docs/01-ddd-high-level/general-travel-ddd.md` |
 
 ## 1. 领域目标

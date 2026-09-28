@@ -7,7 +7,7 @@
 | Domain | Marketing Campaign |
 | Status | proposed-ddd-baseline |
 | Phase | ADR-0003 wave C |
-| Last Updated | 2026-07-10 |
+| Last Updated | 2026-09-28 |
 | High-Level Inputs | `docs/adr/0003-commercial-realism-scope.md`, `docs/02-domains/wallet-promotion.md`, `docs/08-contracts/api/wallet-promotion.md`, `docs/08-contracts/events/wallet-promotion.md` |
 
 ## 1. 领域目标
