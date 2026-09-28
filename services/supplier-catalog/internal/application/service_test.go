@@ -210,3 +210,38 @@ func TestSupplierIdentitySourceFromEnvDefaultsToTheCode(t *testing.T) {
 		t.Fatalf("a padded field name still names the brand, got %q", got)
 	}
 }
+
+// filedProfile answers the profile lookup the way the deployed path does: a
+// partner with that profile is already filed, everything else is not.
+type filedProfile struct {
+	failingRepository
+	profile string
+}
+
+func (r filedProfile) FindSupplierByProfile(_ context.Context, profile string) (domain.Supplier, error) {
+	if strings.EqualFold(strings.TrimSpace(profile), r.profile) {
+		return domain.Supplier{SupplierID: "sup-filed", Profile: profile, Status: domain.SupplierStatusDraft}, nil
+	}
+	return domain.Supplier{}, ErrNotFound
+}
+
+// The deployed registration reads the profile back through the repository before
+// it files anything, so the identity the release names is the value that lookup
+// is given -- and a release that names the code still files a second partner
+// beside the trading name the repository holds.
+func TestRegisterSupplierReadsTheFilingIdentityFromTheRepository(t *testing.T) {
+	repository := filedProfile{failingRepository{}, "transfer rail"}
+	byBrand := NewService(nil).WithRepository(repository).WithIdentitySource(IdentitySourceBrand)
+	_, err := byBrand.RegisterSupplier(context.Background(), RegisterSupplierCommand{
+		LegalName: "Transfer carrier 0194f2e0", BrandName: "Transfer Rail", SupplierCode: "T7191d26549",
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("a partner already filed under the trading name should conflict, got %v", err)
+	}
+	byCode := NewService(nil).WithRepository(repository).WithIdentitySource(IdentitySourceCode)
+	if _, err := byCode.RegisterSupplier(context.Background(), RegisterSupplierCommand{
+		LegalName: "Transfer carrier 0194f2e0", BrandName: "Transfer Rail", SupplierCode: "T7191d26549",
+	}); err != nil {
+		t.Fatalf("a release that files the code does not resolve that code to the trading name: %v", err)
+	}
+}
