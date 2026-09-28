@@ -67,7 +67,7 @@ A `WalletAccount` is the per-account ledger view for benefit balances.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `reasonType` | enum | yes | SCREAMING_SNAKE_CASE reason type from the table above. |
-| `reasonCode` | string | yes | Stable business code such as `GOODWILL_COMP` or `ORDER_BENEFIT_USE`. |
+| `reasonCode` | string | yes | Stable business code supplied with the command, e.g. `VALIDITY_ELAPSED` or `RESERVATION_VALIDITY_ELAPSED` for the expiry scheduler. |
 | `referenceType` | string | no | Referenced object class, for example `ORDER`, `POST_SALES_CASE`, `MANUAL_ACTION`, or `SCHEDULER_JOB`. |
 | `referenceId` | string | no | Referenced aggregate or case ID. Post Sales supplies the canonical `caseId` for `POST_SALES_COMP` issuance. |
 | `description` | string | no | Human-readable operational reason. Do not include unmasked documents or other sensitive personal data. |
