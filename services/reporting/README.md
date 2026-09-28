@@ -69,6 +69,8 @@ It declares the metric definitions and the dashboards, in the document shape `me
 A restart leaves an id the store already holds alone, so a definition the running service has since superseded is not overwritten.
 The built-in definitions remain the fallback for an id the catalog does not name, and `REPORTING_RELEASE_CATALOG` points a deployment at a corrected document without a rebuild.
 
+`revision` names the release the catalog was cut from, and `schemaVersion` names the document format a reader should expect.
+
 ## Captured payment metrics
 
 All monetary revenue metrics use `PaymentCaptured` only.
