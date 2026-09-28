@@ -28,9 +28,9 @@ var readerVocabulary = []domain.FulfillmentSource{
 	domain.FulfillmentSourceAdmin,
 }
 
-// Estate is the evidence this deployment boards through. A release that states
-// no estate keeps the reader vocabulary the image was built with, which is what
-// the service's own tests and a local run resolve to.
+// Estate is the evidence this deployment boards through. A release that
+// states no estate keeps the reader vocabulary the image was built with, which
+// is what the service's own tests and a local run resolve to.
 func Estate() map[domain.FulfillmentSource]struct{} {
 	estate := make(map[domain.FulfillmentSource]struct{}, len(readerVocabulary))
 	for _, reader := range statedReaders() {
@@ -62,7 +62,8 @@ func statedReaders() []domain.FulfillmentSource {
 }
 
 // Operates reports whether a boarding fact arriving from this source is
-// evidence the deployment boards through.
+// evidence the deployment boards through. The source check the boarding command
+// makes is the only caller.
 func Operates(source domain.FulfillmentSource) bool {
 	_, operated := Estate()[source]
 	return operated
