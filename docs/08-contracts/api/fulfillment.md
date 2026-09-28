@@ -76,6 +76,10 @@ reaches the record.
 
 **Error codes:** `VALIDATION_FAILED`, `NOT_FOUND`, `CONFLICT`
 
+The reason is part of the record and not only of the event: a later read of
+the record answers with it, and a second no-show for the same booking is
+answered idempotently without replacing the reason the first one carried.
+
 ### Record Fulfillment Completion
 
 **POST** `/api/v1/fulfillment-records/completions`
