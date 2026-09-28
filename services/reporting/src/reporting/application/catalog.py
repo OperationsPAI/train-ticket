@@ -9,6 +9,8 @@ from train_ticket_platform.documents import document_path, document_section, rea
 
 CATALOG_FILE = Path(__file__).resolve().parents[1] / "config" / "release-catalog.json"
 CATALOG_PATH_ENV = "REPORTING_RELEASE_CATALOG"
+METRIC_SECTION = "metrics"
+DASHBOARD_SECTION = "dashboards"
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +39,6 @@ def load_release_catalog(path: Path | None = None) -> ReleaseCatalog:
     document = read_document(path or catalog_file())
     return ReleaseCatalog(
         revision=str(document.get("revision", "")),
-        metrics=document_section(document, "metrics"),
-        dashboards=document_section(document, "dashboards"),
+        metrics=document_section(document, METRIC_SECTION),
+        dashboards=document_section(document, DASHBOARD_SECTION),
     )
