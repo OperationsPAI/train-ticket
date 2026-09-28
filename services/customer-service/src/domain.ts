@@ -843,8 +843,9 @@ export class SupportCase {
       );
     }
 
-    // The desk only takes a queue its consoles poll, and which queues those are
-    // is the release's statement rather than the caller's choice.
+    // The desk takes a queue its consoles poll. Which queues those are is the
+    // release's statement rather than the caller's choice, so the guard asks
+    // for the roster instead of second-guessing the name.
     if (!deskPollsQueue(command.ownerQueue)) {
       throw new DomainError(
         "CASE_NOT_ROUTABLE",
