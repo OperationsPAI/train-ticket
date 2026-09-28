@@ -1101,3 +1101,10 @@ quarterly repricing is a settings change rather than a rebuild of the service
 and everything beside it. The loader compiles the file into the binary, and a
 file that names a product under another product's code, or omits a premium,
 fails at startup rather than on the first sale.
+
+**The settings files the release publishes are listed together.** A reader
+looking for a price, a window or a limit has one place to look: the product
+catalogue in `services/travel-insurance/config/`, the load generator's journey
+mix in `deploy/helm/train-ticket/loadgen-config.yaml`, and the chart's own
+values. Everything else a service reads is an environment variable, and the
+service README names it.
