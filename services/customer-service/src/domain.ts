@@ -836,21 +836,7 @@ export class SupportCase {
   }
 
   assign(command: AssignSupportCase): { case: SupportCase; event: SupportCaseAssigned } {
-    if (!this.canAssign()) {
-      throw new DomainError(
-        "CASE_NOT_ASSIGNABLE",
-        `SupportCase ${this.id} in ${this.status} cannot be assigned`,
-      );
-    }
-    // The release owns which lanes the desk reads. A handoff to a lane nobody reads would leave
-    // the case open with no owner, so it is refused where it is asked for rather than recorded
-    // against a queue that will never pick it up.
-    if (!deskRunsQueue(command.ownerQueue)) {
-      throw new DomainError(
-        "CASE_NOT_DESK_QUEUE",
-        `SupportCase ${this.id} cannot be handed to ${command.ownerQueue}: the desk does not run that queue`,
-      );
-    }
+    this.requireHandoff(command.ownerQueue);
 
     const newSnapshot: SupportCaseSnapshot = deepFreeze({
       ...this.snapshot,
@@ -1124,6 +1110,31 @@ export class SupportCase {
   }
 
   // ─── State machine guards ──────────────────────────────────────────────────
+
+  /**
+   * Whether the handoff can be taken as it is asked for.
+   *
+   * The status is the service's business; the queue is the release's, because a lane nobody
+   * reads is a case nobody owns rather than a case the desk is working on. Deciding the two
+   * here keeps the counter and the assignment from applying half a handoff.
+   */
+  private requireHandoff(ownerQueue: string): void {
+    if (!this.canAssign()) {
+      throw new DomainError(
+        "CASE_NOT_ASSIGNABLE",
+        `SupportCase ${this.id} in ${this.status} cannot be assigned`,
+      );
+    }
+    // The release owns which lanes the desk reads. A handoff to a lane nobody reads would leave
+    // the case open with no owner, so it is refused where it is asked for rather than recorded
+    // against a queue that will never pick it up.
+    if (!deskRunsQueue(ownerQueue)) {
+      throw new DomainError(
+        "CASE_NOT_DESK_QUEUE",
+        `SupportCase ${this.id} cannot be handed to ${ownerQueue}: the desk does not run that queue`,
+      );
+    }
+  }
 
   private canClassify(): boolean {
     return this.snapshot.status === "Opened";
