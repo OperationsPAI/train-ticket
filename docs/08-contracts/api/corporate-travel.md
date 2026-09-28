@@ -17,3 +17,7 @@ Canonical endpoints are under `/api/v1/agreements`; equivalent `/agreements` ali
 The `/agreements` aliases mirror every canonical path: `POST /agreements`, `GET /agreements/{agreementId}`, `POST /agreements/{agreementId}/authorize`, `POST /agreements/{agreementId}/policy-checks` and `POST /agreements/{agreementId}/monthly-invoices`.
 
 Startup does not insert hidden demo agreements or bypass the domain. Initial business configuration is created through the owning API, emits the normal outbox events and is observable through the same GET endpoint after restart. A repeated POST with the same path, body and idempotency key returns the original response; a changed body under that key returns `IDEMPOTENCY_KEY_REUSED`.
+
+## Price references
+
+A create resolves `priceRef.ruleSetId` at `GET /api/v1/fare-rule-sets/{ruleSetId}` on fare-pricing before the agreement is stored. A reference fare-pricing does not answer is refused with `CORPORATE_TRAVEL_INVARIANT_VIOLATION`; with no `FARE_PRICING_URL` the service keeps the reference it was given.
