@@ -1,4 +1,4 @@
 {
-  "reportingWindowDays": 45,
-  "optionSetValidityHours": 24
+  "reportingWindowDays": 1,
+  "optionSetValidityHours": 18
 }
