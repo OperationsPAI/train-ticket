@@ -1620,7 +1620,7 @@ services:
     # oldest undelivered entry from 10 to 150 seconds across four peak minutes --
     # while the pod sat at a quarter of a core with no throttling and no pool
     # queue. The cost is the invoice the load generator collects at the end of a
-    # purchase: one order's ten polls all answered 404 and its revenue was
+    # purchase: one order's ten polls all answered 404, and its revenue was
     # recognised 36 seconds after the last of them.
     replicas: 3
     strategy:
