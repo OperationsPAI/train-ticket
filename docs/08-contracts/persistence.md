@@ -1,5 +1,7 @@
 # Persistence & Durable Outbox — RULING (2026-07-07)
 
+Last updated: 2026-09-28.
+
 Status: ACCEPTED. Applies to every deployed service. This is the phase-2
 storage baseline; PRs that touch state handling are checked against this
 document field by field.
@@ -17,25 +19,34 @@ Unchanged rulings that this document builds on:
 
 ## 1. Infrastructure
 
-- One PostgreSQL instance: image `postgres:16-alpine`, Deployment name
-  `postgres`, strategy `Recreate`, single replica, PVC 5Gi
-  (storageclass `standard`), Service DNS `postgres:5432`, namespace
-  `train-ticket`.
-- Secret `postgres-credentials`: `POSTGRES_USER=trainticket`,
+- PostgreSQL is split by workload shape into six instances — `core`, `hot`,
+  `txn`, `read`, `user` and `event` — one Deployment per shard named
+  `postgres-<shard>`, image `postgres:16-alpine`, strategy `Recreate`, single
+  replica each, namespace `train-ticket`. The bare `postgres` Service is an
+  `ExternalName` alias to `postgres.instances.defaultInstance` (`core`) with no
+  pods behind it. Storage is a `local-path` PVC per shard, sized from
+  `postgres.instances.<shard>.storageSize` (default 20Gi); the copies and
+  cutover checks are recorded in the chart.
+- Secrets `postgres-<shard>-credentials`: `POSTGRES_USER=trainticket`,
   `POSTGRES_PASSWORD=trainticket-dev` (dev cluster only; never reuse
   elsewhere).
 - One database per service. Database name = service directory name with
-  `-` → `_` (e.g. `services/fare-pricing` → `fare_pricing`). All databases
-  are created by an initdb ConfigMap script mounted at
-  `/docker-entrypoint-initdb.d/`.
+  `-` → `_` (e.g. `services/fare-pricing` → `fare_pricing`). Each database is
+  named in `postgres.instances.<shard>.databases`; all are created by the
+  per-shard initdb ConfigMap script mounted at
+  `/docker-entrypoint-initdb.d/`. A missing entry means the service starts,
+  connects, and fails on its first query.
 - Every service Deployment gets:
-  `DATABASE_URL=postgresql://trainticket:trainticket-dev@postgres:5432/<db>`
-  A service that has not migrated yet simply ignores it.
+  `DATABASE_URL=postgresql://trainticket:trainticket-dev@postgres-<shard>:5432/<db>`
+  where `<shard>` is the service's `pgInstance`, defaulting to `core`.
 - Java services receive the same `DATABASE_URL` (postgres URI form); the
   java-kit adapter converts it to JDBC internally. There is exactly one
   canonical env var; do not introduce `JDBC_URL`, `PGHOST`, etc.
-- Redis gains `--appendonly yes` so consumer-group offsets and unconsumed
-  stream entries survive a redis restart.
+- Redis is the transport-only event bus and runs with **no persistent volume and
+  no AOF**; with nothing mounted, an AOF would only write to the container's
+  ephemeral filesystem. Consumer-group offsets and unconsumed stream entries do
+  not survive a Redis restart. Recovery is from PostgreSQL through the
+  transactional outbox and the durable replay archives.
 
 ## 2. Storage model
 
@@ -142,8 +153,9 @@ ports for unit tests. `make check` must not require a running Postgres.
 
 ## 6. Failure semantics
 
-- DB unreachable → readiness fails → traffic stops (single replica +
-  Recreate: brief dev-cluster outage is accepted).
+- A shard's DB unreachable → its services' readiness fails → their traffic
+  stops (single replica + Recreate per shard: a brief dev-cluster outage of that
+  shard is accepted).
 - Relay restart resumes from unpublished rows; duplicates are absorbed by
   §4.
 - Pod restart must lose NOTHING: the live-gate check for every migrated

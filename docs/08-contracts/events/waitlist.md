@@ -1,6 +1,6 @@
 # Waitlist — Events & Commands
 
-Last updated: 2026-09-23
+Last updated: 2026-09-28
 
 ## Scope and activation-wave rulings
 

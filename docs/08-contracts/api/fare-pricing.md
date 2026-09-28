@@ -1,6 +1,6 @@
 # Fare & Pricing — HTTP API
 
-Last updated: 2026-07-06
+Last updated: 2026-09-28
 
 ## Overview
 
@@ -61,6 +61,17 @@ Publishes the `DRAFT` rule set. Any older `PUBLISHED` rule set with the same
 `publishedAt`.
 
 **Error codes:** `NOT_FOUND`, `VALIDATION_FAILED`, `DOMAIN_RULE_VIOLATION`, `UNAVAILABLE`
+
+### Get Fare Rule Set
+
+**GET** `/api/v1/fare-rule-sets/{ruleSetId}`
+
+Reads one rule set by id in any status. A service that persists a `ruleSetId`
+(for example the Corporate Travel agreement price reference) resolves it here.
+
+**Response (200):** Full fare rule set.
+
+**Error codes:** `NOT_FOUND`
 
 ### Compute Fare Quote
 

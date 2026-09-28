@@ -1,6 +1,6 @@
 # Seat Assignment — Events & Commands
 
-Last updated: 2026-09-23
+Last updated: 2026-09-28
 
 New `SeatAllocated` and `StandingAssigned` payloads include `requestedClassRef` and `issuePurpose` from the accepted allocation request.
 These fields retain the original purchased class even when standing is accepted as a substitution.
