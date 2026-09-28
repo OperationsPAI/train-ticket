@@ -9,6 +9,7 @@ import {
   loadCatalogPolicy,
   noticeFloorHoursFor,
   parseCatalogPolicy,
+  readProperties,
   requireNoticeFloor,
   resetCatalogPolicy,
 } from "./catalog-policy.js";
@@ -57,5 +58,10 @@ describe("catalogue intake policy", () => {
     const policy = loadCatalogPolicy(join(tmpdir(), "ancillary-no-such-directory", "catalog.properties"));
     assert.equal(policy.source, "built-in");
     assert.deepEqual([...policy.noticeFloorMethods], []);
+  });
+
+  it("drops comments and blank lines, and trims both sides of a value", () => {
+    const values = readProperties("\n# a comment\n\ncatalog.notice.floor.hours = 4 \nnot-a-pair\n");
+    assert.deepEqual([...values.entries()], [["catalog.notice.floor.hours", "4"]]);
   });
 });
