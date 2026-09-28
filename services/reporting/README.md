@@ -74,6 +74,7 @@ Entries are written in the order the catalog lists them, and that order is what 
 A stored definition is the document that was written rather than a projection of it: `metric_definition_snapshots` holds the document body, and a read rebuilds the aggregate from that body.
 The store therefore answers with what the release wrote, and the definition a read returns is only as current as the last document written under its id.
 The revision the catalog states is the governance review's, and the seed logs the revision it wrote, so a database can be compared against the catalog it came from.
+The definitions the service has always shipped and the catalog's are written into the same store by the same seed, so an installation that answered before the catalog existed keeps the definitions it already had and gains the catalog's.
 
 ## Captured payment metrics
 
