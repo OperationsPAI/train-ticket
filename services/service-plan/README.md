@@ -55,7 +55,8 @@ Go keeps schedule query services small, fast, and easy to operate.
 
 ## Runtime
 
-- HTTP port `8080` (`containerPort`/`PORT` in the chart).
+- HTTP port `8080` (`containerPort`/`PORT` in the chart; the image ships the
+  same default).
 - Database `service_plan` on the `read` PostgreSQL instance
   (`services.service-plan.db`, `services.service-plan.pgInstance` and
   `postgres.instances.read.databases` in
