@@ -7,7 +7,7 @@
 | Domain | Place & Network |
 | Status | accepted-ddd-baseline |
 | Owner Agent | agentm-place-network |
-| Last Updated | 2026-06-28 |
+| Last Updated | 2026-09-28 |
 | High-Level Inputs | `docs/01-ddd-high-level/domain-glossary.md`, `docs/01-ddd-high-level/context-map.md`, `docs/01-ddd-high-level/general-travel-ddd.md` |
 
 ## 1. 领域目标
