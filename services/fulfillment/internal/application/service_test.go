@@ -679,3 +679,27 @@ func TestRecordReadAnswersTheReferencesItStored(t *testing.T) {
 		t.Fatalf("record references=%+v", record)
 	}
 }
+
+func TestSegmentStatusReportKeepsTheServiceDateItWasFiledUnder(t *testing.T) {
+	observedAt := time.Date(2026, 9, 28, 23, 30, 0, 0, time.UTC)
+	service := NewService(NewInMemoryRepository(), &recordingPublisher{}, NewInMemoryConsumedEventLog(), nil, func() time.Time { return observedAt })
+	result, err := service.ReportSegmentStatus(context.Background(), ReportSegmentStatusCommand{
+		CommandID:           "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c0af",
+		SegmentRef:          "seg-status1",
+		ScheduledServiceRef: "svc-status1",
+		ServiceDate:         "2026-09-28",
+		Status:              domain.SegmentOperationalStatusArrival,
+		ArrivedAt:           &observedAt,
+		ObservedAt:          observedAt,
+		SourceSystem:        domain.SegmentStatusSourceSystemOps,
+	}, CommandMetadata{})
+	if err != nil {
+		t.Fatalf("report segment status: %v", err)
+	}
+	if result.Status != domain.SegmentOperationalStatusArrival || !result.ObservedAt.Equal(observedAt) {
+		t.Fatalf("segment status result=%+v", result)
+	}
+	if result.SegmentStatusRecordID == "" {
+		t.Fatalf("the report was stored without an id: %+v", result)
+	}
+}
