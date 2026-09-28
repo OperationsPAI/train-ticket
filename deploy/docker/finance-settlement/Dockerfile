@@ -15,7 +15,13 @@ WORKDIR /app
 COPY --from=builder /src/services/finance-settlement/target/*.jar /app/service.jar
 # MigrationRunner reads ./migrations relative to WORKDIR /app at startup.
 COPY services/finance-settlement/migrations /app/migrations
+# The read-path settings the service reads once at startup. They are the
+# deployment's copy: a value is changed here and the process it starts with is
+# what changes, not an image rebuild.
+COPY services/finance-settlement/config /app/config
+RUN chmod 0755 /app/config && chmod 0644 /app/config/read-paths.properties
 USER app
-ENV PORT=8080 SERVER_PORT=8080 REDIS_URL=redis://localhost:6379
+ENV PORT=8080 SERVER_PORT=8080 REDIS_URL=redis://localhost:6379 \
+    FINANCE_SETTLEMENT_SETTINGS=/app/config/read-paths.properties
 EXPOSE 8080
 ENTRYPOINT ["java", "-jar", "/app/service.jar"]

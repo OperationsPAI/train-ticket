@@ -1,5 +1,6 @@
 package com.trainticket.financesettlement.application;
 
+import com.trainticket.financesettlement.ServiceSettings;
 import com.trainticket.financesettlement.domain.DomainRuleViolation;
 import com.trainticket.financesettlement.domain.EventMetadata;
 import com.trainticket.financesettlement.domain.FeeAccrual;
@@ -41,21 +42,6 @@ public class FinanceSettlementApplicationService {
     private static final BigDecimal PLATFORM_SERVICE_FEE_PCT = new BigDecimal("0.02");
     private static final BigDecimal SUPPLIER_SERVICE_FEE_PCT = new BigDecimal("0.01");
     private static final BigDecimal VOLUNTARY_CANCELLATION_RETAINED_FEE_PCT = new BigDecimal("0.10");
-    // 2,000 pages of 500 lines is a million lines: past any statement this
-    // environment has measured (the largest is 342,648), and a bound rather
-    // than a target, so a statement that keeps growing cannot hold the
-    // scheduler's single thread forever.
-    private static final int MAX_STATEMENT_LINE_PAGES = 2_000;
-    /**
-     * A bound rather than a target: 1000 pages of 1000 is a million refunds for
-     * one day, four times the largest day measured here. It exists so one bad
-     * date cannot hold the scheduler's thread forever -- and if it is ever
-     * reached, the run says so, because a silently truncated platform side
-     * reports every refund it did not read as one the platform never settled.
-     * Measured at the first cut of this code, when the bound was 100 pages: the
-     * day's last 30236 refunds were read as channel-only.
-     */
-    private static final int MAX_PLATFORM_REFUND_PAGES = 1_000;
 
     private final SupplierSettlementRepository supplierSettlements;
     private final FeeAccrualRepository feeAccruals;
@@ -65,6 +51,18 @@ public class FinanceSettlementApplicationService {
     private ChannelStatementLineSource channelStatementLines;
     private PaymentIntentOrderReferenceRepository paymentIntentOrderReferences;
     private PlatformRefundSource platformRefundsSource;
+    private ServiceSettings settings = ServiceSettings.defaults();
+
+    /**
+     * The read-path settings this process started with. A deployment's file
+     * moves the bounds a listing serves and the pages the reconciliation walks;
+     * without one the compiled defaults answer, which is what the contracts
+     * describe.
+     */
+    public FinanceSettlementApplicationService withServiceSettings(ServiceSettings settings) {
+        this.settings = java.util.Objects.requireNonNull(settings);
+        return this;
+    }
 
     /**
      * Where the channel's own statement lines come from, when this deployment
@@ -255,8 +253,8 @@ public class FinanceSettlementApplicationService {
     }
 
     public Page<ReconciliationCase> listReconciliationCases(String orderId, int limit, int offset) {
-        if (limit < 1 || limit > 100) {
-            throw new ValidationException("limit must be between 1 and 100");
+        if (limit < 1 || limit > settings.listingPageBound()) {
+            throw new ValidationException("limit must be between 1 and " + settings.listingPageBound());
         }
         if (offset < 0) {
             throw new ValidationException("offset must not be negative");
@@ -271,8 +269,8 @@ public class FinanceSettlementApplicationService {
     }
 
     public Page<ChannelStatementProjection> listChannelStatements(String channel, String statementDate, int limit, int offset) {
-        if (limit < 1 || limit > 100) {
-            throw new ValidationException("limit must be between 1 and 100");
+        if (limit < 1 || limit > settings.listingPageBound()) {
+            throw new ValidationException("limit must be between 1 and " + settings.listingPageBound());
         }
         if (offset < 0) {
             throw new ValidationException("offset must not be negative");
@@ -291,8 +289,8 @@ public class FinanceSettlementApplicationService {
     }
 
     public Page<BenefitCostEntry> listBenefitCosts(String accountId, int limit, int offset) {
-        if (limit < 1 || limit > 100) {
-            throw new ValidationException("limit must be between 1 and 100");
+        if (limit < 1 || limit > settings.listingPageBound()) {
+            throw new ValidationException("limit must be between 1 and " + settings.listingPageBound());
         }
         if (offset < 0) {
             throw new ValidationException("offset must not be negative");
@@ -302,8 +300,8 @@ public class FinanceSettlementApplicationService {
     }
 
     public Page<AncillaryFinancialFact> listAncillaryFinancialFacts(String journeyOrderId, int limit, int offset) {
-        if (limit < 1 || limit > 100) {
-            throw new ValidationException("limit must be between 1 and 100");
+        if (limit < 1 || limit > settings.listingPageBound()) {
+            throw new ValidationException("limit must be between 1 and " + settings.listingPageBound());
         }
         if (offset < 0) {
             throw new ValidationException("offset must not be negative");
@@ -536,7 +534,7 @@ public class FinanceSettlementApplicationService {
         if (platformRefundsSource != null) {
             String cursor = null;
             int pages = 0;
-            for (int page = 0; page < MAX_PLATFORM_REFUND_PAGES; page++) {
+            for (int page = 0; page < settings.platformRefundPageBound(); page++) {
                 PlatformRefundSource.Page current = platformRefundsSource.page(date, cursor, PlatformRefundSource.MAX_PAGE_SIZE);
                 pages++;
                 for (PlatformRefundSource.Refund refund : current.refunds()) {
@@ -609,7 +607,7 @@ public class FinanceSettlementApplicationService {
     private int ingestStatementLines(ChannelStatementProjection statement) {
         long after = 0;
         int recorded = 0;
-        for (int page = 0; page < MAX_STATEMENT_LINE_PAGES; page++) {
+        for (int page = 0; page < settings.channelStatementPageBound(); page++) {
             ChannelStatementLineSource.Page current = channelStatementLines.page(
                 statement.channelStatementId(), after, ChannelStatementLineSource.MAX_PAGE_SIZE);
             if (current.lines().isEmpty()) break;

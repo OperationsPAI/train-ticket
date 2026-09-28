@@ -47,7 +47,8 @@ public class ApplicationConfiguration {
         return new FinanceSettlementApplicationService(revenueRecognitions, reconciliationCases, invoices, projections, reconciliationBatches, supplierSettlements, feeAccruals, eventPublisher, envelopeMapper, clock)
             .withChannelStatementLines(channelStatementLines)
             .withPlatformRefunds(platformRefunds)
-            .withPaymentIntentOrderReferences(paymentIntentOrderReferences);
+            .withPaymentIntentOrderReferences(paymentIntentOrderReferences)
+            .withServiceSettings(com.trainticket.financesettlement.ServiceSettings.loadFromEnvironment());
     }
 
     @Bean
