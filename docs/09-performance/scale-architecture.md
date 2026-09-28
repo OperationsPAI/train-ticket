@@ -254,7 +254,16 @@ Retiring terminal holds on a timer changes the published `released` level, so
 it is a decision rather than a pure optimisation: pick the window, then the
 fold's cost falls with the number of pools that become hold-free.
 
-## What the design implies for the TODO
+## Service settings
+
+The Go services read their runtime from the pod's environment, and a release
+declares what it sets in the same chart that deploys it
+(`services.<name>.env` in `deploy/helm/train-ticket/values.yaml`). An unset
+setting keeps the value the image ships, so a release that declares nothing new
+deploys the behaviour the tree already had. `services/service-plan` sizes the
+page its segment listing serves through `SERVICE_PLAN_LISTING_PAGE_LIMIT`.
+
+## Rollout
 
 Of the deferred items, three were a code change on their own and are now
 implemented: T01.1 (the accumulate-and-batch read in all five kits), the
