@@ -66,7 +66,8 @@ holds no inventory of its own and answers from the facts it persisted.
   `MIGRATIONS_DIR` and `SERVICE_PLAN_LISTING_PAGE_LIMIT`, the largest page a
   listing serves. A release declares them in `services.service-plan.env`; a
   setting a release leaves out keeps the value above, which is what this service
-  did before the settings existed (`internal/config`).
+  did before the settings existed (`internal/config`). The release in this
+  repository declares the page bound there.
 - Liveness `/healthz`, readiness `/readyz`; also `/health`, `/ready`,
 `/metadata`.
 

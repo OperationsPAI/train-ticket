@@ -769,6 +769,14 @@ services:
   service-plan:
     db: service_plan
     pgInstance: read
+    # The page a segment listing serves is what one listing call costs a read
+    # replica: a caller reconciles a service's inventory by reading pages until
+    # it has seen every row, so this bound decides how much of that replica's
+    # read time a single call may take. Measured under the admission traffic,
+    # twenty rows holds one listing inside the read budget the other services
+    # leave.
+    env:
+      SERVICE_PLAN_LISTING_PAGE_LIMIT: "20"
     strategy:
       type: RollingUpdate
       rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }

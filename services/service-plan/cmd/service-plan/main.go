@@ -25,6 +25,7 @@ func main() {
 		log.Fatalf("failed to initialize OpenTelemetry: %v", err)
 	}
 	defer func() { _ = shutdownOTel(context.Background()) }()
+	log.Printf("service-plan settings: %s", settings.Describe())
 	port := strconv.Itoa(settings.Port)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

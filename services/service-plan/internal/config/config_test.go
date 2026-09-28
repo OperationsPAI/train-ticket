@@ -21,6 +21,14 @@ func TestFromEnvReadsThePageBoundAReleaseSets(t *testing.T) {
 	}
 }
 
+func TestFromEnvReadsTheBoundTheReleaseDeclares(t *testing.T) {
+	// deploy/helm/train-ticket/values.yaml, services.service-plan.env
+	t.Setenv("SERVICE_PLAN_LISTING_PAGE_LIMIT", "20")
+	if got := FromEnv().ListingPageLimit; got != 20 {
+		t.Fatalf("release page bound: got %d, want 20", got)
+	}
+}
+
 func TestFromEnvRefusesAPageBoundWithAUnit(t *testing.T) {
 	t.Setenv("SERVICE_PLAN_LISTING_PAGE_LIMIT", "40 pages")
 	if got := FromEnv().ListingPageLimit; got != DefaultListingPageLimit {
