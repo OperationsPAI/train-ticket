@@ -581,3 +581,29 @@ func mustSpanContext(t *testing.T) trace.SpanContext {
 	}
 	return spanContext
 }
+
+func TestCompletionIsHeldToTheUsageFloorTheReleaseStates(t *testing.T) {
+	boardedAt := time.Date(2026, 9, 29, 10, 0, 0, 0, time.UTC)
+	now := boardedAt.Add(2 * time.Second)
+	service := NewService(NewInMemoryRepository(), &recordingPublisher{}, NewInMemoryConsumedEventLog(), nil, func() time.Time { return now }).
+		WithSegmentUsageFloor(30 * time.Minute)
+	seedTicket(t, service, "ent-floor1", "sb-floor1", "ord-floor1", "tvl-floor1", "seg-floor1")
+	_, err := service.VerifyBoarding(context.Background(), VerifyBoardingCommand{EntitlementID: "ent-floor1", SegmentBookingID: "sb-floor1", JourneyOrderID: "ord-floor1", TravelerID: "tvl-floor1", SegmentRef: "seg-floor1", Source: domain.FulfillmentSourceGate, SourceEventID: "scan-floor1", OccurredAt: boardedAt}, CommandMetadata{CorrelationID: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c0aa"})
+	if err != nil {
+		t.Fatalf("boarding: %v", err)
+	}
+	command := FulfillmentCompletedCommand{EntitlementID: "ent-floor1", SegmentBookingID: "sb-floor1", JourneyOrderID: "ord-floor1", TravelerID: "tvl-floor1", SegmentRef: "seg-floor1", CompletionSource: domain.CompletionSourceArrival, CompletedAt: now}
+
+	if _, err := service.RecordFulfillmentCompleted(context.Background(), command, CommandMetadata{CorrelationID: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c0ab"}); !errors.Is(err, ErrDomainRuleViolation) {
+		t.Fatalf("a completion inside the floor: got %v, want a domain rule violation", err)
+	}
+
+	now = boardedAt.Add(31 * time.Minute)
+	result, err := service.RecordFulfillmentCompleted(context.Background(), command, CommandMetadata{CorrelationID: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c0ac"})
+	if err != nil {
+		t.Fatalf("a completion past the floor: %v", err)
+	}
+	if result.Status != domain.FulfillmentStatusCompleted {
+		t.Fatalf("status=%s, want COMPLETED", result.Status)
+	}
+}

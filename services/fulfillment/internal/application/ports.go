@@ -100,6 +100,7 @@ type Service struct {
 	idGen        IDGenerator
 	clock        Clock
 	uow          UnitOfWork
+	usageFloor   time.Duration
 	metrics      observability.TransitionRecorder
 	mu           sync.Mutex
 	tickets      map[string]TicketProjection
@@ -165,6 +166,16 @@ func (s *Service) WithEntitlementReader(reader EntitlementReader) *Service {
 func (s *Service) WithSegmentStatusRepository(repo SegmentStatusRepository) *Service {
 	if s != nil {
 		s.segments = repo
+	}
+	return s
+}
+
+// WithSegmentUsageFloor states the shortest time a segment this release takes
+// from its boarding to its arrival. The release's usage settings carry it; a
+// floor of zero accepts a completion from the moment the record is boarded.
+func (s *Service) WithSegmentUsageFloor(floor time.Duration) *Service {
+	if s != nil && floor > 0 {
+		s.usageFloor = floor
 	}
 	return s
 }
@@ -445,6 +456,9 @@ func (s *Service) RecordFulfillmentCompleted(ctx context.Context, cmd Fulfillmen
 			return err
 		}
 		before = record.Status
+		if err := validateSegmentUsage(record, s.clock().UTC(), s.usageFloor); err != nil {
+			return err
+		}
 		if err := record.CompleteFulfillment(cmd.CompletionSource, cmd.CompletedAt.UTC()); err != nil {
 			return fmt.Errorf("%w: %v", ErrDomainRuleViolation, err)
 		}
@@ -1145,6 +1159,22 @@ func validateSegmentProgress(entitlementID domain.EntitlementRef, segmentBooking
 		return errors.New(field + " is required")
 	}
 	return nil
+}
+
+// validateSegmentUsage holds a completion to the floor the release states. A
+// boarded segment whose boarding the platform recorded less than the floor ago
+// has not had the time to arrive, so the completion is refused instead of
+// stored as a fact; every other state keeps the domain's own answer. A floor
+// of zero states no minimum.
+func validateSegmentUsage(record *domain.FulfillmentRecord, now time.Time, floor time.Duration) error {
+	if floor <= 0 || record == nil || record.BoardingFact == nil || record.Status != domain.FulfillmentStatusBoarded {
+		return nil
+	}
+	elapsed := now.Sub(record.BoardingFact.ReceivedAt)
+	if elapsed >= floor {
+		return nil
+	}
+	return fmt.Errorf("%w: the segment was boarded %s ago and this release states a segment takes at least %s", ErrDomainRuleViolation, elapsed.Round(time.Second), floor)
 }
 
 func validateReferences(entitlementID domain.EntitlementRef, segmentBookingID domain.SegmentBookingRef, journeyOrderID domain.OrderRef, travelerID domain.TravelerRef, segmentRef domain.SegmentRef) error {

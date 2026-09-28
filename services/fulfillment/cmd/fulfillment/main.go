@@ -17,6 +17,7 @@ import (
 	"github.com/trainticket/greenfield/services/fulfillment/internal/adapters/observability"
 	adapterpg "github.com/trainticket/greenfield/services/fulfillment/internal/adapters/postgres"
 	"github.com/trainticket/greenfield/services/fulfillment/internal/application"
+	"github.com/trainticket/greenfield/services/fulfillment/internal/config"
 	"github.com/trainticket/greenfield/services/fulfillment/internal/domain"
 	apphttp "github.com/trainticket/greenfield/services/fulfillment/internal/http"
 )
@@ -80,9 +81,18 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to build ticketing transition metrics: %v", err)
 	}
+	// The release owns how long a segment takes; the image carries its document
+	// and a deployment may point the service at its own. A document the service
+	// cannot read is fatal at startup, like the pool metrics: a floor nobody
+	// stated must be visible in a crash, not silently absent.
+	usageSettings, err := config.LoadUsageSettings(config.DefaultUsageSettingsPath)
+	if err != nil {
+		log.Fatalf("failed to read the release's usage settings: %v", err)
+	}
 	service := application.NewService(repo, adapterpg.NewOutboxPublisherWithProvider(transactor), consumed, nil, nil).
 		WithSegmentStatusRepository(repo).
 		WithEntitlementReader(entitlementReader).
+		WithSegmentUsageFloor(usageSettings.SegmentUsageFloor()).
 		WithTicketingMetrics(ticketingMetrics).
 		WithUnitOfWork(transactor.Within)
 

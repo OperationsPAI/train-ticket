@@ -15,6 +15,8 @@ RUN addgroup -S app && adduser -S app -G app
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /out/fulfillment /usr/local/bin/fulfillment
 COPY --from=builder /src/services/fulfillment/migrations /app/migrations
+# The release's usage settings, read by internal/config at startup.
+COPY --from=builder /src/services/fulfillment/config /app/config
 USER app
 ENV PORT=8080 REDIS_URL=redis://localhost:6379 MIGRATIONS_DIR=/app/migrations
 EXPOSE 8080
