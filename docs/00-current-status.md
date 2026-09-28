@@ -1108,3 +1108,9 @@ catalogue in `services/travel-insurance/config/`, the load generator's journey
 mix in `deploy/helm/train-ticket/loadgen-config.yaml`, and the chart's own
 values. Everything else a service reads is an environment variable, and the
 service README names it.
+
+**The autumn catalogue carries version 2026.10.** The version a policy records is
+the one the catalogue named when it was issued, so a policy sold under the
+previous version keeps it after the file moves on. The three other products kept
+their numbers, and the file's own test walks every prefix so a key that falls out
+of step with the loader fails before a deployment does.
