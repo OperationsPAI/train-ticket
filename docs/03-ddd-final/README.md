@@ -1,9 +1,9 @@
 # 当前跨域设计
 
-更新日期：2026 年 9 月 24 日。
+更新日期：2026年9月28日。
 
 本目录说明当前业务边界、事实所有权和命令路由。
-部署基线为 Helm revision 279，发布证据见[当前项目状态](../00-current-status.md)。
+部署基线见[当前项目状态](../00-current-status.md)，发布证据同样记录在那里。
 功能进度、未实现能力和验收缺口统一见 [TODO](../TODO.md)。
 
 | 文档 | 内容 |
@@ -22,4 +22,4 @@
 
 这些文件路径供 catalog、project index 和领域文档持续引用。
 设计约束表达职责要求，功能是否完成以 TODO 和对应发布证据为准。
-Capacity 新联合供给已在提交 `caafa668` 中实现、尚未部署；Notification durable 发送队列已在 revision 280 部署，具体工作见 [TODO](../TODO.md)。
+Capacity 联合供给与 Notification durable 发送队列均已部署并验证，具体工作见 [TODO](../TODO.md)。
