@@ -107,9 +107,14 @@ type OTelTracer = Readonly<{
   startSpan: (name: string, options?: Record<string, unknown>) => OTelSpan;
 }>;
 
+// The roster this release ships, read once where the module loads. The process serves one answer
+// for its lifetime: a roster edited under a running replicas' feet must not make two of them
+// validate the same channel differently.
+const deskSheet = readDeskSheet();
+
 // The channels this deployment answers: the contract's vocabulary narrowed to the intake desks the
-// release's own roster has on duty. A release that ships no roster answers the contract's list.
-const channels = intakeChannels(readDeskSheet());
+// release's roster has on duty. A release that ships no roster answers the contract's whole list.
+const channels = intakeChannels(deskSheet);
 const priorities = ["LOW", "NORMAL", "HIGH", "URGENT"] as const;
 const customerTiers = ["STANDARD", "SILVER", "GOLD", "PLATINUM", "DIAMOND"] as const;
 const escalationLevels = ["L1_AGENT", "L2_SPECIALIST", "L3_SUPERVISOR"] as const;

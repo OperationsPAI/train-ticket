@@ -58,7 +58,9 @@ export type DeskSheet = Readonly<{
  * Where the roster sits beside the compiled module.
  *
  * `dist/` and `config/` are siblings in the installed image, so one step up and across from this
- * module is the file the image was built with.
+ * module is the file the image was built with. That file is the one `tools/intake-desks.mjs`
+ * renders from the console's statement, so what this path resolves to in an image is what that
+ * statement said when the image was built.
  */
 export function deskSheetPath(): string {
   return join(dirname(fileURLToPath(import.meta.url)), "../config/intake-desks.json");
