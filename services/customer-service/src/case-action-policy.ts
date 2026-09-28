@@ -32,7 +32,7 @@ const statusVocabulary = [
   "Reopened",
 ] as const satisfies readonly SupportCaseStatus[];
 
-const statedArrangement: Readonly<Record<CaseAction, readonly SupportCaseStatus[]>> = {
+const shippedArrangement: Readonly<Record<CaseAction, readonly SupportCaseStatus[]>> = {
   classify: ["Opened"],
   assign: ["Classifying", "Opened"],
   escalate: [
@@ -73,7 +73,7 @@ export function admittedStatuses(
     .map((status) => status.trim())
     .filter((status) => status.length > 0);
   if (named.length === 0) {
-    return statedArrangement[action];
+    return shippedArrangement[action];
   }
   return named.map((status) => {
     if (!isSupportCaseStatus(status)) {
@@ -83,21 +83,21 @@ export function admittedStatuses(
   });
 }
 
-const kept = new Map<CaseAction, ReadonlySet<SupportCaseStatus>>();
+function isSupportCaseStatus(status: string): status is SupportCaseStatus {
+  return (statusVocabulary as readonly string[]).includes(status);
+}
+
+const admittedByAction = new Map<CaseAction, ReadonlySet<SupportCaseStatus>>();
 
 /**
  * Whether one action takes a case in this status, against the list this
  * process kept at start-up.
  */
 export function admitsCaseAction(action: CaseAction, status: SupportCaseStatus): boolean {
-  let admitted = kept.get(action);
+  let admitted = admittedByAction.get(action);
   if (admitted === undefined) {
     admitted = new Set(admittedStatuses(action));
-    kept.set(action, admitted);
+    admittedByAction.set(action, admitted);
   }
   return admitted.has(status);
-}
-
-function isSupportCaseStatus(status: string): status is SupportCaseStatus {
-  return (statusVocabulary as readonly string[]).includes(status);
 }
