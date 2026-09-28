@@ -25,6 +25,11 @@ Status: implemented and deployed (Helm revision 521; see [current status](../../
 - Liveness `/healthz`, readiness `/readyz`; also `/health`, `/ready`,
 `/metadata`.
 
+- Non-secret settings come from `services.supplier-catalog.env` in the same
+  file. Which registration field a partner is filed under is one of them:
+  `PARTNER_FILING_FIELD` names it, and the code a registration hands over is
+  what a release that names nothing files under.
+
 ## HTTP surface
 
 - `POST /api/v1/suppliers`, `GET /api/v1/suppliers`,
