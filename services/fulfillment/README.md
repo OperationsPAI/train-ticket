@@ -32,7 +32,7 @@ the service cannot read, or a key it does not know, is fatal at startup.
 
 | Key | Meaning |
 | --- | --- |
-| `usage.minimumSegmentSeconds` | The shortest time a segment this release takes from its boarding to its arrival; `0` states no minimum. |
+| `usage.minimumSegmentSeconds` | The shortest time a segment this release takes from its boarding to its arrival, stated in the half hour the timetables are planned in; `0` states no minimum. |
 
 ## HTTP surface
 

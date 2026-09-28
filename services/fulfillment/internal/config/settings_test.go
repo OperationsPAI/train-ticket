@@ -80,12 +80,12 @@ func TestUsageSettingsPathPrefersTheDeployment(t *testing.T) {
 	}
 }
 
-func TestShippedUsageSettingsAreReadable(t *testing.T) {
+func TestShippedUsageSettingsStateTheFloorTheReleaseUses(t *testing.T) {
 	settings, err := LoadUsageSettings(filepath.Join("..", "..", "config", "usage.properties"))
 	if err != nil {
 		t.Fatalf("the image's own document does not read: %v", err)
 	}
-	if settings.SegmentUsageFloor() < 0 {
-		t.Fatalf("segment usage floor = %s", settings.SegmentUsageFloor())
+	if settings.SegmentUsageFloor() <= 0 {
+		t.Fatalf("the image ships no usage floor: %s", settings.SegmentUsageFloor())
 	}
 }
