@@ -139,3 +139,33 @@ func mustSpanContext(t *testing.T) trace.SpanContext {
 	}
 	return spanContext
 }
+
+// Two onboardings of one partner under one trading name and two codes file two
+// entries, because the profile each registration is matched on is the code it
+// handed over. Pinned here before the identity the release names is read, so the
+// change that introduces it has something to answer.
+func TestRegisterSupplierFilesEachCodeAsItsOwnPartner(t *testing.T) {
+	service := NewService(nil)
+	registered, err := service.RegisterSupplier(context.Background(), RegisterSupplierCommand{
+		LegalName: "Transfer carrier 0194f2e0", BrandName: "Transfer rail", SupplierCode: "T7191d26549",
+	})
+	if err != nil {
+		t.Fatalf("first registration: %v", err)
+	}
+	second, err := service.RegisterSupplier(context.Background(), RegisterSupplierCommand{
+		LegalName: "Transfer carrier 0194f2e1", BrandName: "Transfer rail", SupplierCode: "T8191d26549",
+	})
+	if err != nil {
+		t.Fatalf("second registration under one trading name and a second code: %v", err)
+	}
+	if registered.SupplierID == second.SupplierID {
+		t.Fatalf("two codes should file two partners, got %s twice", registered.SupplierID)
+	}
+	suppliers, err := service.ListSuppliers(context.Background(), "", 20, 0)
+	if err != nil {
+		t.Fatalf("list suppliers: %v", err)
+	}
+	if suppliers.Total != 2 {
+		t.Fatalf("expected two partners filed under two codes, got %d", suppliers.Total)
+	}
+}
