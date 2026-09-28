@@ -17,19 +17,22 @@ def catalog_file() -> Path:
     return CATALOG_FILE
 
 
+def _document(path: Path | None = None) -> Mapping[str, Any]:
+    """The catalog document, or an empty one when nothing is shipped there."""
+    source = path or CATALOG_FILE
+    if not source.is_file():
+        return {}
+    document = json.loads(source.read_text(encoding="utf-8"))
+    return document if isinstance(document, Mapping) else {}
+
+
 def catalog_revision(path: Path | None = None) -> str:
     """The revision the catalog states, so a seed can be read back against it.
 
     An absent catalog states nothing rather than a placeholder, because a
     revision that was never signed off is not one a log line should report.
     """
-    source = path or CATALOG_FILE
-    if not source.is_file():
-        return ""
-    document = json.loads(source.read_text(encoding="utf-8"))
-    if not isinstance(document, Mapping):
-        return ""
-    return str(document.get("revision", ""))
+    return str(_document(path).get("revision", ""))
 
 
 def load_metric_catalog(path: Path | None = None) -> tuple[Mapping[str, Any], ...]:
@@ -41,11 +44,7 @@ def load_metric_catalog(path: Path | None = None) -> tuple[Mapping[str, Any], ..
     without an id cannot be addressed in the store so it is skipped here rather
     than inserted under a name nothing can read back.
     """
-    source = path or CATALOG_FILE
-    if not source.is_file():
-        return ()
-    document = json.loads(source.read_text(encoding="utf-8"))
-    entries = document.get("metrics") if isinstance(document, Mapping) else None
+    entries = _document(path).get("metrics")
     if not isinstance(entries, list):
         return ()
     return tuple(
