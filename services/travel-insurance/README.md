@@ -46,6 +46,11 @@ Consumes `events:ancillary-service`, `events:post-sales`,
 `events:service-plan` and `events:journey-order`
 (`cmd/travel-insurance/main.go`).
 
+The service consumes `TrainDelayed` and files a `DELAY_AUTO` claim from it
+when the delay is over 60 minutes; a shorter delay leaves the policy alone,
+because the coverage the traveller bought is the delay cover the product
+publishes.
+
 A read that an announcement promises is treated as a wait rather than a rule
 violation: `settleNotReady` retries the owning-service read five times, 400 ms
 apart, inside the delivery and only then declares a transient failure
