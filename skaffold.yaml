@@ -328,4 +328,12 @@ profiles:
             setValues:
               nodeExporter.enabled: false
               kubeStateMetrics.enabled: false
+              # A case release exists to be measured, so it runs the workload the
+              # window reads. The chart's own default keeps synthetic traffic
+              # paused and persists the loadgen's entity registry, which is the
+              # resident release's shape: replicas 0 leaves nothing to measure,
+              # and the unconsumed claim stays Pending under WaitForFirstConsumer,
+              # so helm's wait expires before the release is ever ready.
+              loadgen.replicas: 1
+              loadgen.statePersistence.enabled: false
             setValueTemplates: *images
