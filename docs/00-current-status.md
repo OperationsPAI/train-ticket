@@ -913,6 +913,13 @@ and fare-pricing's median is 1.7 seconds. That is the consumer-lag shape the
 offer and post-sales fixes removed at the mean, returning under a three to eight
 times burst. It is recorded in [TODO](TODO.md); no service in the chart has an HPA.
 
+## The settings each service publishes
+
+Every service's own settings file is part of its image, so the release runs the
+value the repository states. place-network's wayfinding allowance lives in
+`services/place-network/internal/config/wayfinding.json`; the other services
+ship the files their READMEs name and nothing else.
+
 ## Every service is on its shard
 
 The chart had split PostgreSQL by workload shape and left thirteen services
