@@ -7,7 +7,7 @@
 | Domain | Corporate Travel |
 | Status | proposed-ddd-baseline |
 | Owner Agent | agentm-corporate-travel |
-| Last Updated | 2026-07-10 |
+| Last Updated | 2026-09-28 |
 | High-Level Inputs | `docs/adr/0003-commercial-realism-scope.md`, `docs/02-domains/account.md`, `docs/02-domains/fare-pricing.md`, `docs/02-domains/journey-order.md`, `docs/02-domains/payment.md`, `docs/02-domains/finance-settlement.md` |
 
 ## 1. 领域目标

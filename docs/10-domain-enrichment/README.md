@@ -1,8 +1,8 @@
 # Business implementation design
 
-Last updated: 2026-09-24.
+Last updated: 2026-09-28.
 
-These documents describe implemented business rules and clearly identified workspace changes.
+These documents describe implemented business rules.
 [Current status](../00-current-status.md) records deployment and verification; [TODO](../TODO.md) is the single remaining work list.
 
 | Area | Current design |
@@ -17,4 +17,4 @@ These documents describe implemented business rules and clearly identified works
 | Gross captured payment reports | [Reporting](reporting-enrichment.md) |
 
 The [domain index](../02-domains/README.md), [API index](../08-contracts/api/README.md) and individual service README files cover other service behavior.
-Unpublished Capacity and Notification changes are not enabled by this documentation update.
+The coordinated Capacity supply integration and the durable Notification delivery queue are deployed; [current status](../00-current-status.md) records the release and its evidence.
