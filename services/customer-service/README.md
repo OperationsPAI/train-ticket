@@ -27,10 +27,10 @@ Status: implemented and deployed (Helm revision 521; see [current status](../../
 ## Settings
 
 - The queues the desk's consoles poll are stated by the release
-  (`services.customer-service.env`): a handoff to a queue the release does not
-  state is refused, so a desk that brings a queue up states it here rather than
-  waiting for a build. A release that states no queue keeps the arrangement the
-  service ships.
+  (`services.customer-service.env`): a desk that brings a queue up states it here
+  rather than waiting for a build, and a handoff to a queue the release does not
+  state is refused (`CASE_NOT_ROUTABLE`). A release that states no queue keeps
+  the arrangement the service ships.
 
 ## HTTP surface
 
