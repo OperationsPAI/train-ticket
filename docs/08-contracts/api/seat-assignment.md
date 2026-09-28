@@ -1,6 +1,6 @@
 # Seat Assignment — HTTP API
 
-Last updated: 2026-09-24
+Last updated: 2026-09-28
 
 ## Overview
 
@@ -459,6 +459,49 @@ This response is an observation; Capacity must combine it with pending holds and
 `offset`, where each item is a `SeatAllocation` resource.
 
 **Error codes:** `VALIDATION_FAILED` (400).
+
+### Assign Seats for a Segment
+
+**POST** `/api/v1/seat-assignments`
+
+**Idempotency:** REQUIRED.
+
+**Request:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `segmentRef` | string | yes | Service segment reference. |
+| `departureDate` | string | yes | Operating date in `YYYY-MM-DD`. |
+| `travelerRefs` | string[] | yes | Travelers to seat. |
+| `seatClass` | string | no | Requested seat class. |
+| `preferences` | array | no | Seat preferences. |
+| `holdId` | string | no | Capacity hold correlation; a new id is generated when absent. |
+
+**Response (201):** `assignments`, each with `assignmentId`, `seatId`, `travelerRef`, `carNumber`, `row`, `letter`, `position`, `status` and `expiresAt`.
+
+**Error codes:** `VALIDATION_FAILED` (400), `NO_SEAT_AVAILABLE` (422).
+
+### Segment Seat Availability
+
+**GET** `/api/v1/seat-assignments/{segmentRef}/{departureDate}/availability`
+
+**Response (200):** `totalSeats`, `available`, `occupied` and `byClass`, each class carrying `total` and `available`.
+
+### Release a Seat Assignment
+
+**DELETE** `/api/v1/seat-assignments/{assignmentId}`
+
+**Response (200):** `{ "released": true }`.
+
+### Confirm a Seat Assignment
+
+**POST** `/api/v1/seat-assignments/{assignmentId}/confirm`
+
+**Idempotency:** REQUIRED.
+
+**Request:** optional `holdId`.
+
+**Response (200):** `{ "confirmed": true, "seatId": "...", "travelerRef": "..." }`.
 
 ## Bus-only behavior
 
