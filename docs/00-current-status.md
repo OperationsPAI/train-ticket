@@ -1093,3 +1093,11 @@ its holds forever. The change therefore saved no transfer and added a second
 scan, so it was dropped rather than shipped. The finding is recorded because it
 is the reason the item now asks whether terminal holds should be retired on
 every pool, which changes the published `released` level.
+
+
+## The settings documents the release installs
+
+`fare-pricing` states the supplier contracts its catalogue carries in
+`config/resolution.json`. The image copies the directory and names it in
+`FARE_PRICING_CONFIG_DIR`, so a container reads the document the release was cut
+from, and a process with no document at all carries no register.
