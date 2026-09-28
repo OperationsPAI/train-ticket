@@ -79,6 +79,8 @@ Each dashboard entry carries the id the store addresses it by, the name the cons
 
 The operations dashboard covers the demand and capacity reads that the revenue dashboard leaves out.
 
+The document ships inside the package, so the image carries the same file a checkout reads.
+
 ## Captured payment metrics
 
 All monetary revenue metrics use `PaymentCaptured` only.
