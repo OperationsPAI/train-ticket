@@ -1682,6 +1682,9 @@ services:
     # over, which is what every release before this one filed.
     env:
       SUPPLIER_IDENTITY_SOURCE: "brand"
+      # The import opens one connection per filing in flight, and the catalogue
+      # already holds the reads of the ops console on the same pool.
+      PG_MAX_POOL_SIZE: "24"
   waitlist:
     db: waitlist
     image: mirrors.tencent.com/microservice/waitlist:final-e98069db@sha256:42657e4c3f0d2328cfa9885a62a4b1f9a7f11366afa093cb8bdd93b8729f4253
