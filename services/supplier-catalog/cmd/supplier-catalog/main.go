@@ -40,6 +40,9 @@ func main() {
 	if migrationsDir == "" {
 		migrationsDir = "/app/migrations"
 	}
+	// The migrations are read from the image's own directory rather than from the
+	// chart, so a release that ships a new one applies it before the process
+	// answers a request.
 	migrationsList, err := storage.LoadMigrations(os.DirFS(migrationsDir), ".")
 	if err != nil {
 		log.Fatal(err)
