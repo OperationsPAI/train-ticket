@@ -1,6 +1,6 @@
 # Messaging Contract — Redis Streams Event Bus
 
-**Last updated:** 2026-07-09
+**Last updated:** 2026-09-28
 **Spec version:** 1.0.0  
 **ADR:** [0001-event-bus-redis-streams.md](../adr/0001-event-bus-redis-streams.md)
 
@@ -330,9 +330,9 @@ analytics, and cross-cutting concerns:
 
 | Consumer Group (Context) | Subscribed Streams | Purpose |
 |---|---|---|
-| `reporting` | All active `events:*` streams except `events:dispatch`, `events:disruption-recovery`, `events:payment-channel`, `events:transfer-management`, and `events:identity-verification` until their deferred-consumer activation waves; includes `events:seat-assignment` and `events:invoicing` in ADR-0003 wave A | Business metrics, funnel analysis, operational dashboards |
-| `finance-settlement` | `events:payment`, `events:payment-channel`, `events:provider-integration`, `events:booking-orchestration`, `events:post-sales`, `events:wallet-promotion`, `events:invoicing` | Revenue recognition, reconciliation, invoice generation, Wallet / Promotion benefit-cost attribution, ADR-0003 SIM channel statement reconciliation, and tax-document lifecycle read models. |
-| `notification` | `events:journey-order`, `events:booking-orchestration`, `events:payment`, `events:entitlement-ticketing`, `events:post-sales`, `events:wallet-promotion`, `events:disruption-recovery`, `events:transfer-management`, `events:seat-assignment`, `events:invoicing` | User-facing notification triggers including Wallet / Promotion issued/expired/revoked touchpoints, transfer risk/recovery updates, seat/standing/degradation changes, and invoice/red-flush status touchpoints. |
+| `reporting` | `events:ancillary-service`, `events:booking-orchestration`, `events:customer-service`, `events:dispatch`, `events:finance-settlement`, `events:fulfillment`, `events:invoicing`, `events:journey-order`, `events:payment`, `events:payment-channel`, `events:post-sales`, `events:seat-assignment`, `events:travel-insurance`, `events:waitlist` | Business metrics, funnel analysis, operational dashboards. This is the set of streams that carry a fact Reporting projects, not every context on the platform; see [Reporting events](events/reporting.md). |
+| `finance-settlement` | `events:payment`, `events:payment-channel`, `events:provider-integration`, `events:booking-orchestration`, `events:post-sales`, `events:wallet-promotion`, `events:ancillary-service` | Revenue recognition, reconciliation, invoice generation, Wallet / Promotion benefit-cost attribution, ADR-0003 SIM channel statement reconciliation, and ancillary fulfillment/refund read models. |
+| `notification` | `events:journey-order`, `events:payment`, `events:entitlement-ticketing`, `events:post-sales`, `events:disruption-recovery`, `events:transfer-management`, `events:ancillary-service`, `events:dispatch`, `events:waitlist`, `events:wallet-promotion` | User-facing notification triggers including Wallet / Promotion issued/expired/revoked touchpoints, transfer risk/recovery updates, ancillary and dispatch lifecycle touchpoints, and waitlist status changes. |
 
 ### Invoicing subscriptions and exclusions
 
@@ -389,31 +389,33 @@ a new subscription row. The resulting `ConnectionRecovered` event carries
 `replacementConnectionId` and replacement-window fields rather than introducing a
 new `ConnectionReaccommodated` event.
 
-### Deferred Identity Verification Subscriptions
+### Identity Verification subscriptions
 
-`events:identity-verification` is registered as a produced stream in this contract. In ADR-0003 wave A there is no active downstream consumer group for this stream: Journey Order uses `POST /api/v1/identity-verification/pre-order-checks`, Fare & Pricing uses the read-only eligibility-certificate query, and Risk & Compliance consumption of `PurchaseLimitFactRecorded`, `PurchaseLimitFactConfirmed`, `PurchaseLimitFactReleased`, `PurchaseLimitFactMissed`, and `PurchaseLimitFactFailed` is future-scope. Reporting and Customer Service projections are likewise deferred unless a later wave activates their consumers.
+`events:identity-verification` is registered as a produced stream in this contract. Two consumers subscribe to it today: `journey-order` and `traveler-profile`, each reading the credential and eligibility-certificate facts it needs. Journey Order also uses the synchronous `POST /api/v1/identity-verification/pre-order-checks` hook, and Fare & Pricing uses the read-only eligibility-certificate query. Risk & Compliance consumption of `PurchaseLimitFactRecorded`, `PurchaseLimitFactConfirmed`, `PurchaseLimitFactReleased`, `PurchaseLimitFactMissed`, and `PurchaseLimitFactFailed` remains future-scope, as do the Reporting and Customer Service projections.
 
 Identity Verification has one active inbound subscription in this wave: it consumes `TravelerSnapshotUpdated` from `events:traveler-profile` for traveler linkage and masked document references. Optional annotation from `RiskBlockApplied`/`RiskBlockLifted` remains a documented future extension and does not create a required subscription row in this wave.
 
-### Deferred Ancillary Service Subscriptions
+### Ancillary Service subscriptions
 
 `events:ancillary-service` is registered as a produced stream in this contract.
-Ancillary Service actively consumes only `JourneyOrderCancelled` from
-`events:journey-order` in this activation wave. Finance Settlement, Notification,
-and Post Sales are documented downstream touchpoints for ancillary order-item,
-refund, and fulfillment-fact events, but their concrete consumer implementations
-are deferred. Journey Order contract shapes are not changed by this activation;
-any order-detail projection of ancillary items is future work.
+Ancillary Service consumes `JourneyOrderCancelled` from `events:journey-order`,
+`EntitlementVoided` from `events:entitlement-ticketing`, and
+`PaymentCaptured`/`RefundSettled` from `events:payment`. Its own catalog, offer
+and order-item events are consumed by Journey Order, Notification, Finance
+Settlement, Post Sales and Reporting; for example, Finance Settlement recognizes
+fulfilled ancillary revenue and its refunds and Post Sales follows the ancillary
+refund chain. See [Ancillary Service events](events/ancillary-service.md) for the
+per-event consumer list.
 
-### Deferred Dispatch Subscriptions
+### Dispatch subscriptions
 
-`events:dispatch` is registered as a produced stream in this contract, but has no
-required consumer groups in this activation wave. Immediate driver/vehicle/ETA
-supply is simulated through internal Dispatch ops HTTP commands, so
-`provider-integration` does not subscribe or publish Dispatch provider events.
-Fulfillment handoff consumption of `DriverArrived`, `RideStarted`, and
-`RideEnded` is deferred; Post Sales, Notification, and Reporting subscriptions to
-Dispatch lifecycle events are likewise deferred until their implementation waves.
+`events:dispatch` is registered as a produced stream in this contract. Immediate
+driver/vehicle/ETA supply is simulated through internal Dispatch ops HTTP
+commands, so `provider-integration` does not subscribe to or publish Dispatch
+provider events. Fulfillment consumes the `DriverArrived`, `RideStarted` and
+`RideEnded` handoff facts, and Post Sales, Notification and Reporting consume the
+dispatch lifecycle facts they project. See [Dispatch events](events/dispatch.md)
+for the per-event consumer list.
 
 ---
 
@@ -441,9 +443,13 @@ XACK events:<stream> <group> <entry-id>
    remains in the Pending Entries List (PEL).
 5. **Recovery:** After `min-idle` timeout (60s), another consumer or a recovery
    process picks up the pending message via `XAUTOCLAIM`.
-6. **Poison:** If a message has been retried 5 times (tracked via delivery
-   count in PEL), it is moved to the dead-letter stream
-   `events:<context>:dlq` and XACKed from the main stream.
+6. **Poison:** The kits bound retirement on the handler's own failure count, not
+   on Redis' delivery count: after 5 genuine handler failures the message is
+   moved to the dead-letter stream `events:<context>:dlq` and XACKed from the
+   main stream. A separate `MAX_REDELIVERY_ATTEMPTS` backstop (100 by default)
+   retires an entry that a crash loop keeps redelivering without the handler ever
+   deciding. A failed pending-entry recovery does not end consumption;
+   `XAUTOCLAIM` cursors are paged rather than restarted.
 
 Notification and Loyalty Membership add a stronger boundary: before the Redis
 DLQ write and XACK, they persist the original envelope, source identity, first
@@ -488,10 +494,12 @@ XAUTOCLAIM events:<context> <group> <consumer> 60000 0 COUNT 100
 ```
 
 - `min-idle`: 60000 ms (60 seconds).
-- For each claimed message, check the delivery count (from the PEL entry).
-- If delivery count >= 5: `XADD events:<context>:dlq * envelope "<JSON>"` then
-  `XACK events:<context> <group> <entry-id>`.
-- If delivery count < 5: attempt reprocessing.
+- For each claimed message, re-run the handler; an event whose `eventId` is
+  already in the durable dedup store is `XACK`ed without re-executing it.
+- The handler's own failure count decides retirement: at 5 genuine handler
+  failures the message is `XADD`ed to `events:<context>:dlq` and `XACK`ed from
+  the main stream. A `MAX_REDELIVERY_ATTEMPTS` backstop (100 by default) retires
+  an entry that never reaches the handler because it keeps being redelivered.
 
 ---
 
@@ -616,9 +624,11 @@ interface EventSubscriber {
      *     4. If the handler returns a transient error -> do NOT XACK (let
      *        XAUTOCLAIM recover the message).
      *     5. If the handler returns a fatal error -> move to DLQ and XACK.
-     * - The implementation MUST track delivery attempts per message.
-     *   After 5 delivery attempts (as observed from PEL delivery count),
-     *   move the message to the dead-letter stream and XACK.
+     * - The implementation MUST track the handler's own failure count per
+     *   message. After 5 genuine handler failures, move the message to the
+     *   dead-letter stream and XACK. A separate MAX_REDELIVERY_ATTEMPTS
+     *   backstop (100 by default) retires an entry that is redelivered
+     *   without the handler ever deciding.
      * - The implementation MUST call XAUTOCLAIM periodically to recover stale
      *   messages in the PEL that belong to other consumers.
      * - The implementation MUST retain the returned next-start-id separately
@@ -757,7 +767,7 @@ Recovery loop:
     page = XAUTOCLAIM events:<stream> <group> <consumer> <min-idle-ms> start COUNT 100
     recovery_cursor[key] = page.next_start_id  # 0-0 starts a new round next time
     for each claimed message in page.messages:
-      if message.delivery_count >= 5:
+      if handler_failures(message) >= 5:
         XADD events:<stream>:dlq * envelope message["envelope"]
         XACK events:<stream> <group> message.id
       else:
