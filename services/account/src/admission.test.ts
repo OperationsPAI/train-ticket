@@ -126,4 +126,34 @@ describe("the new-account admission", () => {
     assert.equal((await create("0194f2e0-7b3e-7610-8284-5c26e8b0c202", "203.0.113.7")).statusCode, 429);
     assert.equal((await create("0194f2e0-7b3e-7610-8284-5c26e8b0c203", "198.51.100.4")).statusCode, 201);
   });
+
+  it("tells a refused client the window it spent and leaves the rest of the API alone", async () => {
+    const app = createApp({
+      storage: {
+        ready: () => true,
+        registrationAdmission: new InMemoryRegistrationAdmission({ ...settings, maxNewAccountsPerClient: 1 }),
+      },
+    });
+    const create = (key: string) =>
+      app.inject({
+        method: "POST",
+        url: "/api/v1/accounts",
+        headers: { "idempotency-key": key, "x-forwarded-for": "203.0.113.7" },
+        payload: { accountId: "acct_admission_refusal" },
+      });
+
+    assert.equal((await create("0194f2e0-7b3e-7610-8284-5c26e8b0c301")).statusCode, 201);
+
+    const refused = await create("0194f2e0-7b3e-7610-8284-5c26e8b0c302");
+    assert.equal(refused.statusCode, 429);
+    const body = refused.json();
+    assert.equal(body.code, "TOO_MANY_REQUESTS");
+    assert.deepEqual(body.details, { windowSeconds: 60 });
+    assert.match(body.message, /60s window/);
+
+    // The allowance gates the create; the reads the same client makes are not
+    // the thing the budget is about and answer as they did before.
+    const stored = await app.inject({ method: "GET", url: "/api/v1/accounts/acct_admission_refusal" });
+    assert.equal(stored.statusCode, 200);
+  });
 });
