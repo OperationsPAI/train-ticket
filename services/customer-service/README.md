@@ -36,9 +36,9 @@ Status: implemented and deployed (Helm revision 521; see [current status](../../
 
 ## HTTP surface
 
-`/api/v1/support-cases`: create, read, `classify`, `assign`, `escalate`,
-`request-escalation`, `evidence`, `resolve`, `reopen`, `close`,
-`manual-action-requests`, `compensation-offers`; plus
+`/api/v1/support-cases`: create, read and `classify` a case; `assign`,
+`escalate` and `request-escalation`; `evidence`, `resolve`, `reopen` and
+`close`; and `manual-action-requests` and `compensation-offers`. Plus
 `/api/v1/compensation-offers/{id}/accept|issue` and
 `POST /api/v1/support-cases/evaluate-sla`.
 
