@@ -836,7 +836,7 @@ export class SupportCase {
   }
 
   assign(command: AssignSupportCase): { case: SupportCase; event: SupportCaseAssigned } {
-    this.requireHandoff(command.ownerQueue);
+    this.requireAssignableHandoff(command.ownerQueue);
 
     const newSnapshot: SupportCaseSnapshot = deepFreeze({
       ...this.snapshot,
@@ -1118,7 +1118,7 @@ export class SupportCase {
    * is a lane the case disappears into rather than a case the desk is working. The two are decided
    * together so that neither the counter nor the assignment applies half of the handoff.
    */
-  private requireHandoff(ownerQueue: string): void {
+  private requireAssignableHandoff(ownerQueue: string): void {
     if (!this.canAssign()) {
       throw new DomainError(
         "CASE_NOT_ASSIGNABLE",
