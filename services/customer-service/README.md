@@ -36,9 +36,9 @@ Status: implemented and deployed (Helm revision 521; see [current status](../../
 
 `/api/v1/support-cases`: create, read, `classify`, `assign`, `escalate`,
 `request-escalation`, `evidence`, `resolve`, `reopen`, `close`,
-`manual-action-requests`, `compensation-offers`; plus
-`/api/v1/compensation-offers/{id}/accept|issue` and
-`POST /api/v1/support-cases/evaluate-sla`.
+`manual-action-requests`, `compensation-offers`; and
+`POST /api/v1/support-cases/evaluate-sla`, plus
+`/api/v1/compensation-offers/{id}/accept|issue`.
 
 The full contract lives in
 [`docs/08-contracts/api/customer-service.md`](../../docs/08-contracts/api/customer-service.md).
