@@ -723,13 +723,8 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
     private EventSubscriber.HandlerResult handleRiskAssessmentResult(EventEnvelope envelope) {
         requirePayloadFields(envelope, "assessmentId", "subjectRef", "scenario", "decision", "policyVersion", "evidenceRef", "reasonCode", "assessmentSnapshotHash", "assessedAt");
         String scenario = requiredTextPayload(envelope, "scenario");
-        if (!riskScenarios.accepts(scenario)) {
-            // The assessment is about a subject this deployment does not act on. It is acknowledged
-            // rather than left pending: the subject is read out of the payload, so a redelivery
-            // would reach the same decision for as long as the message is retained.
-            LOGGER.info("acknowledging {} for scenario={} ({} does not name it)",
-                envelope.eventType(), scenario, RiskScenarioSettings.PROPERTY);
-            return new EventSubscriber.Success();
+        if (!riskScenarios.names(scenario)) {
+            return acknowledgeUnactedOnRiskAssessment(envelope, scenario);
         }
         if (!"ALLOW".equals(requiredTextPayload(envelope, "decision"))) {
             return new EventSubscriber.Success();
@@ -749,6 +744,18 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         }
         stateRepository.saveOrder(order, stored.idempotencyKey());
         publishEvents(order.domainEvents().subList(eventCount, order.domainEvents().size()));
+        return new EventSubscriber.Success();
+    }
+
+    /**
+     * Answers an assessment for a scenario this deployment does not act on.
+     *
+     * <p>Acknowledged rather than left pending: the subject is read out of the payload, so a
+     * redelivery would reach the same decision for as long as the message is retained.
+     */
+    private EventSubscriber.HandlerResult acknowledgeUnactedOnRiskAssessment(EventEnvelope envelope, String scenario) {
+        LOGGER.info("acknowledging {} for scenario={} ({} does not name it)",
+            envelope.eventType(), scenario, RiskScenarioSettings.PROPERTY);
         return new EventSubscriber.Success();
     }
 

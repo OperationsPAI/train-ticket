@@ -38,7 +38,7 @@ public class RiskScenarioSettings {
         return new RiskScenarioSettings(SHIPPED_SCENARIOS);
     }
 
-    public boolean accepts(String scenario) {
+    public boolean names(String scenario) {
         return scenario != null && scenarios.contains(scenario);
     }
 
