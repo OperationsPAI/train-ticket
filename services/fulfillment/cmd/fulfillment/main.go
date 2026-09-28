@@ -85,7 +85,7 @@ func main() {
 	// and a deployment may point the service at its own. A document the service
 	// cannot read is fatal at startup, like the pool metrics: a floor nobody
 	// stated must be visible in a crash, not silently absent.
-	usageSettings, err := config.LoadUsageSettings(config.DefaultUsageSettingsPath)
+	usageSettings, err := config.LoadUsageSettings(config.UsageSettingsPath())
 	if err != nil {
 		log.Fatalf("failed to read the release's usage settings: %v", err)
 	}

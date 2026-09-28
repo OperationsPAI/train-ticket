@@ -17,8 +17,15 @@ import (
 	"time"
 )
 
-// DefaultUsageSettingsPath is where the image carries the document.
-const DefaultUsageSettingsPath = "/app/config/usage.properties"
+const (
+	// UsageSettingsPathEnv names the document a deployment reads instead of the
+	// one the image carries. A local run and a deployment that mounts its own
+	// settings use it.
+	UsageSettingsPathEnv = "FULFILLMENT_USAGE_SETTINGS"
+
+	// DefaultUsageSettingsPath is where the image carries the document.
+	DefaultUsageSettingsPath = "/app/config/usage.properties"
+)
 
 // UsageSettings is what the release states about the use of a segment.
 type UsageSettings struct {
@@ -32,6 +39,15 @@ type UsageSettings struct {
 // SegmentUsageFloor is the floor the release states, as a duration.
 func (s UsageSettings) SegmentUsageFloor() time.Duration {
 	return time.Duration(s.MinimumSegmentSeconds) * time.Second
+}
+
+// UsageSettingsPath is the document to read: the deployment's when it names
+// one, the image's otherwise.
+func UsageSettingsPath() string {
+	if path := strings.TrimSpace(os.Getenv(UsageSettingsPathEnv)); path != "" {
+		return path
+	}
+	return DefaultUsageSettingsPath
 }
 
 // LoadUsageSettings reads the settings document at path.

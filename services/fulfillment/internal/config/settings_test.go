@@ -69,6 +69,17 @@ func TestLoadUsageSettingsReadsTheDocumentItIsGiven(t *testing.T) {
 	}
 }
 
+func TestUsageSettingsPathPrefersTheDeployment(t *testing.T) {
+	t.Setenv(UsageSettingsPathEnv, "")
+	if path := UsageSettingsPath(); path != DefaultUsageSettingsPath {
+		t.Fatalf("path = %q, want the image's document %q", path, DefaultUsageSettingsPath)
+	}
+	t.Setenv(UsageSettingsPathEnv, "/etc/fulfillment/usage.properties")
+	if path := UsageSettingsPath(); path != "/etc/fulfillment/usage.properties" {
+		t.Fatalf("path = %q, want the deployment's document", path)
+	}
+}
+
 func TestShippedUsageSettingsAreReadable(t *testing.T) {
 	settings, err := LoadUsageSettings(filepath.Join("..", "..", "config", "usage.properties"))
 	if err != nil {
