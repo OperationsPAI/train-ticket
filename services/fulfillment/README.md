@@ -22,6 +22,11 @@ Status: implemented and deployed (Helm revision 521; see [current status](../../
   `deploy/helm/train-ticket/values.yaml`).
 - Liveness `/healthz`, readiness `/readyz`; also `/health`, `/ready`,
 `/metadata`.
+- The boarding estate is the release's:
+  `services.fulfillment.env.FULFILLMENT_BOARDING_SOURCES` in the chart lists the
+  readers a boarding fact may arrive under, comma separated. The estate is read
+  once when the process starts, and a release that states none keeps the
+  vocabulary the image was built with.
 
 ## HTTP surface
 
