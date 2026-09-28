@@ -1,6 +1,6 @@
 # Risk & Compliance — Events & Commands
 
-Last updated: 2026-07-04
+Last updated: 2026-09-28
 
 ## Published Events
 

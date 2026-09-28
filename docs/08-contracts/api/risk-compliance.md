@@ -1,6 +1,6 @@
 # Risk & Compliance — HTTP API
 
-Last updated: 2026-07-05
+Last updated: 2026-09-28
 
 ## Overview
 
@@ -81,6 +81,59 @@ timestamps, and Money.
 **Published event:** `RiskBlockLifted` with the same payload shape as `SubjectAllowed`.
 
 **Error codes:** `VALIDATION_FAILED`, `IDEMPOTENCY_KEY_REUSED`, `NOT_FOUND`, `UNAVAILABLE`
+
+### Evaluate Risk
+
+**POST** `/api/v1/risk-evaluations`
+
+**Request:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `orderId` | string | yes | Order being evaluated. |
+| `accountId` | string | yes | Account placing the order. |
+| `travelerRefs` | array | no | Traveler references. |
+| `totalAmountMinor` | integer | no | Order total in minor units. |
+| `currency` | string | no | Currency code, default `CNY`. |
+| `route` | object | no | Route context. |
+| `departureDate` | string | no | Departure date (`YYYY-MM-DD`). |
+| `sourceIp` | string | no | Caller source IP. |
+| `channelId` | string | no | Sales channel. |
+
+**Response (201):**
+
+| Field | Type | Description |
+|---|---|---|
+| `evaluationId` | string | Canonical evaluation ID. |
+| `verdict` | enum | Risk verdict. |
+| `score` | integer | Risk score. |
+| `triggeredRules` | array | Triggered rules with `ruleId`, `result` and `detail`. |
+| `recommendedAction` | enum | Action recommended by the verdict. |
+
+**Error codes:** `VALIDATION_FAILED`, `UNAVAILABLE`
+
+### Get Risk Evaluation
+
+**GET** `/api/v1/risk-evaluations/{evaluationId}`
+
+**Response (200):** The evaluation resource above.
+
+**Error codes:** `NOT_FOUND`
+
+### Override a Risk Evaluation
+
+**POST** `/api/v1/risk-evaluations/{evaluationId}/override`
+
+**Request:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `staffId` | string | yes | Staff operator performing the override. |
+| `reason` | string | yes | Override reason. |
+
+**Response (200):** The updated evaluation resource.
+
+**Error codes:** `VALIDATION_FAILED`, `NOT_FOUND`
 
 ## Bus-only commands
 
