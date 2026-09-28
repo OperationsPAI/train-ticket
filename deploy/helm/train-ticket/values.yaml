@@ -838,6 +838,13 @@ services:
       # the read cheap enough to shorten again, and that is recorded in
       # docs/TODO.md.
       CAPACITY_METRICS_REFRESH_MS: "1800000"
+      # `capacity_supply_observations` is one row per inventory pool, upserted
+      # when the seat map version changes, and never read by the request path.
+      # The sweep drops rows whose observation is older than this window, so a
+      # pool that has not been touched in a week is re-observed on its next
+      # admission rather than kept. Measured on this cluster the table was 746808
+      # rows / 12 GB before the sweep existed.
+      CAPACITY_SUPPLY_RETENTION_HOURS: "168"
     strategy:
       type: RollingUpdate
       rollingUpdate:
