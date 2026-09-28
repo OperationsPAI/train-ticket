@@ -67,7 +67,7 @@
       "dashboardId": "dash-revenue",
       "name": "Revenue Dashboard",
       "description": "Revenue and settlement dashboard.",
-      "status": "building",
+      "status": "published",
       "metrics": [
         {
           "metricId": "metric-revenue",

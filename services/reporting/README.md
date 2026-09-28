@@ -71,6 +71,8 @@ The built-in definitions remain the fallback for an id the catalog does not name
 
 `revision` names the release the catalog was cut from, and `schemaVersion` names the document format a reader should expect.
 
+Both sections state the same publication state, so one vocabulary describes what the release published.
+
 ## Captured payment metrics
 
 All monetary revenue metrics use `PaymentCaptured` only.

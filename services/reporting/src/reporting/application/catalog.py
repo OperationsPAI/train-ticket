@@ -30,7 +30,9 @@ def load_release_catalog(path: Path | None = None) -> ReleaseCatalog:
 
     Entries are returned as the file wrote them: the document holds the shape
     the snapshot stores keep, so no translation sits between the catalog and the
-    store, and a value the catalog states is stored as stated.
+    store, and a value the catalog states is stored as stated. Both sections
+    state the same publication state, so one vocabulary describes what the
+    release published.
     """
     document = read_document(path or catalog_file())
     return ReleaseCatalog(
