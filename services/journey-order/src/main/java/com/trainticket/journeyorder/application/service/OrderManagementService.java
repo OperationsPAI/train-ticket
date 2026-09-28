@@ -13,6 +13,7 @@ import com.trainticket.journeyorder.application.port.out.JourneyOrderEventHandle
 import com.trainticket.journeyorder.application.port.out.IdentityVerificationPort;
 import com.trainticket.journeyorder.application.port.out.OfferPricePort;
 import com.trainticket.journeyorder.application.port.out.ResolvedOrderOffer;
+import com.trainticket.journeyorder.config.RiskScenarioSettings;
 import com.trainticket.platformkit.messaging.EventEnvelope;
 import com.trainticket.platformkit.http.ApiErrorCode;
 import com.trainticket.platformkit.http.ApiException;
@@ -61,11 +62,12 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
     private final OfferPricePort offerPrice;
     private final TransactionTemplate createTransaction;
     private final OrderFunnelMetrics orderFunnelMetrics;
+    private final RiskScenarioSettings riskScenarios;
 
     @Autowired
     public OrderManagementService(EventPublisher eventPublisher, Clock clock, JourneyOrderStateRepository stateRepository,
             IdentityVerificationPort identityVerification, OfferPricePort offerPrice, Optional<PlatformTransactionManager> transactionManager,
-            OrderFunnelMetrics orderFunnelMetrics) {
+            OrderFunnelMetrics orderFunnelMetrics, RiskScenarioSettings riskScenarios) {
         this.eventPublisher = eventPublisher;
         this.clock = clock;
         this.stateRepository = stateRepository;
@@ -73,12 +75,13 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
         this.offerPrice = offerPrice;
         this.createTransaction = transactionManager.map(TransactionTemplate::new).orElse(null);
         this.orderFunnelMetrics = Objects.requireNonNull(orderFunnelMetrics, "orderFunnelMetrics is required");
+        this.riskScenarios = Objects.requireNonNull(riskScenarios, "riskScenarios is required");
     }
 
     public OrderManagementService(EventPublisher eventPublisher, Clock clock, JourneyOrderStateRepository stateRepository,
             IdentityVerificationPort identityVerification, OfferPricePort offerPrice, Optional<PlatformTransactionManager> transactionManager) {
         this(eventPublisher, clock, stateRepository, identityVerification, offerPrice, transactionManager,
-            new NoopOrderFunnelMetrics());
+            new NoopOrderFunnelMetrics(), RiskScenarioSettings.shipped());
     }
 
     public OrderManagementService(EventPublisher eventPublisher, Clock clock, JourneyOrderStateRepository stateRepository,
@@ -719,6 +722,15 @@ public class OrderManagementService implements JourneyOrderService, JourneyOrder
 
     private EventSubscriber.HandlerResult handleRiskAssessmentResult(EventEnvelope envelope) {
         requirePayloadFields(envelope, "assessmentId", "subjectRef", "scenario", "decision", "policyVersion", "evidenceRef", "reasonCode", "assessmentSnapshotHash", "assessedAt");
+        String scenario = requiredTextPayload(envelope, "scenario");
+        if (!riskScenarios.accepts(scenario)) {
+            // The assessment is about a subject this deployment does not act on. It is acknowledged
+            // rather than left pending: the subject is read out of the payload, so a redelivery
+            // would reach the same decision for as long as the message is retained.
+            LOGGER.info("acknowledging {} for scenario={} ({} does not name it)",
+                envelope.eventType(), scenario, RiskScenarioSettings.PROPERTY);
+            return new EventSubscriber.Success();
+        }
         if (!"ALLOW".equals(requiredTextPayload(envelope, "decision"))) {
             return new EventSubscriber.Success();
         }

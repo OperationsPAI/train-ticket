@@ -6,6 +6,7 @@ import com.trainticket.journeyorder.application.port.in.JourneyOrderRequest;
 import com.trainticket.journeyorder.application.port.out.IdentityVerificationPort;
 import com.trainticket.journeyorder.application.service.InMemoryJourneyOrderStateRepository;
 import com.trainticket.journeyorder.application.service.OrderManagementService;
+import com.trainticket.journeyorder.config.RiskScenarioSettings;
 import com.trainticket.journeyorder.observability.OrderFunnelMetrics;
 import java.time.Clock;
 import java.time.Instant;
@@ -31,7 +32,7 @@ class OrderFunnelCardinalityTest {
             (request, orderIntentId, idempotencyKey, correlationId) ->
                 new IdentityVerificationPort.PreOrderCheckResult("PASS", "poc-test"),
             request -> { throw new IllegalStateException("offer resolution is not used by this test"); },
-            Optional.empty(), recorder);
+            Optional.empty(), recorder, RiskScenarioSettings.shipped());
 
         JourneyOrderRequest first = new JourneyOrderRequest("acc-1", "off-1", 1, List.of("tvl-1"), List.of("seg-1"));
         JourneyOrderRequest second = new JourneyOrderRequest("acc-2", "off-2", 3, List.of("tvl-2"), List.of("seg-2"));
@@ -55,7 +56,7 @@ class OrderFunnelCardinalityTest {
             (request, orderIntentId, idempotencyKey, correlationId) ->
                 new IdentityVerificationPort.PreOrderCheckResult("REJECT", "poc-test"),
             request -> { throw new IllegalStateException("offer resolution is not used by this test"); },
-            Optional.empty(), recorder);
+            Optional.empty(), recorder, RiskScenarioSettings.shipped());
         JourneyOrderRequest request = new JourneyOrderRequest("acc-9", "off-9", 1, List.of("tvl-9"), List.of("seg-9"));
 
         org.junit.jupiter.api.Assertions.assertThrows(RuntimeException.class,
