@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 
 mod business_metrics;
+mod retention;
 mod supply;
 
 const INVENTORY_TABLE: &str = "inventory_pool_snapshots";
@@ -25,6 +26,41 @@ const HOLD_TABLE: &str = "capacity_hold_snapshots";
 const SNAPSHOT_TABLE: &str = "availability_snapshot_snapshots";
 const PRODUCER: &str = "capacity-availability";
 const MAX_RETRIES: usize = 3;
+
+/// Past this, one synchronous admission logs its phase breakdown. It is noise
+/// on a healthy cluster and a small fraction of the observed burst latency, so a
+/// line means the admission really was slow.
+const SLOW_ADMISSION: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// The single warning line for one synchronous admission, or `None` when it was
+/// fast enough not to matter.
+///
+/// Split out of the admission itself so the phase labels and the threshold can
+/// be asserted without a transaction that takes two hundred milliseconds, which
+/// only a loaded cluster produces. Nothing here runs until the total crosses the
+/// threshold, which is what keeps the marks on the fast path free.
+fn slow_admission_line(
+    total: std::time::Duration,
+    phases: &[(&str, std::time::Duration)],
+    pool_id: &str,
+    holds: usize,
+) -> Option<String> {
+    if total < SLOW_ADMISSION {
+        return None;
+    }
+    let phases = phases
+        .iter()
+        .map(|(label, elapsed)| format!("{label}={}ms", elapsed.as_millis()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some(format!(
+        "capacity hold admitted under the pool lock in {}ms: {} pool={} holds={}",
+        total.as_millis(),
+        phases,
+        pool_id,
+        holds
+    ))
+}
 
 fn hold_status(state: CapacityHoldState) -> &'static str {
     match state {
@@ -538,6 +574,12 @@ impl PostgresCapacityService {
             .await?;
         let now = now_millis();
         let hold_id = format!("hold-{}", uuid::Uuid::now_v7());
+        // The synchronous admission takes the same per-service and per-pool
+        // advisory locks the inbound admission does, so it is measured the same
+        // way: one line an operator reads to answer where a Hold's latency went.
+        // The marks are `Instant` reads, which are cheap enough that this stays
+        // invisible unless the total crosses the threshold below.
+        let admission_started = std::time::Instant::now();
         let mut tx = self.pool().begin().await.map_err(to_app_storage)?;
         Self::lock_booking(&mut tx, &req.segment_booking_id)
             .await
@@ -550,6 +592,7 @@ impl PostgresCapacityService {
             return Ok(resp);
         }
         Self::lock_supply(&mut tx, facts).await?;
+        let locked = admission_started.elapsed();
         if let Some(hold) = self.hold_for_reservation(&mut tx, facts).await? {
             let response = HoldCapacityResponse {
                 hold_id: hold.hold_id.clone(),
@@ -571,6 +614,7 @@ impl PostgresCapacityService {
         let (occupancy_facts, supply, available, _occupancy) = self
             .admission_supply(&mut tx, facts, &segments, correlation_id, now)
             .await?;
+        let folded = admission_started.elapsed();
         if available.is_empty() {
             return Err(AppError::DomainRuleViolation(
                 "NO_AVAILABLE_CAPACITY".into(),
@@ -580,6 +624,7 @@ impl PostgresCapacityService {
         Self::lock_inventory(&mut tx, &pool_id)
             .await
             .map_err(to_app_storage)?;
+        let pool_locked = admission_started.elapsed();
         let loaded = self
             .inventory_repo
             .get::<InventoryPoolSnapshot>(&mut *tx, &pool_id)
@@ -590,6 +635,7 @@ impl PostgresCapacityService {
             None => (new_pool(&pool_id, &occupancy_facts, &supply)?, None),
         };
         apply_supply(&mut pool, &occupancy_facts, &supply)?;
+        let pool_loaded = admission_started.elapsed();
         let route = segments.route(&facts.segment_ref)?;
         pool.identity.stop_sequence_version = route.stop_sequence_version.clone();
         let interval = StationInterval::new(route.interval.from_seq, route.interval.to_seq)
@@ -660,6 +706,7 @@ impl PostgresCapacityService {
             )
             .await
             .map_err(to_app_storage)?;
+        let hold_saved = admission_started.elapsed();
         self.retire_terminal_holds(&mut tx, &mut pool, now).await?;
         self.inventory_repo
             .save(
@@ -670,13 +717,16 @@ impl PostgresCapacityService {
             )
             .await
             .map_err(to_app_storage)?;
+        let pool_saved = admission_started.elapsed();
         for envelope in envelopes {
             OutboxAppender::append(&mut tx, &stream_for_producer(PRODUCER), &envelope)
                 .await
                 .map_err(to_app_storage)?;
         }
+        let outbox_appended = admission_started.elapsed();
         self.append_combined_snapshot(&mut tx, facts, &segments, correlation_id, now)
             .await?;
+        let snapshot_appended = admission_started.elapsed();
         let response = HoldCapacityResponse {
             hold_id,
             segment_ref: req.segment_ref.clone(),
@@ -692,7 +742,28 @@ impl PostgresCapacityService {
                 .map_err(|error| AppError::Internal(error.to_string()))?,
         )
         .await?;
+        let answered = admission_started.elapsed();
         tx.commit().await.map_err(to_app_storage)?;
+        let committed = admission_started.elapsed();
+        if let Some(line) = slow_admission_line(
+            committed,
+            &[
+                ("lock", locked),
+                ("supply", folded - locked),
+                ("poolLock", pool_locked - folded),
+                ("poolLoad", pool_loaded - pool_locked),
+                ("hold", hold_saved - pool_loaded),
+                ("poolSave", pool_saved - hold_saved),
+                ("outbox", outbox_appended - pool_saved),
+                ("snapshot", snapshot_appended - outbox_appended),
+                ("idem", answered - snapshot_appended),
+                ("commit", committed - answered),
+            ],
+            &pool_id,
+            pool.holds().len(),
+        ) {
+            log::warn!("{line}");
+        }
         Ok(response)
     }
 
@@ -3264,6 +3335,41 @@ mod tests {
         assert_eq!(envelope.payload["holdId"], "hold-replay-envelope");
         assert_eq!(envelope.payload["idempotencyKey"], "idem-replay-envelope");
         assert_eq!(envelope.payload["idempotentReplay"], true);
+    }
+
+    #[test]
+    fn a_fast_admission_says_nothing_and_a_slow_one_reports_every_phase() {
+        let phases = [
+            ("lock", std::time::Duration::from_millis(3)),
+            ("supply", std::time::Duration::from_millis(4)),
+            ("commit", std::time::Duration::from_millis(2)),
+        ];
+
+        // One millisecond under the threshold is the fast path: nothing is
+        // formatted and nothing is logged.
+        assert!(
+            slow_admission_line(
+                std::time::Duration::from_millis(199),
+                &phases,
+                "pool:seg:STANDING",
+                1
+            )
+            .is_none()
+        );
+
+        let line = slow_admission_line(
+            std::time::Duration::from_millis(300),
+            &phases,
+            "pool:seg:STANDING",
+            4,
+        )
+        .expect("an admission past the threshold reports its phases");
+        assert!(line.contains("lock=3ms"), "{line}");
+        assert!(line.contains("supply=4ms"), "{line}");
+        assert!(line.contains("commit=2ms"), "{line}");
+        assert!(line.contains("pool=pool:seg:STANDING"), "{line}");
+        assert!(line.contains("holds=4"), "{line}");
+        assert_eq!(line.lines().count(), 1, "the warning is a single line");
     }
 
     #[test]
