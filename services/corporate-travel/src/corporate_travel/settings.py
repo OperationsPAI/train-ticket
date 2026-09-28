@@ -13,8 +13,9 @@ MAX_MONTHLY_CREDIT_ENV = "CORPORATE_TRAVEL_ONBOARDING_MAX_CREDIT_MINOR"
 SHIPPED_SETTINGS_PATH = Path(__file__).resolve().parent / "config" / "onboarding.json"
 
 
-def _onboarding_section(payload: Mapping[str, Any]) -> Mapping[str, Any]:
-    section = payload.get("onboarding")
+def _settings_section(payload: Mapping[str, Any], name: str) -> Mapping[str, Any]:
+    """One named section of a settings file, empty when it is missing or malformed."""
+    section = payload.get(name)
     return section if isinstance(section, Mapping) else {}
 
 
@@ -40,7 +41,7 @@ def load_onboarding_terms(path: str | Path | None = None) -> OnboardingTerms:
         payload = json.loads(source.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         payload = {}
-    section = _onboarding_section(payload if isinstance(payload, Mapping) else {})
+    section = _settings_section(payload if isinstance(payload, Mapping) else {}, "onboarding")
     ceiling = _credit_ceiling(section)
     override = os.environ.get(MAX_MONTHLY_CREDIT_ENV)
     if override:
