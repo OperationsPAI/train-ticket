@@ -35,16 +35,19 @@ type BoardingRegister struct {
 	readers map[domain.FulfillmentSource]struct{}
 }
 
-// BoardingRegisterOfDeployment resolves the estate this deployment states, once,
-// when the process starts. A release that states none -- or states nothing but
-// separators -- keeps the vocabulary the image was built with: an empty register
-// would refuse every boarding fact, which is not what a release means by leaving
-// the setting empty.
-//
-// The register is read once and held for the life of the process, so widening or
-// narrowing it is a redeployment and not a hot edit, and every boarding a process
-// validates is answered with the same estate.
-var BoardingRegisterOfDeployment = boardingRegister(os.Getenv(BoardingSourcesVariable))
+// BoardingRegisterOfDeployment is the estate this deployment states, resolved
+// once, when the process starts, and held for the life of the process: widening
+// or narrowing it is a redeployment and not a hot edit, and every boarding a
+// process validates is answered with the same estate.
+var BoardingRegisterOfDeployment = boardingRegisterFromEnv()
+
+// boardingRegisterFromEnv reads the release's setting once. A release that
+// states none -- or states nothing but separators -- keeps the vocabulary the
+// image was built with: an empty register would refuse every boarding fact,
+// which is not what a release means by leaving the setting empty.
+func boardingRegisterFromEnv() BoardingRegister {
+	return boardingRegister(os.Getenv(BoardingSourcesVariable))
+}
 
 func boardingRegister(stated string) BoardingRegister {
 	readers := make(map[domain.FulfillmentSource]struct{})
