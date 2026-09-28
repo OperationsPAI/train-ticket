@@ -96,17 +96,17 @@
       ],
       "currentSnapshot": {
         "rebuildId": "rebuild-revenue-001",
-        "rebuiltAt": "2026-07-05T10:30:00Z",
+        "rebuiltAt": "2026-09-28T09:15:00Z",
         "metrics": [
           {
             "metricId": "metric-revenue",
             "version": "1.0.0"
           }
         ],
-        "eventCount": 128,
+        "eventCount": 4096,
         "digest": "sha256-revenue-001"
       },
-      "lastBuiltAt": "2026-07-05T10:30:00Z",
+      "lastBuiltAt": "2026-09-28T09:15:00Z",
       "sourceEvents": [
         "PaymentCaptured",
         "PaymentSucceeded",
