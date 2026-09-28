@@ -190,6 +190,44 @@ func TestListingsServeThePageTheReleaseDeclares(t *testing.T) {
 	assertCanonicalError(t, refusedSegments, http.StatusBadRequest, "VALIDATION_FAILED")
 }
 
+func TestListingsAnswerTheDocumentedPage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	// The contract lets a caller ask for the page it reconciles inventory with,
+	// so both listings are exercised at that page and the answer has to name it.
+	router := Router()
+	serviceBody := `{"serviceRef":"ss-0194f2e0-7b3e-7610-0284-5c26e8b0c401","carrierId":"car-0194f2e0-7b3e-7610-0284-5c26e8b0c001","serviceNumber":"G1234","departureTime":"2026-07-05T10:30:00Z","arrivalTime":"2026-07-05T12:30:00Z","originNodeId":"node-a","destinationNodeId":"node-b"}`
+	performJSON(router, http.MethodPost, "/api/v1/scheduled-services", serviceBody, "0194f2e0-7b3e-7610-0284-5c26e8b0c401")
+	segmentBody := `{"scheduledServiceRef":"ss-0194f2e0-7b3e-7610-0284-5c26e8b0c401","originStopRef":"node-a","destinationStopRef":"node-b","departureTime":"2026-07-05T10:30:00Z","arrivalTime":"2026-07-05T12:30:00Z"}`
+	performJSON(router, http.MethodPost, "/api/v1/service-segments", segmentBody, "0194f2e0-7b3e-7610-0284-5c26e8b0c402")
+
+	services := performJSON(router, http.MethodGet, "/api/v1/scheduled-services?limit=100&offset=0&carrierId=car-0194f2e0-7b3e-7610-0284-5c26e8b0c001", "", "")
+	if services.Code != http.StatusOK {
+		t.Fatalf("unexpected list status: %d body=%s", services.Code, services.Body.String())
+	}
+	assertPageEnvelope(t, services, 100, 1)
+	segments := performJSON(router, http.MethodGet, "/api/v1/service-segments?scheduledServiceRef=ss-0194f2e0-7b3e-7610-0284-5c26e8b0c401&limit=100&offset=0", "", "")
+	if segments.Code != http.StatusOK {
+		t.Fatalf("unexpected segment list status: %d body=%s", segments.Code, segments.Body.String())
+	}
+	assertPageEnvelope(t, segments, 100, 1)
+}
+
+func assertPageEnvelope(t *testing.T, recorder *httptest.ResponseRecorder, wantLimit, wantTotal int) {
+	t.Helper()
+	var page struct {
+		Items  []map[string]any `json:"items"`
+		Total  int              `json:"total"`
+		Limit  int              `json:"limit"`
+		Offset int              `json:"offset"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &page); err != nil {
+		t.Fatalf("page response json: %v", err)
+	}
+	if page.Total != wantTotal || len(page.Items) != wantTotal || page.Limit != wantLimit || page.Offset != 0 {
+		t.Fatalf("unexpected page response: %#v", page)
+	}
+}
+
 func TestCreateServiceSegmentHappyPath(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := Router()
