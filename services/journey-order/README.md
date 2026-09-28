@@ -82,7 +82,8 @@ resolves to an order here, so the handler acts on the scenarios the release name
 in `JOURNEY_ORDER_RISK_SCENARIOS` (`services.journey-order.env` in
 `deploy/helm/train-ticket/values.yaml`); a scenario the list does not name is
 acknowledged without changing an order, and the image's own list names every
-scenario the platform emits today.
+scenario the platform emits today (`order_risk`, `payment_risk`,
+`post_sales_risk`, `account_risk`).
 
 ## Metrics
 
