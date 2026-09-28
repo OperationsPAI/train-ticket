@@ -17,9 +17,7 @@
 export const CASE_OWNER_QUEUES_SETTING = "CUSTOMER_SERVICE_CASE_ASSIGN_OWNER_QUEUES";
 
 /** The queue names a release's statement carries, in the order it wrote them. */
-export function statedOwnerQueues(
-  stated: string | undefined = process.env[CASE_OWNER_QUEUES_SETTING],
-): readonly string[] {
+export function statedOwnerQueues(stated: string | undefined): readonly string[] {
   return (stated ?? "")
     .split(",")
     .map((name) => name.trim())
@@ -27,7 +25,10 @@ export function statedOwnerQueues(
 }
 
 /** Whether the desk runs `ownerQueue`, given the release's statement. */
-export function deskRunsQueue(ownerQueue: string, stated?: string): boolean {
+export function deskRunsQueue(
+  ownerQueue: string,
+  stated: string | undefined = process.env[CASE_OWNER_QUEUES_SETTING],
+): boolean {
   const named = statedOwnerQueues(stated);
   return named.length === 0 || named.includes(ownerQueue);
 }
