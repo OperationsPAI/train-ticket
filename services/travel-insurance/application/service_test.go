@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -331,5 +332,16 @@ func TestIssuedPolicyRecordsThePublishedPremium(t *testing.T) {
 	}
 	if policy.Premium != published {
 		t.Fatalf("premium = %#v, the catalogue publishes %#v", policy.Premium, published)
+	}
+}
+
+// A version the catalogue does not publish is a client error, not a product the
+// service invents a price for.
+func TestIssuePolicyRefusesAVersionTheCatalogueDoesNotPublish(t *testing.T) {
+	now := time.Date(2026, 7, 10, 10, 0, 0, 0, time.UTC)
+	svc := NewInsuranceService(ServiceConfig{Clock: fixedClock{now}, IDGenerator: sequentialIDs()})
+	_, err := svc.IssuePolicy(context.Background(), IssuePolicyCommand{ProductCode: string(domain.ProductDelayInsurance), ProductVersion: "v9", JourneyOrderID: "jo-v9", AncillaryOrderItemID: "anc-v9", AccountID: "acct-v9", TravelerRef: "trav-v9", SegmentRefs: []string{"seg-v9"}, PaymentIntentID: "pi-v9", CoverageStartAt: now.Add(-time.Minute), CoverageEndAt: now.Add(time.Hour)})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
 }
