@@ -1,6 +1,6 @@
 # Travel Insurance Events
 
-Last updated: 2026-09-25.
+Last updated: 2026-09-28.
 
 Travel Insurance publishes to `events:travel-insurance`. Event envelopes follow the shared messaging contract. Money uses `{currency, minorUnits}`.
 
