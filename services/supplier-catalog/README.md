@@ -23,8 +23,8 @@ Status: implemented and deployed (Helm revision 521; see [current status](../../
   (`services.supplier-catalog.db` and `postgres.instances.core.databases` in
   `deploy/helm/train-ticket/values.yaml`).
 - The registration field a partner is filed under is `PARTNER_FILING_FIELD`
-  (`services.supplier-catalog.env` in `deploy/helm/train-ticket/values.yaml`). It is
-  read once at start-up and the supplier code the onboarding minted is its default.
+  (`services.supplier-catalog.env` in `deploy/helm/train-ticket/values.yaml`), read
+  once at start-up; the supplier code the onboarding minted is the default.
 - Liveness `/healthz`, readiness `/readyz`; also `/health`, `/ready`,
 `/metadata`.
 
