@@ -70,7 +70,7 @@ skaffold run -p case --kube-context <test-context> \
 ### 镜像仓库环境
 
 仓库只保留一份 values 文件：`deploy/helm/train-ticket/values.yaml` 同时定义镜像仓库、存储类型、分片数据库、服务资源和负载生成配置。
-需要部署到其它镜像仓库或存储类型时，用 `HELM_VALUES` 指向该环境自己的 values 文件，然后使用 `make push-images` 与 `make deploy-acr`。
+需要部署到其它镜像仓库或存储类型时，用 `HELM_VALUES`（以及 `make deploy-acr` 读取的 `HELM_VALUES_ACR`）指向该环境自己的 values 文件，然后使用 `make push-images` 与 `make deploy-acr`。
 
 | 入口 | 输入与行为 |
 | --- | --- |
@@ -83,8 +83,8 @@ skaffold run -p case --kube-context <test-context> \
 基础设施镜像由 `train-ticket.infraImage` 根据仓库配置生成。
 推送脚本要求本地源镜像存在，使用同一组 values 和标签才能与后续部署对应。
 
-这些 values 文件包含具体环境的存储名称，不能直接视为任意集群的安装配置。
-例如 ACR 文件为 PostgreSQL 设置 `juicefs-sc`，为 ClickHouse 和 Prometheus 设置 `ebs-ssd`。
+这一份 values 文件包含常驻集群的存储名称，不能直接视为任意集群的安装配置。
+`deploy/helm/train-ticket/values.yaml` 把 PostgreSQL、ClickHouse、Prometheus 与 loadgen 的 persistent claim 都指向 `local-path`。
 新环境必须验证这些 StorageClass 以及基础设施镜像和 curl 镜像的可用性。
 种子脚本和 E2E 脚本使用 `kubectl exec`，API 代理必须支持流式连接升级。
 `SMOKE_IMAGE` 仅作用于冒烟探测 Pod，种子脚本的 curl Pod 仍使用脚本中指定的镜像。
@@ -99,8 +99,8 @@ skaffold run -p case --kube-context <test-context> \
 
 | 配置 | 分片 |
 | --- | --- |
-| chart 默认配置与 cluster profile | `core` |
-| production profile | `hot`、`txn`、`read`、`user`、`event`、`core` |
+| `deploy/helm/train-ticket/values.yaml` | `hot`、`txn`、`read`、`user`、`event`、`core` |
+| `postgres.defaultInstance`（未设置 `pgInstance` 的服务） | `core` |
 
 数据库清单必须覆盖渲染后的全部业务 DSN。
 [db-bootstrap.yaml](../deploy/helm/train-ticket/templates/db-bootstrap.yaml) 根据各分片的数据库清单生成 `pre-upgrade,post-install` hook。
