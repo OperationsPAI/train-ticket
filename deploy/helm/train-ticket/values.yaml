@@ -1607,8 +1607,8 @@ services:
     pgInstance: txn
     image: mirrors.tencent.com/microservice/finance-settlement:autoclaim-6b90ce5d@sha256:4120578bb9596d0462f123122de1d6b8be2e13c429f449612d1714edab32620f
     # Two replicas: the revenue recognition that creates the invoice amount basis
-    # is driven by the booking saga's invoice step, which finance-settlement reads
-    # off `events:booking-orchestration` along with six other streams.
+    # is driven by the booking saga's invoice step, which finance-settlement
+    # reads off `events:booking-orchestration` along with six other streams.
     #
     # Three, at the largest burst on 2026-09-27: its group on
     # `events:post-sales` reached 150.6 seconds of oldest undelivered entry, and
