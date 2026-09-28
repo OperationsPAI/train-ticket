@@ -1,6 +1,6 @@
 # Waitlist — HTTP API
 
-Last updated: 2026-09-23
+Last updated: 2026-09-28
 
 ## Overview
 
@@ -178,6 +178,67 @@ of this activation-wave API.
 - `PRECONDITION_FAILED` is returned when the request is already terminal
   (`FULFILLED`, `EXPIRED`, `CANCELLED`, or `CLOSED`) and cannot be cancelled.
 
+## Entry and queue endpoints
+
+The entry routes are the current surface for the same aggregate. They use the
+`entryId` that the request routes expose as `waitlistRequestId`.
+
+### Join Waitlist Entry
+
+**POST** `/api/v1/waitlist/entries`
+
+Equivalent to `POST /api/v1/waitlist-requests`: same body, same validation and
+same `WaitlistRequest` resource at HTTP 201. Requires an `Idempotency-Key`.
+
+### Get Waitlist Entry
+
+**GET** `/api/v1/waitlist/entries/{entryId}`
+
+**Response (200):** `WaitlistRequest` resource.
+
+**Error codes:** `NOT_FOUND`
+
+### Cancel Waitlist Entry
+
+**DELETE** `/api/v1/waitlist/entries/{entryId}`
+
+Requires an `Idempotency-Key` and a body with `reason`.
+
+**Response (200):** `waitlistRequestId`, `status` (`CANCELLED`) and `cancelledAt`.
+
+**Error codes:** `NOT_FOUND`, `PRECONDITION_FAILED`, `DOMAIN_RULE_VIOLATION`,
+`IDEMPOTENCY_KEY_REUSED`
+
+### Accept a Waitlist Promotion
+
+**POST** `/api/v1/waitlist/entries/{entryId}/accept`
+
+Requires an `Idempotency-Key`. The entry must hold an acceptable offer window;
+the call creates the fulfilment journey order and links it to the entry.
+
+**Response (200):** `orderId`, optional `amount` (Money) and `seatAssignment` (or `null` when no seat was assigned).
+
+**Error codes:** `NOT_FOUND`, `PRECONDITION_FAILED`, `DOMAIN_RULE_VIOLATION`
+
+### Queue Info
+
+**GET** `/api/v1/waitlist/segments/{segmentRef}/{departureDate}/queue?seatClass={seatClass}&entryId={entryId}`
+
+`segmentRef` and `departureDate` (ISO `YYYY-MM-DD`) are path parameters.
+`seatClass` and `entryId` are optional; `entryId` is used to report the caller's
+position.
+
+**Response (200):** `totalQueued`, `myPosition` (or `null`) and `estimatedPromotionRate`.
+
+### Archive Terminal Requests
+
+**POST** `/api/v1/waitlist/archive-sweep`
+
+Runs the archival sweep: every `FULFILLED`, `EXPIRED` or `CANCELLED` request
+becomes `CLOSED`.
+
+**Response (200):** `archived`, the list of archived `WaitlistRequest` resources.
+
 ## Bus-only behavior
 
 The following domain commands from `docs/02-domains/waitlist.md` have no public
@@ -202,6 +263,11 @@ Missing order identity is an error.
 The order lookup uses an indexed `journeyOrderRef` expression.
 Database concurrency conflicts and retryable connection or lock failures remain pending for retry.
 
-The current `CapacityReleased` consumer still requires a departure date that the deployed release event does not provide.
-Automatic promotion from those events, canonical class propagation, queue date enforcement and payment guarantee closure remain incomplete.
-The confirmation test alone does not verify automatic capacity triggered promotion or payment authorization.
+The `CapacityReleased` consumer resolves the class, scheduled service and
+departure date the release event itself omits from the booking-orchestration
+segment booking and validates them against service-plan supply; a released seat
+whose facts do not agree is refused rather than queued.
+Automatic promotion from a released seat is verified end to end (T04, closed).
+Payment guarantee remains a validated reference in this wave; real
+pre-authorization closure remains deferred to later wallet-promotion/payment
+work.
