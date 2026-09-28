@@ -1,6 +1,6 @@
 # Transfer Management — HTTP API
 
-Last updated: 2026-09-26
+Last updated: 2026-09-28
 
 ## Overview
 
@@ -391,6 +391,33 @@ are available.
 
 **Error codes:** `NOT_FOUND`
 
+### Refresh Transfer Plan
+
+**POST** `/api/v1/transfer-plans/{transferPlanId}/refresh`
+
+**Idempotency:** REQUIRED.
+
+Accepts the same body as `evaluate` and performs the same re-evaluation; it is a
+distinct path for callers that express a refresh.
+
+**Response (200):** `TransferPlan` resource after evaluation.
+
+**Error codes:** `NOT_FOUND`, `PRECONDITION_FAILED`, `DOMAIN_RULE_VIOLATION`, `IDEMPOTENCY_KEY_REUSED`, `UNAVAILABLE`
+
+### Expire Transfer Plan
+
+**POST** `/api/v1/transfer-plans/{transferPlanId}/expire`
+
+**Idempotency:** REQUIRED.
+
+**Request:** optional `reason`.
+
+**Response (200):** `TransferPlan` resource in `EXPIRED` status.
+
+**Domain effects:** emits `TransferPlanExpired`.
+
+**Error codes:** `NOT_FOUND`, `PRECONDITION_FAILED`, `IDEMPOTENCY_KEY_REUSED`
+
 ### Register Connection
 
 **POST** `/api/v1/connections`
@@ -438,6 +465,14 @@ access time the registration is rejected with `NO_PUBLISHED_MCT_RULE`.
 **Response (200):** `Connection` resource.
 
 **Error codes:** `NOT_FOUND`
+
+### List Connections by Journey Order
+
+**GET** `/api/v1/connections?journeyOrderId={journeyOrderId}`
+
+`journeyOrderId` is required.
+
+**Response (200):** `items`, `total`, `limit` and `offset`, where each item is a `Connection` resource.
 
 ### Report Segment Status
 

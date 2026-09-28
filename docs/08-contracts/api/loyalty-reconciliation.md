@@ -1,5 +1,7 @@
 # Payment points reconciliation
 
+Last updated: 2026-09-28.
+
 `POST /internal/payments/{paymentIntentId}/reconcile` restores missing purchase points for one payment.
 The service reads the original capture event from Payment and verifies the payer against the order owner.
 The request accepts no amount, account override, or substitute event ID.

@@ -1,6 +1,6 @@
 # Reporting Event Contracts
 
-Last updated: 2026-09-25.
+Last updated: 2026-09-28.
 
 Implementation baseline: authoritative revenue facts and migrations 007/008.
 Remaining work is tracked in [TODO](../../TODO.md).

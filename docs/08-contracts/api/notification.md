@@ -1,10 +1,13 @@
 # Notification HTTP API
 
+更新日期：2026年9月28日。
+
 ## 发布状态与入口
 
 Notification 通过业务事件创建通知，HTTP 提供发送记录及健康查询。
-线上 revision 279 仍使用事务内 SMTP 发送路径。
-durable queue 已在 revision 280 部署，本文描述的状态值和追加字段属于当前响应保证。
+PostgreSQL 运行时通过 durable delivery queue 投递：事件在事务内入队，投递器领取任务后调用渠道网关，任务状态、发送 attempt 和 evidence 都持久化。
+没有注入持久化投递调度器的内存运行时仍走事务内同步发送路径。
+本文描述的状态值和追加字段属于当前响应保证。
 
 当前路由由 `services/notification/src/app.ts` 注册。
 发送、dispatch、取消及记录回执属于内部方法，没有 HTTP 写接口，也没有独立的命令 stream 订阅入口。
@@ -18,10 +21,10 @@ durable queue 已在 revision 280 部署，本文描述的状态值和追加字�
 | 字段 | 类型 | 发布状态 | 说明 |
 |---|---|---|---|
 | `notificationId` | string | 已有字段 | 通知任务 ID。 |
-| `status` | string | 已有字段 | `Planned`、`Authorized`、`Delivering`、`Delivered`、`Failed`、`Cancelled`；`Unknown` 是未发布追加值。 |
+| `status` | string | 已有字段 | `Planned`、`Authorized`、`Delivering`、`Delivered`、`Failed`、`Cancelled`；`Unknown` 是追加值。 |
 | `attempts` | array | 已有字段 | 根据任务回执生成的历史记录，初始可以为空。 |
-| `resultUnknown` | boolean | 未发布 | 任务状态或队列状态为 `Unknown` 时为 `true`，未发布实现成功响应始终包含此字段。 |
-| `delivery` | object | 未发布 | 存在 durable queue 记录时返回，不存在队列记录时省略。 |
+| `resultUnknown` | boolean | 已发布 | 任务状态或队列状态为 `Unknown` 时为 `true`；成功响应始终包含此字段。 |
+| `delivery` | object | 已发布 | 存在 durable queue 记录时返回，不存在队列记录时省略。 |
 
 `attempts` 中的每一项对应一条回执。
 同一发送 attempt 可以先产生 `UNKNOWN` 回执，再追加迟到的确定结果。
@@ -31,11 +34,11 @@ durable queue 已在 revision 280 部署，本文描述的状态值和追加字�
 |---|---|---|---|
 | `channelUsed` | string | 已有字段 | `EMAIL`、`SMS`、`PUSH`、`IN_APP`。 |
 | `attemptedAt` | RFC3339 UTC string | 已有字段 | 回执的 `recordedAt`，不等于精确发送开始时间。 |
-| `status` | string | 已有字段 | `DELIVERED`、`FAILED`、`BOUNCED`；`UNKNOWN` 是未发布追加值。 |
+| `status` | string | 已有字段 | `DELIVERED`、`FAILED`、`BOUNCED`；`UNKNOWN` 是追加值。 |
 | `reason` | string，可省略 | 已有字段 | 回执包含 `providerCode` 时返回该代码。 |
-| `attemptId` | string，可省略 | 未发布 | 本次 claim token。 |
-| `messageId` | string，可省略 | 未发布 | 稳定 SMTP MessageID。 |
-| `retryAt` | RFC3339 UTC string，可省略 | 未发布 | 确定失败后安排的同渠道重试时间。 |
+| `attemptId` | string，可省略 | 已发布 | 本次 claim token。 |
+| `messageId` | string，可省略 | 已发布 | 稳定 SMTP MessageID。 |
+| `retryAt` | RFC3339 UTC string，可省略 | 已发布 | 确定失败后安排的同渠道重试时间。 |
 
 `Delivered` 和 `DELIVERED` 在 EMAIL 路径中表示 SMTP 已接受邮件，不表示用户阅读或邮箱最终送达。
 当前 PUSH、SMS、IN_APP 由 `DirectSuccessGateway` 返回成功。
@@ -43,11 +46,11 @@ durable queue 已在 revision 280 部署，本文描述的状态值和追加字�
 ## delivery 对象
 
 服务通过一个 `REPEATABLE READ READ ONLY` 事务查询任务快照、队列、发送 attempt 和 evidence。
-以下对象属于 revision 280 起的响应内容。
+以下对象属于 durable queue 部署后的响应内容。
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `state` | string | `Ready`、`Claimed`、`Sending`、`Unknown`、`Delivered`、`Failed`。 |
+| `state` | string | `Ready`、`Claimed`、`Sending`、`Unknown`、`Delivered`、`Failed`、`Cancelled`。 |
 | `messageId` | string | 由任务 ID 生成，同一任务的重试保持一致。 |
 | `availableAt` | RFC3339 UTC string | 队列下一次允许领取的时间。 |
 | `attempts` | array | 按 `attempt_number` 排序的数据库发送 attempt。 |
@@ -79,6 +82,6 @@ readiness 在 schema 尚未应用时可追加 `schema` 诊断对象。
 所有响应通过请求钩子返回 `x-request-id` 与 `x-correlation-id`。
 错误响应使用共享错误 envelope。
 
-未发布实现最新 compile PASS，PostgreSQL/Mailpit 验证为 10 个子项加父项共 11 PASS，20.8 秒。
+当前实现最新 compile PASS，PostgreSQL/Mailpit 验证为 10 个子项加父项共 11 PASS，20.8 秒。
 完整 `npm test` 未运行，quota 延期恢复未专项验收。
 待办统一见 [docs/TODO.md](../../TODO.md)。
