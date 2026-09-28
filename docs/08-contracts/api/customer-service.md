@@ -110,7 +110,7 @@ timestamps, and Money.
 **Response (200):** Updated case.
 
 **Error codes:** `NOT_FOUND`, `VALIDATION_FAILED`, `DOMAIN_RULE_VIOLATION`
-(`CASE_NOT_ASSIGNABLE` while the case is in a status the handoff does not take,
+(`CASE_NOT_ASSIGNABLE` for a status the handoff does not take,
 `CASE_NOT_DESK_QUEUE` for a queue the desk's release does not name)
 
 ### Escalate Case
