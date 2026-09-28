@@ -36,6 +36,18 @@ describe("a handoff lands only in a queue the release names", () => {
     assert.equal(deskRunsQueue("tier1", "post-sales-desk,ticketing-desk"), false);
   });
 
+  it("keeps the order and the spacing the release wrote", () => {
+    assert.deepEqual(statedOwnerQueues(" post-sales-desk , ticketing-desk "), [
+      "post-sales-desk",
+      "ticketing-desk",
+    ]);
+  });
+
+  it("counts a statement of separators alone as nothing named", () => {
+    assert.deepEqual(statedOwnerQueues(" , , "), []);
+    assert.equal(deskRunsQueue("tier1", " , , "), true);
+  });
+
   it("reads the statement the process carries when none is passed in", () => {
     process.env[CASE_OWNER_QUEUES_SETTING] = "post-sales-desk";
     assert.equal(deskRunsQueue("post-sales-desk"), true);
