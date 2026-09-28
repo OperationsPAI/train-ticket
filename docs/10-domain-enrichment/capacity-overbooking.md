@@ -72,11 +72,11 @@ The deployed Capacity request path reads ordered interval facts from Service Pla
 Service Plan currently creates two stop scheduled services, whose explicit zero based interval is `[0,1)`.
 Capacity validates service date and existing Hold intervals against that source and records its stop sequence digest.
 The current service creation API does not expose general multi stop route creation.
-Capacity unit selection and Seat Assignment's physical allocation are separate operations; quantity admission currently does not establish exact unit identity agreement.
-Combined availability queries and inventory pool snapshot events do not yet establish one consistent cross pool occupancy projection.
-Accepted purchase class and standing substitution occupancy do not yet have an atomic quota transition.
-Hold confirmation checks state without an independent expiry deadline check, so a late confirmation is not fully fenced by the timestamp alone.
-The deployed ordinary `CapacityReleased` payload lacks the date required by Waitlist's release parser.
+Capacity pins one unit per Hold (`capacityUnitRef`), and Seat Assignment binds its physical allocation to that exact unit, following the seat map replacement lineage when the composition changes; the Hold's own evidence records the accepted and occupancy classes.
+The availability query and the published `CapacitySnapshotUpdated` share one combined snapshot over every published class for the service and date; the aggregate's per pool snapshot is filtered out before publishing.
+The accepted purchase class reaches its standing substitution occupancy inside one admission transaction: when the accepted class is empty and the booking accepts standing, the same locked transaction holds a `STANDING` quota slot, so that transition is atomic.
+Hold confirmation is fenced by the deadline: `confirm_or_expire_hold` refuses a confirmation at or past `expiresAt` and expires the Hold instead.
+`CapacityReleased` carries no departure date by design; Waitlist resolves the class, service and date from the segment booking and validates them against Service Plan supply.
 The local supply tests do not themselves exercise automatic waitlist fulfillment or replacement booking compensation under the new admission behavior.
 
 ## Existing verification evidence
