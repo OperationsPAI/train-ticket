@@ -138,10 +138,6 @@ build:
       context: .
       docker:
         dockerfile: deploy/docker/journey-order/Dockerfile
-    - image: loadgen
-      context: .
-      docker:
-        dockerfile: deploy/docker/loadgen/Dockerfile
     - image: loyalty-membership
       context: .
       docker:
@@ -295,7 +291,6 @@ profiles:
               services.trip-planning.image: "{{.IMAGE_FULLY_QUALIFIED_trip_planning}}"
               services.waitlist.image: "{{.IMAGE_FULLY_QUALIFIED_waitlist}}"
               services.wallet-promotion.image: "{{.IMAGE_FULLY_QUALIFIED_wallet_promotion}}"
-              loadgen.image: "{{.IMAGE_FULLY_QUALIFIED_loadgen}}"
               transportCollector.image: "{{.IMAGE_FULLY_QUALIFIED_redis_state_collector}}"
 
   # One case: a release installed to be measured over one window and then
