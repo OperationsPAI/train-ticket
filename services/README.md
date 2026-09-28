@@ -1,6 +1,6 @@
 # Business services
 
-Last updated: 2026-09-24.
+Last updated: 2026-09-28.
 
 Each directory contains its owning business implementation and module README.
 Use [current status](../docs/00-current-status.md) for deployment and acceptance, and [TODO](../docs/TODO.md) for all remaining work.
@@ -19,5 +19,5 @@ Image definitions are in `deploy/docker/`; the chart determines enabled workload
 Services exchange owning APIs and domain events using their language platform kit.
 HTTP health, readiness, correlation, idempotency, PostgreSQL persistence and Redis delivery are configured by the service and platform runtime.
 
-Capacity combined supply and notification durable sending are unpublished worktree implementations at this handoff.
-Their README files distinguish those paths from the deployed release.
+All 37 services are committed and deployed as the resident Helm release (revision 521; see [current status](../docs/00-current-status.md)).
+Each service README states its port, database and shard, HTTP surface, events and metrics.
