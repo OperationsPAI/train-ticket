@@ -9,14 +9,13 @@ import {
   type MemberRepository,
 } from "./application.js";
 import { type EventPublisher } from "./ports.js";
-import { acceptedAccountNamespaces } from "./programme.js";
+import { enrolmentReferenceRefused } from "./programme.js";
 import {
   InMemoryIdempotencyStore,
   errorMessage,
   handleIdempotency,
   headerValue,
   livenessProbe,
-  referenceArrivesIn,
   requestContext as kitRequestContext,
   requestFingerprint,
   sendError,
@@ -439,8 +438,7 @@ function memberIdParam(request: FastifyRequest): string {
  * from.
  */
 function assertEnrolmentReference(accountId: string): void {
-  const accepted = acceptedAccountNamespaces();
-  if (accepted.length > 0 && !referenceArrivesIn(accountId, accepted)) {
+  if (enrolmentReferenceRefused(accountId)) {
     throw new ApplicationError("VALIDATION_FAILED", "The account reference is not one the membership programme keys by", 400);
   }
 }
