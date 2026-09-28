@@ -73,6 +73,23 @@ class LettuceRedisStreamOperationsTest {
     }
 
     @Test
+    void accumulateTickDefaultsAndHonoursAnOverride() {
+        assertThat(LettuceRedisStreamOperations.DEFAULT_ACCUMULATE_TICK_MS).isEqualTo(50L);
+        assertThat(LettuceRedisStreamOperations.ACCUMULATE_TICK_ENV).isEqualTo("CONSUMER_ACCUMULATE_TICK_MS");
+        assertThat(LettuceRedisStreamOperations.accumulateTickMillis(null))
+            .isEqualTo(LettuceRedisStreamOperations.DEFAULT_ACCUMULATE_TICK_MS);
+        assertThat(LettuceRedisStreamOperations.accumulateTickMillis("  "))
+            .isEqualTo(LettuceRedisStreamOperations.DEFAULT_ACCUMULATE_TICK_MS);
+        assertThat(LettuceRedisStreamOperations.accumulateTickMillis("not-a-number"))
+            .isEqualTo(LettuceRedisStreamOperations.DEFAULT_ACCUMULATE_TICK_MS);
+        assertThat(LettuceRedisStreamOperations.accumulateTickMillis("-5"))
+            .isEqualTo(LettuceRedisStreamOperations.DEFAULT_ACCUMULATE_TICK_MS);
+        assertThat(LettuceRedisStreamOperations.accumulateTickMillis(" 250 ")).isEqualTo(250L);
+        // Zero is the documented way to restore the pre-accumulation read.
+        assertThat(LettuceRedisStreamOperations.accumulateTickMillis("0")).isZero();
+    }
+
+    @Test
     void streamMaxLenHonoursConfiguredOverride() {
         assertThat(LettuceRedisStreamOperations.streamMaxLen("2500")).isEqualTo(2_500L);
         assertThat(LettuceRedisStreamOperations.streamMaxLen(" 750 ")).isEqualTo(750L);
