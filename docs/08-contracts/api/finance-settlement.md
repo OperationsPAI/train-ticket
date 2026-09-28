@@ -1,8 +1,9 @@
 # Finance & Settlement — HTTP API
 
-Last updated: 2026-09-25.
+Last updated: 2026-09-28.
 
-Runtime baseline: Helm revision 279.
+The deployed revision and runtime facts are recorded in
+[current status](../../00-current-status.md).
 Remaining work is tracked in [TODO](../../TODO.md).
 
 ## Overview
@@ -49,6 +50,28 @@ return the original response; reusing a key with a different body returns
 **Emits:** `InvoiceGenerated`
 
 **Error codes:** `VALIDATION_FAILED`, `DOMAIN_RULE_VIOLATION`, `IDEMPOTENCY_KEY_REUSED`, `UNAVAILABLE`
+
+### Run Daily Reconciliation
+
+**POST** `/api/v1/settlements/reconciliation/{date}/run`
+
+Runs the settlement date's reconciliation on demand, the same work the daily
+scheduler performs. The date is an ISO `YYYY-MM-DD` settlement date.
+It is idempotent per date: an existing batch is returned rather than recomputed.
+The response is the batch report for that date.
+
+**Response (200):** Batch report with `batchId`, `settlementDate`, `totalEntries`, `matchedEntries`, `matchRate`, `totalVariance`, `exceptionCount` and `statusCounts`.
+
+### Reconcile a Change (internal)
+
+**POST** `/api/v1/internal/change-financial-reconciliations/{caseId}`
+
+Requires `X-Correlation-Id`.
+Reads the change case's approved facts and records the change payment revenue and
+approved fee for the case's order.
+Repeating the call with the same recorded facts is a no-op; a changed fact is refused as a domain rule violation.
+
+**Response (200):** `{ "caseId": "...", "status": "RECONCILED" }`
 
 ## Query Endpoints
 
@@ -125,6 +148,74 @@ Returns persisted automatic-run history. `limit` is 1–100 and `offset` is non-
 Returns one exact automatic run. Fields include `jobKey`, `jobType`, `startDate`, `endDate`, `status` (`RUNNING`, `SUCCEEDED`, `FAILED`), `attempts`, `resultRefs`, `failure`, `startedAt`, `completedAt` and `updatedAt`.
 
 `DAILY_RECONCILIATION` produces one reconciliation batch reference. `SUPPLIER_SETTLEMENT` produces zero or more supplier settlement references for suppliers with attributed ordinary fare revenue in the closed period.
+
+### Get Order Revenue Basis
+
+**GET** `/api/v1/order-revenue-bases/{orderId}`
+
+Returns the order's folded revenue basis: the net total and, per revenue
+recognition, its amount, reversed amount and reversal detail. The fold is over
+the order's durable recognition and reversal history, so it is stable
+regardless of the order in which reversals were applied.
+
+**Response (200):** `orderId`, `totalAmount` (Money) and `items` with `revenueRecognitionId`, `amount`, `reversedAmount` and `reversals`.
+
+**Error codes:** `NOT_FOUND`
+
+### List Channel Statements
+
+**GET** `/api/v1/channel-statements?channel={channel}&statementDate={YYYY-MM-DD}&limit=20&offset=0`
+
+Lists the stored Payment Channel statements. `channel` and `statementDate` are optional filters.
+
+**Response (200):** Paginated response with `items`, `total`, `limit`, `offset`.
+Each item has `channelStatementId`, `channel`, `statementDate`, `currency`, `seedVersion`, `lineCount`, `grossPaymentAmount`, `grossRefundAmount`, `feeAmount`, `statementHash`, `status`, `generatedAt`, `frozenAt` and `sourceEventId`.
+
+### Get Channel Statement
+
+**GET** `/api/v1/channel-statements/{channelStatementId}`
+
+**Response (200):** One channel statement using the item shape above.
+
+**Error codes:** `NOT_FOUND`
+
+### Get Daily Settlement
+
+**GET** `/api/v1/settlements/daily/{date}`
+
+Returns the reconciliation batch report for one ISO settlement date, without the
+batch's entries.
+
+**Response (200):** `batchId`, `settlementDate`, `totalEntries`, `matchedEntries`, `matchRate`, `totalVariance`, `exceptionCount` and `statusCounts`.
+
+**Error codes:** `NOT_FOUND`
+
+### Get Supplier Settlement
+
+**GET** `/api/v1/settlements/suppliers/{supplierId}/period?startDate={YYYY-MM-DD}&endDate={YYYY-MM-DD}`
+
+`startDate` and `endDate` are required and define the closed period.
+
+**Response (200):** `supplierSettlementId`, `supplierId`, `periodStartDate`, `periodEndDate`, `settlementFrequency`, `grossRevenue`, `platformCommission`, `taxesWithheld`, `supplierPayable` and `adjustments` (all monetary fields as Money).
+
+**Error codes:** `VALIDATION_FAILED`, `NOT_FOUND`
+
+### Get Reconciliation Batch
+
+**GET** `/api/v1/settlements/reconciliation/{batchId}`
+
+**Response (200):** `batchId`, `settlementDate`, `cutoffAt`, the batch `report` and its `entries` with `entryId`, `orderId`, `paymentIntentId`, `platformAmount`, `channelAmount`, `status`, `variance` and `sourceEventIds`.
+
+**Error codes:** `NOT_FOUND`
+
+### List Ancillary Financial Facts
+
+**GET** `/api/v1/ancillary-financial-facts?journeyOrderId={journeyOrderId}&limit=20&offset=0`
+
+Lists the ancillary financial facts maintained by this service. `journeyOrderId` is optional.
+
+**Response (200):** Paginated response with `items`, `total`, `limit`, `offset`.
+Each item has `eventId`, `eventType`, `factKind`, `ancillaryOrderItemId`, `journeyOrderId`, `serviceType`, `supplierRef`, `payableAmount`, `refundableAmount`, `refundedAmount`, `retainedAmount` and `occurredAt`.
 
 ### Get Invoice
 
