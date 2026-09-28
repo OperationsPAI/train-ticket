@@ -48,6 +48,19 @@ func TestFromEnvReadsAPageBoundAboveTheShippingPage(t *testing.T) {
 	}
 }
 
+func TestFromEnvReadsThePageBoundAndThePortIndependently(t *testing.T) {
+	t.Setenv("PORT", "9090")
+	t.Setenv("SERVICE_PLAN_LISTING_PAGE_LIMIT", "30")
+	settings := FromEnv()
+	if settings.Port != 9090 || settings.ListingPageLimit != 30 {
+		t.Fatalf("settings: %#v", settings)
+	}
+	t.Setenv("PORT", "not-a-port")
+	if got := FromEnv().Port; got != DefaultPort {
+		t.Fatalf("a port that is not a number must leave the default, got %d", got)
+	}
+}
+
 func TestFromEnvReadsABlankPageBoundAsUnset(t *testing.T) {
 	t.Setenv("SERVICE_PLAN_LISTING_PAGE_LIMIT", "   ")
 	if got := FromEnv().ListingPageLimit; got != DefaultListingPageLimit {
