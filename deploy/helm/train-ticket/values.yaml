@@ -1660,6 +1660,8 @@ services:
       # returning about two hundred connections to a server that has one thread
       # to serve them with.
       REPORTING_CONSUMERS_PER_STREAM: "4"
+      # The console's own reads are served from these workers; the projection is
+      # refreshed from the consumers below and takes no share of them.
       WEB_CONCURRENCY: "2"
       # Eight rather than four: the projection consumer fell 3.6 thousand events
       # behind on the journey order stream during a peak.
