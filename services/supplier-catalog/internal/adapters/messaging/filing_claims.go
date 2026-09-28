@@ -8,8 +8,8 @@ import (
 )
 
 // filingIdentityPrefix keys the identities the catalogue has filed in the shared
-// cache. The cache is shared with the other adapter instances of the release, so a
-// repeat arrival is refused whichever replica answers it.
+// cache. Every adapter instance of the release reads the same keys, so a repeat
+// arrival is refused whichever replica answers it.
 const filingIdentityPrefix = "supplier-catalog:filed-identity:"
 
 // FilingClaims keeps the identities the catalogue has filed in Redis, so the operator
