@@ -1,6 +1,7 @@
 package com.trainticket.journeyorder.application;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static com.trainticket.journeyorder.application.OrderCreationFixture.createOrder;
@@ -14,6 +15,8 @@ import com.trainticket.journeyorder.application.port.in.JourneyOrderResult;
 import com.trainticket.journeyorder.application.port.in.OrderListResult;
 import com.trainticket.journeyorder.application.service.InMemoryJourneyOrderStateRepository;
 import com.trainticket.journeyorder.application.service.OrderManagementService;
+import com.trainticket.journeyorder.config.RiskScenarioSettings;
+import com.trainticket.journeyorder.observability.NoopOrderFunnelMetrics;
 import com.trainticket.journeyorder.application.port.out.EventSubscriber;
 import com.trainticket.journeyorder.application.port.out.IdentityVerificationPort;
 import com.trainticket.platformkit.messaging.EventEnvelope;
@@ -493,6 +496,52 @@ class OrderManagementServiceTest {
         assertTrue(order.isPresent());
         assertEquals("CREATED", order.get().status());
         assertTrue(order.get().riskClear());
+    }
+
+    @Test
+    void riskAssessmentOutsideTheReleaseScenarioListIsAcknowledged() {
+        OrderManagementService narrowed = new OrderManagementService(
+            envelope -> {
+                eventPublisher.publish(envelope);
+                published.add(envelope);
+            }, FIXED_CLOCK, new InMemoryJourneyOrderStateRepository(),
+            (request, orderIntentId, idempotencyKey, correlationId) ->
+                new IdentityVerificationPort.PreOrderCheckResult("PASS", "poc-test"),
+            request -> { throw new IllegalStateException("offer resolution is not used by this test"); },
+            Optional.empty(), new NoopOrderFunnelMetrics(),
+            new RiskScenarioSettings("payment_risk,post_sales_risk,account_risk"));
+        JourneyOrderResult created = createOrder(narrowed,
+            new JourneyOrderRequest("account-risk-list", "offer-risk-list", 1, List.of("tvl-1"), List.of("seg-1")),
+            "idem-risk-list", "corr-1");
+        published.clear();
+
+        EventEnvelope envelope = new EventEnvelope(
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c701",
+            "RiskAssessmentResult",
+            Instant.parse("2026-07-05T10:02:00Z"),
+            "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c702",
+            "evt-0194f2e0-7b3e-7610-8284-5c26e8b0c703",
+            "risk-compliance",
+            1,
+            Map.of(
+                "assessmentId", "asmt-0194f2e0-7b3e-7610-8284-5c26e8b0c710",
+                "subjectRef", created.orderId(),
+                "scenario", "order_risk",
+                "decision", "ALLOW",
+                "policyVersion", "risk-policy-v1",
+                "evidenceRef", "evid-0194f2e0-7b3e-7610-8284-5c26e8b0c711",
+                "reasonCode", "LOW_RISK",
+                "assessmentSnapshotHash", "hash-risk",
+                "assessedAt", "2026-07-05T10:02:00Z"
+            )
+        );
+
+        assertEquals(new EventSubscriber.Success(), narrowed.handle(envelope));
+
+        var order = narrowed.getOrder(created.orderId()).orElseThrow();
+        assertEquals("CREATED", order.status());
+        assertFalse(order.riskClear());
+        assertTrue(published.isEmpty());
     }
 
     @Test
