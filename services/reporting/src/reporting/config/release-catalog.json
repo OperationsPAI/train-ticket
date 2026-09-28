@@ -60,6 +60,26 @@
         "SupportCaseOpened"
       ],
       "deprecatedAt": null
+    },
+    {
+      "metricId": "metric-revenue-by-seat-class",
+      "name": "Revenue by Seat Class",
+      "description": "Gross captured payment amount grouped by the seat class of the reserved segment.",
+      "owner": "finance-team",
+      "category": "financial",
+      "granularity": "daily",
+      "version": "1.0.0",
+      "expression": "SUM(payment.capturedAmount.minorUnits) GROUP BY seatClass",
+      "status": "published",
+      "publishedAt": "2026-07-05T10:30:00Z",
+      "dependsOnMetricIds": [
+        "metric-revenue"
+      ],
+      "sourceLineage": [
+        "PaymentCaptured",
+        "SeatAllocated"
+      ],
+      "deprecatedAt": null
     }
   ],
   "dashboards": [
