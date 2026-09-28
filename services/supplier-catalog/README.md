@@ -36,6 +36,10 @@ Status: implemented and deployed (Helm revision 521; see [current status](../../
   `GET /api/v1/suppliers/{supplierId}`.
 - `POST /api/v1/carriers`, `POST /api/v1/contracts`.
 
+A supplier registration files one partner per identity: the second registration
+of an identity that is already filed answers `CONFLICT`, which is what the
+release's identity source decides.
+
 The full contract lives in
 [`docs/08-contracts/api/supplier-catalog.md`](../../docs/08-contracts/api/supplier-catalog.md).
 

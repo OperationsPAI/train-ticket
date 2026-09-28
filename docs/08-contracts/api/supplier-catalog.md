@@ -38,6 +38,11 @@ timestamps, and Money.
 
 **Error codes:** `VALIDATION_FAILED`, `CONFLICT`
 
+One partner is filed once per identity, and the identity is the field named by
+`SUPPLIER_IDENTITY_SOURCE` in the service's release: the code the request hands
+over, or the trading name. A registration whose identity is already filed answers
+`CONFLICT`, which is the second code of a partner the release files by name.
+
 ### Get Supplier
 
 **GET** `/api/v1/suppliers/{supplierId}`
