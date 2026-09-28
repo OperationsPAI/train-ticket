@@ -310,6 +310,31 @@ describe("customer-service HTTP API", () => {
     }
   });
 
+  it("takes a handoff to a queue the release states", async () => {
+    const stated = process.env[DESK_QUEUES_SETTING];
+    process.env[DESK_QUEUES_SETTING] = "ticketing-desk";
+    try {
+      const app = createApp();
+      const caseId = await openedCase(app);
+
+      const taken = await app.inject({
+        method: "POST",
+        url: `/api/v1/support-cases/${caseId}/assign`,
+        headers: { "idempotency-key": idempotencyKey() },
+        payload: { ownerQueue: "ticketing-desk" },
+      });
+      assert.equal(taken.statusCode, 200);
+      assert.equal(taken.json().ownerQueue, "ticketing-desk");
+      assert.equal(taken.json().status, "IN_PROGRESS");
+    } finally {
+      if (stated === undefined) {
+        delete process.env[DESK_QUEUES_SETTING];
+      } else {
+        process.env[DESK_QUEUES_SETTING] = stated;
+      }
+    }
+  });
+
   it("escalates a support case", async () => {
     const app = createApp();
     const caseId = await openedCase(app);
