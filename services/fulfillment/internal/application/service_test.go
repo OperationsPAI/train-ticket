@@ -607,3 +607,12 @@ func TestCompletionIsHeldToTheUsageFloorTheReleaseStates(t *testing.T) {
 		t.Fatalf("status=%s, want COMPLETED", result.Status)
 	}
 }
+
+func TestCompletionForARecordNobodyHoldsIsNotFound(t *testing.T) {
+	answeredAt := time.Date(2026, 9, 28, 15, 30, 0, 0, time.UTC)
+	service := NewService(NewInMemoryRepository(), &recordingPublisher{}, NewInMemoryConsumedEventLog(), nil, func() time.Time { return answeredAt })
+	_, err := service.RecordFulfillmentCompleted(context.Background(), FulfillmentCompletedCommand{EntitlementID: "ent-absent1", SegmentBookingID: "sb-absent1", JourneyOrderID: "ord-absent1", TravelerID: "tvl-absent1", SegmentRef: "seg-absent1", CompletionSource: domain.CompletionSourceArrival, CompletedAt: answeredAt}, CommandMetadata{CorrelationID: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c0ae"})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a completion nobody holds: got %v, want not found", err)
+	}
+}
