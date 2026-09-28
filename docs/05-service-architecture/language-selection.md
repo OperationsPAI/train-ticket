@@ -1,8 +1,8 @@
 # Languages And Source Paths
 
-Updated: September 24, 2026.
+Updated: September 28, 2026.
 
-The deployment baseline is Helm revision 279, with evidence in [current project status](../00-current-status.md).
+The deployment baseline and evidence are recorded in [current project status](../00-current-status.md).
 The tables below match the checked source tree and build manifests.
 The catalog and source tree contain the same 37 business services and two cataloged platform modules.
 Unfinished capabilities and deployment work are tracked in [TODO](../TODO.md).

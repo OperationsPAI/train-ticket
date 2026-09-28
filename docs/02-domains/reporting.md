@@ -1,6 +1,6 @@
 # Reporting 当前设计
 
-更新日期：2026年9月25日。
+更新日期：2026年9月28日。
 实现基线包含权威收入事实表与 007/008 迁移，服务使用 Python、FastAPI、PostgreSQL 和 Redis。
 统一待办见 [TODO](../TODO.md)。
 

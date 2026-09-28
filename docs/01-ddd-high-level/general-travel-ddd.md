@@ -1,6 +1,6 @@
 # General Travel DDD 业务流与边界划分
 
-Last updated: 2026-06-28
+Last updated: 2026-09-28.
 
 ## 目的
 
