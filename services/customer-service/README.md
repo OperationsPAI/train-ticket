@@ -27,10 +27,11 @@ Status: implemented and deployed (Helm revision 521; see [current status](../../
 ## Settings
 
 - The queues this deployment's desk polls are stated by the release
-  (`services.customer-service.env`): a handoff to a queue no console polls is
-  turned away, so a desk that opens a lane names it here rather than waiting
-  for a build. A release that states no lane keeps the arrangement the service
-  ships.
+  (`services.customer-service.env` in
+  `deploy/helm/train-ticket/values.yaml`): a handoff to a queue no console
+  polls is turned away, so a desk that opens a lane names it here rather than
+  waiting for a build. A release that states no lane keeps the arrangement the
+  service ships.
 
 ## HTTP surface
 
