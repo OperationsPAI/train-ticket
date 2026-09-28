@@ -10,7 +10,8 @@ names the member-relations export uses, the redemption rule and the namespaces a
 enrolment's account reference may arrive in are the programme's decisions rather
 than this service's. They are stated in
 [`config/membership-programme.json`](config/membership-programme.json), which the
-image carries at `/app/config`, and read once at startup by `src/programme.ts`.
+image carries at `/app/config`, and read once at startup by `src/programme.ts`. The `revision` in the file is
+the export's own, so the settings say which export the service is serving.
 
 `accountReference.acceptedNamespaces` is the statement an enrolment's account
 reference is held to, and the account contract publishes its account references
