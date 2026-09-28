@@ -1334,10 +1334,11 @@ services:
     db: fulfillment
     env:
       # The boarding estate this release operates: the readers whose evidence a
-      # boarding fact may arrive under. The image ships the vocabulary its
-      # readers were built with, and a release that names an estate replaces it,
-      # so a reader this release does not operate is refused without a rebuild.
-      FULFILLMENT_BOARDING_SOURCES: "GATE,STATION,PROVIDER"
+      # boarding fact may arrive under. The gate readers went with the station
+      # estate consolidation, and the provider feed is the operator's attendant
+      # writes; the image ships the vocabulary its readers were built with, and a
+      # release that names an estate replaces it.
+      FULFILLMENT_BOARDING_SOURCES: "STATION,PROVIDER"
       # Eight reader loops: one loop processes a read batch on its own goroutine,
       # and the entitlement projection needs a database write per ticket.
       # Measured with one loop, fulfillment processed about 37 events per second
