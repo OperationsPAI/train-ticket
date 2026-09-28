@@ -15,7 +15,10 @@ DASHBOARD_SECTION = "dashboards"
 
 @dataclass(frozen=True, slots=True)
 class ReleaseCatalog:
-    """The documents one release catalog declares, in the order the file lists them."""
+    """The documents one release catalog declares, in the order the file lists them.
+
+    `revision` is the release the catalog was cut from.
+    """
 
     revision: str
     metrics: tuple[Mapping[str, Any], ...]

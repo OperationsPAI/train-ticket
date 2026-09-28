@@ -1,6 +1,6 @@
 {
   "schemaVersion": "trainticket.release-catalog/v1",
-  "revision": "2026.09.27",
+  "revision": "2026.09.28",
   "metrics": [
     {
       "metricId": "metric-revenue",
