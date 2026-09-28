@@ -173,7 +173,8 @@ This read performs no business mutation or event publication.
 
 `GET /api/v1/service-segments?scheduledServiceRef={serviceRef}&limit=20&offset=0` returns `items`, `total`, `limit` and `offset`.
 The scheduled service reference is required.
-The limit is between 1 and 100 and the offset is nonnegative.
+The limit is between 1 and 100 and the offset is nonnegative, and a limit above the page
+bound the deployment declares (`SERVICE_PLAN_LISTING_PAGE_LIMIT`) is refused.
 Items are ordered by segment identifier.
 Each item has the same fields as the single segment response.
 An empty page retains the total count and pagination fields.
