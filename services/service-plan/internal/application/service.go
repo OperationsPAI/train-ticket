@@ -457,10 +457,9 @@ type ServiceSegmentsPage struct {
 }
 
 func (s *Service) ListServiceSegments(ctx context.Context, service string, limit, offset int) (ServiceSegmentsPage, error) {
-	// The bound belongs to the deployment and not to the request: the caller
-	// reconciles a service by reading pages until it has seen total rows, so a
-	// page this release does not serve is refused instead of answered with
-	// another one. Read once, so the page and the answer name the same bound.
+	// The bound belongs to the deployment and not to the request, and it is
+	// read once per call so that the page check and the page answer name the
+	// same bound.
 	listingBound := s.listingBound()
 	if err := segmentPageBounds(service, limit, offset, listingBound); err != nil {
 		return ServiceSegmentsPage{}, err
