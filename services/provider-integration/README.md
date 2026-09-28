@@ -43,6 +43,33 @@ Unmapped raw provider status codes are rejected into quarantine with raw archive
 - `docs/02-domains/provider-integration.md`
 - `docs/01-ddd-high-level/acl-provider-contracts.md`
 
+## Runtime
+
+- HTTP port `8080` for probes and metadata only; there are no HTTP command
+  endpoints (`docs/08-contracts/api/provider-integration.md`).
+- Database `provider_integration` on the `core` PostgreSQL instance
+  (`services.provider-integration.db` and `postgres.instances.core.databases` in
+  `deploy/helm/train-ticket/values.yaml`).
+- Liveness `/healthz`, readiness `/readyz`; also `/health`, `/ready`,
+`/metadata`.
+
+The full contract lives in
+[`docs/08-contracts/api/provider-integration.md`](../../docs/08-contracts/api/provider-integration.md).
+
+## Events
+
+Publishes `ProviderReservationConfirmed`, `ProviderReservationFailed`,
+`ProviderReservationTimedOut`, `ProviderTicketIssued`, `SegmentDelayed` and
+`SegmentCancelled` to `events:provider-integration`; see
+[`docs/08-contracts/events/provider-integration.md`](../../docs/08-contracts/events/provider-integration.md).
+Consumes `events:booking-orchestration` and `events:supplier-catalog`
+(`internal/adapters/messaging/subscriber.go`).
+
+## Metrics
+
+This service owns no service-specific business metric in the
+[`docs/07-observability/business-metrics.md`](../../docs/07-observability/business-metrics.md).
+
 ## Language Rationale
 
 Go fits protocol adapters, webhooks, retry loops, and small deployable edge services.
