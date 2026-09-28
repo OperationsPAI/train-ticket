@@ -28,6 +28,11 @@ set by `services.corporate-travel.env` in
 `deploy/helm/train-ticket/values.yaml`. A checkout with no such document, and a
 unit test in one, keeps the default the domain compiles.
 
+The facility is resolved once when the process starts, so changing it is a
+rollout rather than a request. The create path holds every agreement it opens
+to the facility it resolved: a credit above it is answered with `400
+CORPORATE_TRAVEL_INVARIANT_VIOLATION` and no agreement is written.
+
 ## HTTP surface
 
 `/api/v1/agreements`: create, read, `{id}/authorize`,
