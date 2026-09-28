@@ -28,6 +28,11 @@ describe("customer-service case action policy", () => {
     ]);
   });
 
+  it("takes only the statuses a statement names", () => {
+    assert.equal(admittedStatuses("assign", "Classifying").includes("Opened"), false);
+    assert.equal(admittedStatuses("assign", "Opened").includes("Classifying"), false);
+  });
+
   it("does not start with a status outside the vocabulary", () => {
     assert.throws(() => admittedStatuses("assign", "Classifying,ARCHIVED"), /unknown status: ARCHIVED/);
   });
