@@ -1,7 +1,7 @@
 # Finance Settlement 计算与对账
 
-更新日期：2026年9月25日。
-本文描述 Helm revision 279 文档核对时的 Java 实现。
+更新日期：2026年9月28日。
+本文描述当前已部署的 Java 实现，发布证据见[当前项目状态](../00-current-status.md)。
 领域边界见 [Finance Settlement](../02-domains/finance-settlement.md)，统一待办见 [TODO](../TODO.md)。
 
 ## 日对账
