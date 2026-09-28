@@ -32,18 +32,9 @@ var readerVocabulary = []domain.FulfillmentSource{
 // no estate keeps the reader vocabulary the image was built with, which is what
 // the service's own tests and a local run resolve to.
 func Estate() map[domain.FulfillmentSource]struct{} {
-	stated := strings.TrimSpace(os.Getenv(SourcesVariable))
 	estate := make(map[domain.FulfillmentSource]struct{}, len(readerVocabulary))
-	if stated == "" {
-		for _, reader := range readerVocabulary {
-			estate[reader] = struct{}{}
-		}
-		return estate
-	}
-	for _, name := range strings.Split(stated, ",") {
-		if trimmed := strings.ToUpper(strings.TrimSpace(name)); trimmed != "" {
-			estate[domain.FulfillmentSource(trimmed)] = struct{}{}
-		}
+	for _, reader := range statedReaders() {
+		estate[reader] = struct{}{}
 	}
 	if len(estate) == 0 {
 		for _, reader := range readerVocabulary {
@@ -51,6 +42,23 @@ func Estate() map[domain.FulfillmentSource]struct{} {
 		}
 	}
 	return estate
+}
+
+// statedReaders is the estate a release named, in the order it named it. A
+// release that named none leaves the vocabulary the image was built with in
+// place.
+func statedReaders() []domain.FulfillmentSource {
+	stated := strings.TrimSpace(os.Getenv(SourcesVariable))
+	if stated == "" {
+		return nil
+	}
+	readers := make([]domain.FulfillmentSource, 0, len(readerVocabulary))
+	for _, name := range strings.Split(stated, ",") {
+		if trimmed := strings.ToUpper(strings.TrimSpace(name)); trimmed != "" {
+			readers = append(readers, domain.FulfillmentSource(trimmed))
+		}
+	}
+	return readers
 }
 
 // Operates reports whether a boarding fact arriving from this source is
