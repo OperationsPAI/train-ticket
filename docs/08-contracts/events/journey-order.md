@@ -1,8 +1,8 @@
 # Journey Order — Events & Commands
 
-Last updated: 2026-09-24.
+Last updated: 2026-09-28.
 
-Runtime baseline: Helm revision 279.
+Runtime baseline: the deployed resident release; see [current status](../../00-current-status.md).
 Remaining work is tracked in [TODO](../../TODO.md).
 
 ## Published Events
