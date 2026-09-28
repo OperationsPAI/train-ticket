@@ -1164,6 +1164,16 @@ services:
       # journey-order's, and a larger pool here would take the headroom that
       # supports booking-orchestration replacing during a rollout.
       HIKARI_MAX_POOL_SIZE: "32"
+      # The saga's own wait for a reservation. A step still pending when its wait
+      # is past is failed by the one second sweep and its compensation releases
+      # the hold, so this is the whole of the time the orchestrator gives capacity
+      # to answer the reservation the caller is polling. The caller polls the
+      # booking every four seconds, so five seconds is that poll and a second of
+      # slack, and the step stops waiting when the caller does. It buys back the
+      # inventory a hold keeps while it waits: for that window a reservation row,
+      # a deadline row and a pending step are live for a booking nobody has
+      # answered yet.
+      BOOKING_STEP_WAIT_RESERVATION_SECONDS: "5"
     # CPU headroom covers concurrent HTTP requests and event processing.
     resources:
       requests: { cpu: 500m, memory: 256Mi }

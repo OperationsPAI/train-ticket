@@ -51,12 +51,24 @@ public class BookingOrchestrationService {
     private final BookingSagaStepDeadlineRepository stepDeadlines;
     private final BookingSagaMetrics sagaMetrics;
     private final OrderFunnelMetrics orderFunnelMetrics;
+    private final BookingStepWaitSettings stepWaits;
 
 
     public BookingOrchestrationService(Clock clock, EventPublisher eventPublisher) {
         this(clock, eventPublisher, new InMemoryBookingSagaRepository(), new InMemorySegmentBookingRepository(),
             new InMemoryPaymentIntentSagaReferenceRepository(), new InMemoryConsumedEventRepository(),
             new InMemoryBookingSagaStepDeadlineRepository());
+    }
+
+    public BookingOrchestrationService(Clock clock, EventPublisher eventPublisher, BookingSagaRepository sagas,
+                                       SegmentBookingRepository segmentBookings,
+                                       PaymentIntentSagaReferenceRepository paymentIntentRefs,
+                                       ConsumedEventRepository consumedEvents,
+                                       BookingSagaStepDeadlineRepository stepDeadlines,
+                                       BookingSagaMetrics sagaMetrics,
+                                       OrderFunnelMetrics orderFunnelMetrics) {
+        this(clock, eventPublisher, sagas, segmentBookings, paymentIntentRefs, consumedEvents, stepDeadlines,
+            sagaMetrics, orderFunnelMetrics, BookingStepWaitSettings.defaults());
     }
 
     @Autowired
@@ -66,7 +78,8 @@ public class BookingOrchestrationService {
                                        ConsumedEventRepository consumedEvents,
                                        BookingSagaStepDeadlineRepository stepDeadlines,
                                        BookingSagaMetrics sagaMetrics,
-                                       OrderFunnelMetrics orderFunnelMetrics) {
+                                       OrderFunnelMetrics orderFunnelMetrics,
+                                       BookingStepWaitSettings stepWaits) {
         this.clock = Objects.requireNonNull(clock, "clock is required");
         this.eventPublisher = Objects.requireNonNull(eventPublisher, "eventPublisher is required");
         this.sagas = Objects.requireNonNull(sagas, "sagas repository is required");
@@ -76,6 +89,7 @@ public class BookingOrchestrationService {
         this.stepDeadlines = Objects.requireNonNull(stepDeadlines, "stepDeadlines repository is required");
         this.sagaMetrics = Objects.requireNonNull(sagaMetrics, "sagaMetrics is required");
         this.orderFunnelMetrics = Objects.requireNonNull(orderFunnelMetrics, "orderFunnelMetrics is required");
+        this.stepWaits = Objects.requireNonNull(stepWaits, "stepWaits is required");
     }
 
     public BookingOrchestrationService(Clock clock, EventPublisher eventPublisher, BookingSagaRepository sagas,
@@ -798,13 +812,13 @@ public class BookingOrchestrationService {
     private BookingSaga startSagaAggregate(String sagaId, String journeyOrderId, List<String> segmentRefs) {
         List<BookingSagaStep> plan = new ArrayList<>();
         plan.add(BookingSaga.stepPlan("risk-check", sagaId + ":risk",
-            Duration.ofMinutes(2), 2, "none"));
+            stepWaits.riskCheck(), 2, "none"));
         for (String segmentRef : segmentRefs) {
             plan.add(BookingSaga.stepPlan("reserve-" + segmentRef, sagaId + ":" + segmentRef,
-                Duration.ofMinutes(5), 3, "release-capacity"));
+                stepWaits.reservation(), 3, "release-capacity"));
         }
         plan.add(BookingSaga.stepPlan("invoice", sagaId + ":invoice",
-            Duration.ofMinutes(2), 1, "none"));
+            stepWaits.invoice(), 1, "none"));
         return BookingSaga.start(sagaId, journeyOrderId, "1", "purchase", plan, clock);
     }
 
