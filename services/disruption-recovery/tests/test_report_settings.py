@@ -3,6 +3,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from disruption_recovery.report_settings import (
+    DEFAULT_OPTION_SET_VALIDITY,
+    DEFAULT_REPORTING_WINDOW_DAYS,
+    SETTINGS_ENV,
+    option_set_validity,
     outside_reporting_window,
     reporting_window_days,
 )
@@ -38,3 +42,15 @@ def test_a_service_date_inside_the_window_is_planned_for():
 def test_an_unreadable_service_date_is_left_to_the_report_path():
     assert outside_reporting_window("", _reported_at()) is False
     assert outside_reporting_window("the second of August", _reported_at()) is False
+
+
+def test_a_missing_settings_file_leaves_the_stated_defaults(monkeypatch, tmp_path):
+    monkeypatch.setenv(SETTINGS_ENV, str(tmp_path / "absent.json"))
+    reporting_window_days.cache_clear()
+    option_set_validity.cache_clear()
+    try:
+        assert reporting_window_days() == DEFAULT_REPORTING_WINDOW_DAYS
+        assert option_set_validity() == DEFAULT_OPTION_SET_VALIDITY
+    finally:
+        reporting_window_days.cache_clear()
+        option_set_validity.cache_clear()
