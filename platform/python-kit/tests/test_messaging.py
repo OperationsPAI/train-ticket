@@ -1,6 +1,7 @@
 import json
 import logging
 import threading
+import time
 from datetime import UTC, datetime
 
 from train_ticket_platform import messaging
@@ -449,3 +450,93 @@ def test_handler_arity_is_memoised_per_handler() -> None:
     assert messaging.handler_accepts_stream(two) is True
     assert messaging.handler_accepts_stream(one) is False
     assert messaging.handler_accepts_stream(two) is True
+
+
+class RoundRedis:
+    """Serves a scripted sequence of XREADGROUP replies and records the calls."""
+
+    def __init__(self, replies: list) -> None:
+        self.replies = list(replies)
+        self.reads: list[dict] = []
+        self.acks: list[tuple] = []
+
+    def xreadgroup(self, group, consumer, streams_dict, **kwargs):
+        self.reads.append(kwargs)
+        return self.replies.pop(0) if self.replies else []
+
+    def xack(self, stream: str, group: str, *msg_ids: str) -> None:
+        self.acks.append((stream, group, *msg_ids))
+
+
+def _subscriber_with(redis: RoundRedis) -> RedisEventSubscriber:
+    subscriber = object.__new__(RedisEventSubscriber)
+    subscriber._client = redis
+    subscriber._dedup = set()
+    subscriber._dedup_lock = None
+    return subscriber
+
+
+def _envelope_fields(event_type: str = "PaymentAuthorised") -> dict:
+    # redis-py hands back each entry's fields as a dict, so the round helper is
+    # driven with the same shape the subscriber sees in production.
+    envelope = EventEnvelope(eventType=event_type, producer="tester", payload={"x": 1})
+    return {b"envelope": json.dumps(envelope.to_json_dict()).encode("utf-8")}
+
+
+def test_read_round_folds_a_burst_with_the_tick_and_the_top_up_does_not_block() -> None:
+    redis = RoundRedis([
+        [(b"events:payment", [(b"1-0", _envelope_fields())])],
+        [(b"events:payment", [(b"2-0", _envelope_fields()), (b"3-0", _envelope_fields())])],
+    ])
+    subscriber = _subscriber_with(redis)
+
+    round_result = subscriber._read_round(("events:payment",), "journey-order", "journey-order-a")
+
+    assert messaging._entry_count(round_result) == 3, "the tick must fold the whole burst into one round"
+    assert len(round_result) == 1, "the round stays one stream"
+    assert len(redis.reads) == 2, "one blocking read plus one top-up read"
+    assert redis.reads[0]["block"] == messaging.POLL_BLOCK_MS, "the idle read blocks in Redis"
+    assert "block" not in redis.reads[1], "the top-up read must not pass block=0, which Redis reads as forever"
+
+
+def test_an_accumulated_round_is_retired_by_one_xack_carrying_every_id() -> None:
+    redis = RoundRedis([])
+    subscriber = _subscriber_with(redis)
+    delivered = [(b"1-0", _envelope_fields()), (b"2-0", _envelope_fields()), (b"3-0", _envelope_fields())]
+
+    subscriber._process_results(
+        [("events:payment", delivered)],
+        "journey-order",
+        "journey-order-a",
+        lambda _: HandlerResult.success(),
+    )
+
+    assert redis.acks == [("events:payment", "journey-order", "1-0", "2-0", "3-0")]
+
+
+def test_an_empty_read_pays_neither_the_tick_nor_a_second_read() -> None:
+    redis = RoundRedis([])
+    subscriber = _subscriber_with(redis)
+
+    started = time.monotonic()
+    assert subscriber._accumulate_read(None, ("events:payment",), "journey-order", "journey-order-a") is None
+
+    assert redis.reads == [], "an empty read must not issue a top-up read"
+    assert time.monotonic() - started < messaging.ACCUMULATE_TICK_MS / 1000
+
+
+def test_accumulate_tick_defaults_and_honours_an_override(caplog) -> None:
+    caplog.set_level(logging.WARNING)
+    default = messaging.DEFAULT_ACCUMULATE_TICK_MS
+
+    assert default == 50
+    assert messaging.accumulate_tick_ms(None) == default
+    assert messaging.accumulate_tick_ms("") == default
+    assert messaging.accumulate_tick_ms("  ") == default
+    assert messaging.accumulate_tick_ms("not-a-number") == default
+    assert messaging.accumulate_tick_ms("-5") == default
+    assert messaging.accumulate_tick_ms(" 250 ") == 250
+    # Zero is the documented way to restore the pre-accumulation read.
+    assert messaging.accumulate_tick_ms("0") == 0
+
+    assert "is not a non-negative integer" in caplog.text

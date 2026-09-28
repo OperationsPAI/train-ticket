@@ -8,6 +8,7 @@ import com.trainticket.platformkit.observability.GlobalEventConsumerMetrics;
 import com.trainticket.platformkit.observability.GlobalEventConsumerTracer;
 import io.lettuce.core.api.StatefulRedisConnection;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -48,6 +49,8 @@ public class RedisEventSubscriber implements EventSubscriber {
     private static final Logger LOGGER = LoggerFactory.getLogger(RedisEventSubscriber.class);
     private static final long INITIAL_BACKOFF_SECONDS = 1;
     private static final long MAX_BACKOFF_SECONDS = 30;
+    /** How long an idle poll sleeps before reading again; the loop must not spin. */
+    private static final long IDLE_POLL_MILLIS = 20;
     private static final int LAST_FAILURE_CACHE_SIZE = 1_024;
     private static final int DEAD_LETTERED_CACHE_SIZE = 4_096;
     private static final long DEAD_CONSUMER_IDLE_MS = 5 * 60 * 1_000L;
@@ -328,6 +331,9 @@ public class RedisEventSubscriber implements EventSubscriber {
         Map<String, Long> nextRecoveryAtMillis = new ConcurrentHashMap<>();
         while (running.get()) {
             boolean pruneDue = System.currentTimeMillis() >= nextPruneAtMillis;
+            // One round: read every stream, then -- once, for the whole round --
+            // wait the accumulation tick and take one more, non-blocking, read.
+            Map<String, List<RedisStreamOperations.StreamEntry>> round = new LinkedHashMap<>();
             for (String stream : streamNames) {
                 try {
                     if (!createdGroups.contains(stream)) {
@@ -343,13 +349,9 @@ public class RedisEventSubscriber implements EventSubscriber {
                         recoverQuietly(stream, group, consumerName, handler);
                     }
                     List<RedisStreamOperations.StreamEntry> messages = streams.readGroup(stream, group, consumerName);
-                    for (RedisStreamOperations.StreamEntry message : messages) {
-                        // A `>` read only ever delivers entries this group has never
-                        // been handed, so the redelivery count is not in question.
-                        submitHandle(stream, group, consumerName, message, handler, false);
+                    if (!messages.isEmpty()) {
+                        round.put(stream, new ArrayList<>(messages));
                     }
-                    if (messages.isEmpty()) sleepQuietly(20);
-                    flushAcks();
                     backoffSeconds = INITIAL_BACKOFF_SECONDS;
                 } catch (RuntimeException exception) {
                     if (Thread.currentThread().isInterrupted()) {
@@ -364,8 +366,49 @@ public class RedisEventSubscriber implements EventSubscriber {
                     backoffSeconds = Math.min(backoffSeconds * 2, MAX_BACKOFF_SECONDS);
                 }
             }
+            accumulateRound(round, group, consumerName);
+            for (Map.Entry<String, List<RedisStreamOperations.StreamEntry>> entries : round.entrySet()) {
+                for (RedisStreamOperations.StreamEntry message : entries.getValue()) {
+                    // A `>` read only ever delivers entries this group has never
+                    // been handed, so the redelivery count is not in question.
+                    submitHandle(entries.getKey(), group, consumerName, message, handler, false);
+                }
+            }
+            // An idle round must not spin: the sleep paces the loop when no
+            // stream had anything, exactly as before.
+            if (round.isEmpty()) {
+                sleepQuietly(IDLE_POLL_MILLIS);
+            }
+            // Acks are retired per round, not per entry: XACK takes any number of
+            // ids and one command per delivered event per group was the largest
+            // command class a single-threaded Redis served.
+            flushAcks();
             if (pruneDue) {
                 nextPruneAtMillis = System.currentTimeMillis() + pruneIntervalMillis;
+            }
+        }
+    }
+
+    /**
+     * Waits one accumulation tick and takes one more, non-blocking, read of every stream that
+     * just returned entries, folding a burst into one round and one XACK.
+     *
+     * <p>The idle path is untouched: a round that read nothing does not call this at all, so an
+     * empty stream neither ticks nor spins. The tick is paid once per round rather than once per
+     * stream, so a subscriber with ten streams does not serialise ten waits. A failed or empty
+     * top-up is not fatal to the round; the entries already in hand are still processed.
+     */
+    void accumulateRound(Map<String, List<RedisStreamOperations.StreamEntry>> round, String group, String consumerName) {
+        long tickMillis = LettuceRedisStreamOperations.configuredAccumulateTickMillis();
+        if (tickMillis <= 0 || round.isEmpty()) {
+            return;
+        }
+        sleepQuietly(tickMillis);
+        for (Map.Entry<String, List<RedisStreamOperations.StreamEntry>> entries : round.entrySet()) {
+            try {
+                entries.getValue().addAll(streams.readGroup(entries.getKey(), group, consumerName));
+            } catch (RuntimeException exception) {
+                LOGGER.warn("service={} stream={} accumulation top-up failed; using the entries already in hand", group, entries.getKey(), exception);
             }
         }
     }
