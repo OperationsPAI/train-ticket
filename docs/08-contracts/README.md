@@ -1,6 +1,6 @@
 # Service interfaces
 
-Last updated: 2026-09-24.
+Last updated: 2026-09-28.
 
 The [HTTP API index](api/README.md) and `events/` describe service requests, responses, published events and consumer behavior.
 [Shared primitives](shared-primitives.md) define identifiers, timestamps, envelopes and common values.
@@ -9,7 +9,7 @@ The [HTTP API index](api/README.md) and `events/` describe service requests, res
 
 ## Accuracy and versioning
 
-Each interface document must identify whether its fields are deployed or belong to an unpublished workspace implementation.
+Each interface document must identify the fields the owning service currently serves in the deployed release.
 Current release and verified results are maintained in [current status](../00-current-status.md).
 All incomplete implementation and acceptance work is tracked in [TODO](../TODO.md).
 An example payload or an approved design is not proof that every consumer has implemented it.

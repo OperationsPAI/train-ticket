@@ -1,6 +1,6 @@
 # Corporate Travel Events
 
-Last updated: 2026-09-25.
+Last updated: 2026-09-28.
 
 Corporate Travel writes events to its transactional outbox and publishes them on `events:corporate-travel`.
 

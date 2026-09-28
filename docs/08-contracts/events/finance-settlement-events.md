@@ -1,8 +1,8 @@
 # Finance Settlement Event Contracts
 
-Last updated: 2026-09-24.
+Last updated: 2026-09-28.
 
-Runtime baseline: Helm revision 279.
+Runtime baseline: the deployed resident release; see [current status](../../00-current-status.md).
 Remaining work is tracked in [TODO](../../TODO.md).
 
 Finance Settlement consumes `events:payment-channel`, validates statement and discrepancy payloads, and deduplicates by envelope `eventId`.
