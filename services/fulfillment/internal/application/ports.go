@@ -1167,10 +1167,11 @@ func validateReferences(entitlementID domain.EntitlementRef, segmentBookingID do
 	return segmentRef.Validate()
 }
 
-// validSource reports whether a boarding fact may arrive under this source.
-// The estate the deployment operates decides it: the readers this image was
-// built for are only the fallback a release that states no estate keeps, so a
-// release can retire a reader without shipping a new image.
+// validSource reports whether a boarding fact may arrive under this source,
+// from the boarding command's validation. The estate the deployment operates
+// decides it: the readers this image was built for are only the fallback a
+// release that states no estate keeps, so a release can retire a reader
+// without shipping a new image.
 func validSource(source domain.FulfillmentSource) bool {
 	return boarding.BoardsThrough(source)
 }
