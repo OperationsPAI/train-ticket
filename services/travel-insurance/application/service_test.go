@@ -6,6 +6,7 @@ import (
 	"time"
 
 	kitmsg "github.com/trainticket/greenfield/platform/go-kit/messaging"
+	"github.com/trainticket/greenfield/services/travel-insurance/config"
 	"github.com/trainticket/greenfield/services/travel-insurance/domain"
 )
 
@@ -302,5 +303,33 @@ func TestChangedJourneyUpdatesOnlyAffectedTravelerPolicyAndIsIdempotent(t *testi
 	replayed, _ := svc.GetPolicy(context.Background(), first.ID)
 	if replayed.AggregateVersion != version || len(pub.events) != beforeEvents+1 {
 		t.Fatal("duplicate change must not mutate or publish")
+	}
+}
+
+// The catalogue is the release's price list, so the premium a policy records is
+// the one the loader published for that product version rather than a number
+// written again in this test.
+func TestIssuedPolicyRecordsThePublishedPremium(t *testing.T) {
+	now := time.Date(2026, 7, 10, 10, 0, 0, 0, time.UTC)
+	catalogue, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var published domain.Money
+	for _, product := range catalogue.Products {
+		if product.Code == domain.ProductDelayInsurance {
+			published = product.Premium
+		}
+	}
+	if published.MinorUnits == 0 {
+		t.Fatal("the catalogue publishes no delay premium")
+	}
+	svc := NewInsuranceService(ServiceConfig{Clock: fixedClock{now}, IDGenerator: sequentialIDs()})
+	policy, err := svc.IssuePolicy(context.Background(), IssuePolicyCommand{ProductCode: string(domain.ProductDelayInsurance), ProductVersion: "v1", JourneyOrderID: "jo-price", AncillaryOrderItemID: "anc-price", AccountID: "acct-price", TravelerRef: "trav-price", SegmentRefs: []string{"seg-price"}, PaymentIntentID: "pi-price", CoverageStartAt: now.Add(-time.Minute), CoverageEndAt: now.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy.Premium != published {
+		t.Fatalf("premium = %#v, the catalogue publishes %#v", policy.Premium, published)
 	}
 }
