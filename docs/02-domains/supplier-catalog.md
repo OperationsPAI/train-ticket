@@ -7,7 +7,7 @@
 | Domain | Supplier Catalog |
 | Status | accepted-ddd-baseline |
 | Owner Agent | agentm-supplier-catalog |
-| Last Updated | 2026-06-28 |
+| Last Updated | 2026-09-28 |
 | High-Level Inputs | `docs/01-ddd-high-level/context-map.md`, `docs/01-ddd-high-level/general-travel-ddd.md`, `docs/02-domains/fare-pricing.md`, `docs/02-domains/service-plan.md` |
 
 ## 1. 领域目标

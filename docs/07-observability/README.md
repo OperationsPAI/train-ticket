@@ -39,7 +39,7 @@ The services set `OTEL_LOGS_EXPORTER=none`, and the language kits install no log
 provider. Logs are therefore collected by tailing the files the kubelet already
 writes, not over OTLP. This is deliberate: it makes every service's stdout
 queryable — including init containers, which have no SDK at all — without
-touching 38 services or the kit wiring.
+touching 37 services or the kit wiring.
 
 The cost is that a log record's structure is whatever the service printed. The
 services log plain text, and trace correlation rides in a bracketed prefix —
@@ -668,7 +668,7 @@ OTEL_SEMCONV_STABILITY_OPT_IN=http
 OTEL_LOGS_EXPORTER=none
 ```
 
-Inside the kind cluster, all 38 business services receive the same standard
+Inside the kind cluster, all 37 business services receive the same standard
 OpenTelemetry variables, set once in the shared env block of
 `deploy/helm/train-ticket/templates/services.yaml`:
 
