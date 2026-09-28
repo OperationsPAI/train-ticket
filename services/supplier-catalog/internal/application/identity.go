@@ -28,8 +28,12 @@ const (
 // from. A release that names nothing, or names something this version does not
 // know, keeps filing the code the registration handed over.
 func SupplierIdentitySourceFromEnv() string {
-	if strings.EqualFold(strings.TrimSpace(os.Getenv(SupplierIdentitySourceEnv)), IdentitySourceBrand) {
-		return IdentitySourceBrand
+	// The same normalisation the profile gets where it is filed, for the same
+	// reason: the value comes out of a hand-edited values file, where padding and
+	// case are one decision rather than two.
+	source := strings.ToLower(strings.TrimSpace(os.Getenv(SupplierIdentitySourceEnv)))
+	if source == IdentitySourceBrand {
+		return source
 	}
 	return IdentitySourceCode
 }
