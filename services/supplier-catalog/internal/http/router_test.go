@@ -203,6 +203,19 @@ func TestIdempotentReplayReturnsOriginalResultAndReuseFails(t *testing.T) {
 	}
 }
 
+func TestRegisteringASecondPartnerUnderOneTradingNameConflicts(t *testing.T) {
+	t.Setenv(application.PartnerKeyEnv, application.PartnerKeyBrandName)
+	router := RouterWithService(application.NewService(&fakePublisher{}).WithPartnerBound(application.PartnerBoundFromEnv()))
+	first := doJSON(router, http.MethodPost, "/api/v1/suppliers", `{"legalName":"Transfer carrier 0194f2e0","brandName":"Transfer rail","supplierCode":"T4c1f2a8b9d"}`, "0194f2e0-7b3e-7000-8000-000000000031")
+	if first.Code != http.StatusCreated {
+		t.Fatalf("expected the first partner to be filed, got %d %s", first.Code, first.Body.String())
+	}
+	second := doJSON(router, http.MethodPost, "/api/v1/suppliers", `{"legalName":"Transfer carrier 0194f2e1","brandName":"Transfer rail","supplierCode":"T5d2e3b0c1e"}`, "0194f2e0-7b3e-7000-8000-000000000032")
+	if second.Code != http.StatusConflict || !strings.Contains(second.Body.String(), "CONFLICT") {
+		t.Fatalf("expected a partner already filed under the trading name to conflict, got %d %s", second.Code, second.Body.String())
+	}
+}
+
 func TestInvalidIdempotencyKeyFormatFails(t *testing.T) {
 	router, _ := newTestRouter()
 	for _, key := range []string{"not-a-uuid", "0194f2e0-7b3e-4610-8284-5c26e8b0c401"} {

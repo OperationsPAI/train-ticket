@@ -224,6 +224,31 @@ func TestPartnerBoundCountsTheIdentityTheRepositoryHolds(t *testing.T) {
 	}
 }
 
+func TestPartnerBoundFromEnvReadsTheFieldTheReleaseNames(t *testing.T) {
+	cases := []struct {
+		name  string
+		key   string
+		limit string
+		want  PartnerBound
+	}{
+		{name: "nothing named", want: DefaultPartnerBound()},
+		{name: "the trading name", key: PartnerKeyBrandName, want: PartnerBound{Key: PartnerKeyBrandName, Limit: PartnersPerIdentity}},
+		{name: "the legal name", key: PartnerKeyLegalName, want: DefaultPartnerBound()},
+		{name: "a field the catalogue does not file under", key: "supplierCode", want: DefaultPartnerBound()},
+		{name: "a bound of two", key: PartnerKeyBrandName, limit: "2", want: PartnerBound{Key: PartnerKeyBrandName, Limit: 2}},
+		{name: "a bound that is not a number", key: PartnerKeyLegalName, limit: "many", want: DefaultPartnerBound()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(PartnerKeyEnv, tc.key)
+			t.Setenv(PartnersPerKeyEnv, tc.limit)
+			if got := PartnerBoundFromEnv(); got != tc.want {
+				t.Fatalf("bound from the release: got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
 const wantTraceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 
 func mustSpanContext(t *testing.T) trace.SpanContext {
