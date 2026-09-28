@@ -1,6 +1,6 @@
 # Service Plan Domain Design
 
-更新日期：2026 年 9 月 24 日。
+更新日期：2026年9月28日。
 当前服务使用 Go，入口为 `services/service-plan/cmd/service-plan/main.go`。
 
 ## 领域职责与范围
@@ -31,7 +31,7 @@ Place & Network 拥有节点和地点权威信息，Seat Assignment 拥有编组
 它检查节点、日期来源和时间一致性，返回 `scheduledServiceRef`、`serviceDate`、`stops`、`interval`、到发时间及 `stopSequenceVersion`。
 对当前两个 stop 的服务，接口使用从零开始的站序，区间明确为 `[0,1)`。
 `stopSequenceVersion` 是服务引用及有序站点 JSON 的 SHA256 摘要。
-Capacity 联合 supply 路径使用该接口校验区间和历史 Hold；该 Capacity 改动已在提交 `caafa668` 中实现，尚未部署，Booking coordinated 尚未启用。
+Capacity 联合 supply 路径使用该接口校验区间和历史 Hold；该改动已在提交 `caafa668` 中实现并部署，Booking coordinated 已启用。
 
 ## 季节与运营状态
 
