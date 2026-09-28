@@ -179,9 +179,20 @@ The checked change application endpoint updates the existing order using its rep
 
 ## Cross-Context Dependencies
 
+Journey Order subscribes to exactly the streams listed by
+`RedisJourneyOrderSubscriptions.streams()` and acts only on the event types in
+its `ACTIONABLE` set; every other type on those streams is acknowledged without
+work. Subscriptions to `offer-management`, `booking-orchestration` and
+`traveler-profile` were removed because no type the handler acts on is published
+by those contexts.
+
 | Upstream Context | Consumed Data | Purpose |
 |---|---|---|
-| offer-management | `OfferQuoted`, `OfferExpired` | Offer lifecycle tracking. |
-| booking-orchestration | `SegmentBooking` status events | Booking confirmation. |
-| payment | `PaymentCaptured` event | Payment recording. |
-| entitlement-ticketing | `EntitlementIssued` event | Entitlement summary. |
+| payment | `PaymentCaptured`, `PaymentTimedOut`, `PaymentExpired` | Record the captured payment; expire the order when the payment intent times out or expires. |
+| post-sales | `PostSalesApplied` | Apply the post-sales adjustment to the order. |
+| risk-compliance | `RiskAssessmentResult`, `RiskBlockApplied`, `RiskBlockLifted` | Record the order risk decision and the block/lift state. |
+| account | `AccountCreated`, `AccountFrozen`, `AccountUnfrozen`, `AccountClosureStarted`, `AccountClosed` | Track the account lifecycle state carried on the order. |
+| entitlement-ticketing | `EntitlementIssued` | Entitlement summary. |
+| ancillary-service | `AncillaryOrderItemSelected`, `AncillaryOrderItemPendingConfirmation`, `AncillaryOrderItemConfirmed`, `AncillaryOrderItemFulfillmentReady`, `AncillaryOrderItemFulfilled`, `AncillaryOrderItemFailed`, `AncillaryOrderItemRefunded`, `AncillaryOrderItemCancelled` | Track ancillary order-item snapshots and lifecycle. |
+| identity-verification | `CredentialRegistered`, `VerificationCaseStarted`, `VerificationPassed`, `VerificationFailed`, `EligibilityCertificateRegistered`, `EligibilityCertificateVerified`, `EligibilityUsageReserved`, `EligibilityUsageConfirmed`, `EligibilityUsageReleased` | Track traveler verification outcomes and eligibility certificate/usage state. |
+| transfer-management | `ConnectionContractConfirmed`, `ConnectionMissed`, `ConnectionRecovered` | Track the connecting-journey contract and connection state. |
