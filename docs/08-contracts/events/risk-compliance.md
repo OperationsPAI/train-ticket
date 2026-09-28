@@ -52,7 +52,7 @@ Booking proceeds on `PASS`, fails on `BLOCK`, and enters manual review on `CHALL
 |---|---|
 | **Producer** | risk-compliance |
 | **Consumers** | account, payment |
-| **Trigger** | `IssueChallenge` command processed. |
+| **Trigger** | Declared-only: reserved for `IssueChallenge`, but not produced by the current release. Risk & Compliance publishes `RiskAssessmentResult`, `RiskAssessmentCompleted`, `RiskBlockApplied`, `RiskBlockLifted`, `RiskEvaluationCompleted` and `RiskAlertRaised`; no code path emits this event. |
 
 **Payload:**
 
@@ -71,7 +71,7 @@ Booking proceeds on `PASS`, fails on `BLOCK`, and enters manual review on `CHALL
 |---|---|
 | **Producer** | risk-compliance |
 | **Consumers** | account, payment, journey-order |
-| **Trigger** | `ResolveChallenge` command processed. |
+| **Trigger** | Declared-only: reserved for `ResolveChallenge`, but not produced by the current release. Risk & Compliance publishes `RiskAssessmentResult`, `RiskAssessmentCompleted`, `RiskBlockApplied`, `RiskBlockLifted`, `RiskEvaluationCompleted` and `RiskAlertRaised`; no code path emits this event. |
 
 **Payload:**
 
@@ -128,7 +128,7 @@ Booking proceeds on `PASS`, fails on `BLOCK`, and enters manual review on `CHALL
 |---|---|
 | **Producer** | risk-compliance |
 | **Consumers** | reporting, admin-and-audit |
-| **Trigger** | `RecordEvidence` command processed. |
+| **Trigger** | Declared-only: reserved for `RecordEvidence`, but not produced by the current release. Risk & Compliance publishes `RiskAssessmentResult`, `RiskAssessmentCompleted`, `RiskBlockApplied`, `RiskBlockLifted`, `RiskEvaluationCompleted` and `RiskAlertRaised`; no code path emits this event. |
 
 **Payload:**
 
