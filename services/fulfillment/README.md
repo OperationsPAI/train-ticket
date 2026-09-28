@@ -17,7 +17,7 @@ Status: implemented and deployed (Helm revision 521; see [current status](../../
 ## Runtime
 
 - HTTP port `8080` (`containerPort`/`PORT` in the chart).
-- Database `fulfillment` on the `core` PostgreSQL instance
+- Database `fulfillment`, on the `core` PostgreSQL instance
   (`services.fulfillment.db` and `postgres.instances.core.databases` in
   `deploy/helm/train-ticket/values.yaml`).
 - The boarding estate the service boards through is
