@@ -223,16 +223,6 @@ type CreateTransportNodeRequest struct {
 	CorrelationID     string
 }
 
-type CreateTransportNodeResponse struct {
-	NodeID            string                `json:"nodeId"`
-	PlaceID           string                `json:"placeId"`
-	DisplayName       string                `json:"displayName"`
-	ServingModes      []string              `json:"servingModes"`
-	AccessTimeMinutes *int                  `json:"accessTimeMinutes,omitempty"`
-	WalkingEdges      []WalkingEdgeResponse `json:"walkingEdges,omitempty"`
-	CreatedAt         string                `json:"createdAt"`
-}
-
 func (s *Service) CreateTransportNode(ctx context.Context, req CreateTransportNodeRequest) (*CreateTransportNodeResponse, error) {
 	placeID := domain.PlaceID(req.PlaceID)
 	place, err := s.places.FindByID(ctx, placeID)
@@ -277,7 +267,9 @@ func (s *Service) CreateTransportNode(ctx context.Context, req CreateTransportNo
 	return response, nil
 }
 
-type GetTransportNodeResponse struct {
+// nodeResponseBody is the node read both the create and the get answer with:
+// one shape for the fields a caller sees, so the two cannot drift apart.
+type nodeResponseBody struct {
 	NodeID            string                `json:"nodeId"`
 	PlaceID           string                `json:"placeId"`
 	DisplayName       string                `json:"displayName"`
@@ -286,6 +278,12 @@ type GetTransportNodeResponse struct {
 	WalkingEdges      []WalkingEdgeResponse `json:"walkingEdges,omitempty"`
 	CreatedAt         string                `json:"createdAt"`
 }
+
+// CreateTransportNodeResponse is the create's answer.
+type CreateTransportNodeResponse = nodeResponseBody
+
+// GetTransportNodeResponse is the read's answer.
+type GetTransportNodeResponse = nodeResponseBody
 
 func (s *Service) GetTransportNode(ctx context.Context, id domain.TransportNodeID) (*GetTransportNodeResponse, error) {
 	node, err := s.nodes.FindByID(ctx, id)
