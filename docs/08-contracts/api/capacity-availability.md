@@ -1,6 +1,6 @@
 # Capacity and Availability HTTP API
 
-Last updated: 2026-09-23
+Last updated: 2026-09-28
 
 ## Overview
 
@@ -11,7 +11,7 @@ It owns capacity admission and Hold lifecycle.
 Seat Assignment owns physical seat allocation.
 
 The physical supply integration uses Service Plan segment facts and Seat Assignment's internal capacity facts.
-It is under coordinated integration with Booking and loadgen; verify deployed images before treating it as active.
+It is deployed and active: admission resolves class, service and date from accepted booking facts, validates published supply, and counts pending holds with active allocations.
 See [integration requirements](../../10-domain-enrichment/capacity-overbooking.md).
 Standing quota follows [standing-second-class-10pct-v1](../standing-capacity-policy.md) and is separate from concrete seat capacity.
 
@@ -56,11 +56,36 @@ Returns a non-authoritative availability snapshot for a service segment.
 
 **Error codes:** `VALIDATION_FAILED`, `PRECONDITION_FAILED`, `UNAVAILABLE`
 
+### Get Capacity Snapshot
+
+Returns a per-segment capacity snapshot combining physical capacity, holds and confirmations.
+
+**GET** `/api/v1/capacity/segments/{segmentRef}/snapshot`
+
+**Response (200):**
+
+| Field | Type | Description |
+|---|---|---|
+| `segmentRef` | string | Service segment reference. |
+| `departureDate` | string | Service date (`YYYY-MM-DD`). |
+| `totalCapacity` | integer | Total capacity. |
+| `remainingCapacity` | integer | Remaining capacity. |
+| `physicalCapacity` | integer | Physical capacity. |
+| `holdCount` | integer | Live hold count. |
+| `confirmedCount` | integer | Confirmed count. |
+| `utilizationPct` | number | Utilization percentage. |
+| `snapshotVersion` | string | Snapshot version. |
+| `classes` | array | Per-class capacity with `classRef`, `physicalCapacity`, `effectiveCapacity`, `holdCount`, `confirmedCount`, `remainingCapacity` and `overbookingPolicy`. |
+
+**Error codes:** `NOT_FOUND`
+
 ### Hold Capacity
 
 Places a hold on capacity for a segment.
 
 **POST** `/api/v1/capacity-holds`
+
+`POST /api/v1/capacity/holds` is an equivalent alias.
 
 **Idempotency:** REQUIRED
 
@@ -144,7 +169,7 @@ It is distinct from the purchased class and from the passenger facing seat numbe
 
 ## Integration status
 
-Physical supply and standing quota admission are under coordinated integration.
-The new code resolves class, service and date from accepted booking facts, validates published supply, and counts pending holds with active allocations.
-Before production activation, verify complete historical occupancy, interval mapping, dependency failure behavior and compensation for failed replacement reservations.
-See [integration requirements](../../10-domain-enrichment/capacity-overbooking.md) for verification coverage and current deployment boundaries.
+Physical supply and standing quota admission are deployed and verified (T03, closed).
+Admission resolves class, service and date from accepted booking facts, validates published supply, and counts pending holds with active allocations.
+Historical occupancy, interval mapping and the binding between a hold and its allocated unit are verified against the deployed store.
+See [integration requirements](../../10-domain-enrichment/capacity-overbooking.md) for verification coverage.

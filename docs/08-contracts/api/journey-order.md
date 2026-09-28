@@ -1,8 +1,9 @@
 # Journey Order HTTP API
 
-Last updated: 2026-09-24.
+Last updated: 2026-09-28.
 
-Runtime baseline: Helm revision 279.
+The deployed revision and runtime facts are recorded in
+[current status](../../00-current-status.md).
 Remaining work is tracked in [TODO](../../TODO.md).
 
 ## Overview
@@ -17,7 +18,7 @@ It references but does not own payments, capacity, entitlements, or identity-ver
 ## Identity Verification before order creation
 
 Journey Order calls Identity Verification before accepting `POST /api/v1/journey-orders`.
-This check is deployed in Helm revision 279.
+This check is deployed.
 Rejected or unresolved verification prevents order creation.
 
 | Touchpoint | Current behavior |
@@ -132,6 +133,32 @@ An unknown order returns `NOT_FOUND`.
 
 **Error codes:** `NOT_FOUND`, `PRECONDITION_FAILED`, `DOMAIN_RULE_VIOLATION`
 
+### Apply a Change to the Order
+
+**POST** `/api/v1/journey-orders/{orderId}/apply-change`
+
+Requires `X-Correlation-Id`.
+
+**Request:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `caseId` | string | yes | Approved `CHANGE` post-sales case applied to this order. |
+
+**Response (200):**
+
+| Field | Type | Description |
+|---|---|---|
+| `orderId` | string | Order ID. |
+| `caseId` | string | Applied case ID. |
+| `status` | enum | Resulting order status (`ADJUSTED` on a first application). |
+| `offerId` | string | Replacement offer now carried by the order. |
+
+The service reads the change case and requires an `APPROVED` `CHANGE` case for this order, verifies the replacement tickets and the voided original tickets, and checks the change settlement covers the target fare, fee and retained items before updating the order.
+Repeating the same `caseId` returns the recorded result without a second `JourneyOrderPostSalesAdjusted` event.
+
+**Error codes:** `NOT_FOUND`, `DOMAIN_RULE_VIOLATION`
+
 ## Bus-only commands
 
 - `MarkPendingPayment` (internal: triggered by booking saga)
@@ -140,5 +167,8 @@ An unknown order returns `NOT_FOUND`.
 ## Supply integration
 
 The accepted purchase source endpoint is implemented and deployed.
-Booking accepted supply resolution is implemented in source and remains inactive in the production integration with Capacity at Helm revision 279.
-A source read alone does not establish complete historical occupancy or correct replacement compensation.
+Booking accepted supply resolution is implemented, deployed and verified, and is
+active in the production integration with Capacity (T03, closed).
+Capacity resolves the accepted class, service, date and interval from these
+facts, validates published supply and counts pending holds with active
+allocations; the source read alone is not what establishes historical occupancy.

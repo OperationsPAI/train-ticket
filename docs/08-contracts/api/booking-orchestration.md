@@ -1,8 +1,9 @@
 # Booking Orchestration — HTTP API
 
-Last updated: 2026-09-24.
+Last updated: 2026-09-28.
 
-Runtime baseline: Helm revision 279.
+The deployed revision and runtime facts are recorded in
+[current status](../../00-current-status.md).
 Remaining work is tracked in [TODO](../../TODO.md).
 
 ## Overview
@@ -41,10 +42,18 @@ Each case, segment and traveler has one replacement booking under an independent
 Repeated requests return the existing booking and reject changes to its offer item or class.
 The response uses the segment booking details shape.
 
+### Cancel an Unpaid Change Replacement
+
+`POST /api/v1/internal/change-reservations/{bookingId}/cancel` accepts `caseId` and requires `X-Correlation-Id`.
+The service reads the change case and requires a `CHANGE` case whose `changeOperations` already carry `payment-terminated` and no ticket or order-apply operation.
+Successful cancellation returns the segment booking details shape for the cancelled replacement.
+Recorded ticket, void or order-applied operations, or a change whose payment has not terminated, are refused with `PRECONDITION_FAILED`.
+
 ### Accepted reservation facts
 
-Accepted supply resolution and persistence are implemented in source.
-The coordinated Booking and Capacity integration is not active in production at Helm revision 279.
+Accepted supply resolution and persistence are implemented, deployed and verified.
+The coordinated Booking and Capacity integration is active in production
+(T03, closed).
 Initial reservation commands resolve the parent order's accepted Offer, fare quote and itinerary.
 Account, traveler set, segment, departure time and endpoints must agree before a booking is persisted.
 The resulting `SegmentReservationRequested` includes `classRef`, `offerItemRef`, `scheduledServiceRef` and `serviceDate`.
@@ -87,6 +96,16 @@ Database snapshot, outbox and uniqueness verification is covered by `Reservation
 ### Get Saga Status
 
 **GET** `/api/v1/internal/booking-sagas/{sagaId}`
+
+**Response (200):** Full saga details including step statuses.
+
+**Error codes:** `NOT_FOUND`
+
+### Get Saga by Order
+
+**GET** `/api/v1/internal/booking-sagas/by-order/{orderId}`
+
+Returns the saga whose `journeyOrderId` is the given order.
 
 **Response (200):** Full saga details including step statuses.
 
