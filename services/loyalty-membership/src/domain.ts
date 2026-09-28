@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { accountReferenceAccepted } from "./programme.js";
+import { accountReferenceAccepted, accountReferenceStatement } from "./programme.js";
 
 export type MemberId = string;
 export type AccountId = string;
@@ -541,7 +541,8 @@ function newRedemptionId(): RedemptionId { return `red_${randomUUID()}`; }
 // keyed: storing it anyway would key the membership by something the identity service does not
 // resolve an account from.
 function assertAccountReferenceAccepted(accountId: AccountId): void {
-  if (!accountReferenceAccepted(accountId)) {
+  const statement = accountReferenceStatement();
+  if (!accountReferenceAccepted(accountId, statement)) {
     throw new DomainError("ACCOUNT_REFERENCE_NOT_ACCEPTED", "The account reference is not one the membership programme keys by");
   }
 }
