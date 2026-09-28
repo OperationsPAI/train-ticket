@@ -2,7 +2,7 @@
 
 Java service for commercial orders, accepted Offer references, financial summaries, confirmation conditions, PostgreSQL persistence and Redis event processing.
 
-Last updated: 2026-09-23.
+Last updated: 2026-09-28.
 
 ## Accepted purchase source
 
@@ -72,6 +72,17 @@ Consumes `events:payment`, `events:post-sales`, `events:risk-compliance`,
 `events:ancillary-service`, `events:identity-verification` and
 `events:transfer-management`
 (`adapters/messaging/RedisJourneyOrderSubscriptions.java`).
+
+## Risk scenarios
+
+An order confirms once a risk assessment clears it, and `events:risk-compliance`
+carries risk-compliance's assessment for four subjects: the order, the payment
+intent, the post-sales case and the account. Only the order's own assessment
+resolves to an order here, so the handler acts on the scenarios the release names
+in `JOURNEY_ORDER_RISK_SCENARIOS` (`services.journey-order.env` in
+`deploy/helm/train-ticket/values.yaml`); a scenario the list does not name is
+acknowledged without changing an order, and the image's own list names every
+scenario the platform emits today.
 
 ## Metrics
 

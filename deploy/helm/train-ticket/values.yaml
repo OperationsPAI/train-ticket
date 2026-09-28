@@ -1116,6 +1116,15 @@ services:
       # 48 rather than 60: the steady connection total across all services is
       # the constraint that decides whether a rollout fits.
       HIKARI_MAX_POOL_SIZE: "52"
+      # risk-compliance assesses the order, the payment intent, the post-sales
+      # case and the account on events:risk-compliance, and only the order's own
+      # assessment resolves to an order here. Which of the four this service
+      # consumes is a deployment decision -- it is the release that pairs the
+      # service with the risk service it consumes -- so the list is declared
+      # here, and the three that reach this service at the stream's own rate are
+      # the ones worth naming: each of them is a snapshot read that cannot
+      # succeed before the handler acknowledges it.
+      JOURNEY_ORDER_RISK_SCENARIOS: "payment_risk,post_sales_risk,account_risk"
     resources:
       requests: { cpu: 100m, memory: 256Mi }
       limits: { cpu: '6', memory: 4Gi }
