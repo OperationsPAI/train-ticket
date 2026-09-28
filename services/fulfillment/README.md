@@ -20,6 +20,12 @@ Status: implemented and deployed (Helm revision 521; see [current status](../../
 - Database `fulfillment` on the `core` PostgreSQL instance
   (`services.fulfillment.db` and `postgres.instances.core.databases` in
   `deploy/helm/train-ticket/values.yaml`).
+- The boarding estate the service boards through is
+  `FULFILLMENT_BOARDING_SOURCES`, the readers a release declares in
+  `services.fulfillment.env`; a release that declares none keeps `GATE`,
+  `STATION`, `PROVIDER`, `CONDUCTOR` and `ADMIN`, the readers the image was
+  built with (`internal/boarding`). The release in this repository declares
+  the estate there.
 - Liveness `/healthz`, readiness `/readyz`; also `/health`, `/ready`,
 `/metadata`.
 
