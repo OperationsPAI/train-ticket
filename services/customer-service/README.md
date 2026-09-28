@@ -35,6 +35,13 @@ Status: implemented and deployed (Helm revision 521; see [current status](../../
 The full contract lives in
 [`docs/08-contracts/api/customer-service.md`](../../docs/08-contracts/api/customer-service.md).
 
+The intake answers the channels this deployment's desk routes. They are stated in
+`config/intake-channels.json`, which ships beside the service and which
+`src/intake-rules.ts` reads once at start-up; a release whose file states no
+channel answers the platform's whole vocabulary, as every release did before the
+settings existed. A channel the desk does not route is refused before a case is
+stored, rather than filed for a queue that never claims it.
+
 ## Events
 
 Publishes `SupportCaseOpened`, `EvidenceAttached`, `SupportCaseClassified`,
