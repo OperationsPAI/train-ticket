@@ -37,5 +37,5 @@ Passing module or focused live tests does not establish complete resident peak a
 
 The resident release uses `deploy/helm/train-ticket` and digest pinned service images.
 Preserve its mounted loadgen configuration and `loadgen-resident-state` claim when updating images.
-The source worktree, committed code and deployed image set can differ; consult current status before building or deploying a service.
-The coordinated Capacity supply calculation and notification delivery queue remain unpublished workspace changes at this handoff.
+The deployed revision, its verified outcomes and the outstanding work are recorded in [current status](docs/00-current-status.md) and [TODO](docs/TODO.md).
+The coordinated Capacity supply integration and the durable notification delivery queue are both deployed.
