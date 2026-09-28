@@ -107,9 +107,10 @@ type OTelTracer = Readonly<{
   startSpan: (name: string, options?: Record<string, unknown>) => OTelSpan;
 }>;
 
-// The channels this deployment answers: the contract's vocabulary narrowed to the intake desks
-// the sheet beside the service has on duty for this release.
-const channels = intakeChannels(readDeskSheet());
+// The desk sheet is read once, where this module loads, and every route that validates a
+// channel reads the list built from it.
+const intakeDeskSheet = readDeskSheet();
+const channels = intakeChannels(intakeDeskSheet);
 const priorities = ["LOW", "NORMAL", "HIGH", "URGENT"] as const;
 const customerTiers = ["STANDARD", "SILVER", "GOLD", "PLATINUM", "DIAMOND"] as const;
 const escalationLevels = ["L1_AGENT", "L2_SPECIALIST", "L3_SUPERVISOR"] as const;
