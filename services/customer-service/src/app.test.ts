@@ -16,6 +16,7 @@ import {
   type SupportCaseSnapshot,
 } from "./domain.js";
 import { type CustomerServiceRepository } from "./application/ports/customer-service-repository.js";
+import { DESK_QUEUES_SETTING } from "./desk-queues.js";
 
 const openBody = {
   requesterRef: "tvl-0194f2e0-7b3e-7610-8284-5c26e8b001",
@@ -273,6 +274,40 @@ describe("customer-service HTTP API", () => {
     });
     assert.equal(assigned.statusCode, 200);
     assert.equal(assigned.json().ownerQueue, "payment");
+  });
+
+  it("refuses a handoff to a queue the release does not state", async () => {
+    const stated = process.env[DESK_QUEUES_SETTING];
+    process.env[DESK_QUEUES_SETTING] = "post-sales-desk,ticketing-desk";
+    try {
+      const app = createApp();
+      const caseId = await openedCase(app);
+
+      const refused = await app.inject({
+        method: "POST",
+        url: `/api/v1/support-cases/${caseId}/assign`,
+        headers: { "idempotency-key": idempotencyKey() },
+        payload: { ownerQueue: "tier1" },
+      });
+      assert.equal(refused.statusCode, 422);
+      assert.equal(refused.json().code, "DOMAIN_RULE_VIOLATION");
+      assert.equal(refused.json().details.domainCode, "CASE_NOT_ROUTABLE");
+
+      const taken = await app.inject({
+        method: "POST",
+        url: `/api/v1/support-cases/${caseId}/assign`,
+        headers: { "idempotency-key": idempotencyKey() },
+        payload: { ownerQueue: "post-sales-desk" },
+      });
+      assert.equal(taken.statusCode, 200);
+      assert.equal(taken.json().ownerQueue, "post-sales-desk");
+    } finally {
+      if (stated === undefined) {
+        delete process.env[DESK_QUEUES_SETTING];
+      } else {
+        process.env[DESK_QUEUES_SETTING] = stated;
+      }
+    }
   });
 
   it("escalates a support case", async () => {
