@@ -52,6 +52,26 @@ Issued replacements require ticket void confirmation.
 cd services/booking-orchestration && mvn -o test
 ```
 
+## Step waits
+
+A step's timeout is the wait the orchestrator gives the rest of the platform to
+answer it: a step still pending when its wait is past is failed by the sweep
+(the one-second tick of `BookingSagaTimeoutSweeper`) and its compensation action
+runs. `BookingStepWaitSettings` takes the waits from
+`booking-orchestration.step-wait.*`, and its defaults are the budgets the plans
+carried as constants.
+
+| Setting | Step | Default |
+| --- | --- | --- |
+| `booking-orchestration.step-wait.risk-check-seconds` | `risk-check` | 120 |
+| `booking-orchestration.step-wait.reservation-seconds` | `reserve-<segmentRef>` | 300 |
+| `booking-orchestration.step-wait.invoice-seconds` | `invoice` | 120 |
+| `booking-orchestration.step-wait.change-reservations-seconds` | `change-reservations` | 900 |
+
+A deployment states the ones it wants differently in the service's environment
+(`services.booking-orchestration.env` in
+`deploy/helm/train-ticket/values.yaml`) rather than rebuilding the image.
+
 ## Runtime
 
 - HTTP port `8080` (`containerPort`/`PORT` in the chart).
