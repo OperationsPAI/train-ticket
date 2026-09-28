@@ -88,3 +88,16 @@ func TestApprovedClaimRequiresCompletedPayoutEvidence(t *testing.T) {
 		t.Fatalf("unexpected payout completion: %#v %#v", completed, claim)
 	}
 }
+
+func TestWithinRetentionComparesTheCoverToTheDeclaredRetention(t *testing.T) {
+	product := publishedDelayProduct(t, time.Date(2026, 9, 27, 10, 0, 0, 0, time.UTC))
+	if product.WithinRetention(2000) {
+		t.Fatalf("cover %d should not fit inside a retention of 2000", product.CoverageLimit.MinorUnits)
+	}
+	if !product.WithinRetention(3000) {
+		t.Fatalf("cover %d should fit inside a retention of 3000", product.CoverageLimit.MinorUnits)
+	}
+	if !product.WithinRetention(0) {
+		t.Fatal("a release that declares no retention should keep the catalogue as published")
+	}
+}

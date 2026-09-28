@@ -133,6 +133,13 @@ func (p InsuranceProduct) AvailableAt(now time.Time) bool {
 	return p.Status == ProductPublished && !now.Before(p.SalesStartAt) && !now.After(p.SalesEndAt)
 }
 
+// WithinRetention reports whether the cover this product carries fits inside a
+// retention the caller declares, in the cover's currency. A retention of zero or
+// less means the caller declares none, and then every published product fits.
+func (p InsuranceProduct) WithinRetention(retentionMinor int64) bool {
+	return retentionMinor <= 0 || p.CoverageLimit.MinorUnits <= retentionMinor
+}
+
 func SupportedProductCode(code ProductCode) bool {
 	switch code {
 	case ProductDelayInsurance, ProductCancellationInsurance, ProductAccidentInsurance, ProductBaggageInsurance:

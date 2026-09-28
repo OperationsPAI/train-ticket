@@ -194,7 +194,7 @@ func (s *InsuranceService) IssuePolicy(ctx context.Context, cmd IssuePolicyComma
 	// The envelope is a property of the catalogue entry, so it is answered before
 	// the purchase is verified: a product the carrier will not write is refused
 	// without spending the four owning-service reads.
-	if err := s.withinUnderwritingEnvelope(product); err != nil {
+	if err := s.rejectAboveRetention(product); err != nil {
 		return domain.Policy{}, err
 	}
 	if s.repository != nil && s.verifyPurchase == nil {
