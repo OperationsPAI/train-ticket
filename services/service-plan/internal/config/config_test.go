@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strconv"
+	"testing"
+)
 
 func TestFromEnvKeepsTheShippingDefaults(t *testing.T) {
 	t.Setenv("PORT", "")
@@ -26,6 +29,15 @@ func TestFromEnvReadsTheBoundTheReleaseDeclares(t *testing.T) {
 	t.Setenv("SERVICE_PLAN_LISTING_PAGE_LIMIT", "20")
 	if got := FromEnv().ListingPageLimit; got != 20 {
 		t.Fatalf("release page bound: got %d, want 20", got)
+	}
+}
+
+func TestFromEnvReadsThePageBoundTheReleaseVaries(t *testing.T) {
+	for _, bound := range []int{5, 100, 250} {
+		t.Setenv("SERVICE_PLAN_LISTING_PAGE_LIMIT", strconv.Itoa(bound))
+		if got := FromEnv().ListingPageLimit; got != bound {
+			t.Fatalf("page bound %d: got %d", bound, got)
+		}
 	}
 }
 
