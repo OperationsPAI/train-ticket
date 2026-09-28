@@ -39,12 +39,35 @@ Only unconditional `STATION` to `STATION` rules apply because the current Servic
 The same stop, or two nodes mapped to the same place, is classified as `SAME_STATION`; other transfer categories fail closed until authoritative topology is available.
 The HTTP response does not expose all internal score explanations or exclusion reasons.
 
+## Runtime
+
+- HTTP port `8080` (`containerPort`/`PORT` in the chart).
+- Database `trip_planning` on the `read` PostgreSQL instance
+  (`services.trip-planning.db`, `services.trip-planning.pgInstance` and
+  `postgres.instances.read.databases` in
+  `deploy/helm/train-ticket/values.yaml`).
+- Liveness `/healthz`, readiness `/readyz`; also `/health`, `/live`,
+`/livez`, `/ready`, `/metadata`.
+
+## HTTP surface
+
+- `POST /api/v1/itineraries/search`, `GET /api/v1/itineraries/{itineraryRef}`.
+
+The full contract lives in
+[`docs/08-contracts/api/trip-planning.md`](../../docs/08-contracts/api/trip-planning.md).
+
+## Metrics
+
+Emits the `search` stage of `train_ticket.order.transitions`
+(`src/api.rs`); the contract is in
+[`docs/07-observability/business-metrics.md`](../../docs/07-observability/business-metrics.md).
+
 The current Service Plan creation API defines two stops and an explicit supply interval of `[0,1)`.
 Published seasonal metadata and temporary service records do not automatically add searchable supply.
 
 ## Verification
 
-[Search performance evidence](docs/search-performance-20260923.md) records deployment of the date and origin index in Helm revision 277.
+[Search performance evidence](docs/search-performance-20260923.md) records deployment of the date and origin index; the service is deployed at Helm revision 521 (see [current status](../../docs/00-current-status.md)).
 It includes recorded candidate and response comparisons and local Axum plus PostgreSQL concurrency measurements.
 Those measurements do not establish a complete production peak cycle or all cross service behavior.
 No tests were rerun for this documentation update.
