@@ -1,12 +1,13 @@
 # Platform metrics API audit and first low-cardinality signals
 
-Updated: 2026-09-25, Asia/Beijing.
+Last updated: 2026-09-28, Asia/Beijing.
 
 This document records the metric capabilities that exist in the shared language
-kits and the first transport-level business signals implemented for the Java
-core path. It describes application instrumentation only. Deployment, collector,
-Prometheus, Reporting, Notification and Risk Compliance configuration are out of
-scope here.
+kits and the first transport-level business signals, which were implemented for
+the Java core path and have since been ported to every kit. It describes
+application instrumentation only. The deployed collector and Prometheus
+configuration, and the full business metric contract, are in
+[business metrics](business-metrics.md).
 
 ## Shared platform audit
 
@@ -88,6 +89,9 @@ should be implemented once in a shared collector that owns a configured list of
 stream/group pairs. The process counters implemented here remain useful beside
 that future state collector: they answer whether handlers are succeeding,
 retrying or dead-lettering, while the collector answers how much work remains.
+That shared `redis-state-collector` is now deployed: it publishes consumer lag,
+pending entries, the oldest owed entry and the dead-letter population for every
+stream and group, as described in [business metrics](business-metrics.md).
 
 ## Fault-exercise combinations
 
@@ -123,6 +127,7 @@ while the project targets Java 25:
 - Booking Orchestration, Journey Order and Payment package successfully against
   the updated shared kit.
 
-No deployment was performed. The metrics become runtime-visible when owning
-service images are rebuilt with these commits and the metric pipeline accepts the
-`train_ticket.*` families.
+The kit is deployed: the owning service images carry these commits and the metric
+pipeline accepts the `train_ticket.*` families, so these instruments are
+runtime-visible. The Go, Python, TypeScript and Rust kits now emit the same
+process-level set.

@@ -1,6 +1,6 @@
 # Reporting 指标与投影
 
-更新日期：2026年9月25日。
+更新日期：2026年9月28日。
 本文描述包含权威收入事实与 007/008 迁移的 Python 实现。
 领域边界见 [Reporting](../02-domains/reporting.md)，统一待办见 [TODO](../TODO.md)。
 

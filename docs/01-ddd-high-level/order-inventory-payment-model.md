@@ -1,6 +1,6 @@
 # Order, capacity, payment and ticket model
 
-Last updated: 2026-09-24.
+Last updated: 2026-09-28.
 
 The commercial order, reservation, funds, capacity and ticket are separate lifecycles.
 Clients retain the identities returned by each owning service.
@@ -35,8 +35,8 @@ An original ticket already voided is not restored by retrying a payment operatio
 Seat Assignment owns published physical composition and the ten percent standing quota.
 Standing allocation has policy evidence and no physical SeatUnit.
 Service Plan currently creates two stop services and exposes interval `[0,1)` with a stop sequence digest.
-Capacity combined supply calculation and the matching Booking source path are not jointly deployed.
-See [current supply design](../10-domain-enrichment/capacity-overbooking.md).
+Capacity combined supply calculation and the matching Booking source path are jointly deployed.
+See [current supply design](../10-domain-enrichment/capacity-overbooking.md) and [current status](../00-current-status.md).
 
 ## Replay
 

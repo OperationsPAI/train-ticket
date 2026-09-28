@@ -1,6 +1,6 @@
 # Aggregate ownership
 
-Last updated: 2026-09-24.
+Last updated: 2026-09-28.
 
 | Business object | Owner | Protected fact |
 |---|---|---|
@@ -28,8 +28,8 @@ Service quality `COMPENSATION` records an approved wallet credit with unchanged 
 A recorded compensation result includes the issued benefit and verified original payment reference.
 
 Capacity Hold pool references and physical SeatUnit identities are separate in the deployed path.
-The worktree supply integration is explicitly described in [Capacity design](../10-domain-enrichment/capacity-overbooking.md).
-The notification durable sending queue is also unpublished and is described in [Notification design](../02-domains/notification.md).
+The deployed supply integration is described in [Capacity design](../10-domain-enrichment/capacity-overbooking.md).
+The notification durable sending queue is also deployed and is described in [Notification design](../02-domains/notification.md).
 
 Exact object fields, monetary serialization and states come from the owning [API](../08-contracts/api/README.md) and event files.
 Remaining work is in [TODO](../TODO.md).

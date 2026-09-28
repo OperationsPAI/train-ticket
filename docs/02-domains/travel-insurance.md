@@ -7,7 +7,7 @@
 | Domain | Travel Insurance |
 | Status | proposed-ddd-baseline |
 | Phase | ADR-0003 wave C |
-| Last Updated | 2026-09-25 |
+| Last Updated | 2026-09-28 |
 | High-Level Inputs | `docs/adr/0003-commercial-realism-scope.md`, `docs/02-domains/ancillary-service.md`, `docs/02-domains/fulfillment.md`, `docs/02-domains/disruption-recovery.md`, `docs/02-domains/payment-channel.md`, `docs/02-domains/wallet-promotion.md` |
 
 ## 1. 领域目标
