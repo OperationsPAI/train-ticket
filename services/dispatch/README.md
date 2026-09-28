@@ -6,7 +6,7 @@ Language: golang
 
 Phase: phase-1-core
 
-Status: active-dispatch-service
+Status: active-dispatch-service, implemented and deployed (Helm revision 521; see [current status](../../docs/00-current-status.md))
 
 ## Owns
 
@@ -14,6 +14,39 @@ Status: active-dispatch-service
 - RideAssignment
 - DriverLifecycle
 - Eta
+
+## Runtime
+
+- HTTP port `8080` (`containerPort`/`PORT` in the chart).
+- Database `dispatch` on the `core` PostgreSQL instance
+  (`services.dispatch.db` and `postgres.instances.core.databases` in
+  `deploy/helm/train-ticket/values.yaml`).
+- Liveness `/healthz`, readiness `/readyz`; also `/health`, `/ready`,
+`/metadata`.
+
+## HTTP surface
+
+`/api/v1/ride-requests`: create, list, read, `assign`, `eta`,
+`driver-arrived`, `start`, `complete`, `driver-cancel`, `user-cancel`,
+`no-show`.
+
+The full contract lives in
+[`docs/08-contracts/api/dispatch.md`](../../docs/08-contracts/api/dispatch.md).
+
+## Events
+
+Publishes the ride lifecycle facts (`DispatchRequested`, `DriverAssigned`,
+`DriverEtaUpdated`, `DriverArrived`, `RideStarted`, `RideEnded`,
+`DriverCancelled`, `DispatchUserCancelled`, `DispatchNoShowRecorded`,
+`DispatchFailed`) to `events:dispatch`
+(`internal/domain/events.go`, producer `dispatch`); see
+[`docs/08-contracts/events/dispatch.md`](../../docs/08-contracts/events/dispatch.md).
+It consumes no inbound event stream.
+
+## Metrics
+
+This service owns no service-specific business metric in the
+[`docs/07-observability/business-metrics.md`](../../docs/07-observability/business-metrics.md).
 
 ## DDD Sources
 
@@ -34,5 +67,5 @@ wait timeout to no-show is intentionally ops-command driven in this wave.
 ## Service Check
 
 ```bash
-go test ./...
+cd services/dispatch && go test ./...
 ```
