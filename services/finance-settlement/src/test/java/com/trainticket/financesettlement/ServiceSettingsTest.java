@@ -22,6 +22,22 @@ class ServiceSettingsTest {
     }
 
     @Test
+    void aFileMovesTheBoundsTheProcessServes() throws IOException {
+        Path file = directory.resolve("read-paths.properties");
+        Files.writeString(file, """
+            read.listing.pageBound = 50
+            read.platformRefund.pageBound = 20
+            read.channelStatement.pageBound = 30
+            """);
+
+        ServiceSettings settings = ServiceSettings.load(file);
+
+        assertEquals(50, settings.listingPageBound());
+        assertEquals(20, settings.platformRefundPageBound());
+        assertEquals(30, settings.channelStatementPageBound());
+    }
+
+    @Test
     void aValueThatIsNotAPositiveCountKeepsItsDefault() throws IOException {
         Path file = directory.resolve("read-paths.properties");
         Files.writeString(file, "read.listing.pageBound = not-a-number\nread.platformRefund.pageBound = 0\n");
