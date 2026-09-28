@@ -1,6 +1,6 @@
 # REQ-105 — Provider Integration Internal HTTP Endpoint Audit
 
-Last updated: 2026-07-09
+Last updated: 2026-09-28
 
 ## Scope
 

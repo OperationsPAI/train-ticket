@@ -1,6 +1,6 @@
 # Disruption Recovery — Events & Commands
 
-Last updated: 2026-07-15
+Last updated: 2026-09-28
 
 ## Scope and activation-wave rulings
 
