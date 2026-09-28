@@ -101,6 +101,7 @@ go test ./...
 The read path uses the same repository as segment creation and does not publish events.
 `GET /api/v1/service-segments?scheduledServiceRef={serviceRef}&limit=20&offset=0` lists the service's persisted segments in identifier order.
 Inventory reconciliation must consume all pages.
+The page it serves is bounded by the deployment's `SERVICE_PLAN_LISTING_PAGE_LIMIT`, so a caller that asks for a larger page is refused rather than served a different one.
 `GET /api/v1/internal/service-segments/{segmentRef}/supply` validates the persisted segment against its service and returns its ordered stops, zero based interval, service date and stable stop sequence digest.
 The current creation API defines a two stop scheduled service, with interval `[0,1)`.
 `TEST_SERVICE_SEGMENT_SOURCE` and `TEST_DATABASE_URL` enable the recorded PostgreSQL and HTTP test in `internal/http/segment_live_test.go`.

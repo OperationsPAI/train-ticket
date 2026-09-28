@@ -13,6 +13,7 @@ import (
 	"github.com/trainticket/greenfield/platform/go-kit/ids"
 	kitmsg "github.com/trainticket/greenfield/platform/go-kit/messaging"
 
+	"github.com/trainticket/greenfield/services/service-plan/internal/config"
 	"github.com/trainticket/greenfield/services/service-plan/internal/domain"
 )
 
@@ -213,6 +214,7 @@ type Service struct {
 	publisher         EventPublisher
 	repository        Repository
 	uow               UnitOfWork
+	listingPageLimit  int
 	scheduledServices map[string]scheduledServiceState
 	segments          map[string]ServiceSegment
 	pendingEvents     []EventEnvelope
@@ -244,6 +246,27 @@ func (s *Service) WithUnitOfWork(uow UnitOfWork) *Service {
 	}
 	return s
 }
+
+// WithListingPageLimit sets the page a segment listing serves. A release
+// declares it: a page is what one listing call costs this service's read path,
+// so the bound is sized with the deployment rather than by whichever caller
+// asks, and a process that resolved none keeps the bound the listing shipped
+// with.
+func (s *Service) WithListingPageLimit(limit int) *Service {
+	if s != nil && limit > 0 {
+		s.listingPageLimit = limit
+	}
+	return s
+}
+
+// listingBound is the largest page this process serves.
+func (s *Service) listingBound() int {
+	if s.listingPageLimit > 0 {
+		return s.listingPageLimit
+	}
+	return config.DefaultListingPageLimit
+}
+
 func (s *Service) within(ctx context.Context, fn func(context.Context) error) error {
 	if s.uow == nil {
 		return fn(ctx)
@@ -432,7 +455,7 @@ type ServiceSegmentsPage struct {
 }
 
 func (s *Service) ListServiceSegments(ctx context.Context, service string, limit, offset int) (ServiceSegmentsPage, error) {
-	if strings.TrimSpace(service) == "" || limit < 1 || limit > 100 || offset < 0 {
+	if strings.TrimSpace(service) == "" || limit < 1 || limit > s.listingBound() || offset < 0 {
 		return ServiceSegmentsPage{}, fmt.Errorf("%w: scheduledServiceRef and valid pagination are required", ErrValidation)
 	}
 	if s.repository != nil {
