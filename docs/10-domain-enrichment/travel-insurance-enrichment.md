@@ -23,5 +23,5 @@ and `CANCELLATION` end the coverage, so only those reach the cancellation path. 
 `PayoutAdvice` records both the insurance decision and the verified Wallet execution reference. A failed or uncertain call leaves the advice retryable and does not claim money was delivered. The stable downstream idempotency key and `insurance-claim:{claimId}:v1` issuance identity prevent duplicate credits after a timeout or process restart.
 Migration `004_payout_execution.sql` reopens legacy local-only `PAID_OUT` records as `APPROVED` / `REQUESTED`; they must obtain and verify a Wallet execution reference before becoming paid again.
 The cancellation path verifies a premium refund and does not initiate that refund.
-Deployment and verification evidence, including differences from workspace code, are recorded in [current status](../00-current-status.md).
+Deployment and verification evidence are recorded in [current status](../00-current-status.md).
 Remaining work is maintained only in [TODO](../TODO.md).
