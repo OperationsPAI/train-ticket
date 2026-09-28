@@ -77,3 +77,17 @@ func TestCreateTransportNodeLeavesANonStationNodeUnmeasured(t *testing.T) {
 		t.Fatalf("expected the field to stay absent, got %v", *created.AccessTimeMinutes)
 	}
 }
+
+// A zero allowance is how the settings file says "leave the field absent": the
+// node keeps the absent value the contract documents instead of a measured 0.
+func TestCreateTransportNodeLeavesTheFieldAbsentWithoutAnAllowance(t *testing.T) {
+	service, places := testService(0)
+	place := saveStation(t, places)
+	created, err := service.CreateTransportNode(context.Background(), CreateTransportNodeRequest{PlaceID: string(place.ID), DisplayName: "Test Junction exit", ServingModes: []string{"RAIL"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if created.AccessTimeMinutes != nil {
+		t.Fatalf("expected the field to stay absent, got %v", *created.AccessTimeMinutes)
+	}
+}
