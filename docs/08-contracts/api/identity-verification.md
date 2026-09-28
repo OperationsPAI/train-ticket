@@ -1,6 +1,6 @@
 # Identity Verification — HTTP API
 
-Last updated: 2026-07-10
+Last updated: 2026-09-28
 
 ## Overview
 
@@ -295,6 +295,99 @@ Journey Order calls this hook before accepting `POST /api/v1/journey-orders`. Th
 **Response (200 or 201):** `PreOrderCheck` resource. `201` is used when new facts are recorded; `200` is used for idempotent replay or when no new fact is needed.
 
 **Error codes:** `VALIDATION_FAILED` (400), `NOT_FOUND` (404 traveler/credential/offer reference not known to read model), `CONFLICT` (409 duplicate/conflicting purchase-limit fact for same protected scope), `PRECONDITION_FAILED` (412 required verification or certificate is not in an acceptable state), `IDEMPOTENCY_KEY_REUSED` (422), `DOMAIN_RULE_VIOLATION` (422 policy violation such as expired document), `UNAVAILABLE` (503 read model or outbox unavailable).
+
+### Verify Identity
+
+**POST** `/api/v1/identity-verification/verifications`
+
+Submits real-name verification material directly (not through a stored
+credential) and returns the verification result. The request carries the
+traveler, document material and optional segment/departure/seat context.
+
+**Idempotency:** REQUIRED (`Idempotency-Key` header, UUID-v7).
+
+**Response (201):** Verification result resource.
+
+**Error codes:** `VALIDATION_FAILED` (400), `NOT_FOUND` (404), `DOMAIN_RULE_VIOLATION` (422), `UNAVAILABLE` (503).
+
+### Manual Override of a Verification Case
+
+**POST** `/api/v1/identity-verification/verification-cases/{verificationCaseId}/manual-override`
+
+Marks a `MANUAL_REVIEW_REQUIRED` case and its credential verified.
+
+**Idempotency:** REQUIRED (`Idempotency-Key` header, UUID-v7).
+
+**Response (200):** `VerificationCase` resource.
+
+**Error codes:** `NOT_FOUND` (404), `PRECONDITION_FAILED` (412 case not in manual review).
+
+### Confirm a Pre-Order Check
+
+**POST** `/api/v1/identity-verification/pre-order-checks/{preOrderCheckId}/confirm`
+
+**Idempotency:** REQUIRED (`Idempotency-Key` header, UUID-v7).
+
+**Request:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `journeyOrderId` | string | yes | Order that consumed the check. |
+
+Confirms the reserved eligibility usage and purchase-limit facts against the order. Repeating the call for the same order returns the stored check; a different order is refused.
+
+**Response (200):** `PreOrderCheck` resource.
+
+**Error codes:** `NOT_FOUND` (404), `PRECONDITION_FAILED` (412 already confirmed for another order).
+
+### Release a Pre-Order Check
+
+**POST** `/api/v1/identity-verification/pre-order-checks/{preOrderCheckId}/release`
+
+**Idempotency:** REQUIRED (`Idempotency-Key` header, UUID-v7).
+
+**Request:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `releaseReason` | string | yes | Reason the reservation is no longer needed. |
+| `sourceEventId` | string | no | Upstream event that triggered the release. |
+
+Releases the reserved eligibility usage and purchase-limit facts. Repeating the call on an already released check returns the stored check.
+
+**Response (200):** `PreOrderCheck` resource.
+
+**Error codes:** `NOT_FOUND` (404), `PRECONDITION_FAILED` (412 already confirmed).
+
+### Mark a Purchase-Limit Fact Missed
+
+**POST** `/api/v1/identity-verification/purchase-limit-facts/{purchaseLimitFactId}/mark-missed`
+
+**Request:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ttlBucket` | string | yes | TTL bucket the miss was observed in. |
+| `monitorRunId` | string | yes | Monitor run that observed the miss. |
+
+**Response (200):** Purchase-limit fact resource.
+
+**Error codes:** `NOT_FOUND` (404), `DOMAIN_RULE_VIOLATION` (422).
+
+### Mark a Purchase-Limit Fact Failed
+
+**POST** `/api/v1/identity-verification/purchase-limit-facts/{purchaseLimitFactId}/mark-failed`
+
+**Request:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `failureCode` | string | yes | Bounded failure code. |
+| `detectionRunId` | string | yes | Detection run that observed the failure. |
+
+**Response (200):** Purchase-limit fact resource.
+
+**Error codes:** `NOT_FOUND` (404), `DOMAIN_RULE_VIOLATION` (422).
 
 ## Existing-domain increment: Journey Order hook (需同波实现)
 

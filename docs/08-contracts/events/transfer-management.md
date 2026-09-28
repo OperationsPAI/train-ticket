@@ -1,6 +1,6 @@
 # Transfer Management — Events & Commands
 
-Last updated: 2026-07-15
+Last updated: 2026-09-28
 
 ## Scope and activation-wave rulings
 
@@ -14,9 +14,10 @@ Activation-wave rulings:
   `ConnectionContract`, `MinimumConnectionTimeRule`, and `TransferRiskPolicy`.
   Every risk evaluation carries the active policy version, or `builtin-v1` when
   no active policy exists.
-- Fulfillment segment delay/arrival/cancelled events are not active today.
-  Runtime facts enter through `POST /api/v1/segment-status-reports`; future
-  Fulfillment events may be mapped to the same command material.
+- Transfer Management subscribes to `events:fulfillment` and handles
+  `SegmentDelayed`, `SegmentArrived` and `SegmentCancelled`, mapping them to the
+  same delay/arrival/cancelled command material as
+  `POST /api/v1/segment-status-reports`.
 - Place Network node/place read integration is active for evaluation metadata
   and topology-weighted minimum connection time. Transfer Management consumes the
   Place Network TransportNode fields `accessTimeMinutes` and
