@@ -1,6 +1,6 @@
 # Reporting HTTP API
 
-Last updated: 2026-09-25.
+Last updated: 2026-09-28.
 
 Implementation baseline: authoritative revenue facts and migrations 007/008.
 Remaining work is tracked in [TODO](../../TODO.md).
@@ -102,6 +102,18 @@ Refresh work runs when requests are pending and waits 30 seconds after each comp
 PostgreSQL and the in-memory implementation both exclude a capture whose amount is absent from monetary totals and payment counts.
 Requests using `source_context` or `event_type` return event count reports with zero monetary fields.
 For those reports, `total` is the number of grouped values and `eventCount` is the complete number of source events before pagination.
+
+### Operational Metrics
+
+**GET** `/api/v1/metrics/operational`
+
+**Response (200):** `generatedAt`, `orders_per_second`, `revenue_per_hour` (Money array), `fill_rate_by_route`, `avg_booking_latency`, `refund_rate`, `scalper_block_rate`, `windowsSeconds` and `contextRollups` with per-source/event counts and anomaly rates.
+
+### Anomalies
+
+**GET** `/api/v1/metrics/anomalies`
+
+**Response (200):** `items` and `total`, where each item has `ruleId`, `currentValue`, `threshold`, `severity` and `detectedAt`.
 
 ### Route Metrics
 
