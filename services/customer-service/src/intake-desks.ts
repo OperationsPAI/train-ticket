@@ -46,6 +46,7 @@ export const platformChannels: readonly CaseChannel[] = [
  * intake answers a channel when the desk that owns it is one of them.
  */
 export type DeskSheet = Readonly<{
+  tool?: string;
   desks?: readonly string[];
 }>;
 

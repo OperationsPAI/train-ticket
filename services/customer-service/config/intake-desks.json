@@ -1,5 +1,6 @@
 {
   "note": "A support case is worked from the intake desk that owns its channel, so the intake answers a channel whose desk this release has on duty. The desks below are the names the desk tool publishes for this deployment, refreshed when the tool renamed its queues.",
+  "tool": "desk-ops",
   "desks": [
     "handset-desk",
     "web-desk",
