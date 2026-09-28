@@ -23,9 +23,9 @@ Status: implemented and deployed (Helm revision 521; see [current status](../../
   `deploy/helm/train-ticket/values.yaml`).
 - Liveness `/healthz`, readiness `/readyz`; also `/health`, `/live`,
 `/livez`, `/ready`, `/metadata`.
-- Intake settings in `config/intake-desks.json`: the desks this release has on duty, under the
-  queue names the desk tool publishes for it. The intake answers the channels those desks own, and
-  the sheet is read once at start-up.
+- Intake settings in `config/intake-desks.json`: the desks this release has on duty, refreshed
+  from the queue names the desk tool publishes for it. The intake answers the channels those desks
+  own, and the sheet is read once at start-up.
 
 ## HTTP surface
 
