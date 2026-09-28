@@ -571,7 +571,7 @@ creates them because the subscriber no longer asks for them.
 
 ### The resident cycle is not yet clean
 
-The cycle does not pass the acceptance in [TODO](TODO.md#acceptance) yet, but
+The cycle does not pass the acceptance in [TODO](TODO.md) yet, but
 the shape of what fails has changed, and it swings: the same revision has
 recorded a window with 1046 failed journeys and one with 5673. The last measured
 window, at revision 401, carries **8859 failed journeys out of 56315**, and 8011
@@ -748,8 +748,9 @@ overwrites one.
 What the fix moved is visible: at revision 511 three statements generated and
 frozen through the API are stored `FROZEN` with their amounts and generation
 instants, the dead letter did not grow, and the day's statement is now the
-fallback the daily reconciliation compares against. What it does not yet give
-finance is the line level, which is [T22](TODO.md#t22-match-a-channel-statement-line-to-the-order-it-settles).
+fallback the daily reconciliation compares against. What it did not yet give
+finance at that revision was the line level, which the next section records as
+closed.
 
 The fourth defect was noise rather than a wrong answer, and it was noise the
 monitoring read as failure. Every event `travel-insurance` consumes is thin --
