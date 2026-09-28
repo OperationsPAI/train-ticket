@@ -24,6 +24,14 @@ Status: implemented and deployed (Helm revision 521; see [current status](../../
 - Liveness `/healthz`, readiness `/readyz`; also `/health`, `/live`,
 `/livez`, `/ready`, `/metadata`.
 
+## Settings
+
+- The queues the desk's consoles poll are stated by the release
+  (`services.customer-service.env`): a handoff to a lane the release does not
+  name is refused, so a desk that opens a lane names it here rather than
+  waiting for a build. A release that names no queue keeps the arrangement the
+  service ships.
+
 ## HTTP surface
 
 `/api/v1/support-cases`: create, read, `classify`, `assign`, `escalate`,
