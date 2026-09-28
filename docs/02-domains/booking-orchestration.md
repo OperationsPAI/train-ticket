@@ -1,7 +1,7 @@
 # Booking Orchestration 当前设计
 
-更新日期：2026年9月24日。
-运行基线为 Helm revision 279，服务使用 Java、PostgreSQL 和 Redis 事件处理。
+更新日期：2026年9月28日。
+运行基线为 Helm revision 521，服务使用 Java、PostgreSQL 和 Redis 事件处理。
 统一待办见 [TODO](../TODO.md)。
 
 ## 领域边界
@@ -28,8 +28,7 @@ HTTP Saga 状态是内部状态的公开映射，详情中的步骤结果提供�
 
 ## accepted supply 引用
 
-当前源码已经实现 accepted supply 解析与持久化，Helm revision 279 的生产 Booking 与 Capacity 尚未联合启用该集成。
-这一运行边界适用于下述供应引用行为。
+accepted supply 解析与持久化已经实现并部署：Booking 把接受的 `classRef`、`scheduledServiceRef` 和 `serviceDate` 保存在预订快照上，Capacity 的联合准入按 `segmentBookingId` 读取这些事实。
 
 初始预订 HTTP 入口通过 `ReservationFactsResolver` 读取订单、已接受 Offer、准确的 fare quote 和 itinerary。
 解析器核对账户、旅客集合、行程段、出发时刻和端点，取得 `classRef`、`offerItemRef`、`scheduledServiceRef` 和 `serviceDate`。

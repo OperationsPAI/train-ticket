@@ -1,6 +1,6 @@
 # Seat Assignment implementation
 
-Last updated: 2026-09-24.
+Last updated: 2026-09-28.
 
 ## Runtime and model
 
@@ -66,9 +66,8 @@ Its `seatRef` has `allocationType=STANDING` and `displayLabel=STANDING`, with no
 `requestedClassRef`, `issuePurpose` and accepted preferences preserve the original purchase intent when a substitution is replayed.
 
 Seat Assignment currently counts its own active allocations.
-Capacity's combined calculation of allocations and pending Holds is committed as `caafa668` and remains undeployed.
-Booking coordinated behavior is not enabled.
-Published standing enforcement does not establish completed combined supply admission.
+Capacity's combined calculation of allocations and pending Holds is deployed; Booking presents the accepted class, service and date with each reservation.
+The coordinated supply integration, including combined supply admission, is verified and closed; the release evidence is in [current status](../00-current-status.md).
 
 ## APIs and events
 
@@ -103,5 +102,5 @@ These tests require their recorded inputs and a disposable database.
 
 The published standing policy records online purchase checks across seated, sleeper and standing classes.
 Those checks establish the documented Seat Assignment behavior within their executed scope.
-They do not establish arbitrary multi stop sales, atomic group allocation or deployment of Capacity's combined supply path.
+They do not establish arbitrary multi stop sales or atomic group allocation.
 No tests were added or rerun for this documentation update.

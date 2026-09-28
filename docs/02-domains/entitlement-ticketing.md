@@ -1,6 +1,6 @@
 # Entitlement and Ticketing
 
-Last updated: 2026-09-24.
+Last updated: 2026-09-28.
 
 Rust implementation: `services/entitlement-ticketing`.
 The [HTTP API](../08-contracts/api/entitlement-ticketing.md), [events](../08-contracts/events/entitlement-ticketing.md) and [service guide](../../services/entitlement-ticketing/README.md) describe concrete states and operations.

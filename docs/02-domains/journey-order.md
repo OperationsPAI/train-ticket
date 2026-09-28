@@ -1,7 +1,7 @@
 # Journey Order 当前设计
 
-更新日期：2026年9月24日。
-运行基线为 Helm revision 279，服务使用 Java、PostgreSQL 和 Redis 事件处理。
+更新日期：2026年9月28日。
+运行基线为 Helm revision 521，服务使用 Java、PostgreSQL 和 Redis 事件处理。
 统一待办见 [TODO](../TODO.md)。
 
 ## 领域边界
@@ -54,7 +54,7 @@ Booking、Capacity、Payment、Entitlement 和风险结果更新订单确认条�
 创建事实缺失、不唯一或缺少 Offer 引用返回 `PRECONDITION_FAILED`，未知订单返回 `NOT_FOUND`。
 
 该来源可用于核对缺少供应引用的初始预订，替代预订使用其改签目标。
-Helm revision 279 的 Booking accepted supply 集成尚未在生产启用，原始来源查询本身不证明历史库存已完成核对。
+Booking accepted supply 集成已经部署，Capacity 的联合准入按预订读取这些供应事实；原始来源查询仍只返回创建事实，不证明历史库存已经完成核对。
 
 ## API 与关联输入
 
