@@ -1097,6 +1097,9 @@ func foldedUUIDv7(material string) string {
 	return encoded[0:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" + encoded[16:20] + "-" + encoded[20:32]
 }
 
+// validateVerifyBoarding checks the boarding command's own fields: the
+// references it names, the source the estate carries, the event id and the
+// instant the reader reported.
 func validateVerifyBoarding(cmd VerifyBoardingCommand) error {
 	if err := cmd.EntitlementID.Validate(); err != nil {
 		return err
