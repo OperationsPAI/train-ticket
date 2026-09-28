@@ -23,7 +23,7 @@ Status: implemented and deployed (Helm revision 521; see [current status](../../
   (`services.supplier-catalog.db` and `postgres.instances.core.databases` in
   `deploy/helm/train-ticket/values.yaml`).
 - Liveness `/healthz`, readiness `/readyz`; also `/health`, `/ready`,
-`/metadata`.
+  `/metadata`.
 
 - Non-secret settings come from `services.supplier-catalog.env` in the same
   file. Which registration field a partner is filed under is one of them:
