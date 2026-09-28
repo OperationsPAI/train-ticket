@@ -1,5 +1,7 @@
 # Post sales conflict reconciliation
 
+Last updated: 2026-09-28.
+
 `POST /api/v1/internal/post-sales-cases/{caseId}/reconcile-conflict` requires `Idempotency-Key`.
 The request identifies only the conflicting case.
 The service resolves the original refund, payment results and ticket status itself.
