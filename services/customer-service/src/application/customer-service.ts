@@ -209,8 +209,9 @@ export class CustomerServiceApplication {
     const { aggregate: current, version } = await this.requireVersionedCase(caseId);
     const snapshot = current.toSnapshot();
     if (snapshot.ownerQueue === request.ownerQueue && snapshot.assignedTo === request.assignedTo) return snapshot;
-    // A handoff takes the queue from the roster the release states: a lane no
-    // console polls would leave the case waiting with nobody owning it.
+    // The two checks answer different questions -- whether the case can be
+    // handed on, and whether the release staffs the queue it is handed to -- so
+    // the guard asks the roster in force rather than second-guessing the name.
     assertHandoffQueueIsStaffed(caseId, request.ownerQueue);
     const { case: updated, event } = current.assign({
       caseId,
