@@ -30,7 +30,9 @@ Status: implemented and deployed (Helm revision 521; see [current status](../../
   (`services.customer-service.env.CUSTOMER_SERVICE_CASE_ASSIGN_OWNER_QUEUES`, a
   comma-separated list): a handoff to a queue no console polls is turned away,
   so a desk that opens a lane names it there rather than waiting for a build.
-  A release that states no lane keeps the arrangement the service ships.
+  A release that states no lane keeps the arrangement the service ships. The
+  row is read once when the process starts, so a roster change is a rollout
+  rather than a request.
 
 ## HTTP surface
 
