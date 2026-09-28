@@ -41,6 +41,13 @@ func TestFromEnvReadsThePageBoundTheReleaseVaries(t *testing.T) {
 	}
 }
 
+func TestFromEnvReadsAPageBoundAboveTheShippingPage(t *testing.T) {
+	t.Setenv("SERVICE_PLAN_LISTING_PAGE_LIMIT", "250")
+	if got := FromEnv().ListingPageLimit; got != 250 {
+		t.Fatalf("a release may set the bound itself, got %d", got)
+	}
+}
+
 func TestFromEnvReadsABlankPageBoundAsUnset(t *testing.T) {
 	t.Setenv("SERVICE_PLAN_LISTING_PAGE_LIMIT", "   ")
 	if got := FromEnv().ListingPageLimit; got != DefaultListingPageLimit {
