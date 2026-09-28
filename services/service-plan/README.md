@@ -110,9 +110,9 @@ The read path uses the same repository as segment creation and does not publish 
 `GET /api/v1/service-segments?scheduledServiceRef={serviceRef}&limit=20&offset=0` lists the service's persisted segments in identifier order.
 Inventory reconciliation must consume all pages.
 The page it serves is bounded by the deployment's `SERVICE_PLAN_LISTING_PAGE_LIMIT`
-(`internal/config`, declared for a release in the chart's `services.service-plan.env`), so a
-caller that asks for a larger page is refused rather than served a different one, and a
-caller that reconciles a service reads until it has seen `total` rows.
+(`internal/config`, declared for a release in the chart's `services.service-plan.env`): a caller
+that asks for a larger page is refused rather than served a different one, and a caller that
+reconciles a service reads until it has seen `total` rows.
 `GET /api/v1/internal/service-segments/{segmentRef}/supply` validates the persisted
 segment against its service and returns its ordered stops, zero based interval, service date
 and stable stop sequence digest.
