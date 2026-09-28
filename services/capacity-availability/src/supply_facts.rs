@@ -1413,6 +1413,10 @@ impl SupplyClient {
         Ok(segments)
     }
 
+    /// Reads the whole listing one page at a time. The page is the limit the
+    /// contract documents (1..100) and the walk stops when it has seen `total`
+    /// rows, so a page that comes back with another limit is a producer that
+    /// disagrees with the request and is refused rather than consumed.
     async fn fetch_service_segments(
         &self,
         service: &str,
