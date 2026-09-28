@@ -28,6 +28,10 @@ Status: REQ-004 master-data primitives, implemented and deployed (Helm revision 
   states the allowance an unweighed station node carries; `0` would leave
   the node's `accessTimeMinutes` absent.
 
+A station node created without an `accessTimeMinutes` is answered with the
+allowance the release ships, so a consumer that plans against the node reads a
+weight rather than an absence. A node that declared its own weight keeps it.
+
 ## HTTP surface
 
 - `POST/GET /api/v1/places` and `GET /api/v1/places/{placeId}`.
