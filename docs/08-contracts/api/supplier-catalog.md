@@ -1,6 +1,6 @@
 # Supplier Catalog — HTTP API
 
-Last updated: 2026-09-28
+Last updated: 2026-09-29
 
 ## Overview
 
@@ -37,6 +37,12 @@ timestamps, and Money.
 | `registeredAt` | timestamp | Registration time. |
 
 **Error codes:** `VALIDATION_FAILED`, `CONFLICT`
+
+`CONFLICT` answers a registration that would file another partner under an identity
+the master data already holds. Which request field carries that identity is a
+release decision (`SUPPLIER_PARTNER_KEY` on the service, the legal name when the
+release names nothing), and `SUPPLIER_PARTNERS_PER_KEY` bounds how many partners one
+value of it may hold.
 
 ### Get Supplier
 
