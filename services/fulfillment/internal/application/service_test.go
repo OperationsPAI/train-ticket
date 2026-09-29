@@ -765,3 +765,16 @@ func TestSegmentStatusReportKeepsTheInstantOfACancellation(t *testing.T) {
 		t.Fatalf("segment status result=%+v", result)
 	}
 }
+
+func TestBoardingEnvelopeCarriesTheCorrelationTheCallerSent(t *testing.T) {
+	boardedAt := time.Date(2026, 9, 29, 15, 45, 0, 0, time.UTC)
+	publisher := &recordingPublisher{}
+	service := NewService(NewInMemoryRepository(), publisher, NewInMemoryConsumedEventLog(), nil, func() time.Time { return boardedAt })
+	seedTicket(t, service, "ent-corr1", "sb-corr1", "ord-corr1", "tvl-corr1", "seg-corr1")
+	if _, err := service.VerifyBoarding(context.Background(), VerifyBoardingCommand{EntitlementID: "ent-corr1", SegmentBookingID: "sb-corr1", JourneyOrderID: "ord-corr1", TravelerID: "tvl-corr1", SegmentRef: "seg-corr1", Source: domain.FulfillmentSourceGate, SourceEventID: "gate-corr1", OccurredAt: boardedAt}, CommandMetadata{CorrelationID: "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c0b1"}); err != nil {
+		t.Fatalf("boarding: %v", err)
+	}
+	if len(publisher.envelopes) != 1 || publisher.envelopes[0].CorrelationID != "corr-0194f2e0-7b3e-7610-8284-5c26e8b0c0b1" {
+		t.Fatalf("published envelopes=%#v", publisher.envelopes)
+	}
+}
