@@ -33,6 +33,7 @@ Status: implemented and deployed (Helm revision 521; see [current status](../../
 - `POST /api/v1/suppliers`, `GET /api/v1/suppliers`,
   `GET /api/v1/suppliers/{supplierId}`.
 - `POST /api/v1/carriers`, `POST /api/v1/contracts`.
+- The three `POST` paths require an `Idempotency-Key` header carrying a UUID v7.
 
 The full contract lives in
 [`docs/08-contracts/api/supplier-catalog.md`](../../docs/08-contracts/api/supplier-catalog.md).
