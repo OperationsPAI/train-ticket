@@ -38,6 +38,13 @@ timestamps, and Money.
 
 **Error codes:** `VALIDATION_FAILED`, `CONFLICT`
 
+A `CONFLICT` answers a filing that carries an identity the catalogue already
+holds for another partner. Which field of the request carries that identity is
+the deployment's decision (`SUPPLIER_IDENTITY_SOURCE` in
+`services.supplier-catalog.env`): the code the registration hands over, or the
+brand name the partner trades as. The catalogue compares the identity without
+case, and the refused filing leaves neither a partner nor an identity behind.
+
 ### Get Supplier
 
 **GET** `/api/v1/suppliers/{supplierId}`
