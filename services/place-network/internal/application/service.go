@@ -10,6 +10,10 @@ import (
 	"github.com/trainticket/greenfield/services/place-network/internal/domain/ports"
 )
 
+// codeFilterLimit is the bound the contract puts on the repeated code filter a
+// list read may carry.
+const codeFilterLimit = 100
+
 type UnitOfWork func(context.Context, func(context.Context) error) error
 
 type ServiceConfig struct {
@@ -193,8 +197,8 @@ type ListPlacesResponse struct {
 }
 
 func (s *Service) ListPlaces(ctx context.Context, req ListPlacesRequest) (*ListPlacesResponse, error) {
-	if len(req.Codes) > 100 {
-		return nil, NewDomainError("VALIDATION_FAILED", "at most 100 place codes are allowed")
+	if len(req.Codes) > codeFilterLimit {
+		return nil, NewDomainError("VALIDATION_FAILED", fmt.Sprintf("at most %d place codes are allowed", codeFilterLimit))
 	}
 	for _, code := range req.Codes {
 		if strings.TrimSpace(code) == "" {
