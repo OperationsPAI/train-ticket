@@ -321,3 +321,20 @@ func assertEnvelope(t *testing.T, envelope application.EventEnvelope, eventType 
 		t.Fatalf("bad envelope IDs/payload: %#v", envelope)
 	}
 }
+
+func TestRepeatedCarrierCodeIsRefusedOnTheRoute(t *testing.T) {
+	router, _ := newTestRouter()
+	created := doJSON(router, http.MethodPost, "/api/v1/suppliers", `{"legalName":"Northline Rail Ltd","brandName":"Northline Rail","supplierCode":"NL00000001"}`, "0194f2e0-7b3e-7000-8000-000000000021")
+	var supplier map[string]interface{}
+	mustJSON(t, created.Body.Bytes(), &supplier)
+	supplierID := supplier["supplierId"].(string)
+	first := `{"supplierId":"` + supplierID + `","name":"Northline Freight","code":"NLF01","transportMode":"RAIL"}`
+	if response := doJSON(router, http.MethodPost, "/api/v1/carriers", first, "0194f2e0-7b3e-7000-8000-000000000022"); response.Code != http.StatusCreated {
+		t.Fatalf("first carrier: %d %s", response.Code, response.Body.String())
+	}
+	second := `{"supplierId":"` + supplierID + `","name":"Northline Freight","code":"nlf01","transportMode":"RAIL"}`
+	response := doJSON(router, http.MethodPost, "/api/v1/carriers", second, "0194f2e0-7b3e-7000-8000-000000000023")
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "CONFLICT") {
+		t.Fatalf("unexpected status/body: %d %s", response.Code, response.Body.String())
+	}
+}
