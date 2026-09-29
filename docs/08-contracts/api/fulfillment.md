@@ -106,6 +106,16 @@ Records arrival/provider/admin/system completion after a previously boarded segm
 
 **Response (200):** Full record details.
 
+| Field | Type | Description |
+|---|---|---|
+| `fulfillmentRecordId` | string | Fulfillment record ID (`fr-<uuid>`). |
+| `entitlementId`, `segmentBookingId`, `journeyOrderId`, `travelerId`, `segmentRef` | string | The five references the record was created with. |
+| `status` | enum | The record's lifecycle state. |
+| `boardingFact` | object | The boarding the record holds: `source`, `sourceEventId`, `occurredAt`, `receivedAt`. |
+| `completedAt`, `completionSource` | timestamp, enum | Present once the segment completed. |
+| `noShowReason`, `noShowAssessedAt` | enum, timestamp | Present once the segment was assessed as a no-show. |
+| `createdAt`, `updatedAt` | timestamp | When the record was created and last written. |
+
 **Error codes:** `NOT_FOUND`
 
 ## Bus-only commands
