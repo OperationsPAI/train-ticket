@@ -82,15 +82,7 @@ func (s *Service) CreatePlace(ctx context.Context, req CreatePlaceRequest) (*Cre
 		if err := s.places.Save(txCtx, place); err != nil {
 			return NewDomainError("CONFLICT", err.Error())
 		}
-		event := domain.PlaceUpdatedEvent{
-			PlaceID:       place.ID,
-			PlaceType:     place.Type,
-			CanonicalName: place.CanonicalName,
-			Code:          req.Code,
-			Timezone:      req.Timezone,
-			Status:        place.Status,
-			UpdatedAt:     domain.FormatTimestamp(now),
-		}
+		event := placeRegisteredEvent(place, req, now)
 		if err := s.publisher.Publish(txCtx, domain.NewEventEnvelope("PlaceRegistered", now, req.CorrelationID, "", domain.ProducerPlaceNetwork, event)); err != nil {
 			return NewDomainError("UNAVAILABLE", "event publisher unavailable")
 		}
@@ -111,6 +103,20 @@ func createPlaceResponse(place domain.Place, now time.Time) *CreatePlaceResponse
 		CanonicalName: place.CanonicalName,
 		Status:        string(place.Status),
 		CreatedAt:     domain.FormatTimestamp(now),
+	}
+}
+
+// placeRegisteredEvent is the fact a registration publishes: the place the
+// write filed, with the reference data the request supplied.
+func placeRegisteredEvent(place domain.Place, req CreatePlaceRequest, now time.Time) domain.PlaceUpdatedEvent {
+	return domain.PlaceUpdatedEvent{
+		PlaceID:       place.ID,
+		PlaceType:     place.Type,
+		CanonicalName: place.CanonicalName,
+		Code:          req.Code,
+		Timezone:      req.Timezone,
+		Status:        place.Status,
+		UpdatedAt:     domain.FormatTimestamp(now),
 	}
 }
 
