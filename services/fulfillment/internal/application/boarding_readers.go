@@ -43,7 +43,7 @@ var deploymentEstate = estateStatedBy(os.Getenv(boardingSourcesSetting))
 func estateStatedBy(stated string) boardingEstate {
 	estate := boardingEstate{}
 	for _, name := range strings.Split(stated, ",") {
-		if reader := domain.FulfillmentSource(strings.ToUpper(strings.TrimSpace(name))); reader != "" {
+		if reader := readerNamed(name); reader != "" {
 			estate[reader] = struct{}{}
 		}
 	}
@@ -53,6 +53,13 @@ func estateStatedBy(stated string) boardingEstate {
 		}
 	}
 	return estate
+}
+
+// readerNamed resolves one entry of a stated estate. The setting is written the
+// way an operator writes it, so case and surrounding space are not what decides
+// whether a reader is on the estate.
+func readerNamed(name string) domain.FulfillmentSource {
+	return domain.FulfillmentSource(strings.ToUpper(strings.TrimSpace(name)))
 }
 
 // operates reports whether this deployment boards through that reader.
