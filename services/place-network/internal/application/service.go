@@ -99,15 +99,19 @@ func (s *Service) CreatePlace(ctx context.Context, req CreatePlaceRequest) (*Cre
 		return nil, err
 	}
 
-	response := &CreatePlaceResponse{
+	return createPlaceResponse(place, now), nil
+}
+
+// createPlaceResponse renders the answer a registration gets: the reference the
+// platform will use, the type it was filed under and the instant it was filed.
+func createPlaceResponse(place domain.Place, now time.Time) *CreatePlaceResponse {
+	return &CreatePlaceResponse{
 		PlaceID:       string(place.ID),
 		PlaceType:     string(place.Type),
 		CanonicalName: place.CanonicalName,
 		Status:        string(place.Status),
 		CreatedAt:     domain.FormatTimestamp(now),
 	}
-
-	return response, nil
 }
 
 type WalkingEdgeResponse struct {
