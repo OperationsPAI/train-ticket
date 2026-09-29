@@ -36,6 +36,25 @@ Applied post-sales refunds are matched to the revenue recognition whose source e
 - Liveness `/healthz`, readiness `/readyz`; also `/health`, `/live`,
 `/livez`, `/ready`, `/metadata`.
 
+### Read-path settings
+
+The bounds the reads are served under live in
+[`config/read-paths.properties`](config/read-paths.properties), which the image
+mounts at `/app/config/read-paths.properties` and the service reads once at
+startup; `FINANCE_SETTLEMENT_SETTINGS` names another path. A value that is
+absent keeps its compiled default, so an environment that mounts no file serves
+what the contracts describe:
+
+- `read.listing.pageBound` — how many entries a listing read returns at most.
+- `read.platformRefund.pageBound` — how many pages the daily reconciliation
+  walks through the platform's settled refunds before it stops and says so.
+- `read.channelStatement.pageBound` — how many pages it walks through one
+  channel statement.
+
+The file is a deployment's copy. Moving a value and restarting changes what the
+process serves; nothing on a request path touches the disk, so a read is always
+answered against the values the process started with.
+
 ## HTTP surface
 
 - `GET /api/v1/revenue-recognitions/{id}`,
