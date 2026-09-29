@@ -651,3 +651,29 @@ func TestVerifyBoardingRequiresTheEventTheFactArrivedWith(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestNoShowEventCarriesTheReasonTheRecordHolds(t *testing.T) {
+	publisher := &recordingPublisher{}
+	service := NewService(NewInMemoryRepository(), publisher, NewInMemoryConsumedEventLog(), nil, nil)
+	seedTicket(t, service, "ent-event2", "sb-event2", "ord-event2", "tvl-event2", "seg-event2")
+
+	if _, err := service.RecordNoShow(context.Background(), RecordNoShowCommand{EntitlementID: "ent-event2", SegmentBookingID: "sb-event2", JourneyOrderID: "ord-event2", TravelerID: "tvl-event2", SegmentRef: "seg-event2", Reason: domain.NoShowReasonWindowExpired}, CommandMetadata{}); err != nil {
+		t.Fatalf("record no-show: %v", err)
+	}
+	if len(publisher.envelopes) != 1 {
+		t.Fatalf("expected one published event, got %d", len(publisher.envelopes))
+	}
+	envelope := publisher.envelopes[0]
+	if envelope.EventType != "NoShowRecorded" {
+		t.Fatalf("unexpected event type: %s", envelope.EventType)
+	}
+	var payload struct {
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if payload.Reason != string(domain.NoShowReasonWindowExpired) {
+		t.Fatalf("the event does not carry the reason the record holds: %q", payload.Reason)
+	}
+}
