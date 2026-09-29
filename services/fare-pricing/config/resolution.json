@@ -1,8 +1,7 @@
 {
   "resolution": {
     "servedContracts": [
-      "contract-managed",
-      "contract-default"
+      "contract-managed"
     ]
   }
 }
