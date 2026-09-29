@@ -27,6 +27,14 @@ const knownChannels = [
 
 export type IntakeChannel = (typeof knownChannels)[number];
 
+/**
+ * The channels this process answers, read from the statement the deployment carries.
+ *
+ * Nothing below asks the process again: a statement that changed under a running
+ * process would leave the intake answering one list and the rest of the request
+ * another, so the process reads it once and the value it kept is the value every
+ * case is checked against.
+ */
 export function intakeChannels(
   configured: string | undefined = process.env.CUSTOMER_SERVICE_INTAKE_CHANNELS,
 ): readonly CaseChannel[] {
