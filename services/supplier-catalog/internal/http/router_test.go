@@ -321,3 +321,23 @@ func assertEnvelope(t *testing.T, envelope application.EventEnvelope, eventType 
 		t.Fatalf("bad envelope IDs/payload: %#v", envelope)
 	}
 }
+
+// The release decides which field names a partner, so what the caller sees is a
+// conflict body on the second onboarding of one trading name rather than two
+// created partners.
+func TestRegisteringASecondPartnerUnderOneTradingNameIsRefused(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := RouterWithService(application.NewService(nil).WithIdentitySource(application.IdentitySourceBrand))
+	first := doJSON(router, http.MethodPost, "/api/v1/suppliers",
+		`{"legalName":"Transfer carrier 0194f2e0","brandName":"Transfer rail","supplierCode":"T7191d26549"}`,
+		"0194f2e0-7b3e-7000-8000-000000000021")
+	second := doJSON(router, http.MethodPost, "/api/v1/suppliers",
+		`{"legalName":"Transfer carrier 0194f2e1","brandName":"Transfer rail","supplierCode":"T8191d26549"}`,
+		"0194f2e0-7b3e-7000-8000-000000000022")
+	if first.Code != http.StatusCreated {
+		t.Fatalf("first onboarding should create the partner: %d %s", first.Code, first.Body.String())
+	}
+	if second.Code != http.StatusConflict || !strings.Contains(second.Body.String(), "CONFLICT") {
+		t.Fatalf("second onboarding of one trading name should conflict: %d %s", second.Code, second.Body.String())
+	}
+}
