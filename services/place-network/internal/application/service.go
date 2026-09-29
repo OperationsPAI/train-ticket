@@ -375,10 +375,24 @@ func copyInt(value *int) *int {
 	return &copied
 }
 
+// walkingEdgesFromRequest reads the directed edges a create request declares.
 func walkingEdgesFromRequest(edges []WalkingEdgeRequest) []domain.WalkingEdge {
 	out := make([]domain.WalkingEdge, len(edges))
 	for i, edge := range edges {
 		out[i] = domain.WalkingEdge{ToNodeID: domain.TransportNodeID(edge.ToNodeID), WalkingTimeMinutes: edge.WalkingTimeMinutes}
+	}
+	return out
+}
+
+// walkingEdgesToPayload writes the same edges into the event a registration
+// publishes, so a consumer reads the weights the request declared.
+func walkingEdgesToPayload(edges []domain.WalkingEdge) []domain.WalkingEdgePayload {
+	if len(edges) == 0 {
+		return nil
+	}
+	out := make([]domain.WalkingEdgePayload, len(edges))
+	for i, edge := range edges {
+		out[i] = domain.WalkingEdgePayload{ToNodeID: edge.ToNodeID, WalkingTimeMinutes: copyInt(edge.WalkingTimeMinutes)}
 	}
 	return out
 }
@@ -390,17 +404,6 @@ func walkingEdgesToResponse(edges []domain.WalkingEdge) []WalkingEdgeResponse {
 	out := make([]WalkingEdgeResponse, len(edges))
 	for i, edge := range edges {
 		out[i] = WalkingEdgeResponse{ToNodeID: string(edge.ToNodeID), WalkingTimeMinutes: copyInt(edge.WalkingTimeMinutes)}
-	}
-	return out
-}
-
-func walkingEdgesToPayload(edges []domain.WalkingEdge) []domain.WalkingEdgePayload {
-	if len(edges) == 0 {
-		return nil
-	}
-	out := make([]domain.WalkingEdgePayload, len(edges))
-	for i, edge := range edges {
-		out[i] = domain.WalkingEdgePayload{ToNodeID: edge.ToNodeID, WalkingTimeMinutes: copyInt(edge.WalkingTimeMinutes)}
 	}
 	return out
 }
