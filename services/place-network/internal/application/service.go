@@ -66,9 +66,9 @@ type CreatePlaceResponse struct {
 }
 
 func (s *Service) CreatePlace(ctx context.Context, req CreatePlaceRequest) (*CreatePlaceResponse, error) {
-	placeType := domain.PlaceType(req.PlaceType)
-	if !validPlaceTypeForAPI(placeType) {
-		return nil, NewDomainError("VALIDATION_FAILED", fmt.Sprintf("unsupported place type: %q", req.PlaceType))
+	placeType, err := placeTypeForAPI(req.PlaceType)
+	if err != nil {
+		return nil, err
 	}
 
 	now := s.clock.Now()
@@ -309,6 +309,18 @@ func NewDomainError(code, message string) *DomainError {
 	return &DomainError{Code: code, Message: message}
 }
 func (e *DomainError) Error() string { return fmt.Sprintf("%s: %s", e.Code, e.Message) }
+
+// placeTypeForAPI reads the place type a request states. The domain's
+// vocabulary holds more types than this API serves, so the ones the platform
+// may publish internally are refused here rather than filed under a type no
+// caller of this contract asked for.
+func placeTypeForAPI(value string) (domain.PlaceType, error) {
+	placeType := domain.PlaceType(value)
+	if !validPlaceTypeForAPI(placeType) {
+		return "", NewDomainError("VALIDATION_FAILED", fmt.Sprintf("unsupported place type: %q", value))
+	}
+	return placeType, nil
+}
 
 func validPlaceTypeForAPI(value domain.PlaceType) bool {
 	switch value {
