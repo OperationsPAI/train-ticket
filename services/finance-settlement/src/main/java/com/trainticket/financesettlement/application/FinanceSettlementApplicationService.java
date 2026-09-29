@@ -252,13 +252,23 @@ public class FinanceSettlementApplicationService {
         publish(accrual.domainEvents());
     }
 
-    public Page<ReconciliationCase> listReconciliationCases(String orderId, int limit, int offset) {
+    /**
+     * The one page check every listing this service answers is served under. A
+     * page outside the bound the deployment states is refused with the bound
+     * named, so a caller can tell a page it may not have from a page that was
+     * not there.
+     */
+    public void requireListingPage(int limit, int offset) {
         if (limit < 1 || limit > settings.listingPageBound()) {
             throw new ValidationException("limit must be between 1 and " + settings.listingPageBound());
         }
         if (offset < 0) {
             throw new ValidationException("offset must not be negative");
         }
+    }
+
+    public Page<ReconciliationCase> listReconciliationCases(String orderId, int limit, int offset) {
+        requireListingPage(limit, offset);
         List<ReconciliationCase> items = reconciliationCases.find(orderId, limit, offset);
         return new Page<>(items, reconciliationCases.count(orderId), limit, offset);
     }
@@ -269,12 +279,7 @@ public class FinanceSettlementApplicationService {
     }
 
     public Page<ChannelStatementProjection> listChannelStatements(String channel, String statementDate, int limit, int offset) {
-        if (limit < 1 || limit > settings.listingPageBound()) {
-            throw new ValidationException("limit must be between 1 and " + settings.listingPageBound());
-        }
-        if (offset < 0) {
-            throw new ValidationException("offset must not be negative");
-        }
+        requireListingPage(limit, offset);
         if ((channel == null || channel.isBlank()) && (statementDate == null || statementDate.isBlank())) {
             throw new ValidationException("channel or statementDate is required");
         }
@@ -289,23 +294,13 @@ public class FinanceSettlementApplicationService {
     }
 
     public Page<BenefitCostEntry> listBenefitCosts(String accountId, int limit, int offset) {
-        if (limit < 1 || limit > settings.listingPageBound()) {
-            throw new ValidationException("limit must be between 1 and " + settings.listingPageBound());
-        }
-        if (offset < 0) {
-            throw new ValidationException("offset must not be negative");
-        }
+        requireListingPage(limit, offset);
         List<BenefitCostEntry> items = projections.findBenefitCostEntries(accountId, limit, offset);
         return new Page<>(items, projections.countBenefitCostEntries(accountId), limit, offset);
     }
 
     public Page<AncillaryFinancialFact> listAncillaryFinancialFacts(String journeyOrderId, int limit, int offset) {
-        if (limit < 1 || limit > settings.listingPageBound()) {
-            throw new ValidationException("limit must be between 1 and " + settings.listingPageBound());
-        }
-        if (offset < 0) {
-            throw new ValidationException("offset must not be negative");
-        }
+        requireListingPage(limit, offset);
         List<AncillaryFinancialFact> items = projections.findAncillaryFinancialFacts(journeyOrderId, limit, offset);
         return new Page<>(items, projections.countAncillaryFinancialFacts(journeyOrderId), limit, offset);
     }

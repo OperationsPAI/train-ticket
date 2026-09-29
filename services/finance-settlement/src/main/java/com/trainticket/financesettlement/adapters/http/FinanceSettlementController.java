@@ -9,7 +9,6 @@ import com.trainticket.financesettlement.application.FinanceSettlementApplicatio
 import com.trainticket.financesettlement.application.ResourceNotFoundException;
 import com.trainticket.financesettlement.application.SettlementScheduleRun;
 import com.trainticket.financesettlement.application.SettlementScheduleRunRepository;
-import com.trainticket.financesettlement.application.ValidationException;
 import com.trainticket.financesettlement.domain.Invoice;
 import com.trainticket.financesettlement.domain.Money;
 import com.trainticket.financesettlement.domain.ReconciliationBatch;
@@ -129,8 +128,7 @@ public class FinanceSettlementController {
         @RequestParam(defaultValue = "20") int limit,
         @RequestParam(defaultValue = "0") int offset
     ) {
-        if (limit < 1 || limit > 100) throw new ValidationException("limit must be between 1 and 100");
-        if (offset < 0) throw new ValidationException("offset must not be negative");
+        service.requireListingPage(limit, offset);
         return new PagedResponse<>(scheduleRuns.find(limit, offset).stream().map(SettlementScheduleRunResponse::from).toList(),
             scheduleRuns.count(), limit, offset);
     }
