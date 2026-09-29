@@ -265,6 +265,21 @@ Fulfillment 需要对设备、供应商和遗留执行服务做防腐，避免�
 4. 关闭订单服务对履约状态的直接写入，只保留兼容字段或投影。
 5. 最后把离线核验、NoShow、Arrival、Completed 扩展到多 Segment 和多交通方式。
 
+## 13. 实现存储
+
+服务把上面的聚合落到 `fulfillment` 库的几张表里（`services/fulfillment/migrations/`）：
+
+| 表 | 内容 |
+|---|---|
+| `fulfillment_record_snapshots` | FulfillmentRecord 聚合快照，一行一条记录，写入按 `version` 做乐观并发。 |
+| `outbox` | 服务发布的事实，由 relay 送到 `events:fulfillment`。 |
+| `processed_events` | 已消费事件的去重记录。 |
+| `idempotency_records` | 命令端点的幂等响应，保留十分钟。 |
+| `segment_status_records` | SYSTEM/OPS 申报的区段运行状态。 |
+| `ancillary_fulfillment_handoffs`、`ride_execution_views` | 从 ancillary-service 和 dispatch 折叠出来的外部交接视图。 |
+| `voided_entitlements` | 作废事实，带来源：`event_id` 或票据快照版本，重启后仍然成立。 |
+
+
 ## 12. 验收标准
 
 - 本 domain 的聚合所有权明确：FulfillmentRecord、VerificationSession、UsageTimeline、NoShowAssessment 均由 Fulfillment 拥有。
