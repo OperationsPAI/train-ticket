@@ -1635,6 +1635,10 @@ services:
       # grew from thirteen seconds to fifty seven within a minute.
       CONSUMER_THREADS: "24"   # 7 streams
       HIKARI_MAX_POOL_SIZE: "48"
+      # The read-path settings the pod starts with. Stated here so a release that
+      # mounts its own copy at another path points the pods at it; the image
+      # carries the copy that answers when this names nothing.
+      FINANCE_SETTLEMENT_SETTINGS: "/app/config/read-paths.properties"
     # 4 consumer threads do not fit in the default 500m CPU limit. Raising
     # CONSUMER_THREADS without raising this caused a CrashLoopBackOff: the
     # threads saturated half a core working through the backlog, the HTTP thread
