@@ -43,7 +43,7 @@ The full contract lives in
 
 Publishes `SupplierRegistered`, `CarrierRegistered`, `ContractActivated`,
 `ContractSuspended`, `ProductCapabilityDeclared` and `ExternalCodeMapped` to
-`events:supplier-catalog`; see
+`events:supplier-catalog`; the contract for each is in
 [`docs/08-contracts/events/supplier-catalog.md`](../../docs/08-contracts/events/supplier-catalog.md).
 It consumes no inbound event stream
 (`internal/adapters/messaging/runtime.go`).
