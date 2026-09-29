@@ -1114,3 +1114,10 @@ the one the catalogue named when it was issued, so a policy sold under the
 previous version keeps it after the file moves on. The three other products kept
 their numbers, and the file's own test walks every prefix so a key that falls out
 of step with the loader fails before a deployment does.
+
+**A repricing is a settings change and is checked like one.** The catalogue file
+is compiled into the binary, so the check is the service's own test run: the
+loader test walks every prefix, an issued policy's premium is compared with the
+published one, and the cancellation path is asserted against the same value. What
+is not covered by that run is the price the purchase funnel charges, which lives
+in the load generator's journey mix and moves with its own release.
