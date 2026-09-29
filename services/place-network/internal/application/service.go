@@ -156,7 +156,7 @@ func (s *Service) GetPlace(ctx context.Context, id domain.PlaceID) (*GetPlaceRes
 		Code:          place.Code,
 		Timezone:      place.Timezone,
 		Status:        string(place.Status),
-		Nodes:         nodeSummaries(nodes),
+		Nodes:         summariseNodes(nodes),
 	}, nil
 }
 
@@ -339,10 +339,17 @@ func apiServingModes(modes []domain.TransportMode) []string {
 	return out
 }
 
-func nodeSummaries(nodes []domain.TransportNode) []NodeSummary {
+// nodeSummary shapes one node the way a place read describes the nodes it
+// holds. The node read answers the same fields plus the reference it hangs off,
+// so the two shapes are built from this one summary of a node.
+func nodeSummary(node domain.TransportNode) NodeSummary {
+	return NodeSummary{NodeID: string(node.ID), DisplayName: node.DisplayName, ServingModes: apiServingModes(node.ServingModes), AccessTimeMinutes: copyInt(node.AccessTimeMinutes), WalkingEdges: walkingEdgesToResponse(node.WalkingEdges)}
+}
+
+func summariseNodes(nodes []domain.TransportNode) []NodeSummary {
 	out := make([]NodeSummary, len(nodes))
 	for i, node := range nodes {
-		out[i] = NodeSummary{NodeID: string(node.ID), DisplayName: node.DisplayName, ServingModes: apiServingModes(node.ServingModes), AccessTimeMinutes: copyInt(node.AccessTimeMinutes), WalkingEdges: walkingEdgesToResponse(node.WalkingEdges)}
+		out[i] = nodeSummary(node)
 	}
 	return out
 }
