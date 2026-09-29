@@ -247,12 +247,7 @@ func (s *Service) CreateTransportNode(ctx context.Context, req CreateTransportNo
 		return nil, NewDomainError("VALIDATION_FAILED", err.Error())
 	}
 	node.SetAccessWeights(req.AccessTimeMinutes, walkingEdgesFromRequest(req.WalkingEdges))
-	// A station's wayfinding is planning data like any other: a station the
-	// operator did not weigh is planned from the service's allowance instead of
-	// an absent field every consumer has to interpret for itself.
-	if place.Type == domain.PlaceTypeStation {
-		node.ApplyAccessAllowance(s.stationAccessAllowanceMinutes)
-	}
+	s.measureStationNode(*place, &node)
 	if err := node.Validate(); err != nil {
 		return nil, NewDomainError("VALIDATION_FAILED", err.Error())
 	}
@@ -292,6 +287,16 @@ type CreateTransportNodeResponse = nodeResponseBody
 
 // GetTransportNodeResponse is the read's answer.
 type GetTransportNodeResponse = nodeResponseBody
+
+// measureStationNode fills the station allowance for a node the operator did
+// not weigh. A place that is not a station declares no wayfinding of its own,
+// so its node keeps the absent field the contract documents.
+func (s *Service) measureStationNode(place domain.Place, node *domain.TransportNode) {
+	if place.Type != domain.PlaceTypeStation {
+		return
+	}
+	node.ApplyAccessAllowance(s.stationAccessAllowanceMinutes)
+}
 
 func (s *Service) GetTransportNode(ctx context.Context, id domain.TransportNodeID) (*GetTransportNodeResponse, error) {
 	node, err := s.nodes.FindByID(ctx, id)
