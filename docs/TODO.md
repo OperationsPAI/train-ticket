@@ -113,6 +113,20 @@ rather than by its cost.
    never written again. That changes a published level, so it is a decision; the
    measurement is in [scale architecture](09-performance/scale-architecture.md).
 
+## Boarding estate
+
+The readers a release boards through are stated in
+`services.fulfillment.env.FULFILLMENT_BOARDING_SOURCES` rather than in the
+branch, so the estate a deployment operates moves without a new image. The
+release states the station and the provider.
+
+1. [ ] The station estate's own hand-off has to be verified at the resident
+   rate: the gate readers were the busiest of the three, and the journeys they
+   carried now arrive as station facts with their own source ids, so the
+   projection's pace on `events:entitlement-ticketing` and the boarding window
+   it leaves are the things to measure. The window that closes this item is
+   recorded in [current status](00-current-status.md).
+
 ## Rules
 
 - No unchecked item above is implicitly authorised: completing one means
