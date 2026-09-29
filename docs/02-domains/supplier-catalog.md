@@ -7,7 +7,7 @@
 | Domain | Supplier Catalog |
 | Status | accepted-ddd-baseline |
 | Owner Agent | agentm-supplier-catalog |
-| Last Updated | 2026-09-28 |
+| Last Updated | 2026-09-29 |
 | High-Level Inputs | `docs/01-ddd-high-level/context-map.md`, `docs/01-ddd-high-level/general-travel-ddd.md`, `docs/02-domains/fare-pricing.md`, `docs/02-domains/service-plan.md` |
 
 ## 1. 领域目标
@@ -56,6 +56,7 @@ Supplier Catalog 负责把平台可合作的供应侧主数据整理成稳定、
 |---|---|---|
 | Supplier | 与平台合作提供运输、票务、调度或附加服务的供应侧主体。 | 可是承运商、代理、平台、车队或运营方。 |
 | SupplierProfile | Supplier 的法律实体、品牌、市场、联系方式、资质和风险属性。 | 发布后作为下游展示和审计引用。 |
+| SupplierIdentity | 主数据认定一个 Supplier 身份所用的字段，决定两次登记是否指向同一主体。 | 登记携带法律名称、品牌名和供应商代码，以哪个字段为准由发布配置决定；同一身份值下可容纳的主体数同样由发布配置给出。 |
 | ProductCatalog | 某 Supplier 可售或可服务产品的版本化目录。 | 包含主票和 AncillaryProduct 底稿。 |
 | Contract | 平台与 Supplier 的合作契约。 | 只保存业务摘要和可引用条款，不替代法务系统原件。 |
 | ContractVersion | Contract 的可发布版本。 | 生效窗口、范围和能力不可与同 scope 版本冲突。 |
