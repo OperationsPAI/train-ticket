@@ -265,6 +265,10 @@ func (s *Service) RegisterCarrier(ctx context.Context, cmd RegisterCarrierComman
 		return CarrierView{}, fmt.Errorf("%w: supplierId, name, code, and transportMode are required", ErrValidation)
 	}
 	carrierID := domain.CarrierID("car-" + newUUIDString())
+	// A carrier code is filed in the carrier's own namespace, under the supplier
+	// it is registered for, so the code a partner mints for a carrier is not
+	// compared with the codes its suppliers are filed under. Only the supplier's
+	// profile follows the identity the release names.
 	carrier, err := domain.NewCarrier(carrierID, domain.SupplierID(cmd.SupplierID), cmd.Name, cmd.Code, cmd.TransportMode)
 	if err != nil {
 		return CarrierView{}, fmt.Errorf("%w: %v", ErrDomainViolation, err)
