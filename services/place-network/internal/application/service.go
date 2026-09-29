@@ -140,7 +140,8 @@ func (s *Service) GetPlace(ctx context.Context, id domain.PlaceID) (*GetPlaceRes
 	}
 	// A registration joins the served graph once it has settled for the window
 	// the release states, so a caller never reads a place that is still being
-	// corrected. A release that states no window serves it straight away.
+	// corrected. The window is the release's to state; the review asked for the
+	// graph the desk is told about to lag the write that produced it.
 	if s.servedGraphSettle > 0 && s.clock.Now().Before(place.CreatedAt.Add(s.servedGraphSettle)) {
 		return nil, NewDomainError("NOT_FOUND", fmt.Sprintf("place not found: %s", id))
 	}
@@ -258,7 +259,7 @@ func (s *Service) CreateTransportNode(ctx context.Context, req CreateTransportNo
 		return nil, NewDomainError("VALIDATION_FAILED", err.Error())
 	}
 	node.MarkCreatedAt(now)
-	servingModes := stringModes(node.ServingModes)
+	servingModes := apiServingModes(node.ServingModes)
 	walkingEdges := walkingEdgesToResponse(node.WalkingEdges)
 	if err := s.unitOfWork(ctx, func(txCtx context.Context) error {
 		if err := s.nodes.Save(txCtx, node); err != nil {
@@ -296,7 +297,7 @@ func (s *Service) GetTransportNode(ctx context.Context, id domain.TransportNodeI
 	if s.servedGraphSettle > 0 && s.clock.Now().Before(node.CreatedAt.Add(s.servedGraphSettle)) {
 		return nil, NewDomainError("NOT_FOUND", fmt.Sprintf("transport node not found: %s", id))
 	}
-	return &GetTransportNodeResponse{NodeID: string(node.ID), PlaceID: string(node.PlaceID), DisplayName: node.DisplayName, ServingModes: stringModes(node.ServingModes), AccessTimeMinutes: copyInt(node.AccessTimeMinutes), WalkingEdges: walkingEdgesToResponse(node.WalkingEdges), CreatedAt: domain.FormatTimestamp(node.CreatedAt)}, nil
+	return &GetTransportNodeResponse{NodeID: string(node.ID), PlaceID: string(node.PlaceID), DisplayName: node.DisplayName, ServingModes: apiServingModes(node.ServingModes), AccessTimeMinutes: copyInt(node.AccessTimeMinutes), WalkingEdges: walkingEdgesToResponse(node.WalkingEdges), CreatedAt: domain.FormatTimestamp(node.CreatedAt)}, nil
 }
 
 type DomainError struct {
@@ -318,7 +319,7 @@ func validPlaceTypeForAPI(value domain.PlaceType) bool {
 	}
 }
 
-func stringModes(modes []domain.TransportMode) []string {
+func apiServingModes(modes []domain.TransportMode) []string {
 	out := make([]string, len(modes))
 	for i, mode := range modes {
 		out[i] = apiServingMode(mode)
@@ -329,7 +330,7 @@ func stringModes(modes []domain.TransportMode) []string {
 func nodeSummaries(nodes []domain.TransportNode) []NodeSummary {
 	out := make([]NodeSummary, len(nodes))
 	for i, node := range nodes {
-		out[i] = NodeSummary{NodeID: string(node.ID), DisplayName: node.DisplayName, ServingModes: stringModes(node.ServingModes), AccessTimeMinutes: copyInt(node.AccessTimeMinutes), WalkingEdges: walkingEdgesToResponse(node.WalkingEdges)}
+		out[i] = NodeSummary{NodeID: string(node.ID), DisplayName: node.DisplayName, ServingModes: apiServingModes(node.ServingModes), AccessTimeMinutes: copyInt(node.AccessTimeMinutes), WalkingEdges: walkingEdgesToResponse(node.WalkingEdges)}
 	}
 	return out
 }
