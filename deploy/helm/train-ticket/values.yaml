@@ -1598,7 +1598,8 @@ services:
     # the pod every 64 seconds. Threads and CPU must be raised together.
     #
     # 1 core was itself binding: measured at 99.9% of the limit with a client p99
-    # of 808ms on timeline projections that do no real work.
+    # of 808ms on timeline projections that do no real work -- the limit below is
+    # the one that held.
     resources:
       requests: { cpu: 100m, memory: 256Mi }
       limits: { cpu: '4', memory: 3Gi }
