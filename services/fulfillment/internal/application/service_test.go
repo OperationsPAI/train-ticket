@@ -730,3 +730,16 @@ func TestBoardingFactKeepsTheReaderThatVerifiedIt(t *testing.T) {
 		t.Fatalf("boarding fact=%+v", record.BoardingFact)
 	}
 }
+
+func TestNoShowForABoardedSegmentIsRefused(t *testing.T) {
+	boardedAt := time.Date(2026, 9, 29, 13, 30, 0, 0, time.UTC)
+	service := NewService(NewInMemoryRepository(), &recordingPublisher{}, NewInMemoryConsumedEventLog(), nil, func() time.Time { return boardedAt })
+	seedTicket(t, service, "ent-board1", "sb-board1", "ord-board1", "tvl-board1", "seg-board1")
+	if _, err := service.VerifyBoarding(context.Background(), VerifyBoardingCommand{EntitlementID: "ent-board1", SegmentBookingID: "sb-board1", JourneyOrderID: "ord-board1", TravelerID: "tvl-board1", SegmentRef: "seg-board1", Source: domain.FulfillmentSourceGate, SourceEventID: "gate-board1", OccurredAt: boardedAt}, CommandMetadata{}); err != nil {
+		t.Fatalf("boarding: %v", err)
+	}
+	_, err := service.RecordNoShow(context.Background(), RecordNoShowCommand{EntitlementID: "ent-board1", SegmentBookingID: "sb-board1", JourneyOrderID: "ord-board1", TravelerID: "tvl-board1", SegmentRef: "seg-board1", Reason: domain.NoShowReasonWindowExpired}, CommandMetadata{})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("a no-show for a boarded segment: got %v, want a conflict", err)
+	}
+}
