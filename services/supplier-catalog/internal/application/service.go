@@ -202,12 +202,12 @@ func (s *Service) RegisterSupplier(ctx context.Context, cmd RegisterSupplierComm
 	return supplierView(supplier), nil
 }
 
-// checkPartnerBound refuses a registration that would put another partner under an
-// identity the master data already holds. Which field of a registration carries the
-// identity, and how many partners one value of it may hold, is the bound the release
-// names; the partners filed under the identity this registration carries are counted
-// before it is added, so the code the call minted stays what it is, a code and not a
-// partner.
+// checkPartnerBound refuses a registration that would put a second partner under an
+// identity the master data already holds. The bound a release names carries both the
+// field of a registration that identity is read from and how many partners one value
+// of it may hold; the partners filed under the identity this registration carries are
+// counted before it is added, so the code the call minted stays what it is, a code
+// and not a partner.
 func (s *Service) checkPartnerBound(ctx context.Context, supplier domain.Supplier) error {
 	bound := s.partnerBound
 	if bound.Limit <= 0 {

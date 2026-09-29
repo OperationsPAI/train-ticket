@@ -11,9 +11,9 @@ import (
 // The catalogue files one entry per partner, and which field of a registration
 // carries that partner's identity is a decision about the master data rather than
 // about the call that registers it: an onboarding hands over the code its own batch
-// minted, while the operator import reconciles the partners it brings in by the
-// name they trade as. A release names the field, and how many partners one value
-// of it may hold.
+// minted, while the operator import reconciles the partners it brings in by the name
+// they trade as. A release names the field, and how many partners one value of it may
+// hold.
 const (
 	// PartnerKeyLegalName reads a partner's identity from the legal name the
 	// registration hands over: the codes two onboardings mint differ, so two
