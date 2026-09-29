@@ -16,8 +16,10 @@ Status: implemented
 
 The four products and the version they are published under live in
 [`config/insurance-products.properties`](config/insurance-products.properties),
-beside the loader that reads them; the autumn release carries `2026.10`. A
-premium or a coverage limit is a settings change and not a rebuild, and a policy
+beside the loader that reads them; the autumn release carries `2026.10`. The
+file is compiled into the binary, so a deployment cannot come up with a
+catalogue it cannot read. A premium or a coverage limit is a settings change and
+not a rebuild, and a policy
 keeps the product version it was issued from after the catalogue moves on.
 
 The sales window is not in the file: a product is published from a day
