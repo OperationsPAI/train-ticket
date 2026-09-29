@@ -206,4 +206,12 @@ class FinanceSettlementControllerTest {
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.total").isNumber());
     }
+
+    @Test
+    void listsTheScheduleRunsUnderTheOnePageCheck() throws Exception {
+        mockMvc.perform(get("/api/v1/settlement-schedule-runs").param("limit", "5").param("offset", "0"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.limit").value(5))
+            .andExpect(jsonPath("$.offset").value(0));
+    }
 }
