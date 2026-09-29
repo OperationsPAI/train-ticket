@@ -27,6 +27,9 @@ Status: REQ-004 master-data primitives, implemented and deployed (Helm revision 
 ## HTTP surface
 
 - `POST/GET /api/v1/places` and `GET /api/v1/places/{placeId}`.
+- `GET /api/v1/places` takes `limit`, `offset`, an optional `status` and a
+  repeated `code` exact filter (at most 100 values); the answer carries `items`,
+  `total`, `limit` and `offset`.
 - `POST /api/v1/transport-nodes` and `GET /api/v1/transport-nodes/{nodeId}`.
 
 The full contract lives in
