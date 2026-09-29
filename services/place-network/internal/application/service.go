@@ -297,7 +297,14 @@ func (s *Service) GetTransportNode(ctx context.Context, id domain.TransportNodeI
 	if s.servedGraphSettle > 0 && s.clock.Now().Before(node.CreatedAt.Add(s.servedGraphSettle)) {
 		return nil, NewDomainError("NOT_FOUND", fmt.Sprintf("transport node not found: %s", id))
 	}
-	return &GetTransportNodeResponse{NodeID: string(node.ID), PlaceID: string(node.PlaceID), DisplayName: node.DisplayName, ServingModes: apiServingModes(node.ServingModes), AccessTimeMinutes: copyInt(node.AccessTimeMinutes), WalkingEdges: walkingEdgesToResponse(node.WalkingEdges), CreatedAt: domain.FormatTimestamp(node.CreatedAt)}, nil
+	return nodeResponse(node), nil
+}
+
+// nodeResponse renders the node read's answer: the fields the node summary
+// carries, plus the place the node hangs off and the instant the registration
+// was filed.
+func nodeResponse(node *domain.TransportNode) *GetTransportNodeResponse {
+	return &GetTransportNodeResponse{NodeID: string(node.ID), PlaceID: string(node.PlaceID), DisplayName: node.DisplayName, ServingModes: apiServingModes(node.ServingModes), AccessTimeMinutes: copyInt(node.AccessTimeMinutes), WalkingEdges: walkingEdgesToResponse(node.WalkingEdges), CreatedAt: domain.FormatTimestamp(node.CreatedAt)}
 }
 
 type DomainError struct {
