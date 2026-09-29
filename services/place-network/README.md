@@ -50,7 +50,7 @@ It consumes no inbound event stream.
 
 ## Settings
 
-`internal/config/wayfinding.json` carries the wayfinding the release ships for
+`internal/config/wayfinding.json` travels inside the image and carries the wayfinding the release ships for
 nodes the operator did not weigh. `stationAccessTimeMinutes` is the station
 allowance in whole minutes; `0` leaves the field absent.
 

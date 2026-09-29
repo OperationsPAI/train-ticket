@@ -21,3 +21,9 @@ HTTP health, readiness, correlation, idempotency, PostgreSQL persistence and Red
 
 All 37 services are committed and deployed as the resident Helm release (revision 521; see [current status](../docs/00-current-status.md)).
 Each service README states its port, database and shard, HTTP surface, events and metrics.
+
+## Settings files
+
+A service that ships a value rather than deriving it keeps it in its own
+settings file beside the code that reads it, so the release runs the value the
+repository states; the per-service READMEs name theirs.
