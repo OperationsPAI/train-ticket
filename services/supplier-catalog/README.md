@@ -30,6 +30,14 @@ Status: implemented and deployed (Helm revision 521; see [current status](../../
 - Liveness `/healthz`, readiness `/readyz`; also `/health`, `/ready`,
 `/metadata`.
 
+Release values the service reads, in `services.supplier-catalog.env`:
+
+| Value | Meaning |
+|---|---|
+| `SUPPLIER_IDENTITY_SOURCE` | The field a partner's profile is taken from: the code the registration handed over, or the brand the partner trades as. |
+| `PG_MAX_POOL_SIZE` | Connections the service keeps to `supplier_catalog`. |
+| `MIGRATIONS_DIR` | Where the image's migrations are read from. |
+
 ## HTTP surface
 
 - `POST /api/v1/suppliers`, `GET /api/v1/suppliers`,

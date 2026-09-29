@@ -41,7 +41,9 @@ timestamps, and Money.
 One partner is filed once per identity, and the identity is the field named by
 `SUPPLIER_IDENTITY_SOURCE` in the service's release: the code the request hands
 over, or the trading name. A registration whose identity is already filed answers
-`CONFLICT`, which is the second code of a partner the release files by name.
+`CONFLICT`, which is the second code of a partner the release files by name. The
+values the release sets for this service are listed in its
+[README](../../../services/supplier-catalog/README.md#runtime).
 
 ### Get Supplier
 
