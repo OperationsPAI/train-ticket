@@ -192,17 +192,7 @@ func (s *Service) ListPlaces(ctx context.Context, req ListPlacesRequest) (*ListP
 			return nil, NewDomainError("VALIDATION_FAILED", "place code must not be blank")
 		}
 	}
-	limit := req.Limit
-	if limit <= 0 {
-		limit = 20
-	}
-	if limit > 100 {
-		limit = 100
-	}
-	offset := req.Offset
-	if offset < 0 {
-		offset = 0
-	}
+	limit, offset := pageBounds(req.Limit, req.Offset)
 	responseOffset := offset
 	page, err := s.places.FindPage(ctx, ports.PlaceListFilter{Limit: limit, Offset: offset, Status: req.Status, Codes: req.Codes})
 	if err != nil {
@@ -336,6 +326,22 @@ func validPlaceTypeForAPI(value domain.PlaceType) bool {
 	default:
 		return false
 	}
+}
+
+// pageBounds clamps the page a list request asks for. The contract's page size
+// is the ceiling, the default page is the one a bare request gets, and a
+// negative offset reads from the start rather than from before it.
+func pageBounds(limit, offset int) (int, int) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return limit, offset
 }
 
 func apiServingModes(modes []domain.TransportMode) []string {
