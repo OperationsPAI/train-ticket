@@ -37,6 +37,8 @@ import org.springframework.stereotype.Component;
 @ConditionalOnProperty(name = "finance.scheduler.enabled", havingValue = "true", matchIfMissing = true)
 public class FinanceSettlementScheduler {
     private static final Logger LOGGER = LoggerFactory.getLogger(FinanceSettlementScheduler.class);
+    /** The shortest lease that still covers the read a reconciliation does. */
+    private static final Duration MINIMUM_LEASE = Duration.ofSeconds(30);
     private final FinanceSettlementApplicationService service;
     private final SettlementScheduleRunRepository runs;
     private final Clock clock;
@@ -54,7 +56,7 @@ public class FinanceSettlementScheduler {
                                       @Value("${finance.supplier-settlement.commission-pct:0.05}") BigDecimal commissionPct,
                                       @Value("${finance.supplier-settlement.withholding-pct:0.00}") BigDecimal withholdingPct) {
         this(service, runs, clock, configuredOwner == null || configuredOwner.isBlank() ? "finance-" + UuidV7.generate() : configuredOwner,
-            Duration.ofSeconds(Math.max(30, leaseSeconds)), SettlementFrequency.valueOf(supplierFrequency.trim().toUpperCase()), commissionPct, withholdingPct);
+            leaseOf(leaseSeconds), SettlementFrequency.valueOf(supplierFrequency.trim().toUpperCase()), commissionPct, withholdingPct);
     }
 
     FinanceSettlementScheduler(FinanceSettlementApplicationService service, SettlementScheduleRunRepository runs, Clock clock,
@@ -68,6 +70,16 @@ public class FinanceSettlementScheduler {
         this.supplierFrequency = supplierFrequency;
         this.commissionPct = commissionPct;
         this.withholdingPct = withholdingPct;
+    }
+
+    /**
+     * The lease a scheduled run is held under: the seconds the release states,
+     * raised to the shortest lease that covers a reconciliation. A release that
+     * states less than that would let another replica acquire the run while the
+     * first is still reading the day, and both would write the same batch.
+     */
+    static Duration leaseOf(long leaseSeconds) {
+        return leaseSeconds < MINIMUM_LEASE.toSeconds() ? MINIMUM_LEASE : Duration.ofSeconds(leaseSeconds);
     }
 
     @Scheduled(initialDelayString = "${finance.scheduler.initial-delay-ms:15000}", fixedDelayString = "${finance.scheduler.interval-ms:60000}")

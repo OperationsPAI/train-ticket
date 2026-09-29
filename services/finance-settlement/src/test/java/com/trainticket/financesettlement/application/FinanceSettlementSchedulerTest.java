@@ -33,6 +33,13 @@ class FinanceSettlementSchedulerTest {
     }
 
     @Test
+    void raisesALeaseThatCouldNotCoverTheRun() {
+        assertEquals(Duration.ofSeconds(30), FinanceSettlementScheduler.leaseOf(5));
+        assertEquals(Duration.ofSeconds(30), FinanceSettlementScheduler.leaseOf(30));
+        assertEquals(Duration.ofMinutes(10), FinanceSettlementScheduler.leaseOf(600));
+    }
+
+    @Test
     void persistsReconciliationAndSupplierResultsExactlyOnce() {
         InMemoryRevenueRecognitionRepository recognitions = new InMemoryRevenueRecognitionRepository();
         recognitions.save(recognition("ord-1", "sup-1", "fare", "100.00"));
