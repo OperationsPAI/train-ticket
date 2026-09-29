@@ -630,3 +630,24 @@ func TestRecordNoShowKeepsTheReasonItWasGiven(t *testing.T) {
 		t.Fatalf("the reason the operator stated is not the one stored: %v", record.NoShowReason)
 	}
 }
+
+func TestVerifyBoardingRequiresTheEventTheFactArrivedWith(t *testing.T) {
+	service := NewService(NewInMemoryRepository(), &recordingPublisher{}, NewInMemoryConsumedEventLog(), nil, nil)
+	seedTicket(t, service, "ent-event1", "sb-event1", "ord-event1", "tvl-event1", "seg-event1")
+
+	_, err := service.VerifyBoarding(context.Background(), VerifyBoardingCommand{
+		EntitlementID:    "ent-event1",
+		SegmentBookingID: "sb-event1",
+		JourneyOrderID:   "ord-event1",
+		TravelerID:       "tvl-event1",
+		SegmentRef:       "seg-event1",
+		Source:           domain.FulfillmentSourceGate,
+		OccurredAt:       time.Date(2026, 9, 29, 8, 0, 0, 0, time.UTC),
+	}, CommandMetadata{})
+	if err == nil {
+		t.Fatalf("a boarding fact with no event identifier was accepted")
+	}
+	if !strings.Contains(err.Error(), "sourceEventId is required") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
