@@ -146,8 +146,8 @@ type SupplierList struct {
 }
 
 func (s *Service) RegisterSupplier(ctx context.Context, cmd RegisterSupplierCommand) (SupplierView, error) {
-	if strings.TrimSpace(cmd.LegalName) == "" || strings.TrimSpace(cmd.BrandName) == "" || strings.TrimSpace(cmd.SupplierCode) == "" {
-		return SupplierView{}, fmt.Errorf("%w: legalName, brandName, and supplierCode are required", ErrValidation)
+	if err := requireSupplierRegistration(cmd); err != nil {
+		return SupplierView{}, err
 	}
 	supplierID := domain.SupplierID("sup-" + newUUIDString())
 	// The profile is the value one partner is filed under, and which field
@@ -199,6 +199,16 @@ func (s *Service) RegisterSupplier(ctx context.Context, cmd RegisterSupplierComm
 	s.suppliers[supplier.SupplierID] = supplier
 	s.mu.Unlock()
 	return supplierView(supplier), nil
+}
+
+// requireSupplierRegistration holds the fields a registration cannot infer: the
+// legal entity, the trading name the partner trades as, and the code the
+// onboarding minted.
+func requireSupplierRegistration(cmd RegisterSupplierCommand) error {
+	if strings.TrimSpace(cmd.LegalName) == "" || strings.TrimSpace(cmd.BrandName) == "" || strings.TrimSpace(cmd.SupplierCode) == "" {
+		return fmt.Errorf("%w: legalName, brandName, and supplierCode are required", ErrValidation)
+	}
+	return nil
 }
 
 // profileFor returns the value the catalogue treats as one partner's identity
