@@ -59,8 +59,8 @@ func main() {
 	defer func() { _ = redisClient.Close() }()
 	go storage.NewOutboxRelay(pool, redisClient).Run(ctx)
 	// Which registration field carries the identity a partner is filed under is the
-	// release's decision rather than the call's, so it is read once at start-up with the
-	// store and the cache a filing is remembered in.
+	// release's decision, so it is read once at start-up with the store and the cache a
+	// filing is remembered in, and handed to the service that files under it.
 	filingField := application.PartnerFilingFieldFromEnv()
 	transactor := adapterpg.NewTransactor(pool)
 	service := application.NewService(adapterpg.NewOutboxPublisherWithProvider(transactor)).WithRepository(adapterpg.NewRepositoryWithProvider(transactor)).WithUnitOfWork(transactor.Within).WithFilingField(filingField).WithFilingClaims(messaging.NewFilingClaims(redisClient))
