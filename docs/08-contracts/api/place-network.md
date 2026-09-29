@@ -11,6 +11,21 @@ Place & Network manages geographic places (cities, stations, airports) and
 transport nodes (platforms, gates). It serves as the reference master data
 for all location lookups.
 
+## The served graph
+
+The read endpoints answer the graph a release publishes, not the rows its writes
+have just committed. A registration joins the served graph once it has settled
+for the window the service's own settings state (`internal/config` in the
+service, read at startup and carried in the image). A release that states no
+window publishes a registration as soon as the write commits, which is what
+every release so far has done.
+
+The window is an operations decision about how long a registration may still be
+corrected before the rest of the platform is told it exists, so one release may
+state a window where the next states none. A read that arrives while the
+registration is still settling answers `NOT_FOUND` for that place or node; the
+same answer a reference gets when nothing was ever registered under it.
+
 ## Endpoints
 
 ### Create a Place
