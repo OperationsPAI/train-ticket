@@ -57,7 +57,9 @@ its pool, its HTTP server and its runtime ship over OTLP like every service.
 ## Build and test
 
 ```bash
-cd services/supplier-catalog && go test ./...
+cd services/supplier-catalog
+GOWORK=off go build ./...   # the module builds without the repository workspace
+GOWORK=off go test ./...
 ```
 
 ## DDD Sources
