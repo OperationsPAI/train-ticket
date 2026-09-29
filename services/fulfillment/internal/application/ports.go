@@ -1170,13 +1170,21 @@ func validSource(source domain.FulfillmentSource) bool {
 	return acceptsBoardingSource(source)
 }
 
+// noShowReasons are the reasons a no-show record may carry, in the order the
+// service names them.
+var noShowReasons = []domain.NoShowReason{
+	domain.NoShowReasonWindowExpired,
+	domain.NoShowReasonVerificationFailed,
+	domain.NoShowReasonManualRecord,
+}
+
 func validNoShowReason(reason domain.NoShowReason) bool {
-	switch reason {
-	case domain.NoShowReasonWindowExpired, domain.NoShowReasonVerificationFailed, domain.NoShowReasonManualRecord:
-		return true
-	default:
-		return false
+	for _, carried := range noShowReasons {
+		if carried == reason {
+			return true
+		}
 	}
+	return false
 }
 
 func validCompletionSource(source domain.CompletionSource) bool {
