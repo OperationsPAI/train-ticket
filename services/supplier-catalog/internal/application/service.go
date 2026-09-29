@@ -145,6 +145,16 @@ type SupplierList struct {
 	Offset int            `json:"offset"`
 }
 
+// profileFor returns the value the catalogue treats as one partner's identity
+// from the release's field, and is what a registration is matched on before it
+// is filed.
+func (s *Service) profileFor(cmd RegisterSupplierCommand) string {
+	if s.identitySource == IdentitySourceBrand {
+		return strings.TrimSpace(cmd.BrandName)
+	}
+	return strings.TrimSpace(cmd.SupplierCode)
+}
+
 func (s *Service) RegisterSupplier(ctx context.Context, cmd RegisterSupplierCommand) (SupplierView, error) {
 	if err := requireSupplierRegistration(cmd); err != nil {
 		return SupplierView{}, err
@@ -209,16 +219,6 @@ func requireSupplierRegistration(cmd RegisterSupplierCommand) error {
 		return fmt.Errorf("%w: legalName, brandName, and supplierCode are required", ErrValidation)
 	}
 	return nil
-}
-
-// profileFor returns the value the catalogue treats as one partner's identity
-// from the release's field, and is what a registration is matched on before it
-// is filed.
-func (s *Service) profileFor(cmd RegisterSupplierCommand) string {
-	if s.identitySource == IdentitySourceBrand {
-		return strings.TrimSpace(cmd.BrandName)
-	}
-	return strings.TrimSpace(cmd.SupplierCode)
 }
 
 func (s *Service) GetSupplier(ctx context.Context, supplierID string) (domain.Supplier, error) {
