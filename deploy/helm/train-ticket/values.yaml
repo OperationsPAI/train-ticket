@@ -1679,7 +1679,8 @@ services:
     # partner per trading name, so the second import meets the partner the first
     # one filed instead of filing an entry downstream master data cannot tell
     # apart from it. The code's own default is the code the registration hands
-    # over, which is what every release before this one filed.
+    # over, which is what every release before this one filed; the field is read
+    # once at start-up, so every request the pod answers files under one identity.
     env:
       SUPPLIER_IDENTITY_SOURCE: "brand"
       # The import opens one connection per filing in flight, and the catalogue
