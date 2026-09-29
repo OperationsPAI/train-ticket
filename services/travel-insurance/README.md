@@ -93,6 +93,14 @@ marks the claim `PAID_OUT`; a read-back that does not match leaves it
 
 The service also consumes `JourneyOrderPostSalesAdjusted`. It resolves the applied change and current order through their owning APIs, then updates each affected issued policy to the replacement segment and travel window. It never guesses dates from event time, and it does not rewrite terminal policies.
 
+## Storage
+
+One PostgreSQL database, `travel_insurance`, with a row per aggregate
+snapshot (`insurance_product_snapshots`, `policy_snapshots`,
+`claim_snapshots`, `payout_advice_snapshots`), the underwriting request log,
+the outbox `processed_events` reads, and `idempotency_records` for the
+purchase funnel's replays (`migrations/001_travel_insurance.sql`).
+
 ## Tests
 
 ```bash
