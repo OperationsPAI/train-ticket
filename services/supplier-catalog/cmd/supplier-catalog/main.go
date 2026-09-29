@@ -51,6 +51,9 @@ func main() {
 	if err := runner.Run(ctx, migrationsList); err != nil {
 		log.Fatal(err)
 	}
+	// The relay publishes what the handlers write and the subscriber reads what the
+	// other services publish, and both go through this client, so it is pinged
+	// before either starts.
 	redisClient, err := kitmessaging.NewRedisClient(os.Getenv("REDIS_URL"))
 	if err != nil {
 		log.Fatal(err)
