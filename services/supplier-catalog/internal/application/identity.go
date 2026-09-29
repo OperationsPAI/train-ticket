@@ -16,9 +16,10 @@ import (
 // rather than being filed twice under two codes downstream cannot tell apart.
 const SupplierIdentitySourceEnv = "SUPPLIER_IDENTITY_SOURCE"
 
-// The two fields a release may name. An unset or unrecognised value keeps the
-// code, which is the behaviour every release before the master data import had
-// and the shape a rollback returns to.
+// The two fields a release may name. The release that reads them is
+// services.supplier-catalog.env in deploy/helm/train-ticket/values.yaml; an
+// unset or unrecognised value keeps the code, which is the behaviour every
+// release before the master data import had and the shape a rollback returns to.
 const (
 	IdentitySourceCode  = "code"
 	IdentitySourceBrand = "brand"
