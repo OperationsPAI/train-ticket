@@ -21,7 +21,9 @@ Status: implemented and deployed (Helm revision 521; see [current status](../../
   (`services.fulfillment.db` and `postgres.instances.core.databases` in
   `deploy/helm/train-ticket/values.yaml`).
 - Liveness `/healthz`, readiness `/readyz`; also `/health`, `/ready`,
-`/metadata`.
+`/metadata`. Readiness is the migration runner's own state and a live
+connection to the database: a replica that has not applied its migrations
+answers 503 on `/readyz` rather than serving reads it cannot answer.
 
 ## Settings
 
