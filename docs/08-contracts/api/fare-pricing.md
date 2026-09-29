@@ -67,7 +67,9 @@ Publishes the `DRAFT` rule set. Any older `PUBLISHED` rule set with the same
 **GET** `/api/v1/fare-rule-sets/{ruleSetId}`
 
 Reads one rule set by id in any status. A service that persists a `ruleSetId`
-(for example the Corporate Travel agreement price reference) resolves it here.
+(for example the Corporate Travel agreement price reference) resolves it here. A
+rule set whose contract the deployment's register does not carry is answered
+`NOT_FOUND`, because a stored reference is one the release serves.
 
 **Response (200):** Full fare rule set.
 
