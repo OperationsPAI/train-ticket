@@ -743,3 +743,25 @@ func TestNoShowForABoardedSegmentIsRefused(t *testing.T) {
 		t.Fatalf("a no-show for a boarded segment: got %v, want a conflict", err)
 	}
 }
+
+func TestSegmentStatusReportKeepsTheInstantOfACancellation(t *testing.T) {
+	observedAt := time.Date(2026, 9, 29, 14, 10, 0, 0, time.UTC)
+	service := NewService(NewInMemoryRepository(), &recordingPublisher{}, NewInMemoryConsumedEventLog(), nil, func() time.Time { return observedAt })
+	cancelledAt := observedAt
+	result, err := service.ReportSegmentStatus(context.Background(), ReportSegmentStatusCommand{
+		CommandID:           "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c0b0",
+		SegmentRef:          "seg-cancel1",
+		ScheduledServiceRef: "svc-cancel1",
+		ServiceDate:         "2026-09-29",
+		Status:              domain.SegmentOperationalStatusCancelled,
+		CancelledAt:         &cancelledAt,
+		ObservedAt:          observedAt,
+		SourceSystem:        domain.SegmentStatusSourceSystemSystem,
+	}, CommandMetadata{})
+	if err != nil {
+		t.Fatalf("report cancellation: %v", err)
+	}
+	if result.Status != domain.SegmentOperationalStatusCancelled || !result.ObservedAt.Equal(observedAt) {
+		t.Fatalf("segment status result=%+v", result)
+	}
+}
