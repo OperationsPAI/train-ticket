@@ -68,18 +68,18 @@ func (s *Service) WithRepository(repository Repository) *Service {
 	}
 	return s
 }
-func (s *Service) WithUnitOfWork(uow UnitOfWork) *Service {
-	if s != nil {
-		s.uow = uow
-	}
-	return s
-}
 
 // WithIdentitySource names the field a partner's profile is taken from, which
 // the release decides rather than this service.
 func (s *Service) WithIdentitySource(source string) *Service {
 	if s != nil {
 		s.identitySource = source
+	}
+	return s
+}
+func (s *Service) WithUnitOfWork(uow UnitOfWork) *Service {
+	if s != nil {
+		s.uow = uow
 	}
 	return s
 }
