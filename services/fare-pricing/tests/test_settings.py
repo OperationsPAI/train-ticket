@@ -34,3 +34,8 @@ class ResolutionRegisterTest(unittest.TestCase):
 
     def test_a_process_with_no_document_serves_every_contract_it_holds(self) -> None:
         self.assertIsNone(settings.served_contracts())
+
+    def test_the_environment_overlays_the_document(self) -> None:
+        self.write(["contract-managed", "contract-default"])
+        with mock.patch.dict(os.environ, {settings.CONTRACTS_ENV: "contract-managed"}):
+            self.assertEqual(settings.served_contracts(), frozenset({"contract-managed"}))
