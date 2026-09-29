@@ -138,11 +138,10 @@ func (s *Service) GetPlace(ctx context.Context, id domain.PlaceID) (*GetPlaceRes
 	if err != nil || place == nil {
 		return nil, NewDomainError("NOT_FOUND", fmt.Sprintf("place not found: %s", id))
 	}
-	// A registration joins the served graph once it has settled for the window
-	// the release states, so a caller never reads a place that is still being
-	// corrected. The window is the release's to state; the review asked for the
-	// graph the desk is told about to lag the write that produced it.
-	if s.servedGraphSettle > 0 && s.clock.Now().Before(place.CreatedAt.Add(s.servedGraphSettle)) {
+	// The read endpoints answer the graph the release publishes, so a place
+	// that has not settled for the release's window answers as one that is not
+	// there rather than as a fact that is still being corrected.
+	if !s.served(place.CreatedAt) {
 		return nil, NewDomainError("NOT_FOUND", fmt.Sprintf("place not found: %s", id))
 	}
 	nodes, err := s.nodes.FindByPlaceID(ctx, id)
@@ -284,7 +283,7 @@ func (s *Service) GetTransportNode(ctx context.Context, id domain.TransportNodeI
 	}
 	// The node follows the place it hangs off: a registration that has not
 	// settled for the release's window is not in the served graph yet.
-	if s.servedGraphSettle > 0 && s.clock.Now().Before(node.CreatedAt.Add(s.servedGraphSettle)) {
+	if !s.served(node.CreatedAt) {
 		return nil, NewDomainError("NOT_FOUND", fmt.Sprintf("transport node not found: %s", id))
 	}
 	return nodeResponse(node), nil
@@ -295,6 +294,18 @@ func (s *Service) GetTransportNode(ctx context.Context, id domain.TransportNodeI
 // was filed.
 func nodeResponse(node *domain.TransportNode) *GetTransportNodeResponse {
 	return &GetTransportNodeResponse{NodeID: string(node.ID), PlaceID: string(node.PlaceID), DisplayName: node.DisplayName, ServingModes: apiServingModes(node.ServingModes), AccessTimeMinutes: copyInt(node.AccessTimeMinutes), WalkingEdges: walkingEdgesToResponse(node.WalkingEdges), CreatedAt: domain.FormatTimestamp(node.CreatedAt)}
+}
+
+// served reports whether a registration filed at the given instant is in the
+// graph the read endpoints answer. A registration is held out of that graph
+// until it has settled for the window the release states, so the window is
+// asked in one place rather than once per read; a release that states no window
+// serves every registration as soon as the write commits.
+func (s *Service) served(recordedAt time.Time) bool {
+	if s.servedGraphSettle <= 0 {
+		return true
+	}
+	return !s.clock.Now().Before(recordedAt.Add(s.servedGraphSettle))
 }
 
 type DomainError struct {
