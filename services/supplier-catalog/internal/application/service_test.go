@@ -245,3 +245,31 @@ func TestRegisterSupplierReadsTheFilingIdentityFromTheRepository(t *testing.T) {
 		t.Fatalf("a release that files the code does not resolve that code to the trading name: %v", err)
 	}
 }
+
+// The list path applies the bounds a query omitted, so a caller that pages
+// without a limit or an offset gets the default page rather than an empty one,
+// and one that asks for more than the ceiling gets the ceiling.
+func TestListSuppliersAppliesTheBoundsTheQueryOmitted(t *testing.T) {
+	service := NewService(nil)
+	for _, code := range []string{"CR", "LG", "TR"} {
+		if _, err := service.RegisterSupplier(context.Background(), RegisterSupplierCommand{
+			LegalName: "Partner " + code, BrandName: "Brand " + code, SupplierCode: code,
+		}); err != nil {
+			t.Fatalf("register %s: %v", code, err)
+		}
+	}
+	page, err := service.ListSuppliers(context.Background(), "", 0, -1)
+	if err != nil {
+		t.Fatalf("list suppliers: %v", err)
+	}
+	if page.Limit != 20 || page.Offset != 0 || page.Total != 3 || len(page.Items) != 3 {
+		t.Fatalf("unexpected bounds: limit=%d offset=%d total=%d items=%d", page.Limit, page.Offset, page.Total, len(page.Items))
+	}
+	wide, err := service.ListSuppliers(context.Background(), "", 500, 0)
+	if err != nil {
+		t.Fatalf("list suppliers: %v", err)
+	}
+	if wide.Limit != 100 {
+		t.Fatalf("a limit above the ceiling is clamped to 100, got %d", wide.Limit)
+	}
+}
