@@ -38,7 +38,8 @@ weight rather than an absence. A node that declared its own weight keeps it.
 - `POST /api/v1/transport-nodes` and `GET /api/v1/transport-nodes/{nodeId}`.
 
 The full contract lives in
-[`docs/08-contracts/api/place-network.md`](../../docs/08-contracts/api/place-network.md).
+[`docs/08-contracts/api/place-network.md`](../../docs/08-contracts/api/place-network.md);
+the node reads there carry the access-time semantics these handlers apply.
 
 ## Events
 
