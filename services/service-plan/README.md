@@ -98,6 +98,7 @@ The read path uses the same repository as segment creation and does not publish 
 Inventory reconciliation must consume all pages.
 `GET /api/v1/internal/service-segments/{segmentRef}/supply` validates the persisted segment against its service and returns its ordered stops, zero based interval, service date and stable stop sequence digest.
 The current creation API defines a two stop scheduled service, with interval `[0,2)`.
+The image embeds `internal/config/supply.json`, which states the interval bound and the stop sequence digest the supply read publishes.
 `TEST_SERVICE_SEGMENT_SOURCE` and `TEST_DATABASE_URL` enable the recorded PostgreSQL and HTTP test in `internal/http/segment_live_test.go`.
 
 
