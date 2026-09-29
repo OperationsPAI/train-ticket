@@ -30,7 +30,7 @@ class FakeTopology:
     def validate_connection_nodes(self, from_node_ref, to_node_ref, from_node_type, to_node_type):
         if self.missing:
             from transfer_management.topology import PlaceNetworkValidationError
-            raise PlaceNetworkValidationError("place-network resource not found: /api/v1/transport-nodes/missing")
+            raise PlaceNetworkValidationError("place-network has no record of /api/v1/transport-nodes/missing")
         if self.fail:
             from transfer_management.topology import PlaceNetworkUnavailable
             raise PlaceNetworkUnavailable("boom")

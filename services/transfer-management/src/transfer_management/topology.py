@@ -95,7 +95,7 @@ class PlaceNetworkClient:
                 with traced_httpx_client(timeout=self.timeout) as client:
                     response = client.get(f"{self.base_url}{path}", headers={"Accept": "application/json"})
                 if response.status_code == 404:
-                    raise PlaceNetworkValidationError(f"place-network resource not found: {path}")
+                    raise PlaceNetworkValidationError(f"place-network has no record of {path}")
                 if response.status_code >= 500:
                     raise PlaceNetworkUnavailable(f"place-network returned {response.status_code}")
                 if response.status_code >= 400:
