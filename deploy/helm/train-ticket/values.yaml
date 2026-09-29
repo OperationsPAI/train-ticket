@@ -1677,7 +1677,7 @@ services:
       # code its own batch minted and then under the name it trades as on the market it
       # is being rolled out to, and the master data reconciles the two arrivals as one
       # partner. Which registration field carries a partner's identity is the release's
-      # decision rather than the call's, and this release files under the trading name.
+      # decision rather than the call's, and the entry below states the one it files by.
       PARTNER_FILING_FIELD: "brandName"
   waitlist:
     db: waitlist
