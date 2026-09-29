@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/trainticket/greenfield/services/place-network/internal/domain"
 	"github.com/trainticket/greenfield/services/place-network/internal/domain/ports"
@@ -17,14 +18,19 @@ type ServiceConfig struct {
 	Publisher  EventPublisher
 	Clock      domain.Clock
 	UnitOfWork UnitOfWork
+	// ServedGraphSettle is the window the read API keeps between a registration
+	// and the graph it serves; zero serves a registration as soon as the write
+	// commits.
+	ServedGraphSettle time.Duration
 }
 
 type Service struct {
-	places     ports.PlaceRepository
-	nodes      ports.TransportNodeRepository
-	publisher  EventPublisher
-	clock      domain.Clock
-	unitOfWork UnitOfWork
+	places            ports.PlaceRepository
+	nodes             ports.TransportNodeRepository
+	publisher         EventPublisher
+	clock             domain.Clock
+	unitOfWork        UnitOfWork
+	servedGraphSettle time.Duration
 }
 
 func NewService(cfg ServiceConfig) *Service {
@@ -40,7 +46,7 @@ func NewService(cfg ServiceConfig) *Service {
 	if unitOfWork == nil {
 		unitOfWork = func(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) }
 	}
-	return &Service{places: cfg.Places, nodes: cfg.Nodes, publisher: publisher, clock: clock, unitOfWork: unitOfWork}
+	return &Service{places: cfg.Places, nodes: cfg.Nodes, publisher: publisher, clock: clock, unitOfWork: unitOfWork, servedGraphSettle: cfg.ServedGraphSettle}
 }
 
 type CreatePlaceRequest struct {
@@ -130,6 +136,12 @@ type GetPlaceResponse struct {
 func (s *Service) GetPlace(ctx context.Context, id domain.PlaceID) (*GetPlaceResponse, error) {
 	place, err := s.places.FindByID(ctx, id)
 	if err != nil || place == nil {
+		return nil, NewDomainError("NOT_FOUND", fmt.Sprintf("place not found: %s", id))
+	}
+	// A registration joins the served graph once it has settled for the window
+	// the release states, so a caller never reads a place that is still being
+	// corrected. A release that states no window serves it straight away.
+	if s.servedGraphSettle > 0 && s.clock.Now().Before(place.CreatedAt.Add(s.servedGraphSettle)) {
 		return nil, NewDomainError("NOT_FOUND", fmt.Sprintf("place not found: %s", id))
 	}
 	nodes, err := s.nodes.FindByPlaceID(ctx, id)
@@ -277,6 +289,11 @@ type GetTransportNodeResponse struct {
 func (s *Service) GetTransportNode(ctx context.Context, id domain.TransportNodeID) (*GetTransportNodeResponse, error) {
 	node, err := s.nodes.FindByID(ctx, id)
 	if err != nil || node == nil {
+		return nil, NewDomainError("NOT_FOUND", fmt.Sprintf("transport node not found: %s", id))
+	}
+	// The node follows the place it hangs off: a registration that has not
+	// settled for the release's window is not in the served graph yet.
+	if s.servedGraphSettle > 0 && s.clock.Now().Before(node.CreatedAt.Add(s.servedGraphSettle)) {
 		return nil, NewDomainError("NOT_FOUND", fmt.Sprintf("transport node not found: %s", id))
 	}
 	return &GetTransportNodeResponse{NodeID: string(node.ID), PlaceID: string(node.PlaceID), DisplayName: node.DisplayName, ServingModes: stringModes(node.ServingModes), AccessTimeMinutes: copyInt(node.AccessTimeMinutes), WalkingEdges: walkingEdgesToResponse(node.WalkingEdges), CreatedAt: domain.FormatTimestamp(node.CreatedAt)}, nil

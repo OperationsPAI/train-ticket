@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/trainticket/greenfield/platform/go-kit/idempotency"
 	kitmessaging "github.com/trainticket/greenfield/platform/go-kit/messaging"
@@ -13,6 +14,7 @@ import (
 	goruntime "github.com/trainticket/greenfield/platform/go-runtime"
 	adapterpg "github.com/trainticket/greenfield/services/place-network/internal/adapters/postgres"
 	"github.com/trainticket/greenfield/services/place-network/internal/application"
+	"github.com/trainticket/greenfield/services/place-network/internal/config"
 	"github.com/trainticket/greenfield/services/place-network/internal/domain"
 	apphttp "github.com/trainticket/greenfield/services/place-network/internal/http"
 )
@@ -64,12 +66,17 @@ func main() {
 	go storage.NewOutboxRelay(pool, redisClient).Run(ctx)
 
 	transactor := adapterpg.NewTransactor(pool)
+	served, err := config.LoadServedGraph()
+	if err != nil {
+		log.Fatal(err)
+	}
 	service := application.NewService(application.ServiceConfig{
-		Places:     adapterpg.NewPlaceRepositoryWithProvider(transactor),
-		Nodes:      adapterpg.NewTransportNodeRepositoryWithProvider(transactor),
-		Publisher:  adapterpg.NewOutboxPublisherWithProvider(transactor),
-		Clock:      domain.RealClock{},
-		UnitOfWork: transactor.Within,
+		Places:            adapterpg.NewPlaceRepositoryWithProvider(transactor),
+		Nodes:             adapterpg.NewTransportNodeRepositoryWithProvider(transactor),
+		Publisher:         adapterpg.NewOutboxPublisherWithProvider(transactor),
+		Clock:             domain.RealClock{},
+		UnitOfWork:        transactor.Within,
+		ServedGraphSettle: time.Duration(served.SettleSeconds) * time.Second,
 	})
 	var idempotencyStore idempotency.Store = storage.NewIdempotencyStore(pool)
 
