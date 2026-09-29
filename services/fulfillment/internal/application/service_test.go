@@ -813,3 +813,25 @@ func TestBoardingWithoutASourceEventIsRefused(t *testing.T) {
 		t.Fatalf("a boarding without a source event: got %v", err)
 	}
 }
+
+func TestSegmentStatusReportAnswersTheCommandItWasFiledUnder(t *testing.T) {
+	observedAt := time.Date(2026, 9, 29, 22, 0, 0, 0, time.UTC)
+	service := NewService(NewInMemoryRepository(), &recordingPublisher{}, NewInMemoryConsumedEventLog(), nil, func() time.Time { return observedAt })
+	command := ReportSegmentStatusCommand{
+		CommandID:           "cmd-0194f2e0-7b3e-7610-8284-5c26e8b0c0c1",
+		SegmentRef:          "seg-echo1",
+		ScheduledServiceRef: "svc-echo1",
+		ServiceDate:         "2026-09-29",
+		Status:              domain.SegmentOperationalStatusDelay,
+		EstimatedArrivalAt:  &observedAt,
+		ObservedAt:          observedAt,
+		SourceSystem:        domain.SegmentStatusSourceSystemSystem,
+	}
+	result, err := service.ReportSegmentStatus(context.Background(), command, CommandMetadata{})
+	if err != nil {
+		t.Fatalf("report segment status: %v", err)
+	}
+	if result.CommandID != command.CommandID || result.SegmentRef != command.SegmentRef {
+		t.Fatalf("segment status result=%+v", result)
+	}
+}
