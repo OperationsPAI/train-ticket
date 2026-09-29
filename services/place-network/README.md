@@ -23,6 +23,7 @@ Status: REQ-004 master-data primitives, implemented and deployed (Helm revision 
   `deploy/helm/train-ticket/values.yaml`).
 - Liveness `/healthz`, readiness `/readyz`; also `/health`, `/ready`,
 `/metadata`.
+- Migrations live in `migrations/` and run at startup, before the server binds.
 
 ## HTTP surface
 
