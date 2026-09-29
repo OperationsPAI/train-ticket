@@ -257,7 +257,7 @@ func (s *Service) CreateTransportNode(ctx context.Context, req CreateTransportNo
 		if err := s.nodes.Save(txCtx, node); err != nil {
 			return NewDomainError("CONFLICT", err.Error())
 		}
-		event := domain.TransportNodeUpdatedEvent{NodeID: node.ID, PlaceID: node.PlaceID, DisplayName: node.DisplayName, ServingModes: node.ServingModes, AccessTimeMinutes: copyInt(node.AccessTimeMinutes), WalkingEdges: walkingEdgesToPayload(node.WalkingEdges), UpdatedAt: domain.FormatTimestamp(now)}
+		event := nodeUpdatedEvent(node, now)
 		if err := s.publisher.Publish(txCtx, domain.NewEventEnvelope("TransportNodeRegistered", now, req.CorrelationID, "", domain.ProducerPlaceNetwork, event)); err != nil {
 			return NewDomainError("UNAVAILABLE", "event publisher unavailable")
 		}
@@ -267,6 +267,12 @@ func (s *Service) CreateTransportNode(ctx context.Context, req CreateTransportNo
 	}
 	response := &CreateTransportNodeResponse{NodeID: string(node.ID), PlaceID: string(node.PlaceID), DisplayName: node.DisplayName, ServingModes: servingModes, AccessTimeMinutes: copyInt(node.AccessTimeMinutes), WalkingEdges: walkingEdges, CreatedAt: domain.FormatTimestamp(now)}
 	return response, nil
+}
+
+// nodeUpdatedEvent is the fact a node registration publishes, carrying the
+// weights the request declared beside the node it filed.
+func nodeUpdatedEvent(node domain.TransportNode, now time.Time) domain.TransportNodeUpdatedEvent {
+	return domain.TransportNodeUpdatedEvent{NodeID: node.ID, PlaceID: node.PlaceID, DisplayName: node.DisplayName, ServingModes: node.ServingModes, AccessTimeMinutes: copyInt(node.AccessTimeMinutes), WalkingEdges: walkingEdgesToPayload(node.WalkingEdges), UpdatedAt: domain.FormatTimestamp(now)}
 }
 
 type GetTransportNodeResponse struct {
