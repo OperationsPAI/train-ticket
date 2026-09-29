@@ -35,12 +35,18 @@ Status: implemented and deployed (Helm revision 521; see [current status](../../
 The full contract lives in
 [`docs/08-contracts/api/customer-service.md`](../../docs/08-contracts/api/customer-service.md).
 
-The intake answers the channels this deployment's desk routes. They are stated in
-`config/intake-channels.json`, which ships beside the service and which
-`src/intake-rules.ts` reads once at start-up; a release whose file states no
-channel answers the platform's whole vocabulary, as every release did before the
-settings existed. A channel the desk does not route is refused before a case is
-stored, rather than filed for a queue that never claims it.
+## Settings
+
+`config/intake-channels.json` is the deployment's own statement about the desk
+behind it, and it ships inside the image:
+
+- `channels` — the channel names this deployment's intake answers. An empty list
+  keeps the platform's whole vocabulary, which is what a release answers when it
+  has said nothing about its desk.
+
+`src/intake-rules.ts` reads the file once at start-up. A channel the desk does not
+route is refused before a case is stored, rather than filed for a queue that never
+claims it.
 
 ## Events
 
