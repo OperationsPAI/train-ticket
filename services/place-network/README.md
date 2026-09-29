@@ -65,6 +65,9 @@ This service owns no service-specific business metric in the
 cd services/place-network && go test ./...
 ```
 
+The allowance is in whole minutes on the same clock the request's weight uses,
+so a consumer that reads both cannot mix units.
+
 ## DDD Sources
 
 - `docs/02-domains/place-network.md`
