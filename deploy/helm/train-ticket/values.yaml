@@ -1680,6 +1680,12 @@ services:
       # reads the legal name a registration hands over, which is what every release
       # before the master data consolidation filed under.
       SUPPLIER_PARTNER_KEY: "brandName"
+      # A registration opens a connection of its own and the platform default of ten
+      # is what the pool held while the master data import filed its batches: the
+      # import's measurement shows 41 waits of "pool timed out while waiting for an
+      # open connection" in the six minutes the batches ran, and the core instance
+      # was holding 214 of its 1200 connections. Sized to the burst the import opens.
+      PG_MAX_POOL_SIZE: "24"
   waitlist:
     db: waitlist
     image: mirrors.tencent.com/microservice/waitlist:final-e98069db@sha256:42657e4c3f0d2328cfa9885a62a4b1f9a7f11366afa093cb8bdd93b8729f4253
