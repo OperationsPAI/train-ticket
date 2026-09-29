@@ -417,6 +417,9 @@ func (s *Service) publishEnvelope(ctx context.Context, envelope EventEnvelope) e
 	return nil
 }
 
+// flushPendingEvents publishes what a replayed registration left pending, oldest
+// first and once per event, so an idempotent retry that lost its publish is not
+// answered as a success while the stream has not seen the event.
 func (s *Service) flushPendingEvents(ctx context.Context) error {
 	if s.publisher == nil {
 		s.mu.Lock()
