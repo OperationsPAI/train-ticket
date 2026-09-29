@@ -54,7 +54,10 @@ Publishes `BoardingVerified`, `NoShowRecorded`, `FulfillmentCompleted`,
 see [`docs/08-contracts/events/fulfillment.md`](../../docs/08-contracts/events/fulfillment.md).
 Consumes `events:entitlement-ticketing`, `events:booking-orchestration`,
 `events:ancillary-service` and `events:dispatch`
-(`internal/adapters/messaging/redis.go`).
+(`internal/adapters/messaging/redis.go`). Each of those streams is read once
+per replica under the `fulfillment` group, and the consumer name each replica
+registers is `FULFILLMENT_CONSUMER_NAME` (default `fulfillment-local`), so a
+rolling deployment does not leave a replica reading with another's name.
 
 ## Metrics
 
