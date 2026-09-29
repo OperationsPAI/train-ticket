@@ -59,6 +59,7 @@ to one and back.
 | Reads that trail their announcement | A read that a just-consumed announcement promises is a wait rather than a rule violation. `travel-insurance` waits for the case or reference it announced to become visible -- five attempts 400 milliseconds apart inside the delivery -- and declares a transient failure only if it still cannot see it. |
 | Scheduled job age | `finance-settlement` publishes `train_ticket.scheduled_job.success_age` for its daily reconciliation and supplier settlement, rebuilt from the durable run table rather than held in memory, and the scrape's label allowlist keeps the `scheduled_job` split it is published with. |
 | Due-task age | The sweeps that retire work on a timer publish how far behind they are: `payment` the age of the oldest intent past its expiry, `booking-orchestration` the age of the oldest overdue saga step deadline. Both are rebuilt from the durable queue they read, so a restart republishes the reading, and both clear it when the queue empties rather than holding a stale age. |
+| Catalogue identity | A partner is filed once per identity, and the field carrying that identity is the release's: `supplier-catalog` declares `SUPPLIER_IDENTITY_SOURCE=brand`, so a second onboarding of one trading name resolves to the entry the first one filed, while a release that names no field keeps filing the code the onboarding handed over. |
 
 ## Verification evidence
 
