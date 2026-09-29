@@ -118,6 +118,15 @@ Records arrival/provider/admin/system completion after a previously boarded segm
 
 **Error codes:** `NOT_FOUND`
 
+## Idempotency
+
+Every command endpoint requires an `Idempotency-Key` (UUID v7) and answers a
+replayed key from the response it stored, so a retry after a lost answer does
+not record the fact twice. The stored response is kept for ten minutes: the
+platform's retention sweep removes `idempotency_records` older than that
+(`platform/go-kit/storage/outbox.go`), and a key replayed after the sweep runs
+the command again, which the record's own idempotency then absorbs.
+
 ## Bus-only commands
 
 The following commands are consumed from the event bus only and have no HTTP
