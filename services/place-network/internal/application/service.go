@@ -251,8 +251,6 @@ func (s *Service) CreateTransportNode(ctx context.Context, req CreateTransportNo
 		return nil, NewDomainError("VALIDATION_FAILED", err.Error())
 	}
 	node.MarkCreatedAt(now)
-	servingModes := apiServingModes(node.ServingModes)
-	walkingEdges := walkingEdgesToResponse(node.WalkingEdges)
 	if err := s.unitOfWork(ctx, func(txCtx context.Context) error {
 		if err := s.nodes.Save(txCtx, node); err != nil {
 			return NewDomainError("CONFLICT", err.Error())
@@ -265,8 +263,13 @@ func (s *Service) CreateTransportNode(ctx context.Context, req CreateTransportNo
 	}); err != nil {
 		return nil, err
 	}
-	response := &CreateTransportNodeResponse{NodeID: string(node.ID), PlaceID: string(node.PlaceID), DisplayName: node.DisplayName, ServingModes: servingModes, AccessTimeMinutes: copyInt(node.AccessTimeMinutes), WalkingEdges: walkingEdges, CreatedAt: domain.FormatTimestamp(now)}
-	return response, nil
+	return createTransportNodeResponse(node, now), nil
+}
+
+// createTransportNodeResponse renders the answer a node registration gets: the
+// node, the place it hangs off, and the weights it carries.
+func createTransportNodeResponse(node domain.TransportNode, now time.Time) *CreateTransportNodeResponse {
+	return &CreateTransportNodeResponse{NodeID: string(node.ID), PlaceID: string(node.PlaceID), DisplayName: node.DisplayName, ServingModes: apiServingModes(node.ServingModes), AccessTimeMinutes: copyInt(node.AccessTimeMinutes), WalkingEdges: walkingEdgesToResponse(node.WalkingEdges), CreatedAt: domain.FormatTimestamp(now)}
 }
 
 // nodeUpdatedEvent is the fact a node registration publishes, carrying the
