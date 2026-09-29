@@ -723,3 +723,13 @@ func TestInvariantNonDestructiveChanges(t *testing.T) {
 		t.Fatalf("contract data should be preserved")
 	}
 }
+
+func TestNewCarrierTrimsTheCodeAndTheNameItIsGiven(t *testing.T) {
+	carrier, err := NewCarrier("car-trim", "sup-trim", "  Northline Freight  ", "  NLF01  ", "RAIL")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if carrier.Name != "Northline Freight" || carrier.Code != "NLF01" {
+		t.Fatalf("expected the trimmed values, got %q %q", carrier.Name, carrier.Code)
+	}
+}
