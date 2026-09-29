@@ -703,3 +703,13 @@ func TestSegmentStatusReportKeepsTheServiceDateItWasFiledUnder(t *testing.T) {
 		t.Fatalf("the report was stored without an id: %+v", result)
 	}
 }
+
+func TestCompletionOfASegmentNobodyBoardedIsRefused(t *testing.T) {
+	answeredAt := time.Date(2026, 9, 29, 9, 20, 0, 0, time.UTC)
+	service := NewService(NewInMemoryRepository(), &recordingPublisher{}, NewInMemoryConsumedEventLog(), nil, func() time.Time { return answeredAt })
+	seedTicket(t, service, "ent-ready1", "sb-ready1", "ord-ready1", "tvl-ready1", "seg-ready1")
+	_, err := service.RecordFulfillmentCompleted(context.Background(), FulfillmentCompletedCommand{EntitlementID: "ent-ready1", SegmentBookingID: "sb-ready1", JourneyOrderID: "ord-ready1", TravelerID: "tvl-ready1", SegmentRef: "seg-ready1", CompletionSource: domain.CompletionSourceArrival, CompletedAt: answeredAt}, CommandMetadata{})
+	if !errors.Is(err, ErrDomainRuleViolation) || !strings.Contains(err.Error(), "must be boarded") {
+		t.Fatalf("a completion before the boarding: got %v, want the domain's own answer", err)
+	}
+}
