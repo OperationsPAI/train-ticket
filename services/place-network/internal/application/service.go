@@ -197,11 +197,7 @@ func (s *Service) ListPlaces(ctx context.Context, req ListPlacesRequest) (*ListP
 	if err != nil {
 		return nil, NewDomainError("UNAVAILABLE", "failed to list places")
 	}
-	items := make([]PlaceSummary, 0, len(page.Items))
-	for _, place := range page.Items {
-		items = append(items, PlaceSummary{PlaceID: string(place.ID), PlaceType: string(place.Type), CanonicalName: place.CanonicalName, Code: place.Code, Timezone: place.Timezone, Status: string(place.Status)})
-	}
-	return &ListPlacesResponse{Items: items, Total: page.Total, Limit: limit, Offset: responseOffset}, nil
+	return &ListPlacesResponse{Items: placeSummaries(page), Total: page.Total, Limit: limit, Offset: responseOffset}, nil
 }
 
 type WalkingEdgeRequest struct {
@@ -337,6 +333,17 @@ func validPlaceTypeForAPI(value domain.PlaceType) bool {
 	default:
 		return false
 	}
+}
+
+// placeSummaries renders the page a list read answers. The page a repository
+// returns carries the places themselves, so the summaries are built here rather
+// than inside the query.
+func placeSummaries(page ports.PlacePage) []PlaceSummary {
+	items := make([]PlaceSummary, 0, len(page.Items))
+	for _, place := range page.Items {
+		items = append(items, PlaceSummary{PlaceID: string(place.ID), PlaceType: string(place.Type), CanonicalName: place.CanonicalName, Code: place.Code, Timezone: place.Timezone, Status: string(place.Status)})
+	}
+	return items
 }
 
 // pageBounds clamps the page a list request asks for. The contract's page size
