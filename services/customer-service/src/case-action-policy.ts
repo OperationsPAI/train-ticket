@@ -9,7 +9,8 @@ import type { SupportCaseStatus } from "./domain.js";
  * queue that takes another status is a routing decision the release owns.
  *
  * Unset or blank keeps the table below, which is the arrangement every
- * deployment released so far runs. A name outside the status vocabulary fails
+ * deployment released so far runs: the desk's own default, not a vocabulary
+ * the service owns. A name outside the status vocabulary fails
  * here, at start-up, rather than refusing one action's cases in production.
  * The statement is read once per process, so a value that changed under a
  * running process cannot leave one guard answering a different list from the
