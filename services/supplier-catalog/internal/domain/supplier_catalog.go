@@ -35,6 +35,10 @@ type CorrelationID string
 // SupplierStatus represents the lifecycle state of a supplier.
 type SupplierStatus string
 
+// The statuses a supplier moves through: a registration starts at DRAFT, and the
+// transitions the methods below allow are the ones the console offers. The list
+// is also the set the store's status filter accepts, so a status added here is
+// one a caller can read the catalogue by.
 const (
 	SupplierStatusDraft       SupplierStatus = "DRAFT"
 	SupplierStatusUnderReview SupplierStatus = "UNDER_REVIEW"
