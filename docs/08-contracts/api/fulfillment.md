@@ -158,4 +158,8 @@ Request body:
 | `observedAt` | RFC3339 UTC | yes | Observation/declaration time. |
 | `sourceSystem` | enum | yes | `SYSTEM` or `OPS`. |
 
-Responses: `201 Created` with `segmentStatusRecordId`, `commandId`, `segmentRef`, `status`, `observedAt`; `400` for validation; `422` for domain-rule violations; `503` when outbox append is unavailable.
+Responses: `201 Created` with `segmentStatusRecordId`, `commandId`,
+`segmentRef`, `status`, `observedAt`; `400` for validation, including a status
+the command does not carry or a timestamp the stated status requires and does
+not have; `422` for domain-rule violations; `503` when outbox append is
+unavailable.
