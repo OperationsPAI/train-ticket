@@ -803,3 +803,13 @@ func TestCompletionTheRecordAlreadyHoldsIsNotRecordedTwice(t *testing.T) {
 		t.Fatalf("a completion the record already holds published %d events", len(publisher.envelopes))
 	}
 }
+
+func TestBoardingWithoutASourceEventIsRefused(t *testing.T) {
+	boardedAt := time.Date(2026, 9, 29, 21, 0, 0, 0, time.UTC)
+	service := NewService(NewInMemoryRepository(), &recordingPublisher{}, NewInMemoryConsumedEventLog(), nil, func() time.Time { return boardedAt })
+	seedTicket(t, service, "ent-noscan1", "sb-noscan1", "ord-noscan1", "tvl-noscan1", "seg-noscan1")
+	_, err := service.VerifyBoarding(context.Background(), VerifyBoardingCommand{EntitlementID: "ent-noscan1", SegmentBookingID: "sb-noscan1", JourneyOrderID: "ord-noscan1", TravelerID: "tvl-noscan1", SegmentRef: "seg-noscan1", Source: domain.FulfillmentSourceGate, OccurredAt: boardedAt}, CommandMetadata{})
+	if err == nil || !strings.Contains(err.Error(), "sourceEventId is required") {
+		t.Fatalf("a boarding without a source event: got %v", err)
+	}
+}
