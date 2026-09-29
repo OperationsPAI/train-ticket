@@ -31,6 +31,8 @@ Status: implemented and deployed (Helm revision 521; see [current status](../../
   keeps the arrangement the service ships.
 - The statement is read once at start-up, so a change to it needs the pod to
   restart.
+- A statement that names a status outside the case vocabulary fails at start-up
+  rather than refusing one action's cases in production.
 - A case that is not in a status an action takes is refused with the action's own
   `CASE_NOT_*` code; `resolve` and `close` answer `PRECONDITION_FAILED` so a
   client can reconcile the case and retry.
