@@ -194,7 +194,8 @@ func (s *Service) RegisterSupplier(ctx context.Context, cmd RegisterSupplierComm
 
 	// The identity a filing claims is the field the release names, and the catalogue
 	// remembers the identities it has filed, so an import that brings one bureau in
-	// under several codes is answered the same way whichever code it arrives with.
+	// under several codes is answered the same way whichever code it arrives with. The
+	// store still answers for the profile the filing carries.
 	identity := filingIdentity(s.filingField, cmd)
 	held, err := s.filingIdentityHeld(ctx, identity)
 	if err != nil {
