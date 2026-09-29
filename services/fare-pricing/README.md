@@ -80,7 +80,9 @@ cut from; `FARE_PRICING_RESOLUTION_CONTRACTS` overlays the list with a
 comma-separated one, so a release that carries a different catalogue states it
 without a build; a process that states neither carries no register. The register
 is what lets a surface that answers a stored reference tell a contract this
-deployment carries from one it does not.
+deployment carries from one it does not. It gates that surface only: the rule
+sets the deployment holds are still what its own quotes are priced on, and the
+quote path reads them without consulting the register.
 
 ## Metrics
 
