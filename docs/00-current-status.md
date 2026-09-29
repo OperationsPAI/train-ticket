@@ -1101,3 +1101,13 @@ every pool, which changes the published `released` level.
 `config/resolution.json`. The image copies the directory and names it in
 `FARE_PRICING_CONFIG_DIR`, so a container reads the document the release was cut
 from, and a process with no document at all carries no register.
+
+
+## A stored rule set reference is answered against the register
+
+`GET /api/v1/fare-rule-sets/{ruleSetId}` answers a rule set whose contract the
+deployment's register carries and answers nothing for one outside it, which is
+what lets corporate-travel's create path refuse a price reference that names no
+rule set the release serves. Measured against the deployed service, a quote's
+snapshot id and the register the same release states are read together, and the
+register is what the answer follows.
