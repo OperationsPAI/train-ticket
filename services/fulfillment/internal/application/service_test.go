@@ -778,3 +778,28 @@ func TestBoardingEnvelopeCarriesTheCorrelationTheCallerSent(t *testing.T) {
 		t.Fatalf("published envelopes=%#v", publisher.envelopes)
 	}
 }
+
+func TestCompletionTheRecordAlreadyHoldsIsNotRecordedTwice(t *testing.T) {
+	boardedAt := time.Date(2026, 9, 29, 19, 0, 0, 0, time.UTC)
+	publisher := &recordingPublisher{}
+	service := NewService(NewInMemoryRepository(), publisher, NewInMemoryConsumedEventLog(), nil, func() time.Time { return boardedAt })
+	seedTicket(t, service, "ent-twice1", "sb-twice1", "ord-twice1", "tvl-twice1", "seg-twice1")
+	if _, err := service.VerifyBoarding(context.Background(), VerifyBoardingCommand{EntitlementID: "ent-twice1", SegmentBookingID: "sb-twice1", JourneyOrderID: "ord-twice1", TravelerID: "tvl-twice1", SegmentRef: "seg-twice1", Source: domain.FulfillmentSourceGate, SourceEventID: "gate-twice1", OccurredAt: boardedAt}, CommandMetadata{}); err != nil {
+		t.Fatalf("boarding: %v", err)
+	}
+	command := FulfillmentCompletedCommand{EntitlementID: "ent-twice1", SegmentBookingID: "sb-twice1", JourneyOrderID: "ord-twice1", TravelerID: "tvl-twice1", SegmentRef: "seg-twice1", CompletionSource: domain.CompletionSourceArrival, CompletedAt: boardedAt.Add(2 * time.Hour)}
+	if _, err := service.RecordFulfillmentCompleted(context.Background(), command, CommandMetadata{}); err != nil {
+		t.Fatalf("first completion: %v", err)
+	}
+	publisher.envelopes = nil
+	second, err := service.RecordFulfillmentCompleted(context.Background(), command, CommandMetadata{})
+	if err != nil {
+		t.Fatalf("second completion: %v", err)
+	}
+	if second.Status != domain.FulfillmentStatusCompleted {
+		t.Fatalf("status=%s, want COMPLETED", second.Status)
+	}
+	if len(publisher.envelopes) != 0 {
+		t.Fatalf("a completion the record already holds published %d events", len(publisher.envelopes))
+	}
+}
