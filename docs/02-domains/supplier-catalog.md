@@ -170,6 +170,8 @@ Supplier Catalog 负责把平台可合作的供应侧主数据整理成稳定、
 
 所有发布事件必须通过 Outbox；来自导入、Provider Integration 发现和后台审批的输入必须通过 Inbox 去重。同一外部编码的重复导入不得生成多个活跃映射。
 
+RegisterSupplier 的幂等键是接入批次的事实（sourceSystem + externalSupplierCode + onboardingBatchId），它只保证同一次接入不重复投递；两个批次接入同一个伙伴时，把两次请求收敛成一条记录的是 profile，也就是身份字段。因此接入方给的编码不构成身份，只有 release 声明的那个字段构成身份，重复接入的返回值是冲突而不是新记录。
+
 ## 8. 策略和 Saga 参与点
 
 - 供应商接入策略：Supplier 只有在资质、结算主体、合同范围和风险标识通过后，才能从 UnderReview 进入 Active，并允许创建可发布目录。
