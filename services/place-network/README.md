@@ -69,6 +69,10 @@ cd services/place-network && go test ./...
 
 - `docs/02-domains/place-network.md`
 
+The allowance exists because absence and zero are different facts: a station
+nobody measured is not a station with no wayfinding, and every consumer that
+plans a connection would otherwise have to guess which one it is holding.
+
 ## Language Rationale
 
 Go fits read-heavy master-data APIs and simple operational lookup paths.
