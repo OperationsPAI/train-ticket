@@ -230,10 +230,7 @@ func (s *Service) CreateTransportNode(ctx context.Context, req CreateTransportNo
 	if err != nil || place == nil {
 		return nil, NewDomainError("NOT_FOUND", fmt.Sprintf("place not found: %s", req.PlaceID))
 	}
-	modes := make([]domain.TransportMode, len(req.ServingModes))
-	for i, mode := range req.ServingModes {
-		modes[i] = apiTransportMode(mode)
-	}
+	modes := transportModesFromRequest(req.ServingModes)
 	now := s.clock.Now()
 	node, err := domain.NewTransportNode(domain.NewTransportNodeID(), placeID, req.DisplayName, modes)
 	if err != nil {
@@ -424,6 +421,16 @@ func walkingEdgesToResponse(edges []domain.WalkingEdge) []WalkingEdgeResponse {
 		out[i] = WalkingEdgeResponse{ToNodeID: string(edge.ToNodeID), WalkingTimeMinutes: copyInt(edge.WalkingTimeMinutes)}
 	}
 	return out
+}
+
+// transportModesFromRequest reads the modes a create request declares in the
+// vocabulary the domain files them under.
+func transportModesFromRequest(values []string) []domain.TransportMode {
+	modes := make([]domain.TransportMode, len(values))
+	for i, value := range values {
+		modes[i] = apiTransportMode(value)
+	}
+	return modes
 }
 
 func apiTransportMode(value string) domain.TransportMode {
