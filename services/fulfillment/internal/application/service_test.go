@@ -713,3 +713,20 @@ func TestCompletionOfASegmentNobodyBoardedIsRefused(t *testing.T) {
 		t.Fatalf("a completion before the boarding: got %v, want the domain's own answer", err)
 	}
 }
+
+func TestBoardingFactKeepsTheReaderThatVerifiedIt(t *testing.T) {
+	stationAt := time.Date(2026, 9, 29, 11, 0, 0, 0, time.UTC)
+	service := NewService(NewInMemoryRepository(), &recordingPublisher{}, NewInMemoryConsumedEventLog(), nil, func() time.Time { return stationAt })
+	seedTicket(t, service, "ent-source1", "sb-source1", "ord-source1", "tvl-source1", "seg-source1")
+	first, err := service.VerifyBoarding(context.Background(), VerifyBoardingCommand{EntitlementID: "ent-source1", SegmentBookingID: "sb-source1", JourneyOrderID: "ord-source1", TravelerID: "tvl-source1", SegmentRef: "seg-source1", Source: domain.FulfillmentSourceStation, SourceEventID: "station-source1", OccurredAt: stationAt}, CommandMetadata{})
+	if err != nil {
+		t.Fatalf("boarding: %v", err)
+	}
+	record, err := service.GetFulfillmentRecord(context.Background(), first.FulfillmentRecordID)
+	if err != nil {
+		t.Fatalf("read record: %v", err)
+	}
+	if record.BoardingFact == nil || record.BoardingFact.Source != domain.FulfillmentSourceStation || record.BoardingFact.SourceEventID != "station-source1" {
+		t.Fatalf("boarding fact=%+v", record.BoardingFact)
+	}
+}
