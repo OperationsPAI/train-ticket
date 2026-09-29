@@ -59,12 +59,16 @@ func main() {
 	defer func() { _ = redisClient.Close() }()
 	go storage.NewOutboxRelay(pool, redisClient).Run(ctx)
 	transactor := adapterpg.NewTransactor(pool)
-	// The identity a partner is filed under is a release decision, so it is read
-	// once here rather than per registration: the value is the same for every
-	// request the pod answers and reading it beside the pool keeps the service
-	// from consulting the environment on the request path.
+	// The identity a partner is filed under is a release decision rather than a
+	// property of the registration call, so it is read once here: the value is
+	// the same for every request the pod answers, and reading it beside the pool
+	// keeps the registration path off the environment.
 	identitySource := application.SupplierIdentitySourceFromEnv()
-	service := application.NewService(adapterpg.NewOutboxPublisherWithProvider(transactor)).WithRepository(adapterpg.NewRepositoryWithProvider(transactor)).WithUnitOfWork(transactor.Within).WithIdentitySource(identitySource)
+	service := application.
+		NewService(adapterpg.NewOutboxPublisherWithProvider(transactor)).
+		WithRepository(adapterpg.NewRepositoryWithProvider(transactor)).
+		WithUnitOfWork(transactor.Within).
+		WithIdentitySource(identitySource)
 	eventBus, err := messaging.NewRedisRuntimeFromEnv(ctx)
 	if err != nil {
 		log.Fatal(err)
