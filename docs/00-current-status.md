@@ -1093,3 +1093,22 @@ its holds forever. The change therefore saved no transfer and added a second
 scan, so it was dropped rather than shipped. The finding is recorded because it
 is the reason the item now asks whether terminal holds should be retired on
 every pool, which changes the published `released` level.
+
+## Boarding estate consolidation
+
+**The estate a release boards through is the release's.** Fulfillment's source
+check used to carry the readers it accepts in the branch, which meant retiring a
+reader at a deployment boundary waited for a new image. The readers are now a
+list beside the check and the estate a deployment operates is stated as
+`services.fulfillment.env.FULFILLMENT_BOARDING_SOURCES`, comma separated and
+resolved once when the process starts; a release that states none keeps the
+vocabulary the image was built with. This release states the station and the
+provider, because the gate readers went with the station estate's own hand-off
+and the provider feed is the operator's attendant writes.
+
+**What is measured and what is not.** The estate is data the chart renders into
+the container environment, so a deployment that states one changes no code: the
+service reads it at start-up and every later boarding is answered with the same
+estate until the process is replaced. What the release has not measured yet is
+the rate the retired lane's facts arrive under once they come in as station
+facts, which is the open item in [TODO](TODO.md#boarding-estate).
