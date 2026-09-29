@@ -1575,7 +1575,7 @@ services:
         exec:
           command: ["sleep", "10"]
     env:
-      # The TypeScript kit has no CONSUMER_THREADS support: the effective knob
+      # The TypeScript kit has no CONSUMER_THREADS support -- the effective knob
       # is the parallel handler count per read batch. Four handlers kept up at
       # troughs only, and this consumer fell thirteen seconds behind on the
       # identity verification stream while a peak held near one hundred and
