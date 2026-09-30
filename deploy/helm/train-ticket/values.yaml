@@ -1702,6 +1702,7 @@ services:
       # The pool carries the read batches above and the HTTP reads beside them.
       PG_MAX_POOL_SIZE: "24"
   wallet-promotion:
+    # Its own database on the core instance; no other service reads it.
     db: wallet_promotion
     image: mirrors.tencent.com/microservice/wallet-promotion:autoclaim-6b90ce5d@sha256:79de2e83f778390a379a05be2486cc7226bb188a0eb43532d42a5836957cf5ae
     # JVM event consumer, low traffic -- see the note on defaults.resources.
