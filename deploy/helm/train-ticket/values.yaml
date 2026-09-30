@@ -1671,6 +1671,7 @@ services:
       requests: { cpu: 100m, memory: 256Mi }
       limits: { cpu: '8', memory: 6Gi }
   supplier-catalog:
+    # On the core instance with the other service databases in this block.
     db: supplier_catalog
     env:
       # The operator import brings the same bureau in more than once, first under the
